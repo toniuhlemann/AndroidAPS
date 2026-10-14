@@ -346,11 +346,9 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
     @Test
     fun `mit Konto - Buchung am Druck, Ersetzung im Fenster, Budget nie aufgefuellt`(@TempDir dir: File) {
-        konfiguration(kontoAn = true)
         val f = fStabil
-        val alle = lauf(f, dir)
-        // Abbruchzyklen (Anlauf ohne Historie) tragen keinen Block.
-        val zyklen = alle.filter { it.o.abortReason == null }
+        // Konsolidierung: jeder Druck bucht ein v2-Konto (fruehe Versorgung); v1 und die Direktdosis sind entfallen.
+        val zyklen = fruehLauf(f, dir) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
         assertTrue(zyklen.size > 300)
         assertTrue(zyklen.all { it.o.erwartungskonto != null }) { "Konto an: Block in jedem vollen Zyklus" }
 
@@ -364,8 +362,8 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertEquals(f.ts(0), konto0.authId)
         assertTrue(konto0.expectationOn)
         assertTrue(konto0.startStable, "stabiler Start")
-        // A_0 = min(Huelle, phi_0 * F(120)) = min(Standard-Huelle, 0,5 * 3,0).
-        assertEquals(minOf(FuseDoubleKey.PrimeEnvelopeU.defaultValue, 0.5 * 3.0), konto0.a0U, 1e-9)
+        assertNotNull(konto0.early) { "kein v2-Konto" }
+        assertTrue(konto0.a0U > 0.0 && konto0.a0U <= FRUEH_BUDGET_U + 1e-9) { "Budget ${konto0.a0U}" }
 
         // Im Fenster: Ersetzung, Onset-Kanal, H8 und Liveness-Kanal aus.
         val imFenster = zyklen.filter { it.o.erwartungskonto!!.gilt }
@@ -388,10 +386,10 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         var vorher: ExpectationAccount.State? = null
         for (z in zyklen) {
             val x = z.o.erwartungskonto ?: continue
-            x.buchung?.split?.let { s ->
-                assertEquals(0.0, s.violationU, 1e-9, "Minute ${z.minute}: Ueberschreitung")
-                assertTrue(s.dErwU <= x.zyklus!!.eval.restEffU + 1e-9) { "Minute ${z.minute}: d_erw ueber dem Rest" }
-                erwSumme += s.dErwU
+            x.buchung?.split?.let { b ->
+                assertEquals(0.0, b.violationU, 1e-9, "Minute ${z.minute}: Ueberschreitung")
+                assertTrue(b.dErwU <= x.zyklus!!.eval.restEffU + 1e-9) { "Minute ${z.minute}: d_erw ueber dem Rest" }
+                erwSumme += b.dErwU
             }
             val k = z.konto
             if (k != null && vorher != null && k.authId == vorher!!.authId) {
@@ -404,24 +402,11 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         }
         assertTrue(erwSumme <= konto0.a0U + 1e-9) { "d_erw-Summe $erwSumme ueber A_0" }
 
-        // NICHT LEER: in dieser Mahlzeit fliesst Erwartung, die Direktdosis
-        // bucht voll, und die Guard-Ausnahme hebt nur bei typisiertem
-        // Guard-Grund. Die Buecher gehen auf: gebucht = Direktdosis + d_erw.
+        // NICHT LEER: in dieser Mahlzeit fliesst Erwartung - ohne Direktdosis und ohne die v1-Ausnahme.
         val direktSumme = zyklen.sumOf { it.o.erwartungskonto?.buchung?.direktdosisU ?: 0.0 }
         assertTrue(erwSumme > 0.0) { "kein Erwartungsanteil geflossen" }
-        assertTrue(direktSumme > 0.0) { "keine Direktdosis gebucht" }
-        val hebungen = zyklen.filter { (it.o.erwartungskonto?.angehobenU ?: 0.0) > 0.0 }
-        assertTrue(hebungen.isNotEmpty()) { "keine Guard-Ausnahme" }
-        val guardGrund = app.aaps.fuse.core.controller.CandidateSearch.Reject.GUARD_FLOOR
-        for (z in hebungen) {
-            val x = z.o.erwartungskonto!!
-            assertTrue(x.zyklus!!.guardAusnahme)
-            // Gehoben wird nur das Guard-Urteil: Baseline-Guard oder typisierter Guard-Grund der Suche.
-            assertTrue(x.blockNormalpfad == app.aaps.fuse.core.controller.FuseController.Block.GUARD_FLOOR || x.grundNormalpfad == guardGrund) {
-                "Minute ${z.minute}: Hebung ohne Guard-Urteil (${x.blockNormalpfad}/${x.grundNormalpfad})"
-            }
-            assertTrue(x.angehobenU <= x.zyklus.eval.restEffU + 1e-9) { "Minute ${z.minute}: Hebung ueber dem Rest" }
-        }
+        assertEquals(0.0, direktSumme, 0.0, "Direktdosis gebucht")
+        assertTrue(zyklen.none { it.o.erwartungskonto?.zyklus?.guardAusnahme == true }) { "v1-Ausnahme im v2-Konto" }
         // Jeder CANDIDATE-Zyklus traegt einen typisierten Grund (Mechanismuskriterium des Plans).
         for (z in zyklen) {
             val x = z.o.erwartungskonto ?: continue
@@ -429,7 +414,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
                 assertNotNull(x.grundNormalpfad, "Minute ${z.minute}: CANDIDATE ohne typisierten Grund")
         }
         val kontoEnde = zyklen.mapNotNull { it.konto }.last()
-        assertEquals(direktSumme + erwSumme - kontoEnde.cancelledU, kontoEnde.bookedU, 1e-9, "Buecher gehen nicht auf")
+        assertEquals(erwSumme - kontoEnde.cancelledU, kontoEnde.bookedU, 1e-9, "Buecher gehen nicht auf")
 
         // Nach dem Fenster gilt das Konto nicht mehr, der Kanal laeuft wieder normal.
         val danach = zyklen.filter { it.minute >= 125 }
@@ -454,51 +439,11 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     }
 
     @Test
-    fun `nach Tief fliesst Erwartung erst nach der Stabilitaet`(@TempDir dir: File) {
-        konfiguration(kontoAn = true)
-        val zyklen = lauf(fTief, dir).filter { it.o.abortReason == null }
-        val start = zyklen.first { it.o.erwartungskonto!!.zyklus?.armiertInDiesemZyklus == true }
-        val konto = start.o.erwartungskonto!!.zyklus!!.state
-        assertFalse(konto.startStable, "BG am Druck unter der Stabilitaetsgrenze")
-        assertEquals(minOf(FuseDoubleKey.PrimeEnvelopeU.defaultValue, 0.25 * 3.0), konto.a0U, 1e-9)
-        for (z in zyklen) {
-            val zy = z.o.erwartungskonto?.zyklus ?: continue
-            if (!zy.state.released || zy.pausiert) {
-                assertEquals(0.0, zy.eval.restEffU, 0.0, "Minute ${z.minute}: Rest vor Stabilitaet oder in Pause")
-                assertEquals(0.0, z.o.erwartungskonto!!.buchung?.split?.dErwU ?: 0.0, 0.0, "Minute ${z.minute}: d_erw")
-            }
-        }
-        // Die Stabilitaet stellt sich im Anstieg ein - danach ist der Rest frei.
-        val frei = zyklen.firstOrNull { it.o.erwartungskonto?.zyklus?.state?.released == true }
-        assertNotNull(frei, "keine Freigabe nach Stabilitaet")
-        assertTrue(frei!!.minute >= 15) { "Freigabe zu frueh: Minute ${frei.minute}" }
-    }
-
-    @Test
     fun `Arm REF ist der Kandidat mit Schalter aus`(@TempDir dir: File) {
         konfiguration(kontoAn = true)
         val zyklen = lauf(fStabil, dir, FuseCycleRunner.Pruefarm.REF)
         assertTrue(zyklen.all { it.o.erwartungskonto == null && it.konto == null })
         assertTrue(zyklen.none { it.o.livenessDenial == "EXPECTATION_ACCOUNT" })
-    }
-
-    @Test
-    fun `Arm EK-S liefert das Budget ohne Direktdosis-Familie`(@TempDir dir: File) {
-        konfiguration(kontoAn = true)
-        val zyklen = lauf(fStabil, dir, FuseCycleRunner.Pruefarm.EK_S).filter { it.o.abortReason == null }
-        val konto = zyklen.first { it.o.erwartungskonto!!.zyklus?.armiertInDiesemZyklus == true }.o.erwartungskonto!!.zyklus!!.state
-        // phi_0 = 1,0: A_0 = min(Huelle, F(120)).
-        assertEquals(minOf(FuseDoubleKey.PrimeEnvelopeU.defaultValue, 3.0), konto.a0U, 1e-9)
-        val imFenster = zyklen.filter { it.o.erwartungskonto!!.gilt }
-        assertTrue(imFenster.isNotEmpty())
-        // Keine Direktdosis im Fenster: weder Sofortanteil noch Prime, Aufschub oder Ruhe.
-        assertTrue(imFenster.all { (it.o.erwartungskonto!!.buchung?.direktdosisU ?: 0.0) == 0.0 }) { "Direktdosis im Fenster" }
-        assertTrue(imFenster.all { it.o.decision.grant?.source != app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME })
-        // Der Erwartungsanteil fliesst - in Schritten, nie ueber dem Rest.
-        val erw = imFenster.sumOf { it.o.erwartungskonto!!.buchung?.split?.dErwU ?: 0.0 }
-        assertTrue(erw > 0.0) { "kein Erwartungsanteil" }
-        assertTrue(erw <= konto.a0U + 1e-9)
-        assertTrue(imFenster.all { it.geliefertU <= FuseDoubleKey.MaxSmbU.defaultValue + 1e-9 }) { "Schritt ueber maxSMB" }
     }
 
     /** Die Direktdosis-Familie, wie sie in der Entscheidung als Quelle erscheint. */
@@ -508,55 +453,15 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     )
 
     /**
-     * TONIS DRITTER WEG: die Marker-Wahl "nur Erwartung" macht im
-     * Betrieb, was der Pruefstandsarm EK-S macht - keine Direktdosis, das
-     * Budget traegt die Mahlzeit, in Schritten und nie ueber dem Rest.
+     * Konsolidierung: es gibt keine Direktdosis mehr - auch nicht, wenn das Konto ausfaellt (hier: keine Kurve) und der
+     * Marker keine Wahl traegt.
      */
     @Test
-    fun `nur Erwartung per Marker-Wahl liefert das Budget ohne Direktdosis`(@TempDir dir: File) {
-        nurErwartung = true
-        try {
-            konfiguration(kontoAn = true, phi0Stabil = 1.0, phi0Tief = 1.0)
-            val zyklen = lauf(fStabil, dir).filter { it.o.abortReason == null }
-            val konto = zyklen.first { it.o.erwartungskonto!!.zyklus?.armiertInDiesemZyklus == true }.o.erwartungskonto!!.zyklus!!.state
-            // Die Huelle bleibt fuer das Konto: A_0 = min(Huelle, F(120)), anders als "ohne Vorschuss".
-            assertEquals(minOf(FuseDoubleKey.PrimeEnvelopeU.defaultValue, 3.0), konto.a0U, 1e-9)
-            val imFenster = zyklen.filter { it.o.erwartungskonto!!.gilt }
-            assertTrue(imFenster.isNotEmpty())
-            assertTrue(imFenster.all { (it.o.erwartungskonto!!.buchung?.direktdosisU ?: 0.0) == 0.0 }) { "Direktdosis im Fenster" }
-            assertTrue(zyklen.none { it.o.decision.grant?.source in direktQuellen }) { "Direktdosis-Quelle trotz nur Erwartung" }
-            val erw = imFenster.sumOf { it.o.erwartungskonto!!.buchung?.split?.dErwU ?: 0.0 }
-            assertTrue(erw > 0.0) { "kein Erwartungsanteil" }
-            assertTrue(erw <= konto.a0U + 1e-9)
-            assertTrue(imFenster.all { it.geliefertU <= FuseDoubleKey.MaxSmbU.defaultValue + 1e-9 }) { "Schritt ueber maxSMB" }
-            // Die Wahl steht im Zustand (und damit im Trail).
-            assertTrue(imFenster.all { it.o.state?.markerExpectationOnly == true })
-        } finally {
-            nurErwartung = false
-        }
-    }
-
-    /**
-     * Die Wahl gilt die GANZE Mahlzeit, auch ohne Konto: faellt das Konto aus
-     * (hier: keine Kurve), gibt es trotzdem keine ueberraschende Direktdosis.
-     * Gegenprobe: ohne die Wahl liefert derselbe Lauf eine Direktdosis.
-     */
-    @Test
-    fun `nur Erwartung haelt die Direktdosis auch ohne Konto zurueck`(@TempDir dir: File) {
+    fun `ohne Konto gibt es keine Direktdosis`(@TempDir dir: File) {
         konfiguration(kontoAn = false)
-        val gegenprobe = lauf(fStabil, File(dir, "ohne")).filter { it.o.abortReason == null }
-        assertTrue(gegenprobe.any { it.o.decision.grant?.source in direktQuellen }) { "Gegenprobe ohne Direktdosis - Probe zeigt nichts" }
-        nurErwartung = true
-        try {
-            markerAt = 0L
-            markerPress = 0L
-            konfiguration(kontoAn = false)
-            val zyklen = lauf(fStabil, File(dir, "mit")).filter { it.o.abortReason == null }
-            assertTrue(zyklen.isNotEmpty())
-            assertTrue(zyklen.none { it.o.decision.grant?.source in direktQuellen }) { "Direktdosis trotz nur Erwartung ohne Konto" }
-        } finally {
-            nurErwartung = false
-        }
+        val zyklen = lauf(fStabil, dir).filter { it.o.abortReason == null }
+        assertTrue(zyklen.any { it.minute in 0..60 }) { "Probe zeigt nichts: keine Zyklen nach dem Druck" }
+        assertTrue(zyklen.none { it.o.decision.grant?.source in direktQuellen }) { "Direktdosis ohne Konto" }
     }
 
     /** Fallen nach dem Marker mit Prime-Insulin an Bord: das spaete Abwaertsrisiko des Aufschubs greift. */
@@ -565,23 +470,6 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         listOf(-90 to 150.0, -10 to 150.0, 0 to 152.0, 12 to 160.0, 45 to 98.0, 70 to 84.0, 120 to 95.0, 240 to 120.0),
         markerMin = 0,
     )
-
-    /** Codex 11.10., Punkt 9: einmal aus, bleibt die Ausnahme fuer diese Episode entzogen. */
-    @Test
-    fun `Abschalten der Guard-Ausnahme entzieht das Recht fuer die ganze Episode`(@TempDir dir: File) {
-        konfiguration(kontoAn = true)
-        val zyklen = lauf(fStabil, dir, vorZyklus = { m ->
-            if (m == 2) whenever(preferences.get(FuseBooleanKey.ExpectationGuardExceptionEnabled)).thenReturn(false)
-            if (m == 4) whenever(preferences.get(FuseBooleanKey.ExpectationGuardExceptionEnabled)).thenReturn(true)
-        }).filter { it.o.abortReason == null }
-        val mitKonto = zyklen.filter { it.o.erwartungskonto?.zyklus != null }
-        assertTrue(mitKonto.filter { it.minute < 2 }.all { it.o.erwartungskonto!!.zyklus!!.guardAusnahme })
-        for (z in mitKonto.filter { it.minute >= 2 }) {
-            assertFalse(z.o.erwartungskonto!!.zyklus!!.guardAusnahme, "Minute ${z.minute}: Ausnahme wieder an")
-            assertEquals(0.0, z.o.erwartungskonto!!.angehobenU, 0.0, "Minute ${z.minute}: Hebung ohne Recht")
-        }
-        assertFalse(zyklen.mapNotNull { it.konto }.last().guardException, "Entzug im Kontozustand")
-    }
 
     /** Codex 11.10., Punkt 8: ein verlorenes Konto wird nicht neu eroeffnet, der Rueckfall ist ausgewiesen. */
     @Test
@@ -600,23 +488,6 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         }
         // Ausserhalb des Mahlzeitkontexts gibt es keinen Rueckfall.
         assertTrue(zyklen.filter { it.minute < 0 || it.minute >= 125 }.all { it.o.erwartungskonto!!.rueckfall == null })
-    }
-
-    /** Codex 11.10., Punkt 5: das spaete Abwaertsrisiko pausiert den Erwartungsanteil nach ANTEIL, auf allen Wegen. */
-    @Test
-    fun `das spaete Abwaertsrisiko pausiert den Erwartungsanteil`(@TempDir dir: File) {
-        konfiguration(kontoAn = true)
-        whenever(preferences.get(FuseBooleanKey.DeferredPrimeEnabled)).thenReturn(true)
-        val zyklen = lauf(fFall, dir).filter { it.o.abortReason == null }
-        val gesperrt = zyklen.filter { it.o.erwartungskonto?.zyklus?.pausenGruende?.contains("DESCENT_RISK_MARKER") == true }
-        assertTrue(gesperrt.isNotEmpty()) { "die Probe erreicht das spaete Abwaertsrisiko nicht" }
-        for (z in gesperrt) {
-            val x = z.o.erwartungskonto!!
-            assertTrue(x.zyklus!!.pausiert)
-            assertEquals(0.0, x.zyklus.eval.restEffU, 0.0, "Minute ${z.minute}: Rest trotz Sperre")
-            assertEquals(0.0, x.buchung?.split?.dErwU ?: 0.0, 0.0, "Minute ${z.minute}: d_erw trotz Sperre")
-            assertEquals(0.0, x.angehobenU, 0.0, "Minute ${z.minute}: Hebung trotz Sperre")
-        }
     }
 
     /**
@@ -690,21 +561,25 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     )
 
     /**
-     * Gemeinsamer Ablauf der Tief-Proben: freigegeben vor dem Tief, Ruecknahme
-     * mit dem erwarteten Grund, PFLICHT-Wiederfreigabe erst nach einer vollen
-     * Strecke, die nach dem letzten Tief (und nach einem Neustart) beginnt, mit
-     * verfuegbarem Rest; dazwischen kein Rest und kein d_erw.
+     * Gemeinsamer Ablauf der Tief-Proben (v2, Toni): freigegeben vor dem Tief, Ruecknahme mit dem erwarteten Grund,
+     * und ab da SPERRT das Tief den Erwartungsanteil der Mahlzeit - auch wenn die Strecke die Freigabe zurueckgibt,
+     * auch ueber einen Neustart. Aufheben koennte nur eine ausdrueckliche Bestaetigung (hier keine).
      */
     private fun pruefeTief(dir: File, abbruch: IntRange?, neustartMin: Int?, grund: String) {
-        konfiguration(kontoAn = true)
-        whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeU)).thenReturn(HUELLE_PROBE)
-        val arm = FuseCycleRunner.Pruefarm.EK_S
-        val alle = lauf(fTiefNachDruck, dir, arm, vorZyklus = { m ->
-            whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(
-                if (abbruch != null && m in abbruch) UNGUELTIGE_REBOUND_DAUER else FuseIntKey.ReboundWindowMin.defaultValue,
-            )
-            if (m == neustartMin) neustart(dir, fTiefNachDruck, arm)
-        })
+        nurErwartung = true
+        val alle = try {
+            markerAt = 0L
+            markerPress = 0L
+            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
+            lauf(fTiefNachDruck, dir, vorZyklus = { m ->
+                whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(
+                    if (abbruch != null && m in abbruch) UNGUELTIGE_REBOUND_DAUER else FuseIntKey.ReboundWindowMin.defaultValue,
+                )
+                if (m == neustartMin) neustart(dir, fTiefNachDruck, null)
+            })
+        } finally {
+            nurErwartung = false
+        }
         val tief = alle.filter { it.o.step?.safetyReasons?.isNotEmpty() == true }
         assertTrue(tief.isNotEmpty()) { "die Probe erreicht kein gemessenes Tief" }
         if (abbruch != null) {
@@ -717,49 +592,36 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(voll.last { it.o.computeTs < ersterTiefTs }.o.erwartungskonto!!.zyklus!!.eval.released) {
             "vor dem Tief nicht freigegeben - die Probe prueft keine Ruecknahme"
         }
-        val ruecknahme = voll.first { it.o.erwartungskonto!!.zyklus!!.eval.releaseRevoked }
+        val ruecknahme = voll.first { it.o.computeTs >= ersterTiefTs && it.o.erwartungskonto!!.zyklus!!.eval.releaseRevoked }
         assertEquals(grund, ruecknahme.o.erwartungskonto!!.zyklus!!.ruecknahmeGrund)
-        val letztesTiefTs = tief.maxOf { it.o.computeTs }
-        val neustartTs = neustartMin?.let { fTiefNachDruck.ts(it) } ?: Long.MIN_VALUE
-        val wieder = voll.firstOrNull {
-            it.o.computeTs > ruecknahme.o.computeTs && it.o.erwartungskonto!!.zyklus!!.eval.released
-        } ?: throw AssertionError("keine Wiederfreigabe im Fenster")
-        val strecke = wieder.o.erwartungskonto!!.stabilSeitTs ?: throw AssertionError("Strecke unbekannt")
-        assertTrue(strecke > letztesTiefTs && strecke >= neustartTs) { "die Strecke beginnt vor dem Tief oder dem Neustart" }
-        assertTrue(wieder.o.computeTs - strecke >= FuseIntKey.ExpectationStabilityMin.defaultValue * 60_000L) {
-            "Wiederfreigabe ohne volle Strecke"
-        }
-        assertTrue(wieder.o.erwartungskonto!!.zyklus!!.eval.restEffU > 0.0) { "kein Rest bei der Wiederfreigabe" }
-        for (z in voll.filter { it.o.computeTs >= ruecknahme.o.computeTs && it.o.computeTs < wieder.o.computeTs }) {
-            val x = z.o.erwartungskonto!!
-            assertFalse(x.zyklus!!.eval.released, "Minute ${z.minute}: frei ohne Strecke")
-            assertEquals(0.0, x.zyklus.eval.restEffU, 0.0, "Minute ${z.minute}: Rest ohne Freigabe")
-            assertEquals(0.0, x.buchung?.split?.dErwU ?: 0.0, 0.0, "Minute ${z.minute}: d_erw ohne Freigabe")
-        }
+        val danach = voll.filter { it.o.computeTs >= ruecknahme.o.computeTs }
+        assertTrue(danach.all { it.konto?.earlyLowLocked == true && it.konto?.earlyAfterLow == true }) { "nicht gesperrt" }
+        assertEquals(0.0, danach.sumOf { it.dErw() }, 0.0)
+        // Gegenprobe: die Strecke gibt die Freigabe zurueck - nur die Sperre haelt den Erwartungsanteil.
+        assertTrue(danach.any { it.o.erwartungskonto!!.zyklus!!.eval.released }) { "keine Wiederfreigabe - Probe zeigt nichts" }
     }
 
     @Test
-    fun `ein gemessenes Tief nimmt die Freigabe zurueck und verlangt eine volle neue Strecke`(@TempDir dir: File) =
+    fun `ein gemessenes Tief nimmt die Freigabe zurueck und sperrt den Erwartungsanteil`(@TempDir dir: File) =
         pruefeTief(dir, abbruch = null, neustartMin = null, grund = "LOW")
 
     /** Codex-Befund P0: das Tief faellt nur in Abbruchzyklen vor dem Kontoschritt. */
     @Test
-    fun `ein Tief in Abbruchzyklen nimmt die Freigabe ebenso zurueck`(@TempDir dir: File) =
+    fun `ein Tief in Abbruchzyklen sperrt ebenso`(@TempDir dir: File) =
         pruefeTief(dir, abbruch = 5..13, neustartMin = null, grund = "LOW_ON_ABORT")
 
-    /** Codex-Befund P0: Tief in Abbruchzyklen, danach ein Neustart - die Ruecknahme geht nicht verloren. */
+    /** Codex-Befund P0: Tief in Abbruchzyklen, danach ein Neustart - die Sperre geht nicht verloren. */
     @Test
-    fun `nach Tief im Abbruch und Neustart braucht die Freigabe eine Strecke im neuen Prozess`(@TempDir dir: File) =
+    fun `nach Tief im Abbruch und Neustart bleibt die Sperre`(@TempDir dir: File) =
         pruefeTief(dir, abbruch = 5..13, neustartMin = 16, grund = "LOW_ON_ABORT")
 
     /** Codex-Befund P0: auch ohne Tief verlangt eine nach dem Neustart noch freigegebene Episode die Strecke neu. */
     @Test
     fun `nach einem Neustart braucht eine freigegebene Episode die Strecke neu`(@TempDir dir: File) {
-        konfiguration(kontoAn = true)
         val neustartMin = 30
-        val arm = FuseCycleRunner.Pruefarm.EK_S
-        val voll = lauf(fStabil, dir, arm, vorZyklus = { m -> if (m == neustartMin) neustart(dir, fStabil, arm) })
-            .filter { it.o.abortReason == null && it.o.erwartungskonto?.zyklus != null }
+        val voll = fruehLauf(fStabil, dir, vorZyklus = { m -> if (m == neustartMin) neustart(dir, fStabil, null) }) {
+            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
+        }.filter { it.o.erwartungskonto?.zyklus != null }
         assertTrue(voll.last { it.minute < neustartMin }.o.erwartungskonto!!.zyklus!!.eval.released)
         val erster = voll.first { it.minute >= neustartMin }
         assertTrue(erster.o.erwartungskonto!!.zyklus!!.eval.releaseRevoked) { "nach dem Neustart nicht zurueckgenommen" }
@@ -770,29 +632,10 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             "Freigabe ohne volle Strecke nach dem Neustart"
         }
         for (z in voll.filter { it.minute >= neustartMin && it.o.computeTs < wieder.o.computeTs }) {
-            assertEquals(0.0, z.o.erwartungskonto!!.buchung?.split?.dErwU ?: 0.0, 0.0, "Minute ${z.minute}: d_erw ohne Freigabe")
+            assertEquals(0.0, z.dErw(), 0.0, "Minute ${z.minute}: d_erw ohne Freigabe")
         }
-    }
-
-    /** Codex-Befund P1: auch im predictorfreien Pfad liefert EK-S keinen Prime-Anteil. */
-    @Test
-    fun `EK-S liefert auch im predictorfreien Pfad keinen Prime-Anteil`(@TempDir dir: File) {
-        fun laufMit(arm: FuseCycleRunner.Pruefarm): List<Zyklus> {
-            konfiguration(kontoAn = true)
-            return lauf(fStabil, File(dir, arm.name).also(File::mkdirs), arm, vorZyklus = { m ->
-                predictReject = if (m in 0..10) app.aaps.fuse.core.predictor.PredictorReason.PENDING_MODEL_TOO_SHORT else null
-            }).filter { it.o.abortReason == null && it.o.markerFallbackUsed }
-        }
-        val prime = app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME
-        // Gegenprobe: im Hauptarm liefert der predictorfreie Pfad hier wirklich Prime.
-        val ek = laufMit(FuseCycleRunner.Pruefarm.EK)
-        assertTrue(ek.isNotEmpty()) { "kein predictorfreier Zyklus" }
-        assertTrue(ek.any { it.o.decision.grant?.source == prime && it.geliefertU > 0.0 }) {
-            "der Prime-Plan ist in der Probe nicht lieferfaehig - sonst prueft der Fall nichts"
-        }
-        val s = laufMit(FuseCycleRunner.Pruefarm.EK_S)
-        assertTrue(s.isNotEmpty()) { "kein predictorfreier Zyklus in EK-S" }
-        assertTrue(s.none { it.o.decision.grant?.source == prime }) { "EK-S liefert Prime im predictorfreien Pfad" }
+        // Nicht leer: vor dem Neustart floss Erwartung - die Probe prueft eine echte Freigabe.
+        assertTrue(voll.filter { it.minute < neustartMin }.sumOf { it.dErw() } > 0.0) { "vor dem Neustart kein Erwartungsanteil" }
     }
 
     // ---- E-034 v2: FRUEHE VERSORGUNG - N1 (Mechanik), je mit Gegenprobe --------------
@@ -1333,13 +1176,49 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         }
     }
 
+    /** Budget und Anfangsanteil gelten ab dem Druck fest - eine Aenderung der Einstellung wirkt erst am naechsten Marker. */
     @Test
-    fun `ohne Nur Erwartung bleibt das Konto v1, auch mit eingeschalteter frueher Versorgung`(@TempDir dir: File) {
+    fun `eine Einstellungsaenderung im Lauf aendert Budget und Anteil der laufenden Mahlzeit nicht`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fStabil, dir, vorZyklus = { m ->
+            if (m == 2) {
+                whenever(preferences.get(FuseDoubleKey.EarlySupplyInitialShare)).thenReturn(1.0)
+                whenever(preferences.get(FuseDoubleKey.EarlySupplyBudgetMaxU)).thenReturn(8.0)
+            }
+        }) { fruehKonfiguration(g1 = true, g2 = true, anteil = 0.5, budgetU = 3.0) }
+        val k0 = zyklen.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }.konto!!
+        // Die Kurve verlangt mehr als 3 U: das Budget sitzt an B_max, also zeigte eine Neuberechnung mit 8 U sofort.
+        assertEquals(3.0, k0.a0U, 1e-9) { "Budget nicht gedeckelt - die Probe zeigt fuer B_max nichts" }
+        val danach = zyklen.filter { it.minute >= 2 }.mapNotNull { it.konto }
+        assertTrue(danach.isNotEmpty())
+        for (k in danach) {
+            assertEquals(k0.a0U, k.a0U, 0.0)
+            assertEquals(0.5, k.early!!.initialShare, 0.0)
+        }
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+    }
+
+    /**
+     * Konsolidierung: jeder Druck bucht ein v2-Konto. Ein Marker ohne Wahl laeuft wie "Nur Erwartung", "Nur Marker"
+     * bucht Budget 0 - dann fliesst nur der gemessene Anteil.
+     */
+    @Test
+    fun `jeder Druck bucht ein v2-Konto, Nur Marker mit Budget 0`(@TempDir dir: File) {
         fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
-        val zyklen = lauf(fStabil, dir).filter { it.o.abortReason == null }
-        val konto = zyklen.mapNotNull { it.konto }.last()
-        assertNull(konto.early)
-        assertTrue(zyklen.all { it.o.erwartungskonto?.zyklus?.eval?.early == null })
+        val ohneWahl = lauf(fStabil, File(dir, "ohneWahl")).filter { it.o.abortReason == null }
+        val k1 = ohneWahl.mapNotNull { it.konto }.last()
+        assertNotNull(k1.early) { "ohne Wahl kein v2-Konto" }
+        assertTrue(k1.a0U > 0.0) { "ohne Wahl kein Budget" }
+        ohneVorschuss = true
+        try {
+            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
+            val nurMarker = lauf(fStabil, File(dir, "nurMarker")).filter { it.o.abortReason == null }
+            val k2 = nurMarker.mapNotNull { it.konto }.last()
+            assertNotNull(k2.early) { "Nur Marker ohne v2-Konto" }
+            assertEquals(0.0, k2.a0U, 0.0)
+            assertEquals(0.0, nurMarker.sumOf { it.dErw() }, 0.0)
+        } finally {
+            ohneVorschuss = false
+        }
     }
 
     private companion object {
@@ -1352,9 +1231,6 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
         /** Unter der Kerngrenze: die Konfiguration scheitert, der Zyklus bricht NACH dem Observer-Schritt ab. */
         const val UNGUELTIGE_REBOUND_DAUER = 10
-
-        /** Synthetische Huelle der Tief-Proben [U]: genug Budget, dass nach der Wiederfreigabe ein Rest bleibt. */
-        const val HUELLE_PROBE = 3.0
 
         /** Synthetische Obergrenze des v2-Budgets [U]. */
         const val FRUEH_BUDGET_U = 5.0

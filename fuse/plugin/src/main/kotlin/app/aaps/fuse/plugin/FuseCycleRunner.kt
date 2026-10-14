@@ -1577,12 +1577,10 @@ class FuseCycleRunner(
         // Totband-Oeffnung bleiben - die Mahlzeit ist ja erklaert. Ein
         // Altbestand-Stempel kennt die Wahl nicht und laeuft mit voller Huelle.
         val markerNoPrime = markerTs > 0L && preferences.get(FuseLongKey.MealMarkerNoPrime) != 0L
-        // Die Episoden-Wahl "nur Erwartung" (Toni): KEINE Direktdosis in
-        // dieser Mahlzeit - die ganze Familie (Sofortanteil, Prime, Aufschub,
-        // Ruhe) bleibt aus, auch wenn das Konto spaeter ausfaellt; die Huelle
-        // bleibt fuer das Erwartungskonto. "Ohne Vorschuss" geht vor.
-        val markerNurErwartung = markerTs > 0L && !markerNoPrime &&
-            preferences.get(FuseLongKey.MealMarkerExpectationOnly) != 0L
+        // "Nur Erwartung" (Toni): das Erwartungskonto traegt die Mahlzeit. Seit der Konsolidierung gibt es keine
+        // Direktdosis mehr - jeder Marker ohne "Nur Marker" ist "Nur Erwartung", auch ein Altbestand-Stempel ohne Wahl.
+        // "Nur Marker" geht vor.
+        val markerNurErwartung = markerTs > 0L && !markerNoPrime
         val episodes = ledger.episodes
         // DER WIRKSAME EPISODENDECKEL (Toni 16.08., Fall 1 des Audit-Nachtrags).
         //
@@ -3933,11 +3931,9 @@ class FuseCycleRunner(
         // eigene Messgroesse unveraendert (er misst NACH PrimeRelease.lift
         // und deckt Phase-A-Maskierungen nicht).
         val underlyingNormalBlock = vetted.block
-        // E-034, Arm EK-S: im Mahlzeitkontext des Kontos die ganze
-        // Direktdosis-Familie aus (Sofortanteil, Prime, Aufschub, Ruhe) - auf
-        // dem Pruefstand per Schalter, im Betrieb per Marker-Wahl "nur
-        // Erwartung" (die gilt die ganze Mahlzeit, auch ohne Konto).
-        val ekOhneDirektdosis = markerNurErwartung || (ekZyklus != null && cfg.expectationBenchNoDirectDose)
+        // KONSOLIDIERUNG (Toni): die Direktdosis-Familie (Sofortanteil, Prime, Aufschub-Freigabe, Ruhe) ist entfallen -
+        // "sollte dennoch eine Direktdosis noetig sein, mache ich das manuell". Ihr Code faellt im naechsten Schritt.
+        val ekOhneDirektdosis = true
         val liftedUpfront = when {
             ekOhneDirektdosis -> vetted
             upfrontOhneNetz || ledgerView.hold -> vetted
@@ -7099,12 +7095,14 @@ class FuseCycleRunner(
         var konto = episodes.expectation
         var armiert = false
         if (konto == null || konto.authId != dosingCtx.authorizationId) {
-            // E-034 v2: "Nur Erwartung" mit eingeschalteter frueher Versorgung
-            // bucht das Gesamtbudget statt der Huelle. Ungueltige Einstellungen
-            // schalten sie ab - dann gilt NICHT ersatzweise v1, sondern das
-            // Konto ohne Budget (nur Ersetzung): weniger Insulin, nie mehr.
-            val fruehGewollt = cfg.earlySupplyEnabled && nurErwartung
-            val frueh = cfg.earlySupplySettings?.takeIf { fruehGewollt }
+            // KONSOLIDIERUNG: jeder Druck bucht ein v2-Konto. "Nur Erwartung" bucht das Gesamtbudget nach Kurve;
+            // "Nur Marker" (Toni: fuer Snacks oder unsichere Mahlzeiten) und eine ausgeschaltete fruehe Versorgung
+            // buchen Budget 0 - dann fliesst nur der gemessene Anteil. Ungueltige Einstellungen schalten die fruehe
+            // Versorgung ab - dann gilt das Konto ohne Budget (nur Ersetzung): weniger Insulin, nie mehr.
+            val fruehGewollt = true
+            val frueh = cfg.earlySupplySettings?.let { s ->
+                if (nurErwartung && cfg.earlySupplyEnabled) s else s.copy(budgetMaxU = 0.0)
+            }
             val params = cfg.expectationParams
             konto = if (frueh != null && params != null) {
                 // Das Budget braucht das Insulinmodell. Fehlt es, wird jetzt
@@ -7700,8 +7698,7 @@ class FuseCycleRunner(
             computeTs = computeTs, markerNoPrime = markerNoPrime,
             // v2 ohne Bahn: gebucht wird erst mit Insulinmodell im Hauptpfad,
             // ein Erwartungsanteil fliesst hier nie (NO_TRAJECTORY pausiert).
-            nurErwartung = mealMarkerActive && !markerNoPrime &&
-                preferences.get(FuseLongKey.MealMarkerExpectationOnly) != 0L,
+            nurErwartung = mealMarkerActive && !markerNoPrime,
             bgMgdl = signal.q1, targetMgdl = state.targetMgdl, isfMgdlPerU = state.isfMgdlPerU,
             iobTotalU = iobTotal.iob + transportModelledU, activityUPerMin = iobTotal.activity,
             sperren = listOfNotNull(
@@ -7728,8 +7725,7 @@ class FuseCycleRunner(
         // Dieselbe Episoden-Wahl wie im Hauptpfad - hier lokal gelesen, weil
         // dieser Pfad seine Eingaben als Parameter bekommt.
         val markerNoPrime = mealMarkerActive && preferences.get(FuseLongKey.MealMarkerNoPrime) != 0L
-        val markerNurErwartung = mealMarkerActive && !markerNoPrime &&
-            preferences.get(FuseLongKey.MealMarkerExpectationOnly) != 0L
+        val markerNurErwartung = mealMarkerActive && !markerNoPrime
 
         val primePlan = PrimeRelease.plan(
             PrimeRelease.Input(
@@ -7844,9 +7840,8 @@ class FuseCycleRunner(
         ) episodes.upfrontBatchDeferredSince = computeTs
         val upfrontPendingU = if (fallbackTransferNowU > 0.0) 0.0 else offenImFallbackU
         val upfrontRequestedU = 0.0
-        // EK-S (Codex-Befund P1 zu K5b): die ganze Direktdosis-Familie ist aus -
-        // auch der lineare Prime-Anteil des predictorfreien Pfads.
-        val ekOhneDirektdosisFallback = markerNurErwartung || (ekZyklus != null && cfg.expectationBenchNoDirectDose)
+        // Konsolidierung: auch im predictorfreien Pfad keine Direktdosis (kein linearer Prime-Anteil).
+        val ekOhneDirektdosisFallback = true
         val liftedPrime = if (ekOhneDirektdosisFallback) basis else PrimeRelease.lift(
             basis, primePlan, state,
             markerAuthorized = true,

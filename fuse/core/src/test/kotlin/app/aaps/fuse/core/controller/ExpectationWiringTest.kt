@@ -298,4 +298,42 @@ class ExpectationWiringTest {
         // maxSMB begrenzt die Einzeldosis.
         assertEquals(0.75, ekLift(b, floor = 2.0).smbU, eps)
     }
+
+    // ---- Kappen der Anfangsportion ---------------------------------------------------
+    //
+    // Die Anfangsportion ist nicht maxSMB-geteilt; genau deshalb muessen die Bestandsgrenzen in der Grant-Bildung sitzen.
+    // Bis zur Konsolidierung prueften das nur die Lift-Tests der Direktdosis-Familie.
+
+    private fun anfangLift(
+        base: FuseController.Decision = entscheidung(FuseController.Block.GUARD_FLOOR),
+        maxIob: Double = 8.0,
+        iob: Double = 0.5,
+        transport: Double = 0.0,
+        kontext: Double? = null,
+    ) = AuthorizedLift.lift(
+        base = base, source = AuthorizedLift.Source.EXPECTATION, floorU = 3.0, remainingU = 3.0,
+        state = liftState().copy(maxIobU = maxIob, netIobU = iob, bolusIobU = iob),
+        authorized = true, transportCommitmentU = transport, contextExposureLimitU = kontext, tickEps = 1e-9,
+        early = AuthorizedLift.EarlyLift(guardLift = true, tailLift = true),
+    )
+
+    @Test
+    fun `die Anfangsportion steht unter maxIOB, Transporthaftung und Kontextgrenze`() {
+        // Kontrolle: frei hebt der Lift die ganze Portion - maxSMB teilt sie nicht.
+        assertEquals(3.0, anfangLift().smbU, eps)
+        assertEquals(1.5, anfangLift(maxIob = 2.0).smbU, eps)
+        // Was schon unterwegs ist, finanziert die Portion nicht erneut.
+        assertEquals(0.9, anfangLift(maxIob = 2.0, transport = 0.6).smbU, eps)
+        // Die Kontextgrenze steht schon in der Grant-Bildung: kein Grant oberhalb des Raums.
+        val k = anfangLift(iob = 0.4, kontext = 2.5)
+        assertEquals(2.1, k.smbU, eps)
+        assertEquals(2.1, k.grant!!.amountU, eps)
+    }
+
+    @Test
+    fun `ein winziger Ratio-Anteil der Basis kappt die Anfangsportion nicht`() {
+        val d = anfangLift(base = entscheidung(FuseController.Block.NONE, smb = 0.05))
+        assertEquals(3.0, d.smbU, eps)
+        assertEquals(AuthorizedLift.Source.EXPECTATION, d.grant!!.source)
+    }
 }
