@@ -682,6 +682,14 @@ object FuseController {
          * Nur im Speicher, nie persistiert.
          */
         val candidateReason: CandidateSearch.Reject? = null,
+        /**
+         * NORMALBEDARF IM KONTOFENSTER (Toni: Anfangsgabe, anschliessende Bedarfsrechnung und Sicherheitspruefung
+         * muessen zusammen einen funktionierenden Versorgungsweg ergeben - auch nach Ende des Vorgriffs). `true`, wenn
+         * im Mahlzeitkontext mit Konto die BASISMENGE aus dem Normalbedarf kam, weil er mehr trug als der Kontobedarf.
+         * Das Konto bucht eine solche Menge als normal, nicht gegen das Budget ([ExpectationAccount.book]); hebt eine
+         * spaetere Stufe die Menge an, entscheidet deren Quelle.
+         */
+        val normalDemandInAccountWindow: Boolean = false,
     ) {
 
         /**
@@ -864,11 +872,12 @@ object FuseController {
          * die lieferbare Menge `min(max(0, R_roh), max(0, R_mess) + Rest)`.
          *
          * Nicht-null NUR im Mahlzeitkontext bei eingeschaltetem Konto. Dann
-         * ersetzt er den Bedarf aus der Fortschreibung am Freigabehorizont
-         * und die Ratio-Kandidaten (smbRatio, demandRatioCap): je Zyklus geht
-         * hoechstens maxSMB. Zustand, Guard, Schwanz, Totbaender und die
-         * IOB-Grenzen bleiben unveraendert. Nicht berechenbar zaehlt als 0
-         * (kein Bedarf), nie als Menge.
+         * tritt er NEBEN den Bedarf aus der Fortschreibung am Freigabehorizont:
+         * es gilt der Weg mit der groesseren Menge - der Kontoweg ohne
+         * Ratio-Kandidaten (je Zyklus hoechstens maxSMB), der Normalweg mit
+         * ihnen ([Decision.normalDemandInAccountWindow]). Zustand, Guard,
+         * Schwanz, Totbaender und die IOB-Grenzen bleiben unveraendert. Nicht
+         * berechenbar zaehlt als 0 (kein Kontobedarf), nie als Menge.
          */
         expectationDemandU: Double? = null,
     ): Decision {
@@ -1016,13 +1025,14 @@ object FuseController {
         }
 
         // Kein zweites "- iob": die IOB-Wirkung ist in predBG bereits enthalten.
-        // E-034: im Mahlzeitkontext mit Konto kommt der Bedarf aus dem Konto
-        // (dort steht das IOB ausdruecklich in R_mess).
-        val insulinReq = when {
-            expectationDemandU == null -> (releaseMean - state.targetMgdl) / state.isfMgdlPerU
-            expectationDemandU.isFinite() -> expectationDemandU
-            else -> 0.0
-        }
+        val normalReq = (releaseMean - state.targetMgdl) / state.isfMgdlPerU
+        // E-034: im Mahlzeitkontext mit Konto kommt der Bedarf AUCH aus dem Konto (dort steht das IOB ausdruecklich in
+        // R_mess); nicht berechenbar zaehlt als 0. Der Normalbedarf bleibt daneben erhalten (Toni: frueh begrenzt
+        // vorleisten und die Mahlzeit anschliessend bedarfsgerecht weiter versorgen). Ersetzte der Kontobedarf ihn, kam
+        // nach dem Ende der Kurve oder bei statischem R_mess <= 0 trotz steigender Fortschreibung bis zum Fensterende
+        // nichts - mit Marker weniger als ohne.
+        val kontoReq = expectationDemandU?.let { if (it.isFinite()) it else 0.0 }
+        val insulinReq = if (kontoReq == null) normalReq else max(kontoReq, normalReq)
 
         // REBOUND-TOTBAND (v2): Nach einem Tief ist die Erholung bis leicht
         // ueber das Ziel das ZIEL der Traubenzucker-Aktion, keine Stoerung.
@@ -1109,25 +1119,35 @@ object FuseController {
             ).tele(iobCaps)
         }
 
-        // E-034: der Kontobedarf ist schon die lieferbare Menge - kein
-        // Ratio-Anteil darauf; der Schritt je Zyklus ist maxSMB.
-        val baseCandidates = if (expectationDemandU != null) listOf(
-            "expectationDemand" to insulinReq,
-            "iobThHeadroom" to fastHeadroom,
-            "maxIobHeadroom" to maxIobHeadroom,
-            "maxSmb" to state.maxSmbU,
-        ) else listOfNotNull(
-            "smbRatio" to insulinReq * state.effectiveSmbRatio,
+        val normalCandidates = listOfNotNull(
+            "smbRatio" to normalReq * state.effectiveSmbRatio,
             // B2 (Bauauftrag 7.2): effectiveDemandRatio = min(Basis, Kontext-
             // Cap) — als EIGENER Kandidat, nicht als Aenderung der Basis. Das
             // min der Liste IST die Formel, und bei echtem Griff traegt die
             // Grenze ihren Namen (bei Gleichstand gewinnt weiterhin der erste
             // Eintrag — der Cap wird nur benannt, wenn er real gekappt hat).
-            state.contextDemandRatioCap?.let { "demandRatioCap" to insulinReq * it },
+            state.contextDemandRatioCap?.let { "demandRatioCap" to normalReq * it },
             "iobThHeadroom" to fastHeadroom,
             "maxIobHeadroom" to maxIobHeadroom,
             "maxSmb" to state.maxSmbU,
         )
+        // E-034: der Kontobedarf ist schon die lieferbare Menge - kein Ratio-Anteil darauf; der Schritt je Zyklus ist
+        // maxSMB. Im Kontofenster gilt der Weg mit der groesseren Menge, gezaehlt in Pumpenschritten; bei Gleichstand
+        // der Kontoweg - er traegt die Buchung des Kontos.
+        val kontoCandidates = kontoReq?.let {
+            listOf(
+                "expectationDemand" to it,
+                "iobThHeadroom" to fastHeadroom,
+                "maxIobHeadroom" to maxIobHeadroom,
+                "maxSmb" to state.maxSmbU,
+            )
+        }
+        val normalImKontofenster = kontoCandidates != null &&
+            ticksOf(normalCandidates.minOf { it.second }, state.pumpIncrementU) >
+            ticksOf(kontoCandidates.minOf { it.second }, state.pumpIncrementU)
+        val baseCandidates = if (kontoCandidates == null || normalImKontofenster) normalCandidates else kontoCandidates
+        // Der Bedarf des Wegs, der die Menge traegt (Export, Rest-Zaehler).
+        val gewaehlterReq = if (normalImKontofenster) normalReq else kontoReq ?: normalReq
         // Die Onset-Huelle gehoert zu den Basis-Kandidaten: sie ist die Grenze
         // des Kanals, der die Bahn gehoben hat - nicht Teil der Schwanzkosten.
         val baseWithOnset =
@@ -1164,9 +1184,10 @@ object FuseController {
         val deliverable = ticksOf(raw, state.pumpIncrementU) * state.pumpIncrementU
         if (deliverable < state.pumpIncrementU) {
             return Decision(
-                0.0, TbrAction.KEEP_CURRENT, Block.BELOW_PUMP_INCREMENT, insulinReq,
+                0.0, TbrAction.KEEP_CURRENT, Block.BELOW_PUMP_INCREMENT, gewaehlterReq,
                 releaseMean, minLower, binding.first, tail, tailCost, ctx,
                 desiredBeforeStepU = raw,
+                normalDemandInAccountWindow = normalImKontofenster,
             ).tele(capList)
         }
 
@@ -1175,13 +1196,14 @@ object FuseController {
             desiredBeforeStepU = raw,
             tbr = TbrAction.KEEP_CURRENT,
             block = Block.NONE,
-            insulinReqU = insulinReq,
+            insulinReqU = gewaehlterReq,
             predAtReleaseMgdl = releaseMean,
             minLowerMgdl = minLower,
             bindingLimit = binding.first,
             tail = tail,
             tailCostU = tailCost,
             context = ctx,
+            normalDemandInAccountWindow = normalImKontofenster,
         ).tele(capList)
     }
 

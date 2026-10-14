@@ -275,6 +275,22 @@ class ExpectationAccountTest {
     }
 
     @Test
+    fun `die Menge des Normalbedarfs verbraucht nichts aus dem Konto`() {
+        // R_mess negativ (Insulin an Bord): ohne Normalanteil waere jede Lieferung d_erw.
+        val (s, e) = ExpectationAccount.step(arm(), inputs(nach = 1, bg = 100.0, iob = 0.5))
+        val (s1, ganz) = ExpectationAccount.book(s, e, finalU = 0.4, normalU = 0.4)
+        assertEquals(0.4, ganz.dNormU, eps)
+        assertEquals(0.0, ganz.dMessU, eps)
+        assertEquals(0.0, ganz.dErwU, eps)
+        assertEquals(0.0, ganz.violationU, eps)
+        assertEquals(s.bookedU, s1.bookedU, eps)
+        // Nur was darueber hinausgeht, ist d_erw.
+        val teil = ExpectationAccount.book(s, e, finalU = 0.6, normalU = 0.4).second
+        assertEquals(0.4, teil.dNormU, eps)
+        assertEquals(0.2, teil.dErwU, eps)
+    }
+
+    @Test
     fun `die Guard-Ausnahme gibt es nur, wenn der Normalpfad den gemessenen Anteil traegt`() {
         // R_mess = 0,5 U, Rest 0,5 U (Huelle), Anforderung gross genug.
         val (_, e) = ExpectationAccount.step(arm(huelle = 0.5), inputs(nach = 1, bg = 125.0))

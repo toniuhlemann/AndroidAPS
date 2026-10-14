@@ -75,7 +75,7 @@ class ExpectationWiringTest {
     }
 
     @Test
-    fun `der Kontobedarf ersetzt Fortschreibung und Ratio-Kandidaten`() {
+    fun `der Kontoweg traegt seine Menge ohne Ratio-Kandidaten`() {
         // Heute: (250 - 100) / 50 = 3 U Bedarf, smbRatio 0,25 und Kontext-Cap 0,1 -> 0,30 U.
         val heute = decide(state(smbRatio = 0.25, cap = 0.1), pred(250.0), demand = null)
         assertEquals(0.30, heute.smbU, eps)
@@ -104,12 +104,44 @@ class ExpectationWiringTest {
     }
 
     @Test
-    fun `kein oder nicht berechenbarer Kontobedarf ergibt keine Menge`() {
+    fun `kein oder nicht berechenbarer Kontobedarf traegt keine Menge - es bleibt der Normalbedarf`() {
+        val ohneKonto = decide(state(), pred(250.0), demand = null)
         for (d in listOf(0.0, -0.3, Double.NaN, Double.POSITIVE_INFINITY)) {
-            val r = decide(state(), pred(250.0), demand = d)
+            // Bahn unter dem Ziel: auch kein Normalbedarf - nichts.
+            val r = decide(state(), pred(95.0), demand = d)
             assertEquals(0.0, r.smbU, 0.0) { "Bedarf $d" }
             assertEquals(FuseController.Block.NO_DEMAND, r.block) { "Bedarf $d" }
+            // Bahn hoch: genau die Menge ohne Konto, aus dem Normalweg.
+            val hoch = decide(state(), pred(250.0), demand = d)
+            assertEquals(ohneKonto.smbU, hoch.smbU, 0.0) { "Bedarf $d" }
+            assertTrue(hoch.normalDemandInAccountWindow) { "Bedarf $d" }
         }
+    }
+
+    /**
+     * A (Toni): Anfangsgabe, Bedarfsrechnung und Pruefung muessen zusammen einen Versorgungsweg ergeben - auch nach
+     * Ende des Vorgriffs. Im Kontofenster bleibt der Normalbedarf erhalten; es gilt der Weg mit der groesseren Menge.
+     */
+    @Test
+    fun `im Kontofenster bleibt der Normalbedarf erhalten - es gilt der groessere Weg`() {
+        // Normalweg: (250 - 100) / 50 = 3 U, smbRatio 0,25 und Kontext-Cap 0,1 -> 0,30 U.
+        val s = state(smbRatio = 0.25, cap = 0.1)
+        val leer = decide(s, pred(250.0), demand = 0.0)
+        assertEquals(0.30, leer.smbU, eps)
+        assertEquals("demandRatioCap", leer.bindingLimit)
+        assertEquals(3.0, leer.insulinReqU!!, eps)
+        assertTrue(leer.normalDemandInAccountWindow)
+        // Der kleinere Kontoweg verdraengt den Normalweg nicht.
+        val klein = decide(s, pred(250.0), demand = 0.2)
+        assertEquals(0.30, klein.smbU, eps)
+        assertTrue(klein.normalDemandInAccountWindow)
+        // Traegt das Konto mehr, gilt es; Gleichstand in Pumpenschritten gehoert dem Konto.
+        val mehr = decide(s, pred(250.0), demand = 0.6)
+        assertEquals(0.6, mehr.smbU, eps)
+        assertFalse(mehr.normalDemandInAccountWindow)
+        val gleich = decide(s, pred(250.0), demand = 0.30)
+        assertEquals("expectationDemand", gleich.bindingLimit)
+        assertFalse(gleich.normalDemandInAccountWindow)
     }
 
     // ---- Kandidatensuche --------------------------------------------------------

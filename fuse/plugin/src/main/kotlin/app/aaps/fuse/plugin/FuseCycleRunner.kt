@@ -455,6 +455,12 @@ class FuseCycleRunner(
         /** Rasterluft des Erwartungs-Lifts - dieselbe wie bei Prime (E-034). */
         const val EK_TICK_EPS = 1e-9
 
+        /** A: die Quellen des Normalwegs - im Kontofenster bucht ihre Menge als normal, wenn der Normalbedarf sie trug. */
+        val EK_NORMALWEG: Set<app.aaps.fuse.core.controller.ExposureGate.FinalSource> = setOf(
+            app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL,
+            app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL_SUBSTEP,
+        )
+
         /** Name der Kontosperre aus dem Tieftor (Null-Tor) - Exportwert, nicht umbenennen. */
         const val SPERRE_TIEFTOR = "LOW_THREAT"
 
@@ -4065,6 +4071,10 @@ class FuseCycleRunner(
             else app.aaps.fuse.core.controller.AuthorizedLift.EarlyLift(guardLift = g.guardWithExpectation, tailLift = g.tailWithExpectation)
         }
         val fruehBodenU = if (fruehHebung != null) fruehGemessenFreiU + fruehAnteilU else 0.0
+        // A: traegt der Normalbedarf schon mindestens diesen Boden, bleibt es seine Menge. Eine Anhebung gaebe es
+        // nicht, aber ihr Grant buchte die Normalmenge gegen das Budget.
+        val fruehNormalTraegt = liftedVorKonto.normalDemandInAccountWindow &&
+            liftedVorKonto.smbU + EK_TICK_EPS >= fruehBodenU
         // G3/G4: Bahn und Schwanzkante MIT der angekuendigten Mahlzeit - nur
         // fuer weitere Portionen und nur, wenn der jeweilige Schalter gilt.
         // Angerechnet wird nur die BESTAETIGTE Erwartung (vor +20 min nichts,
@@ -4108,7 +4118,7 @@ class FuseCycleRunner(
                 contextExposureLimitU = kontextExposureLimitU,
                 tickEps = EK_TICK_EPS,
             )
-            fruehHebung != null && fruehBodenU > 0.0 -> app.aaps.fuse.core.controller.AuthorizedLift.lift(
+            fruehHebung != null && fruehBodenU > 0.0 && !fruehNormalTraegt -> app.aaps.fuse.core.controller.AuthorizedLift.lift(
                 base = liftedVorKonto,
                 source = app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION,
                 floorU = fruehBodenU,
@@ -4351,7 +4361,7 @@ class FuseCycleRunner(
             }
             return null
         }
-        val fruehGilt = fruehHebung != null && fruehBodenU > 0.0 && ekBodenU <= 0.0
+        val fruehGilt = fruehHebung != null && fruehBodenU > 0.0 && ekBodenU <= 0.0 && !fruehNormalTraegt
         fun kontoEndpruefung(u: Double): String? = if (fruehGilt) fruehEndpruefung(u) else ekEndpruefung(u)
         val fruehEndgrund = lifted.grant?.takeIf { fruehGilt && it.source == app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION }
             ?.let { fruehEndpruefung(it.amountU) }
@@ -6338,6 +6348,10 @@ class FuseCycleRunner(
             ekBuchen(
                 z, episodes, actuatedU, exposureRequestedSourceWert,
                 gemessenKappeU = if (fruehGilt) fruehGemessenFreiU else Double.POSITIVE_INFINITY,
+                // A (Toni): die Menge des Normalbedarfs im Kontofenster verbraucht kein Budget.
+                normalU = if (decisionVorEndpruefung.normalDemandInAccountWindow &&
+                    exposureRequestedSourceWert in EK_NORMALWEG
+                ) actuatedU else 0.0,
             )
         }
         val smbVerdict = app.aaps.fuse.core.controller.SmbStatus.of(
@@ -7322,6 +7336,8 @@ class FuseCycleRunner(
         quelle: app.aaps.fuse.core.controller.ExposureGate.FinalSource,
         /** v2: hoechstens so viel zaehlt als gemessen ([ExpectationAccount.book]). */
         gemessenKappeU: Double = Double.POSITIVE_INFINITY,
+        /** A: der Teil aus dem Normalbedarf im Kontofenster - verbraucht nichts aus dem Konto. */
+        normalU: Double = 0.0,
     ) {
         if (!(actuatedU > 0.0)) return
         val konto = episodes.expectation?.takeIf { it.authId == z.state.authId } ?: return
@@ -7331,7 +7347,7 @@ class FuseCycleRunner(
             reservierung?.apply { ekAuthId = konto.authId; ekDirektU = actuatedU }
             ekBuchungThisCycle = ErwartungskontoBuchung(konto.authId, actuatedU, null)
         } else {
-            val (neu, split) = ExpectationAccount.book(konto, z.eval, actuatedU, gemessenKappeU)
+            val (neu, split) = ExpectationAccount.book(konto, z.eval, actuatedU, gemessenKappeU, normalU)
             episodes.expectation = neu
             reservierung?.apply {
                 ekAuthId = konto.authId

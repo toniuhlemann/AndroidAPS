@@ -630,6 +630,8 @@ object ExpectationAccount {
         val dErwU: Double,
         /** d_erw ueber dem erlaubten Rest - ein Mechanismusverstoss, nie still. */
         val violationU: Double,
+        /** Die Menge aus dem Normalbedarf im Kontofenster - weder d_mess noch d_erw, verbraucht nichts. */
+        val dNormU: Double = 0.0,
     )
 
     /**
@@ -650,11 +652,21 @@ object ExpectationAccount {
 
     /**
      * Bucht eine Lieferung aus dem Konto. [finalU] ist die Endmenge nach allen
-     * Pruefungen (nach der Expositionsgrenze). d_mess = min(d, max(0, R_mess)),
+     * Pruefungen (nach der Expositionsgrenze). Was davon der Normalbedarf im
+     * Kontofenster getragen hat ([normalU]), zaehlt zuerst als d_norm und
+     * verbraucht nichts; vom Rest d: d_mess = min(d, max(0, R_mess)),
      * d_erw = d - d_mess (Autorisierungsentwurf Abschnitt 2).
      */
-    fun book(state: State, e: Evaluation, finalU: Double, measuredCapU: Double = Double.POSITIVE_INFINITY): Pair<State, Split> {
-        val fin = if (finalU.isFinite()) max(0.0, finalU) else 0.0
+    fun book(
+        state: State,
+        e: Evaluation,
+        finalU: Double,
+        measuredCapU: Double = Double.POSITIVE_INFINITY,
+        normalU: Double = 0.0,
+    ): Pair<State, Split> {
+        val gesamt = if (finalU.isFinite()) max(0.0, finalU) else 0.0
+        val norm = if (normalU.isFinite()) min(gesamt, max(0.0, normalU)) else 0.0
+        val fin = gesamt - norm
         // v2: hat eine Anhebung den Erwartungsanteil auf das gelegt, was der Normalpfad MIT Guard freigab, zaehlt als
         // d_mess nur dieser freigegebene Teil - sonst verbuchte ein vom Guard gekuerzter gemessener Anteil
         // Erwartungsinsulin als gemessen, und das Budget waere keine Grenze mehr.
@@ -666,7 +678,7 @@ object ExpectationAccount {
         if (s.early != null && dErw > EPS_U) s =
             if (e.early?.initial == true) s.copy(initialDone = true)
             else s.copy(portions = s.portions + EarlySupply.Portion(e.atTs, dErw))
-        return s to Split(dMess, dErw, if (violation > EPS_U) violation else 0.0)
+        return s to Split(dMess, dErw, if (violation > EPS_U) violation else 0.0, dNormU = norm)
     }
 
     /**

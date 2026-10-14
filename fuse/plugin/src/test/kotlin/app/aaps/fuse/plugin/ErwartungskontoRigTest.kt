@@ -100,6 +100,19 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         markerMin = 0,
     )
 
+    /**
+     * A (Toni): eine Mahlzeit laenger als die Kurve - der steile Anstieg kommt erst nach Minute 90, wenn die
+     * Kontoanforderung per Konstruktion 0 ist (Kurve endet bei 120, Deckung ab 30 min).
+     */
+    private val fSpaet = Fuse20Folgen.Folge(
+        "SPAET", 1_700_388_000_000L, -90, 240,
+        listOf(
+            -90 to 118.0, -10 to 118.0, 0 to 120.0, 30 to 135.0, 60 to 140.0, 90 to 175.0, 120 to 260.0, 180 to 230.0,
+            240 to 160.0,
+        ),
+        markerMin = 0,
+    )
+
     /** Start nach Tief: BG um Minute 0 unter der Stabilitaetsgrenze, danach Anstieg. */
     private val fTief = Fuse20Folgen.Folge(
         "TIEF", 1_700_215_200_000L, -90, 240,
@@ -345,7 +358,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     }
 
     @Test
-    fun `mit Konto - Buchung am Druck, Ersetzung im Fenster, Budget nie aufgefuellt`(@TempDir dir: File) {
+    fun `mit Konto - Buchung am Druck, Kontobedarf im Fenster, Budget nie aufgefuellt`(@TempDir dir: File) {
         val f = fStabil
         // Konsolidierung: jeder Druck bucht ein v2-Konto (fruehe Versorgung); v1 und die Direktdosis sind entfallen.
         val zyklen = fruehLauf(f, dir) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
@@ -365,7 +378,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertNotNull(konto0.early) { "kein v2-Konto" }
         assertTrue(konto0.a0U > 0.0 && konto0.a0U <= FRUEH_BUDGET_U + 1e-9) { "Budget ${konto0.a0U}" }
 
-        // Im Fenster: Ersetzung, Onset-Kanal, H8 und Liveness-Kanal aus.
+        // Im Fenster: Kontobedarf neben dem Normalbedarf (A), Onset-Kanal, H8 und Liveness-Kanal aus.
         val imFenster = zyklen.filter { it.o.erwartungskonto!!.gilt }
         assertTrue(imFenster.isNotEmpty())
         assertTrue(imFenster.all { it.minute in 0 until 120 }) { "Fenster 0..120: ${imFenster.map { it.minute }}" }
@@ -376,7 +389,12 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             assertFalse(z.o.earlyAdaptiveMeal.eligible, "Minute ${z.minute}: H8 geeignet")
             assertEquals("EXPECTATION_ACCOUNT", z.o.livenessDenial, "Minute ${z.minute}: Kanal nicht aus")
             z.o.decision.insulinReqU?.let { req ->
-                assertEquals(ExpectationAccount.deliverableU(x.zyklus!!.eval), req, 1e-9, "Minute ${z.minute}: Bedarf nicht ersetzt")
+                // A: der Bedarf liegt nie unter dem Kontobedarf; wo der Kontoweg die Menge traegt, ist er genau er.
+                val konto = ExpectationAccount.deliverableU(x.zyklus!!.eval)
+                assertTrue(req >= konto - 1e-9) { "Minute ${z.minute}: Bedarf $req unter dem Kontobedarf $konto" }
+                if (z.o.decision.block == app.aaps.fuse.core.controller.FuseController.Block.NONE &&
+                    !z.o.decision.normalDemandInAccountWindow
+                ) assertEquals(konto, req, 1e-9, "Minute ${z.minute}: Kontoweg ohne Kontobedarf")
             }
         }
 
@@ -1074,15 +1092,23 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertEquals(0.0, zyklen.filter { it.minute < frei.minute }.sumOf { it.dErw() }, 0.0)
         assertTrue(zyklen.filter { it.o.step?.safetyReasons?.isNotEmpty() == true }.none { it.dErw() > 0.0 }) { "Portion im Tief" }
         assertTrue(frei.o.step?.safetyReasons?.isEmpty() == true) { "frei, obwohl das Tief noch misst" }
-        // Versorgbar: die weiteren Portionen fliessen aus dem Rest des gebuchten Budgets.
+        // Versorgbar: nach der Bestaetigung steht der Rest des gebuchten Budgets wieder zur Verfuegung, und die Mahlzeit
+        // wird versorgt - aus dem Konto oder, wo er mehr traegt, aus dem Normalbedarf (A).
         val konto = zyklen.mapNotNull { it.konto }.last()
-        val nachher = zyklen.filter { it.minute >= frei.minute }.sumOf { it.dErw() }
-        assertTrue(nachher >= 1.0) { "nach der Bestaetigung nur $nachher U Erwartungsanteil" }
-        assertTrue(nachher <= konto.a0U + 1e-9)
+        val nachFrei = zyklen.filter { it.minute >= frei.minute }
+        assertTrue(nachFrei.any { (it.o.erwartungskonto?.zyklus?.eval?.restEffU ?: 0.0) > 0.0 }) {
+            "der Rest steht nach der Bestaetigung nicht zur Verfuegung"
+        }
+        val nachher = nachFrei.sumOf { it.geliefertU }
+        assertTrue(nachher >= 1.0) { "nach der Bestaetigung nur $nachher U" }
+        assertTrue(nachFrei.sumOf { it.dErw() } <= konto.a0U + 1e-9)
         assertTrue(konto.earlyAfterLow)
-        // Gegenprobe: dieselbe Folge OHNE Bestaetigung liefert keinen Erwartungsanteil.
+        // Gegenprobe: dieselbe Folge OHNE Bestaetigung liefert keinen Erwartungsanteil, der Rest bleibt gesperrt.
         val ohne = fruehLauf(fTiefDannMahlzeit, File(dir, "ohne")) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
         assertEquals(0.0, ohne.sumOf { it.dErw() }, 0.0)
+        assertTrue(ohne.none { (it.o.erwartungskonto?.zyklus?.eval?.restEffU ?: 0.0) > 0.0 }) {
+            "ohne Bestaetigung steht der Rest zur Verfuegung"
+        }
         assertTrue(ohne.any { it.o.erwartungskonto?.zyklus?.eval?.released == true }) { "Probe zeigt nichts: keine Strecke" }
     }
 
@@ -1174,6 +1200,34 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             assertEquals(false, z.o.erwartungskonto!!.zyklus!!.fruehSchalter?.guardWithExpectation, "Minute ${z.minute}")
             assertTrue(z.o.erwartungskonto!!.fruehHebung?.guardLift != true) { "Minute ${z.minute}: G3 nach Abschalten" }
         }
+    }
+
+    /**
+     * A (Toni): Anfangsgabe, Bedarfsrechnung und Pruefung muessen zusammen einen Versorgungsweg ergeben, auch nach Ende
+     * des Vorgriffs. Steigt der Zucker erst, wenn die Kontoanforderung per Konstruktion 0 ist, traegt im Kontofenster der
+     * Normalbedarf - gebucht als normal, ohne Budget.
+     */
+    @Test
+    fun `nach dem Vorgriff traegt im Kontofenster der Normalbedarf, ohne Budget zu verbrauchen`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fSpaet, dir) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+        val normal = zyklen.filter {
+            it.o.erwartungskonto?.gilt == true && it.o.decision.normalDemandInAccountWindow &&
+                it.o.decision.grant == null && it.geliefertU > 0.0
+        }
+        assertTrue(normal.isNotEmpty()) {
+            "kein Normalbedarf im Kontofenster: " + zyklen.filter { it.minute in 85..125 }.joinToString { z ->
+                "${z.minute}:${z.o.decision.block}/${z.o.decision.bindingLimit}/${z.geliefertU}"
+            }
+        }
+        for (z in normal) {
+            val split = z.o.erwartungskonto!!.buchung!!.split!!
+            assertEquals(z.geliefertU, split.dNormU, 1e-9) { "Minute ${z.minute}: Normalmenge nicht als normal gebucht" }
+            assertEquals(0.0, split.dErwU, 1e-9) { "Minute ${z.minute}: Normalmenge verbraucht Budget" }
+            assertEquals(0.0, split.violationU, 1e-9)
+        }
+        // Mindestens eine davon, wo das Konto selbst nichts mehr forderte - genau die Luecke, die A schliesst.
+        assertTrue(normal.any { it.frueh()?.demandU == 0.0 }) { "keine Normalmenge nach dem Ende der Kurve" }
     }
 
     /** Budget und Anfangsanteil gelten ab dem Druck fest - eine Aenderung der Einstellung wirkt erst am naechsten Marker. */

@@ -1088,6 +1088,8 @@ object FuseStateJson {
                 .put("tbr", d.tbr.name)
                 .put("block", d.block.name)
                 .put("bindingLimit", d.bindingLimit)
+                // A: im Kontofenster kam die Basismenge aus dem Normalbedarf.
+                .put("normalInAccountWindow", d.normalDemandInAccountWindow)
                 .put("insulinReqU", fin(d.insulinReqU))
                 .put("predAtReleaseMgdl", fin(d.predAtReleaseMgdl))
                 .put("minLowerMgdl", fin(d.minLowerMgdl))
@@ -2606,6 +2608,7 @@ object FuseStateJson {
                 .put("dMessU", fin(b.split?.dMessU ?: 0.0))
                 .put("dErwU", fin(b.split?.dErwU ?: 0.0))
                 .put("violationU", fin(b.split?.violationU ?: 0.0))
+                .put("dNormU", fin(b.split?.dNormU ?: 0.0))
         }
         return o
     }
