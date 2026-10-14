@@ -316,9 +316,8 @@ class ExpectationWiringTest {
         val b = entscheidung(FuseController.Block.GUARD_FLOOR)
         assertEquals(0.25, ekLift(b, tail = 0.25).smbU, eps)
         assertEquals(0.25, ekLift(b, tail = 0.25).grant!!.amountU, eps)
-        // Die uebrigen autorisierten Quellen bleiben, wie sie sind: autorisiert ohne Schwanzkappe
-        // (Konsolidierung 2.0: hier stand die entfallene Quelle PRIME, jetzt das Fundament).
-        assertEquals(0.6, ekLift(b, tail = 0.25, source = AuthorizedLift.Source.FOUNDATION).smbU, eps)
+        // Konsolidierung 2.0: die Gegenprobe mit einer anderen autorisierten Quelle (zuletzt das Fundament) ist
+        // entfallen - es gibt keine andere mehr.
         // Konsolidierung 2.0: "maxSMB begrenzt die Einzeldosis" galt der v1-Ausnahme; die Portion der fruehen
         // Versorgung teilt maxSMB nicht (s. die Proben der Anfangsportion unten).
     }

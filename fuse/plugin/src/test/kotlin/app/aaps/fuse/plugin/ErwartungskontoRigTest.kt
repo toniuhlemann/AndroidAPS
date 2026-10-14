@@ -244,10 +244,15 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         },
     )
 
-    /** Prozess-Neustart mitten in der Folge: Ledger von der Platte, neuer Runner - der Speicherzustand ist weg. */
+    /**
+     * Prozess-Neustart mitten in der Folge: Ledger von der Platte, neuer Runner - der Speicherzustand ist weg. Dazu
+     * gehoert die Beobachtung des Drucks: sie lebt im Plugin nur im Speicher, ein Marker gilt nach dem Neustart als
+     * vorgefunden.
+     */
     private fun neustart(dir: File, f: Fuse20Folgen.Folge, arm: FuseCycleRunner.Pruefarm?) {
         ledger = FuseLedgerAdapter().also { it.loadOnce(File(dir, "ledger_${f.name}"), "ek-epoch", clock) }
         runner = neuerRunner(arm)
+        markerPress = 0L
     }
 
     private fun lauf(
@@ -325,13 +330,23 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
     // ---- Die Proben ------------------------------------------------------------
 
+    /**
+     * Ohne gueltige Kurve gibt es keinen Kontozustand. Konsolidierung 2.0 (Toni): im Mahlzeitkontext steht der
+     * Rueckfall ausgewiesen im Block (NO_CURVE) - sonst gibt es keinen.
+     */
     @Test
-    fun `ohne Konto gibt es weder Block noch Kontozustand`(@TempDir dir: File) {
+    fun `ohne Konto gibt es keinen Kontozustand und im Mahlzeitkontext nur den Rueckfall`(@TempDir dir: File) {
         konfiguration(kontoAn = false)
         val zyklen = lauf(Fuse20Folgen.F1, dir)
         assertTrue(zyklen.size > 300)
-        assertTrue(zyklen.all { it.o.erwartungskonto == null }) { "Konto aus: kein Exportblock" }
         assertTrue(zyklen.all { it.konto == null }) { "Konto aus: kein Kontozustand" }
+        for (z in zyklen) {
+            val x = z.o.erwartungskonto ?: continue
+            assertEquals("NO_CURVE", x.rueckfall, "Minute ${z.minute}: Block ohne Rueckfall")
+            assertFalse(x.gilt, "Minute ${z.minute}")
+            assertNull(x.zyklus, "Minute ${z.minute}")
+        }
+        assertTrue(zyklen.any { it.o.erwartungskonto?.rueckfall == "NO_CURVE" }) { "Rueckfall nicht ausgewiesen" }
         assertTrue(zyklen.none { it.o.livenessDenial == "EXPECTATION_ACCOUNT" })
     }
 
@@ -354,7 +369,161 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         konfiguration(kontoAn = false)
         whenever(preferences.get(FuseBooleanKey.ExpectationAccountEnabled)).thenReturn(true)
         val zyklen = lauf(Fuse20Folgen.F1, dir)
-        assertTrue(zyklen.all { it.o.erwartungskonto == null }) { "Konto ohne Kurve" }
+        assertTrue(zyklen.all { it.o.erwartungskonto?.gilt != true && it.konto == null }) { "Konto ohne Kurve" }
+    }
+
+    // ---- RUECKFALL OHNE KONTO (Tonis Regel) --------------------------------------------
+    //
+    // "Wie ohne Marker" nur als begrenzter Rueckfall bei tatsaechlich fehlendem oder ungueltigem Konto. Nach einem
+    // Neustart zuerst ein gueltig gespeichertes Konto einschliesslich Verbrauch und Sperren wiederherstellen. Keine
+    // Neubuchung unbekannten Budgets. Die Mahlzeitenankuendigung sichtbar behalten und den Ausfall deutlich melden.
+
+    /** Dieselbe Folge ohne Druck - das Gegenstueck der gepaarten Probe. */
+    private fun ohneDruck(f: Fuse20Folgen.Folge) =
+        Fuse20Folgen.Folge(f.name + "_OHNE", f.nullMs, f.vonMin, f.bisMin, f.stuetzen, markerMin = null)
+
+    /**
+     * (a) KONTO FEHLT IM MAHLZEITKONTEXT: die Mahlzeit ist angekuendigt und autorisiert, ein Konto gilt nicht (keine
+     * gueltige Kurve). Gepaart mit derselben Folge ohne Druck trifft FUSE in JEDEM Zyklus dieselbe Dosierentscheidung.
+     * Nicht still: der Rueckfall steht mit Grund im Block, Marker und Vollmacht bleiben im Trail sichtbar.
+     */
+    @Test
+    fun `Rueckfall ohne Konto - dieselbe Dosierung wie ohne Marker, gemeldet, Ankuendigung sichtbar`(@TempDir dir: File) {
+        konfiguration(kontoAn = false)
+        val mit = lauf(fStabil, File(dir, "mit").also(File::mkdirs))
+        konfiguration(kontoAn = false)
+        val ohne = lauf(ohneDruck(fStabil), File(dir, "ohne").also(File::mkdirs))
+        assertEquals(ohne.map { it.minute }, mit.map { it.minute })
+        for ((a, b) in mit.zip(ohne)) {
+            val k = "Minute ${a.minute}"
+            assertEquals(b.o.abortReason, a.o.abortReason, k)
+            assertEquals(b.o.decision.smbU, a.o.decision.smbU, 0.0, k)
+            assertEquals(b.o.decision.block, a.o.decision.block, k)
+            assertEquals(b.o.decision.insulinReqU, a.o.decision.insulinReqU, k)
+            assertEquals(b.o.tbr?.rateUPerH, a.o.tbr?.rateUPerH, k)
+            assertEquals(b.o.tbr?.durationMin, a.o.tbr?.durationMin, k)
+            assertEquals(b.geliefertU, a.geliefertU, 0.0, k)
+            // Der Kanal ebenso: mit dem Profil des Laufs ohne Marker, im Rueckfall auch mit dessen Grund (danach
+            // nennt der Grund die abgelaufene Vollmacht).
+            assertEquals(b.o.livenessProfile, a.o.livenessProfile, k)
+            if (a.o.erwartungskonto?.rueckfall != null) assertEquals(b.o.livenessProfileReason, a.o.livenessProfileReason, k)
+        }
+        // Nicht leer: der Lauf ohne Druck dosiert - die Paarung vergleicht echte Entscheidungen.
+        assertTrue(ohne.sumOf { it.geliefertU } > 0.0) { "die Folge dosiert nicht" }
+        val rueckfall = mit.filter { it.o.erwartungskonto?.rueckfall != null }
+        assertTrue(rueckfall.isNotEmpty()) { "Vorbedingung: Mahlzeitkontext ohne Konto" }
+        assertTrue(rueckfall.any { it.geliefertU > 0.0 }) { "im Rueckfall fliesst nichts - die Probe prueft keine Menge" }
+        for (z in rueckfall) {
+            val x = z.o.erwartungskonto!!
+            assertEquals("NO_CURVE", x.rueckfall, "Minute ${z.minute}")
+            assertFalse(x.gilt, "Minute ${z.minute}")
+            // Die Ankuendigung bleibt sichtbar: Marker und Vollmacht stehen unveraendert im Trail.
+            assertEquals(fStabil.ts(0), z.o.state?.markerArmedTs, "Minute ${z.minute}: Marker")
+            assertEquals("MEAL", z.o.dosingContextProfile, "Minute ${z.minute}: Vollmacht")
+            assertEquals(fStabil.ts(0), z.o.dosingContextAuthorizationId, "Minute ${z.minute}: Autorisierung")
+            // Und wie ohne Marker: kein Marker-Sonderrecht.
+            assertFalse(z.o.state?.markerBoost == true, "Minute ${z.minute}: Sonderrechte im Rueckfall")
+        }
+        // Ohne Druck gibt es keinen Rueckfall.
+        assertTrue(ohne.all { it.o.erwartungskonto == null })
+    }
+
+    /**
+     * (b) NEUSTART MIT GUELTIG GESPEICHERTEM KONTO: das Konto kommt samt Verbrauch, Portionen und Tief-Sperre zurueck -
+     * kein Rueckfall, keine Neubuchung. Die Freigabe verlangt danach die Strecke neu (s. `nach einem Neustart braucht
+     * eine freigegebene Episode die Strecke neu`).
+     */
+    @Test
+    fun `Neustart mit gueltigem Konto - Konto samt Verbrauch und Sperren zurueck, kein Rueckfall`(@TempDir dir: File) {
+        val neustartMin = 30
+        for (f in listOf(fStabil, fTiefNachDruck)) {
+            var vorher: ExpectationAccount.State? = null
+            var nachher: ExpectationAccount.State? = null
+            val zyklen = fruehLauf(f, File(dir, f.name).also(File::mkdirs), vorZyklus = { m ->
+                if (m == neustartMin) {
+                    vorher = ledger.episodes.expectation
+                    neustart(File(dir, f.name), f, null)
+                    nachher = ledger.episodes.expectation
+                }
+            }) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+            val k = vorher ?: throw AssertionError("${f.name}: Vorbedingung - vor dem Neustart ein Konto")
+            assertEquals(k, nachher, "${f.name}: das gespeicherte Konto kommt unveraendert zurueck")
+            if (f === fStabil) assertTrue(k.bookedU > 0.0 && k.initialDone) { "${f.name}: Vorbedingung - Verbrauch" }
+            if (f === fTiefNachDruck) assertTrue(k.earlyLowLocked && k.earlyAfterLow) { "${f.name}: Vorbedingung - Sperre" }
+            val danach = zyklen.filter { it.minute in neustartMin until 120 }
+            assertTrue(danach.isNotEmpty())
+            for (z in danach) {
+                val x = z.o.erwartungskonto!!
+                assertTrue(x.gilt, "${f.name} Minute ${z.minute}: Konto gilt nicht")
+                assertNull(x.rueckfall, "${f.name} Minute ${z.minute}: Rueckfall")
+                assertFalse(x.zyklus!!.armiertInDiesemZyklus, "${f.name} Minute ${z.minute}: Neubuchung")
+                val n = z.konto!!
+                assertEquals(k.authId, n.authId)
+                assertEquals(k.a0U, n.a0U, 0.0, "${f.name} Minute ${z.minute}: Budget")
+                assertTrue(n.bookedU >= k.bookedU - 1e-9) { "${f.name} Minute ${z.minute}: Verbrauch verloren" }
+                assertTrue(n.portions.containsAll(k.portions.filter { it.ts > z.o.computeTs - 30 * 60_000L })) {
+                    "${f.name} Minute ${z.minute}: Portionen verloren"
+                }
+                if (k.earlyLowLocked) assertTrue(n.earlyLowLocked) { "${f.name} Minute ${z.minute}: Sperre verloren" }
+            }
+        }
+    }
+
+    /**
+     * (c) NEUSTART MIT UNBRAUCHBAREM GESPEICHERTEM KONTO: der Codec verwirft es, die Mahlzeit bleibt angekuendigt -
+     * Rueckfall mit Grund, und es wird KEIN neues Budget gebucht (die Beobachtung des Drucks ist mit dem Prozess weg).
+     */
+    @Test
+    fun `Neustart mit unbrauchbarem Konto - Rueckfall ausgewiesen, keine Neubuchung`(@TempDir dir: File) {
+        val neustartMin = 30
+        val zyklen = fruehLauf(fStabil, dir, vorZyklus = { m ->
+            if (m == neustartMin) {
+                // Ein gespeichertes Konto, das der Codec verwirft (negativer Verbrauch).
+                val k = ledger.episodes.expectation ?: throw AssertionError("Vorbedingung: ein Konto")
+                ledger.episodes.expectation = k.copy(bookedU = -1.0)
+                assertTrue(ledger.persistVerified(File(dir, "ledger_${fStabil.name}")))
+                neustart(dir, fStabil, null)
+                assertNull(ledger.episodes.expectation, "der Codec verwirft das Konto")
+                assertTrue(ledger.episodes.expectationDropped)
+            }
+        }) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+        val danach = zyklen.filter { it.minute in neustartMin until 120 }
+        assertTrue(danach.isNotEmpty())
+        for (z in danach) {
+            val x = z.o.erwartungskonto!!
+            assertFalse(x.gilt, "Minute ${z.minute}: Konto gilt")
+            assertEquals("DROPPED_ON_LOAD", x.rueckfall, "Minute ${z.minute}: Rueckfall nicht ausgewiesen")
+            assertNull(x.zyklus, "Minute ${z.minute}: Kontozyklus")
+            assertNull(z.konto, "Minute ${z.minute}: neues Konto gebucht")
+            assertEquals(0.0, z.dErw(), 0.0, "Minute ${z.minute}")
+            // Die Ankuendigung bleibt: die Vollmacht steht weiter im Trail.
+            assertEquals(fStabil.ts(0), z.o.dosingContextAuthorizationId, "Minute ${z.minute}: Vollmacht")
+        }
+    }
+
+    /**
+     * Konsolidierung 2.0 (lebender v1-Weg): ist die fruehe Versorgung aus oder ungueltig eingestellt, bucht der Druck ein
+     * v2-Konto mit Budget 0 und neutralen Pins - es fliesst nur der gemessene Anteil, das Konto ersetzt den Bedarf.
+     */
+    @Test
+    fun `ohne gueltige fruehe Versorgung bucht der Druck ein v2-Konto mit Budget 0`(@TempDir dir: File) {
+        konfiguration(kontoAn = true)
+        val aus = lauf(fStabil, File(dir, "aus").also(File::mkdirs)).filter { it.o.abortReason == null }
+        konfiguration(kontoAn = true)
+        whenever(preferences.get(FuseBooleanKey.EarlySupplyEnabled)).thenReturn(true)
+        whenever(preferences.get(FuseIntKey.EarlySupplyPeriodMin)).thenReturn(0)
+        val ungueltig = lauf(fStabil, File(dir, "ungueltig").also(File::mkdirs)).filter { it.o.abortReason == null }
+        for ((name, zyklen) in listOf("aus" to aus, "ungueltig" to ungueltig)) {
+            val k = zyklen.mapNotNull { it.konto }.lastOrNull() ?: throw AssertionError("$name: kein Konto")
+            // Neutrale Pins; der ausgeschaltete Hauptschalter entzieht sie zudem fuer die Mahlzeit (withdrawn).
+            assertEquals(app.aaps.fuse.core.controller.EarlySupply.Pins.NEUTRAL, k.early?.copy(withdrawn = false), name)
+            assertEquals(name == "aus", k.early?.withdrawn, name)
+            assertEquals(0.0, k.a0U, 0.0, name)
+            assertEquals(0.0, zyklen.sumOf { it.dErw() }, 0.0, name)
+            assertTrue(zyklen.any { it.o.erwartungskonto!!.gilt && it.o.livenessDenial == "EXPECTATION_ACCOUNT" }) {
+                "$name: das Konto ersetzt den Bedarf nicht"
+            }
+        }
     }
 
     @Test
@@ -460,7 +629,9 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     fun `Arm REF ist der Kandidat mit Schalter aus`(@TempDir dir: File) {
         konfiguration(kontoAn = true)
         val zyklen = lauf(fStabil, dir, FuseCycleRunner.Pruefarm.REF)
-        assertTrue(zyklen.all { it.o.erwartungskonto == null && it.konto == null })
+        assertTrue(zyklen.all { it.konto == null && it.o.erwartungskonto?.gilt != true })
+        // Konsolidierung 2.0: im Mahlzeitkontext steht der Rueckfall ausgewiesen (Konto aus heisst keine Kurve).
+        assertTrue(zyklen.all { it.o.erwartungskonto == null || it.o.erwartungskonto!!.rueckfall == "NO_CURVE" })
         assertTrue(zyklen.none { it.o.livenessDenial == "EXPECTATION_ACCOUNT" })
     }
 
@@ -955,14 +1126,19 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(fallend.isNotEmpty()) { "deutliches Fallen pausiert nicht" }
         assertEquals(0.0, fallend.sumOf { it.dErw() }, 0.0)
 
-        // v1 ("Nur Erwartung" ohne fruehe Versorgung): dieselbe leichte Folge pausiert wie bisher an der Kanalkonstante.
-        val v1 = fruehLauf(fLeichtFallend, File(dir, "v1")) {
+        // Ohne fruehe Versorgung (Konsolidierung 2.0: statt des Kontos v1 ein Konto mit Budget 0 und neutralen Pins):
+        // dieselbe leichte Folge bringt keine Portion - die Pause nennt den ausgeschalteten Hauptschalter.
+        val ohne = fruehLauf(fLeichtFallend, File(dir, "ohne")) {
             fruehKonfiguration()
             whenever(preferences.get(FuseBooleanKey.EarlySupplyEnabled)).thenReturn(false)
             whenever(preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin)).thenReturn(fallGrenze)
         }
-        assertTrue(fruehe(v1).all { it.konto?.early == null }) { "v1-Probe hat ein v2-Konto" }
-        assertTrue(fruehe(v1).any { "FALLING" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) { "v1 pausiert nicht mehr an der Kanalkonstante" }
+        // Neutrale Pins; der ausgeschaltete Hauptschalter entzieht sie zudem fuer die Mahlzeit (withdrawn).
+        assertTrue(fruehe(ohne).all {
+            it.konto?.early?.copy(withdrawn = false) == app.aaps.fuse.core.controller.EarlySupply.Pins.NEUTRAL
+        }) { "ohne fruehe Versorgung kein Konto mit neutralen Pins" }
+        assertTrue(fruehe(ohne).all { "EARLY_SUPPLY_OFF" in it.o.erwartungskonto!!.zyklus!!.pausenGruende })
+        assertEquals(0.0, ohne.sumOf { it.dErw() }, 0.0)
     }
 
     /** Langsames Abdriften vor dem Druck bei normalem Zucker; ein Bolus davor sorgt fuer Bolus-IOB. */

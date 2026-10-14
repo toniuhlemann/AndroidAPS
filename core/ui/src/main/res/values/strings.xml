@@ -162,6 +162,8 @@
     <string name="overview_insulin_label">Insulin</string>
     <string name="overview_fuse_meal_label">Mahlzeit</string>
     <string name="overview_fuse_meal_active_label">◉ Mahlzeit</string>
+    <!-- Rueckfall ohne Konto: die Mahlzeit ist angekuendigt, FUSE dosiert aber wie ohne Marker. -->
+    <string name="overview_fuse_meal_no_account_label">◉ Mahlzeit · ohne Konto</string>
     <!-- Die Knoepfe BENENNEN die Handlung: "Nur Marker" nennt ausdruecklich 0 U. Die Direktdosis ("Mit
          Insulinfreigabe") ist mit der Konsolidierung entfallen; braucht es sie doch, bolt Toni manuell. -->
     <string name="fuse_meal_confirm_no_prime">Nur Marker · 0 U</string>

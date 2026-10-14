@@ -1,6 +1,5 @@
 package app.aaps.fuse.plugin.ledger
 
-import app.aaps.fuse.core.controller.MealFoundation
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
@@ -44,7 +43,6 @@ class ConstraintRevokeTest {
         prime: Boolean = true,
         onset: Boolean = true,
         meal: Boolean = true,
-        phase: MealFoundation.Phase = MealFoundation.Phase.PHASE_B,
         schonGebucht: Double = 0.45,
     ): FuseLedgerAdapter {
         val a = FuseLedgerAdapter()
@@ -52,11 +50,10 @@ class ConstraintRevokeTest {
         e.primeSpentU = schonGebucht + menge
         e.onsetSpentU = schonGebucht + menge
         e.evidenceCommittedU = schonGebucht + menge
-        e.deliveredSinceHandoverU = schonGebucht + menge
         if (meal) e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, menge))
         e.pendingReservation = EpisodeBudgets.Reservation(
             computeTs = ts, amountU = menge, prime = prime, onset = onset,
-            mealTs = if (meal) ts else 0L, foundationPhase = phase,
+            mealTs = if (meal) ts else 0L,
         )
         // Das Publikationsgate hat die Menge durchgelassen.
         a.resolveReservation(ts, publishedU = menge, proposalId = ID)
@@ -83,7 +80,6 @@ class ConstraintRevokeTest {
         // Die Widerrufs-Revision rueckt ATOMAR mit der Absenkung vor (Toni
         // 29.08.) - nur sie erlaubt EvidenceStock den Rebase statt UNKNOWN.
         assertEquals(1L, a.episodes.evidenceCommitmentRevision)
-        assertEquals(0.45, a.episodes.deliveredSinceHandoverU, 1e-9)
         assertEquals(0, a.episodes.mealDeliveries.size, "und der Eintrag verschwindet")
         assertNull(a.episodes.settled, "danach gibt es nichts mehr zurueckzudrehen")
     }
@@ -116,11 +112,10 @@ class ConstraintRevokeTest {
         // --- Zyklus 1: 0,15 U, sourceTs = ts. Publikation geht durch.
         e.primeSpentU += 0.15
         e.evidenceCommittedU += 0.15
-        e.deliveredSinceHandoverU += 0.15
         e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, 0.15))
         e.pendingReservation = EpisodeBudgets.Reservation(
             computeTs = ts, amountU = 0.15, prime = true, onset = false,
-            mealTs = ts, foundationPhase = MealFoundation.Phase.PHASE_B,
+            mealTs = ts,
         )
         a.resolveReservation(ts, publishedU = 0.15, proposalId = "s#1")
 
@@ -128,11 +123,10 @@ class ConstraintRevokeTest {
         // Der Runner bucht ZUERST, der Beweis fuer Zyklus 1 kommt DANACH.
         e.primeSpentU += 0.05
         e.evidenceCommittedU += 0.05
-        e.deliveredSinceHandoverU += 0.05
         e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, 0.05))
         e.pendingReservation = EpisodeBudgets.Reservation(
             computeTs = ts + 60_000L, amountU = 0.05, prime = true, onset = false,
-            mealTs = ts, foundationPhase = MealFoundation.Phase.PHASE_B,
+            mealTs = ts,
         )
 
         // JETZT der Beweis fuer Zyklus 1 - waehrend die neue Zeile schon steht.
@@ -149,7 +143,6 @@ class ConstraintRevokeTest {
                 "Mit indexOfLast ueber den Zeitstempel stuende hier 0,15.",
         )
         assertEquals(0.05, e.primeSpentU, 1e-9)
-        assertEquals(0.05, e.deliveredSinceHandoverU, 1e-9)
     }
 
     /**
@@ -174,11 +167,10 @@ class ConstraintRevokeTest {
             // (1) Der Runner bucht die neue Menge.
             e.primeSpentU += 0.15
             e.evidenceCommittedU += 0.15
-            e.deliveredSinceHandoverU += 0.15
             e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(zyklus, 0.15))
             e.pendingReservation = EpisodeBudgets.Reservation(
                 computeTs = zyklus, amountU = 0.15, prime = true, onset = false,
-                mealTs = zyklus, foundationPhase = MealFoundation.Phase.PHASE_B,
+                mealTs = zyklus,
             )
 
             // (2) DANN erst wird der Vorgaenger entlastet - so wie im Plugin,
@@ -196,7 +188,6 @@ class ConstraintRevokeTest {
 
         assertEquals(2.70, e.primeSpentU, 1e-9, "die Huelle ist NICHT ausgeschoepft")
         assertEquals(2.70, e.evidenceCommittedU, 1e-9, "und der Bestand nicht bezahlt")
-        assertEquals(2.70, e.deliveredSinceHandoverU, 1e-9)
         assertEquals(18, e.mealDeliveries.size, "zwei Eintraege sind verschwunden")
         assertEquals(2.70, e.mealDeliveries.sumOf { it.amountU }, 1e-9)
     }
@@ -272,31 +263,14 @@ class ConstraintRevokeTest {
         // Jetzt der ECHTE Weg: persistVerified -> neuer Adapter -> loadOnce.
         val vor = FuseLedgerAdapter()
         vor.loadOnce(dir, "s1", ts)
-        // EINE ECHTE AUTORISIERUNG, und der echte Weg hat sofort gezeigt,
-        // warum das noetig ist: `deliveredSinceHandoverU` wird NUR gemeinsam
-        // mit der Autorisierung persistiert (s. LedgerCodec.encodeFoundation).
-        // Ohne sie ging der Zaehler beim Laden verloren, und der Test schlug
-        // mit 0,0 statt 0,60 fehl. Die Attrappe konnte das nicht zeigen - sie
-        // kopierte den Zaehler ja von Hand.
-        //
-        // Das ist kein Mangel, sondern der Vertrag: ein Bezahlstand ohne
-        // Autorisierung ist bedeutungslos, und die beiden duerfen nicht
-        // auseinanderlaufen.
-        vor.episodes.foundation = MealFoundation.arm(
-            markerTs = ts - 30 * 60_000L, foundationEnabled = true, totalBudgetU = 3.0,
-            phaseAShare = 0.75, primeWindowMin = 15, wallCeilingMin = 45,
-            phaseAUpfrontShare = 0.0,
-            pressObservedInThisProcess = true, primeDeclinedByUser = false,
-            markerAuthorized = true, phaseBUntilMin = 60,
-        )
+        // Konsolidierung 2.0: die Fundament-Autorisierung samt ihrem Bezahlstand ist entfallen.
         vor.episodes.primeSpentU = 0.60
         vor.episodes.onsetSpentU = 0.60
         vor.episodes.evidenceCommittedU = 0.60
-        vor.episodes.deliveredSinceHandoverU = 0.60
         vor.episodes.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, 0.15))
         vor.episodes.pendingReservation = EpisodeBudgets.Reservation(
             computeTs = ts, amountU = 0.15, prime = true, onset = true,
-            mealTs = ts, foundationPhase = MealFoundation.Phase.PHASE_B,
+            mealTs = ts,
         )
         vor.resolveReservation(ts, publishedU = 0.15, proposalId = ID)
         assertNotNull(vor.episodes.settled, "vor dem Neustart ist die Ablage da")
@@ -309,11 +283,10 @@ class ConstraintRevokeTest {
         assertNull(nach.episodes.settled, "ein Neustart hat keine offene Ablage")
         assertEquals(0.0, nach.revokeSettled(ID).amountU, 1e-9, "und damit nichts zurueckzudrehen")
 
-        // ALLE FUENF Buecher, einzeln geprueft.
+        // ALLE VIER Buecher, einzeln geprueft (Konsolidierung 2.0: der Fundament-Bezahlstand ist entfallen).
         assertEquals(0.60, nach.episodes.primeSpentU, 1e-9, "primeSpentU")
         assertEquals(0.60, nach.episodes.onsetSpentU, 1e-9, "onsetSpentU")
         assertEquals(0.60, nach.episodes.evidenceCommittedU, 1e-9, "evidenceCommittedU")
-        assertEquals(0.60, nach.episodes.deliveredSinceHandoverU, 1e-9, "deliveredSinceHandoverU")
         assertEquals(
             0.15, nach.episodes.mealDeliveries.single().amountU, 1e-9,
             "mealDeliveries - die fuenf Buecher bleiben einig",
@@ -338,10 +311,6 @@ class ConstraintRevokeTest {
         assertEquals(0.60, a.episodes.primeSpentU, 1e-9)
         assertEquals(0.60, a.episodes.onsetSpentU, 1e-9)
         assertEquals(0.60, a.episodes.evidenceCommittedU, 1e-9)
-        assertEquals(
-            0.60, a.episodes.deliveredSinceHandoverU, 1e-9,
-            "ALLE vier Zaehler MUESSEN unveraendert bleiben",
-        )
     }
 
     /**
@@ -356,7 +325,7 @@ class ConstraintRevokeTest {
         // Die Reservierung nennt eine Mahlzeitenzeile - aber es gibt keine.
         a.episodes.pendingReservation = EpisodeBudgets.Reservation(
             computeTs = ts, amountU = 0.15, prime = true, onset = false,
-            mealTs = ts, foundationPhase = MealFoundation.Phase.PHASE_B,
+            mealTs = ts,
         )
         a.resolveReservation(ts, publishedU = 0.15, proposalId = ID)
 
@@ -400,7 +369,7 @@ class ConstraintRevokeTest {
         val a = nachPublikation()
         a.episodes.pendingReservation = EpisodeBudgets.Reservation(
             computeTs = ts + 60_000L, amountU = 0.10, prime = true, onset = false,
-            mealTs = 0L, foundationPhase = MealFoundation.Phase.PHASE_B,
+            mealTs = 0L,
         )
         a.resolveReservation(ts + 60_000L, publishedU = 0.10, proposalId = "s#43")
 
@@ -420,7 +389,6 @@ class ConstraintRevokeTest {
         a.episodes.primeSpentU = 0.15
         a.episodes.pendingReservation = EpisodeBudgets.Reservation(
             computeTs = ts, amountU = 0.15, prime = true, onset = false, mealTs = 0L,
-            foundationPhase = MealFoundation.Phase.NONE,
         )
         a.resolveReservation(ts, publishedU = 0.15)
         assertNull(a.episodes.settled)
@@ -442,7 +410,7 @@ class ConstraintRevokeTest {
         // Neuer Zyklus, diesmal vom Publikationsgate entfernt.
         a.episodes.pendingReservation = EpisodeBudgets.Reservation(
             computeTs = ts + 60_000L, amountU = 0.15, prime = true, onset = false,
-            mealTs = 0L, foundationPhase = MealFoundation.Phase.PHASE_B,
+            mealTs = 0L,
         )
         a.episodes.primeSpentU += 0.15
         val vorher = a.episodes.primeSpentU
@@ -453,26 +421,7 @@ class ConstraintRevokeTest {
         assertEquals(0.0, a.revokeSettled("s#44").amountU, 1e-9, "und kein zweites Mal")
     }
 
-    /**
-     * NUR PHASE B BEWEGT DEN FUNDAMENT-ZAEHLER - auch beim spaeten
-     * Zurueckdrehen.
-     */
-    @Test
-    fun `nur Phase B dreht den Fundament-Zaehler zurueck`() {
-        for (phase in listOf(
-            MealFoundation.Phase.NONE,
-            MealFoundation.Phase.PHASE_A,
-            MealFoundation.Phase.AFTER_WINDOW,
-        )) {
-            val a = nachPublikation(phase = phase)
-            a.revokeSettled(ID)
-            assertEquals(
-                0.60, a.episodes.deliveredSinceHandoverU, 1e-9,
-                "$phase darf den Phase-B-Zaehler nicht senken",
-            )
-            assertEquals(0.45, a.episodes.primeSpentU, 1e-9, "$phase: Prime aber schon")
-        }
-    }
+    // Konsolidierung 2.0: die Probe "nur Phase B dreht den Fundament-Zaehler zurueck" ist mit dem Fundament entfallen.
 
     /**
      * DIE GEFUNDENE ZEILE MUSS DIE MENGE EXAKT TRAGEN (Toni 19.08.).
@@ -501,7 +450,6 @@ class ConstraintRevokeTest {
             assertEquals(0.60, a.episodes.primeSpentU, 1e-9, "$zeilenmenge")
             assertEquals(0.60, a.episodes.onsetSpentU, 1e-9, "$zeilenmenge")
             assertEquals(0.60, a.episodes.evidenceCommittedU, 1e-9, "$zeilenmenge")
-            assertEquals(0.60, a.episodes.deliveredSinceHandoverU, 1e-9, "$zeilenmenge")
             assertEquals(
                 zeilenmenge, a.episodes.mealDeliveries.single().amountU, 1e-9,
                 "$zeilenmenge: und die Zeile bleibt unangetastet",

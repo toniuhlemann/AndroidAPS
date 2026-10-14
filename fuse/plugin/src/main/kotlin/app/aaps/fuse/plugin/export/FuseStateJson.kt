@@ -604,17 +604,11 @@ object FuseStateJson {
             } ?: JSONObject.NULL)
             // ---- Mahlzeitenfundament (Punkt 12, Toni 18.08.) --------------
             //
-            // IMMER GESCHRIEBEN, auch ohne Autorisierung. Ein fehlender
-            // Abschnitt waere von "der Zyklus kam nicht so weit" nicht zu
-            // unterscheiden; `armed: false` sagt dagegen ausdruecklich, dass
-            // kein Fundament laeuft. Solange arm() nicht verdrahtet ist, ist
-            // das der Dauerzustand - und die richtige Aussage.
-            //
-            // Der Inhalt kommt VOLLSTAENDIG aus MealFoundation.snapshot();
-            // hier wird nur serialisiert. Wuerde diese Stelle irgendetwas
-            // selbst rechnen, saehe das Offline-Replay etwas anderes als der
-            // Feldexport - und jede Auswertung haette eine Annahme statt
-            // einer Messung als Grundlage.
+            // IMMER GESCHRIEBEN, auch ohne Autorisierung. Konsolidierung 2.0:
+            // das Fundament ist entfallen - der Block steht bis Schritt 5 mit
+            // seinen Feldnamen und den Werten "kein Fundament" (`armed: false`,
+            // Nullen); nur die Messung VOR dem Fundament (die Normalentscheidung)
+            // und die neutralen Sofortanteil-Felder kommen weiter aus dem Outcome.
             // DIE ENDKETTE DES SOFORTANTEILS - bis eben NUR im Outcome, also
             // nur fuer den Replay lesbar. Auf dem Geraet fehlte sie
             // vollstaendig: der Trail trug weder Ruhemodus noch Streak,
@@ -640,122 +634,52 @@ object FuseStateJson {
             })
             // E-034: nur bei eingeschaltetem Konto - aus bleibt der Datensatz bitgleich.
             .apply { outcome.erwartungskonto?.let { put("expectationAccount", erwartungskontoJson(it)) } }
-            .put("mealFoundation", outcome.mealFoundation.let { f ->
-                JSONObject()
-                    .put("armed", f.armed)
-                    .put("armedTs", f.armedTs)
-                    // Das gepinnte Budget und seine beiden Teile. Sie stehen
-                    // einzeln da, statt aus einem Anteil errechenbar zu sein:
-                    // im Replay wird genau ihre Aufteilung variiert.
-                    .put("totalBudgetU", fin(f.totalBudgetU))
-                    .put("phaseABudgetU", fin(f.phaseABudgetU))
-                    .put("phaseBBudgetU", fin(f.phaseBBudgetU))
-                    // ---- PHASE-A-SOFORTANTEIL (iLet, v27) -----------------
-                    // "angefordert", "publiziert" und "pumpenbestaetigt"
-                    // bleiben getrennt: requested ist die MEAL_UPFRONT-
-                    // Anforderung DIESES Zyklus (vor Gate), published der
-                    // kumulativ gate- und beweiskorrigierte Anteil
-                    // (min(planned, deliveredPhaseAU) - deliveredPhaseAU ist
-                    // publiziert-und-nicht-widerlegt), pending der offene
-                    // Boden. confirmed ist NULL: FUSE fuehrt keine
-                    // Pumpenbestaetigungs-Buchfuehrung je Menge, und hier
-                    // wird nichts behauptet (Zeilen schliessen ueber die
-                    // IOB-Reconciliation). Die proposalId der Anforderung
-                    // ist die cycleId des Zyklus mit requested > 0 - sie
-                    // steht dauerhaft im Trail an genau diesem Zyklus.
-                    .put("phaseAUpfrontShare", fin(f.phaseAUpfrontShare))
-                    .put("phaseAUpfrontPlannedU", fin(f.phaseAUpfrontPlannedU))
-                    .put("phaseARemainderU", fin(f.phaseARemainderU))
-                    .put("phaseAUpfrontRequestedU", fin(outcome.phaseAUpfrontRequestedU))
-                    .put(
-                        "phaseAUpfrontPublishedU",
-                        fin(kotlin.math.min(f.phaseAUpfrontPlannedU, f.deliveredPhaseAU)),
-                    )
-                    .put("phaseAUpfrontConfirmedU", JSONObject.NULL)
-                    .put("phaseAUpfrontPendingU", fin(outcome.phaseAUpfrontPendingU))
-                    .put("phaseAUpfrontState", outcome.phaseAUpfrontState ?: JSONObject.NULL)
-                    // ZWEI GETRENNTE GROESSEN (Review-P1.2): was real im
-                    // schrittweisen Pfad ankam, und was die Huelle beim
-                    // Uebergang nicht mehr aufnahm. "Uebertragen" darf nur
-                    // heissen, was wirklich uebertragen wurde.
-                    .put("phaseAUpfrontTransferredU", fin(outcome.phaseAUpfrontTransferredU))
-                    .put("phaseAUpfrontLapsedU", fin(outcome.phaseAUpfrontLapsedU))
-                    .put(
-                        "phaseAUpfrontProposalId",
-                        if (outcome.phaseAUpfrontRequestedU > 0.0) cycleId else JSONObject.NULL,
-                    )
-                    // BEIDE Uebergaenge: der effektive folgt vor dem Latch
-                    // noch der Prime-Laufzeit, der gelatchte steht fest. Ihre
-                    // Differenz beantwortet die Frage, ob eine Clearance den
-                    // Anker noch verschieben kann - aus einem einzelnen Wert
-                    // ist das nicht ablesbar.
-                    .put("effectiveHandoverTs", f.effectiveHandoverTs)
-                    .put("latchedHandoverTs", f.latchedHandoverTs)
-                    .put("endTs", f.endTs)
-                    .put("phase", f.phase.name)
-                    // DER AUTORITATIVE PHASE-A-ZAEHLER (Codex 19.08.). Ohne ihn
-                    // ist die Uebertrags-Ableitung aus dem Trail nicht
-                    // nachrechenbar: sichtbar waeren nur Ergebnis und
-                    // Rohzaehler, nicht die Groesse dazwischen.
-                    // WER DIE DOSIS WOLLTE (Toni 19.08.): der Stand VOR der
-                    // Fundament-Anhebung und die Anhebung selbst. Aus der
-                    // publizierten Menge allein ist nicht zu sehen, ob das
-                    // Fundament lief und nur der ZUSAETZLICHE Bedarf
-                    // gebremst wurde - oder ob das Fundament selbst
-                    // blockiert war. Die beiden Lagen bedeuten das
-                    // Gegenteil voneinander.
-                    .put("preFoundationSmbU", fin(outcome.preFoundationSmbU))
-                    // UND DIE URSACHE DER LAGE aus demselben Moment: der
-                    // Fundament-Binding kann den urspruenglichen Guard oder
-                    // Tail ueberdecken. Ohne diese beiden sagt der Trail
-                    // nicht, WAS gebunden hat, bevor das Fundament anhob.
-                    .put("preFoundationBlock", outcome.preFoundationBlock.name)
-                    .putOpt("preFoundationBindingLimit", outcome.preFoundationBindingLimit)
-                    .put("foundationLiftU", fin(outcome.foundationLiftU))
-                    .put("deliveredPhaseAU", fin(f.deliveredPhaseAU))
-                    .put("deliveredSinceHandoverU", fin(f.deliveredSinceHandoverU))
-                    // DIE BELEGTE PHASE-A-LUECKE UND DIE DARAUS FOLGENDE
-                    // ERLAUBNIS - beide einzeln, nicht nur ihre Summe.
-                    //
-                    // Ohne den Uebertrag waere im Replay ein Lauf, in dem
-                    // Phase B ihr eigenes Teilbudget lieferte, nicht von einem
-                    // zu unterscheiden, in dem sie eine am Intervalltor
-                    // verlorene Prime-Menge nachholte. Gleiche Summe, voellig
-                    // verschiedene Bedeutung - und genau die Frage, die dieser
-                    // Umbau beantworten soll.
-                    .put("confirmedNotSentPhaseAU", fin(f.confirmedNotSentPhaseAU))
-                    // ROH UND EFFEKTIV NEBENEINANDER: der erste sagt, was je
-                    // bewiesen wurde, der zweite, was davon jetzt noch offen
-                    // ist. Laufen sie auseinander, hat Prime seine eigene
-                    // Luecke geschlossen - eine Aussage, die aus keiner der
-                    // beiden Zahlen allein hervorgeht.
-                    .put("effectiveCarryU", fin(f.effectiveCarryU))
-                    // Eigener Topf fuer den vom harten Abwaertsriegel
-                    // verschobenen Phase-A-Anteil. Rohwert, aktuelles
-                    // Sicherheitsurteil und wirksamer Anteil bleiben getrennt
-                    // nachrechenbar; ein Nullwert verraet sonst nicht, ob nie
-                    // etwas verschoben wurde oder ein Schutz gerade sperrt.
-                    .put("descentDeferredPhaseAU", fin(f.descentDeferredPhaseAU))
-                    .put("descentCarryEligibility", f.descentCarryEligibility.name)
-                    .put("manualBolusAfterMarkerU", fin(outcome.manualBolusAfterMarkerU))
-                    .put("effectiveDescentCarryU", fin(f.effectiveDescentCarryU))
-                    .put("phaseBAllowanceU", fin(f.phaseBAllowanceU))
-                    // Soll, Rueckstand und dueU sind DREI Groessen, nicht eine
-                    // in drei Formen: dueU ist gerastert und gedeckelt, der
-                    // Rueckstand zeigt die tatsaechliche Lage (negativ =
-                    // Vorsprung), das Soll den Plan zu diesem Zeitpunkt.
-                    .put("plannedTotalU", fin(f.plannedTotalU))
-                    .put("backlogU", fin(f.backlogU))
-                    .put("dueU", fin(f.dueU))
-                    .put("remainingInWindowU", fin(f.remainingInWindowU))
-                    .put("binding", f.binding?.name ?: JSONObject.NULL)
-                    // Fenster und Rate machen die KOMPRESSION sichtbar: eine
-                    // spaet verschobene Uebergabe presst dasselbe Teilbudget
-                    // in weniger Minuten. Ohne diese beiden faellt eine
-                    // verdreifachte Sollrate im Replay niemandem auf.
-                    .put("effectiveWindowMin", f.effectiveWindowMin)
-                    .put("effectiveRateUPerMin", fin(f.effectiveRateUPerMin))
-            })
+            .put("mealFoundation", JSONObject()
+                .put("armed", false)
+                .put("armedTs", 0L)
+                .put("totalBudgetU", 0.0)
+                .put("phaseABudgetU", 0.0)
+                .put("phaseBBudgetU", 0.0)
+                .put("phaseAUpfrontShare", 0.0)
+                .put("phaseAUpfrontPlannedU", 0.0)
+                .put("phaseARemainderU", 0.0)
+                .put("phaseAUpfrontRequestedU", fin(outcome.phaseAUpfrontRequestedU))
+                .put("phaseAUpfrontPublishedU", 0.0)
+                .put("phaseAUpfrontConfirmedU", JSONObject.NULL)
+                .put("phaseAUpfrontPendingU", fin(outcome.phaseAUpfrontPendingU))
+                .put("phaseAUpfrontState", outcome.phaseAUpfrontState ?: JSONObject.NULL)
+                .put("phaseAUpfrontTransferredU", fin(outcome.phaseAUpfrontTransferredU))
+                .put("phaseAUpfrontLapsedU", fin(outcome.phaseAUpfrontLapsedU))
+                .put(
+                    "phaseAUpfrontProposalId",
+                    if (outcome.phaseAUpfrontRequestedU > 0.0) cycleId else JSONObject.NULL,
+                )
+                .put("effectiveHandoverTs", 0L)
+                .put("latchedHandoverTs", 0L)
+                .put("endTs", 0L)
+                .put("phase", "NONE")
+                .put("preFoundationSmbU", fin(outcome.preFoundationSmbU))
+                .put("preFoundationBlock", outcome.preFoundationBlock.name)
+                .putOpt("preFoundationBindingLimit", outcome.preFoundationBindingLimit)
+                .put("foundationLiftU", fin(outcome.foundationLiftU))
+                .put("deliveredPhaseAU", 0.0)
+                .put("deliveredSinceHandoverU", 0.0)
+                .put("confirmedNotSentPhaseAU", 0.0)
+                .put("effectiveCarryU", 0.0)
+                .put("descentDeferredPhaseAU", 0.0)
+                .put("descentCarryEligibility", "NO_DEFERRED")
+                // Wie bisher ohne Autorisierung: 0 - nur der Abbruch kannte den Wert nicht.
+                .put("manualBolusAfterMarkerU", if (outcome.abortReason != null) JSONObject.NULL else 0.0)
+                .put("effectiveDescentCarryU", 0.0)
+                .put("phaseBAllowanceU", 0.0)
+                .put("plannedTotalU", 0.0)
+                .put("backlogU", 0.0)
+                .put("dueU", 0.0)
+                .put("remainingInWindowU", 0.0)
+                .put("binding", JSONObject.NULL)
+                .put("effectiveWindowMin", 0)
+                .put("effectiveRateUPerMin", 0.0),
+            )
             // Die Evidenz-Episode: Identitaet UND der Grund, falls keine
             // eroeffnet wurde. Beides, weil "0 ohne Grund" (kein Marker) etwas
             // anderes ist als "0 mit Grund" (Druck nicht durabel).
@@ -2335,13 +2259,11 @@ object FuseStateJson {
             p.expectationGuardException.toString(),
             p.expectationStabilityMin.toString(),
             p.expectationHorizonMin.toString(),
-            // Nur der Pruefstand setzt ihn (Arm EK-S); er steht im Hash, weil
-            // er die Lieferung aendert.
-            if (p.expectationBenchNoDirectDose) "benchNoDirectDose" else "-",
+            // Konsolidierung 2.0: der Pruefstand-Schalter des Arms EK-S ist entfallen - die Stelle steht als
+            // Konstante seines Standes "aus", damit der Hash positionsgleich bleibt. (Der Zuordnungsarm
+            // EK-RBheute stand nur gesetzt im Hash und entfaellt ersatzlos.)
+            "-",
         ) + listOfNotNull(
-            // Zuordnungsarm EK-RBheute: nur wenn gesetzt - die Hashes der
-            // uebrigen Arme bleiben, wie sie waren.
-            "benchReboundToday".takeIf { p.expectationBenchReboundToday },
             // Die Fallgrenze der Stabilitaetsstrecke: nur wenn abweichend -
             // ein Konto mit Standard behaelt seinen bisherigen Hash.
             p.expectationStabilityFallMgdlPerMin

@@ -49,7 +49,6 @@ import app.aaps.fuse.core.predictor.PredictorOutcome
 import app.aaps.fuse.core.predictor.TrajectoryCore
 import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.DescentRecoveryLatch
-import app.aaps.fuse.core.controller.DescentDeferredCarry
 import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.controller.LivenessChannel
 import app.aaps.fuse.core.controller.ExpectationLedger
@@ -888,6 +887,44 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(LongKey.FslCalibrationStart)).thenAnswer { kalibrierStart }
         whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenReturn(0L)
         whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenAnswer { markerAt }
+    }
+
+    /** Synthetische Kurve des Kontos im Rig: F(5k) = 0,125 * k. */
+    private val rigKurve = (1..24).joinToString("; ") { (it * 0.125).toString() }
+
+    /**
+     * KONSOLIDIERUNG 2.0: DAS KONTO IM RIG. Seit Tonis Regel dosiert ein Marker ohne gueltiges Konto wie ohne Marker
+     * (Rueckfall). Proben, die die Mahlzeitendosierung selbst pruefen, schalten deshalb das Konto ein: eine gueltige
+     * synthetische Kurve, die Kontowerte wie ausgeliefert, die fruehe Versorgung aus (Budget 0, neutrale Pins) - es
+     * fliesst nur der gemessene Anteil, der Normalweg traegt im Kontofenster.
+     */
+    private fun kontoAn() {
+        whenever(preferences.get(FuseStringKey.ExpectationCurve)).thenReturn(rigKurve)
+        for (k in listOf(
+            FuseDoubleKey.ExpectationPhi0Stable, FuseDoubleKey.ExpectationPhi0AfterLow,
+            FuseDoubleKey.ExpectationStabilityBgMgdl, FuseDoubleKey.ExpectationStabilityFallMgdlPerMin,
+            FuseDoubleKey.ExpectationReleaseThresholdU,
+        )) whenever(preferences.get(k)).thenReturn(k.defaultValue)
+        for (k in listOf(FuseIntKey.ExpectationStabilityMin, FuseIntKey.ExpectationHorizonMin))
+            whenever(preferences.get(k)).thenReturn(k.defaultValue)
+    }
+
+    /**
+     * Das Konto MIT frueher Versorgung ("Nur Erwartung" am Marker): synthetisches Budget, Anfangsportion und Portionen,
+     * G1/G2 (die Anfangsportion hebt Guard und Schwanz). Die Quelle eines Mahlzeitengrants seit der Konsolidierung.
+     */
+    private fun kontoMitFruehVersorgung(budgetU: Double = 3.0) {
+        kontoAn()
+        whenever(preferences.get(FuseBooleanKey.EarlySupplyEnabled)).thenReturn(true)
+        whenever(preferences.get(FuseDoubleKey.EarlySupplyScaleStable)).thenReturn(1.0)
+        whenever(preferences.get(FuseDoubleKey.EarlySupplyScaleAfterLow)).thenReturn(1.0)
+        whenever(preferences.get(FuseDoubleKey.EarlySupplyBudgetMaxU)).thenReturn(budgetU)
+        whenever(preferences.get(FuseDoubleKey.EarlySupplyInitialShare)).thenReturn(0.5)
+        whenever(preferences.get(FuseDoubleKey.EarlySupplyMaxPortionU)).thenReturn(1.0)
+        whenever(preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU)).thenReturn(2.0)
+        whenever(preferences.get(FuseIntKey.EarlySupplyPeriodMin)).thenReturn(FuseIntKey.EarlySupplyPeriodMin.defaultValue)
+        whenever(preferences.get(FuseBooleanKey.EarlySupplyInitialLiftsGuard)).thenReturn(true)
+        whenever(preferences.get(FuseBooleanKey.EarlySupplyInitialLiftsTail)).thenReturn(true)
     }
 
     private fun cycle(): FuseCycleRunner.Outcome {
@@ -2943,26 +2980,21 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(dritterDruck, l.episodes.evidenceEpisodeId, "neuer Druck, neue Episode")
     }
 
-    // ---- Die Armierung des Mahlzeitenfundaments (Toni 19.08.) -------------
+    // ---- Die Armierung der Kredit-Huelle (Toni) -----------------------------
+    //
+    // Konsolidierung 2.0: das Mahlzeitenfundament ist entfallen. Am selben Armierungspunkt (neue Prime-Episode oder
+    // Neuautorisierung, nur am in diesem Prozess beobachteten Druck) wird die Kredit-Huelle gepinnt
+    // ([EpisodeBudgets.creditEnvelopeU]); die Tests unten pruefen diesen Punkt.
 
     /**
      * DIE ARMIERUNG HAENGT AN DER PRIME-EPISODE, NICHT AN DER EVIDENZEPISODE.
      *
-     * MEIN ERSTER WURF HING SIE AN `episodeGate.opened` - und das ist die
-     * EVIDENZ-Episode, die bis zu 360 Minuten laeuft. Das Fundament gehoert
-     * aber zum Prime-/Markerbudget, das mit `startsNewEpisode` neu bewaffnet
-     * wird. Zwei Folgen, beide belegt durch die Tests hier:
-     *
-     *   ein Abbruch nach der Evidenzeroeffnung liess die Armierung dauerhaft
-     *   ausfallen;
-     *
-     *   und ein zweiter Druck nach Ablauf des Primefensters setzte Prime
-     *   zurueck, ohne das Fundament neu zu armieren - Prime laese dann ueber
-     *   `primeBudgetU` weiter das ALTE gepinnte Phase-A-Budget.
+     * Die Evidenzepisode laeuft bis zu 360 Minuten; die Huelle gehoert zum Prime-/Markerbudget, das mit
+     * `startsNewEpisode` neu bewaffnet wird. Ein Abbruch nach dem Druck darf die Armierung nicht dauerhaft verlieren:
+     * `primeArmedTs` bleibt im Abbruchzyklus unveraendert, also holt der naechste gesunde Zyklus sie nach.
      */
     @Test
     fun `ein Abbruch verliert die Armierung nicht - der naechste Zyklus holt sie nach`() {
-        fundamentAn = true
         flach = 105.0
         steigungProMin = -0.9
         markerAuthorized = true
@@ -2973,29 +3005,21 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(profileFunction.getProfile(any())).thenReturn(null)
         val abgebrochen = cycle()
         assertTrue(abgebrochen.abortReason != null, "der Aufbau MUSS abbrechen")
-        assertTrue(
-            !ledger.episodes.foundation.valid,
-            "im Abbruchzyklus entsteht keine Autorisierung",
-        )
+        assertNull(ledger.episodes.creditEnvelopeU, "im Abbruchzyklus wird keine Huelle gepinnt")
 
-        // Naechster gesunder Zyklus. Mehrere, weil der Marker anfangs in der
-        // Zukunft liegt und der Observer erst READY werden muss.
+        // Naechster gesunder Zyklus. Mehrere, weil der Observer erst READY werden muss.
         whenever(profileFunction.getProfile(any())).thenReturn(validProfile)
         repeat(8) { cycle() }
-        assertTrue(
-            ledger.episodes.foundation.valid,
+        assertEquals(
+            primeHuelleU, ledger.episodes.creditEnvelopeU ?: Double.NaN, 1e-12,
             "die Armierung MUSS nachgeholt werden - sonst ist sie dauerhaft weg",
         )
-        assertEquals(
-            markerAtIntern, ledger.episodes.foundation.armedTs,
-            "und zwar fuer genau diesen Markerdruck",
-        )
+        assertEquals(markerAtIntern, ledger.episodes.primeArmedTs, "und zwar fuer genau diesen Markerdruck")
     }
 
-    /** UND GENAU EINMAL - nicht bei jedem Folgezyklus neu. */
+    /** UND GENAU EINMAL - nicht bei jedem Folgezyklus neu: eine geaenderte Einstellung trifft die laufende Mahlzeit nicht. */
     @Test
     fun `die Armierung geschieht genau einmal`() {
-        fundamentAn = true
         flach = 105.0
         steigungProMin = -0.9
         markerAuthorized = true
@@ -3003,27 +3027,27 @@ class TransportWiringTest : TestBaseWithProfile() {
 
         clock = start
         repeat(6) { cycle() }
-        val ersteArmierung = ledger.episodes.foundation.armedTs
-        // Ein Bezahlstand, den eine erneute Armierung nullen wuerde.
-        ledger.episodes.deliveredSinceHandoverU = 0.42
+        val ersteArmierung = ledger.episodes.primeArmedTs
+        val gepinnt = primeHuelleU
+        assertEquals(gepinnt, ledger.episodes.creditEnvelopeU ?: Double.NaN, 1e-12, "die Huelle MUSS gepinnt sein")
+        // Eine geaenderte Einstellung, die eine erneute Armierung pinnen wuerde.
+        primeHuelleU = gepinnt + 1.0
         repeat(4) { cycle() }
 
-        assertEquals(ersteArmierung, ledger.episodes.foundation.armedTs, "dieselbe Autorisierung")
+        assertEquals(ersteArmierung, ledger.episodes.primeArmedTs, "dieselbe Autorisierung")
         assertEquals(
-            0.42, ledger.episodes.deliveredSinceHandoverU, 1e-9,
-            "eine zweite Armierung haette den Bezahlstand genullt",
+            gepinnt, ledger.episodes.creditEnvelopeU ?: Double.NaN, 1e-12,
+            "eine zweite Armierung haette die geaenderte Einstellung gepinnt",
         )
     }
 
     /**
      * EIN ZWEITER DRUCK NACH ABLAUF DES PRIMEFENSTERS ARMIERT NEU - auch wenn
-     * dieselbe Evidenzepisode weiterlaeuft.
-     *
-     * Das ist der Fall, den `episodeGate.opened` nicht erwischt haette.
+     * dieselbe Evidenzepisode weiterlaeuft, und mit der Huelle, die an SEINEM
+     * Druck eingestellt ist.
      */
     @Test
     fun `ein zweiter Druck erzeugt eine neue gepinnte Autorisierung`() {
-        fundamentAn = true
         flach = 105.0
         steigungProMin = -0.9
         markerAuthorized = true
@@ -3031,35 +3055,32 @@ class TransportWiringTest : TestBaseWithProfile() {
 
         clock = start
         repeat(5) { cycle() }
-        val ersteArmierung = ledger.episodes.foundation.armedTs
+        val ersteArmierung = ledger.episodes.primeArmedTs
         assertTrue(ersteArmierung > 0L, "die erste Autorisierung MUSS stehen")
+        assertEquals(primeHuelleU, ledger.episodes.creditEnvelopeU ?: Double.NaN, 1e-12)
 
         // Weit hinter das Markerfenster - die Prime-Episode ist abgelaufen,
         // die Evidenzepisode (360 min) laeuft weiter.
         clock += (OnsetChannel.MARKER_WINDOW_MIN + 5) * 60_000L
+        primeHuelleU += 0.5
         markerAt = clock + 60_000L
         repeat(4) { cycle() }
 
-        assertTrue(
-            ledger.episodes.foundation.armedTs > ersteArmierung,
-            "der zweite Druck MUSS eine NEUE Autorisierung erzeugen - sonst laese " +
-                "Prime weiter das alte gepinnte Phase-A-Budget",
+        assertTrue(ledger.episodes.primeArmedTs > ersteArmierung, "der zweite Druck MUSS neu armieren")
+        assertEquals(
+            primeHuelleU, ledger.episodes.creditEnvelopeU ?: Double.NaN, 1e-12,
+            "mit der Huelle, die an seinem Druck gilt",
         )
     }
 
     // ---- Die Ruecknahme ---------------------------------------------------
 
     /**
-     * EINE RUECKNAHME BEENDET DAS FUNDAMENT SOFORT.
-     *
-     * Ohne das bliebe die gepinnte Autorisierung gueltig, und der Snapshot
-     * lieferte weiter PHASE_B mit `dueU > 0`. Dass `manualMarkerAuthorized`
-     * danach false ist, hilft nicht: der Lift liest die GEPINNTE
-     * Autorisierung - genau wie es der Pinning-Vertrag verlangt.
+     * EINE RUECKNAHME BEENDET DIE GEPINNTE HUELLE SOFORT. Konsolidierung 2.0: mit dem Fundament sind Bezahlstand,
+     * Sicherheitsaufschub und sein Export entfallen.
      */
     @Test
-    fun `eine Ruecknahme beendet Autorisierung und Bezahlstand`() {
-        fundamentAn = true
+    fun `eine Ruecknahme beendet die gepinnte Huelle`() {
         flach = 105.0
         steigungProMin = -0.9
         markerAuthorized = true
@@ -3067,185 +3088,18 @@ class TransportWiringTest : TestBaseWithProfile() {
 
         clock = start
         repeat(5) { cycle() }
-        assertTrue(ledger.episodes.foundation.valid, "die Autorisierung MUSS stehen")
-        ledger.episodes.deliveredSinceHandoverU = 0.20
-        ledger.episodes.descentDeferredPhaseAU = 0.40
+        assertTrue(ledger.episodes.creditEnvelopeU != null, "die Huelle MUSS stehen")
 
         // DIE RUECKNAHME: der Marker wird zurueckgenommen.
         markerAt = 0L
-        val o = cycle()
-
-        assertTrue(
-            !ledger.episodes.foundation.valid,
-            "nach der Ruecknahme darf keine Autorisierung mehr stehen",
-        )
-        assertEquals(
-            0.0, ledger.episodes.deliveredSinceHandoverU, 1e-9,
-            "und der Bezahlstand faellt mit - er bedeutet ohne sie nichts",
-        )
-        assertEquals(
-            0.0, ledger.episodes.descentDeferredPhaseAU, 1e-9,
-            "auch ein Sicherheitsaufschub gehoert nur zu dieser Autorisierung",
-        )
-        assertEquals(
-            MealFoundation.Phase.NONE, o.mealFoundation.phase,
-            "der Export MUSS das sofort zeigen",
-        )
-        assertEquals(0.0, o.mealFoundation.dueU, 1e-9, "und nichts mehr fordern")
-    }
-
-    /**
-     * DIE BEZAHLSTAENDE HABEN VERSCHIEDENE LEBENSDAUERN - und das ist
-     * KEIN Widerspruch (Codex-Rueckfrage 19.08., hier beantwortet).
-     *
-     * DIE FRAGE. Fuer den Phase-A-Rueckstand wurde
-     * `deliveredFromBudget - deliveredSinceHandover` gerechnet, und
-     * `deliveredFromBudget` ist produktiv `evidenceCommittedU`. Vorgeschlagen
-     * war, `deliveredSinceHandover > deliveredFromBudget` als Korruption zu
-     * behandeln - fail-closed im Kern, `require` im Codec.
-     *
-     * DAS WAERE EIN SELBSTGEBAUTER AUSFALL GEWESEN. Die beiden Zaehler
-     * wachsen unter UNABHAENGIGEN Bedingungen (`FuseCycleRunner.buche`):
-     *
-     *     if (phase == PHASE_B)        deliveredSinceHandoverU += actuatedU
-     *     if (evidenceEpisodeId > 0L)  evidenceCommittedU      += actuatedU
-     *
-     * und `MarkerEpisodeGate` liefert `episodeId = 0` bei jeder Ablehnung -
-     * unter anderem `MARKER_ALREADY_CONSUMED`, also beim ZWEITEN Markerdruck
-     * innerhalb des 360-Minuten-Deckels. Die Mahlzeiten-Autorisierung haengt
-     * ausdruecklich NICHT an diesem Tor (s. den Kommentar an der
-     * Armierungsstelle): sie wird trotzdem armiert.
-     *
-     * Ergebnis: eine voellig gesunde zweite Mahlzeit laeuft mit
-     * `evidenceCommittedU == 0` und wachsendem `deliveredSinceHandoverU`. Der
-     * Kern haette dort geschwiegen, der Codec die Generation verworfen und
-     * die Aktuation in den RECOVERY_HOLD geschickt.
-     *
-     * DESHALB FUEHRT DAS FUNDAMENT SEINEN EIGENEN PHASE-A-ZAEHLER
-     * ([EpisodeBudgets.deliveredPhaseAU]) - die Alternative, die in der
-     * Rueckfrage selbst benannt ist. Dieser Test haelt den Grund fest, damit
-     * der Riegel nicht spaeter aus guten Absichten nachgereicht wird.
-     */
-    @Test
-    fun `ohne Evidenzepisode waechst nur der Bezahlstand - kein Widerspruch`() {
-        fundamentAn = true
-        flach = 180.0
-        steigungProMin = 2.5           // echter Mahlzeitenanstieg, es fliesst etwas
-        markerAuthorized = true
-        markerAt = start + 2 * 60_000L
-
-        clock = start
-        // DER MARKER GILT ALS VERBRAUCHT -> MARKER_ALREADY_CONSUMED,
-        // episodeId = 0. Genau die Lage der ZWEITEN Mahlzeit im Deckel.
-        ledger.episodes.lastConsumedMarkerTs = markerAt
-
-        // Weit hinter die Uebergabe, damit Phase B laeuft und bucht.
-        repeat(40) { cycle() }
-
-        assertTrue(
-            ledger.episodes.foundation.valid,
-            "die Autorisierung MUSS trotz verbrauchtem Marker stehen - sonst prueft der Test nichts",
-        )
-        assertEquals(
-            0.0, ledger.episodes.evidenceCommittedU, 1e-9,
-            "ohne Evidenzepisode waechst dieser Zaehler gar nicht",
-        )
-        assertTrue(
-            ledger.episodes.deliveredSinceHandoverU > 0.0,
-            "waehrend Phase B sehr wohl bucht: ${ledger.episodes.deliveredSinceHandoverU}",
-        )
-        // UND DAMIT DIE BEZIEHUNG, die als Korruption gelten sollte:
-        assertTrue(
-            ledger.episodes.deliveredSinceHandoverU > ledger.episodes.evidenceCommittedU + 1e-9,
-            "der 'Widerspruch' ist ein gesunder Betriebszustand",
-        )
-    }
-
-    /**
-     * UND SIE LOESCHT DEN PHASE-B-UEBERTRAG MIT (Toni 19.08.).
-     *
-     * Der Uebertrag gehoert zu der Autorisierung, die hier gerade endet.
-     * Bliebe er stehen, gaebe der ausdrueckliche Widerruf der NAECHSTEN
-     * Mahlzeit zusaetzliches Insulin fuer eine Luecke aus der widerrufenen -
-     * der Widerruf haette dann MEHR Insulin zur Folge als das Zulassen.
-     *
-     * UEBER DEN ECHTEN WEG, nicht ueber einen nachgebauten Zustand: der
-     * Runner laeuft, der Marker wird zurueckgenommen, und geprueft wird, was
-     * danach im Ledger steht. Ein von Hand kopierter Zustand hat in dieser
-     * Baustelle schon einmal ein Feld vergessen und den Test gruen gehalten.
-     */
-    @Test
-    fun `eine Ruecknahme loescht auch den Phase-B-Uebertrag`() {
-        fundamentAn = true
-        flach = 105.0
-        steigungProMin = -0.9
-        markerAuthorized = true
-        markerAt = start + 2 * 60_000L
-
-        clock = start
-        repeat(5) { cycle() }
-        assertTrue(ledger.episodes.foundation.valid, "die Autorisierung MUSS stehen")
-        // Eine belegte Phase-A-Luecke, wie sie ein Nicht-Sende-Beweis
-        // hinterlaesst.
-        ledger.episodes.confirmedNotSentPhaseAU = 0.30
-        ledger.episodes.descentDeferredPhaseAU = 0.40
-
-        markerAt = 0L
         cycle()
 
-        assertEquals(
-            0.0, ledger.episodes.confirmedNotSentPhaseAU, 1e-9,
-            "der Uebertrag faellt mit der Autorisierung",
-        )
-    }
-
-    /**
-     * EIN NEUER MARKERDRUCK ERBT DEN UEBERTRAG NICHT.
-     *
-     * Der zweite Weg, eine Episode zu beenden - und er braucht seine eigene
-     * Ruecksetzung: das Armen laeuft an einer voellig anderen Stelle als der
-     * Widerruf. Eine neue Mahlzeit bekommt ihr eigenes Budget; die Luecke der
-     * vorigen ist mit deren Fenster verfallen.
-     */
-    @Test
-    fun `ein neuer Markerdruck erbt den Uebertrag nicht`() {
-        fundamentAn = true
-        flach = 105.0
-        steigungProMin = -0.9
-        markerAuthorized = true
-        markerAt = start + 2 * 60_000L
-
-        clock = start
-        repeat(5) { cycle() }
-        assertTrue(ledger.episodes.foundation.valid, "die erste Autorisierung MUSS stehen")
-        ledger.episodes.confirmedNotSentPhaseAU = 0.30
-        val ersteArmierung = ledger.episodes.foundation.armedTs
-
-        // Hinter das Markerfenster - sonst gilt die alte Episode als laufend
-        // und es wird gar nicht neu armiert (dann pruefte der Test nichts).
-        clock += (OnsetChannel.MARKER_WINDOW_MIN + 5) * 60_000L
-        markerAt = clock + 60_000L
-        repeat(6) { cycle() }
-
-        assertTrue(
-            ledger.episodes.foundation.valid &&
-                ledger.episodes.foundation.armedTs != ersteArmierung,
-            "es MUSS wirklich neu armiert worden sein",
-        )
-        assertEquals(
-            0.0, ledger.episodes.confirmedNotSentPhaseAU, 1e-9,
-            "und die neue Mahlzeit beginnt ohne fremde Luecke",
-        )
-        assertEquals(
-            0.0, ledger.episodes.descentDeferredPhaseAU, 1e-9,
-            "und ohne Sicherheitsaufschub der vorigen Mahlzeit",
-        )
+        assertNull(ledger.episodes.creditEnvelopeU, "nach der Ruecknahme darf keine Huelle mehr gepinnt sein")
     }
 
     /** Und ein erneuter bewusster Druck armiert danach neu. */
     @Test
     fun `nach einer Ruecknahme armiert ein neuer Druck wieder`() {
-        fundamentAn = true
         flach = 105.0
         steigungProMin = -0.9
         markerAuthorized = true
@@ -3255,7 +3109,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         repeat(5) { cycle() }
         markerAt = 0L
         repeat(2) { cycle() }
-        assertTrue(!ledger.episodes.foundation.valid, "zurueckgenommen")
+        assertTrue(ledger.episodes.creditEnvelopeU == null, "zurueckgenommen")
 
         // Hinter das Markerfenster - sonst gilt die Prime-Episode als noch
         // laufend und `startsNewEpisode` waere falsch.
@@ -3263,7 +3117,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         markerAt = clock + 60_000L
         repeat(6) { cycle() }
         assertTrue(
-            ledger.episodes.foundation.valid,
+            ledger.episodes.creditEnvelopeU != null,
             "ein neuer bewusster Druck MUSS wieder armieren",
         )
     }
@@ -3284,7 +3138,6 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     @Test
     fun `ein vorgefundener Marker armiert nicht`() {
-        fundamentAn = true
         flach = 105.0
         steigungProMin = -0.9
         markerAuthorized = true
@@ -3295,7 +3148,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         clock = start
         repeat(8) { cycle() }
         assertTrue(
-            !ledger.episodes.foundation.valid,
+            ledger.episodes.creditEnvelopeU == null,
             "ohne eigene Beobachtung des Drucks darf nichts armiert werden",
         )
 
@@ -3309,7 +3162,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         markerAt = clock + 60_000L
         repeat(6) { cycle() }
         assertTrue(
-            ledger.episodes.foundation.valid,
+            ledger.episodes.creditEnvelopeU != null,
             "mit Beobachtung MUSS es armieren - sonst prueft der Test oben nichts",
         )
     }
@@ -3324,7 +3177,6 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     @Test
     fun `ein fremder beobachteter Druck autorisiert den aktuellen nicht`() {
-        fundamentAn = true
         flach = 105.0
         steigungProMin = -0.9
         markerAuthorized = true
@@ -3334,7 +3186,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         val druckA = markerAtIntern
         clock = start
         repeat(6) { cycle() }
-        assertTrue(ledger.episodes.foundation.valid, "A wurde beobachtet und armiert")
+        assertTrue(ledger.episodes.creditEnvelopeU != null, "A wurde beobachtet und armiert")
 
         // Neue Prime-Episode, Druck B - aber beobachtet ist weiterhin nur A.
         clock += (OnsetChannel.MARKER_WINDOW_MIN + 5) * 60_000L
@@ -3342,7 +3194,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         markerPress = druckA
         repeat(8) { cycle() }
         assertTrue(
-            !ledger.episodes.foundation.valid,
+            ledger.episodes.creditEnvelopeU == null,
             "ein FREMDER beobachteter Druck darf B nicht autorisieren",
         )
     }
@@ -3357,7 +3209,6 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     @Test
     fun `derselbe beobachtete Druck autorisiert`() {
-        fundamentAn = true
         flach = 105.0
         steigungProMin = -0.9
         markerAuthorized = true
@@ -3369,7 +3220,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             markerAtIntern, markerPress,
             "der Aufbau MUSS denselben Druck beobachtet haben",
         )
-        assertTrue(ledger.episodes.foundation.valid, "und dann armiert er")
+        assertTrue(ledger.episodes.creditEnvelopeU != null, "und dann armiert er")
     }
 
     /**
@@ -3390,7 +3241,6 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     @Test
     fun `nach Ruecknahme armiert ein Druck in derselben Prime-Episode nicht neu`() {
-        fundamentAn = true
         flach = 105.0
         steigungProMin = -0.9
         markerAuthorized = true
@@ -3398,40 +3248,38 @@ class TransportWiringTest : TestBaseWithProfile() {
 
         clock = start
         repeat(6) { cycle() }
-        assertTrue(ledger.episodes.foundation.valid, "armiert")
+        assertTrue(ledger.episodes.creditEnvelopeU != null, "armiert")
 
         markerAt = 0L
         repeat(2) { cycle() }
-        assertTrue(!ledger.episodes.foundation.valid, "die Ruecknahme beendet sie")
+        assertTrue(ledger.episodes.creditEnvelopeU == null, "die Ruecknahme beendet sie")
 
         // Erneuter Druck INNERHALB des 90-Minuten-Fensters.
         markerAt = clock + 60_000L
         repeat(6) { cycle() }
         assertTrue(
-            !ledger.episodes.foundation.valid,
+            ledger.episodes.creditEnvelopeU == null,
             "in derselben Prime-Episode entsteht KEIN neues Fundament - sonst " +
                 "gaebe dieselbe Huelle ein zweites Mal frei",
         )
     }
 
     /**
-     * DER SCHALTER AUS BLEIBT VERHALTENSGLEICH.
-     *
-     * Ohne diese Probe waere jede andere hier wertlos: sie zeigt, dass der
-     * ganze Baustein im Auslieferungszustand nichts tut.
+     * "NUR MARKER" (Toni): kein Vorgriff - es wird keine Huelle gepinnt (der Erklaerungskredit rechnet dann mit 0).
+     * Konsolidierung 2.0: an die Stelle der Probe "Fundament aus" tritt die Wahl am Marker.
      */
     @Test
-    fun `bei ausgeschaltetem Fundament entsteht keine Autorisierung`() {
-        fundamentAn = false
+    fun `mit Nur Marker wird keine Huelle gepinnt`() {
         flach = 105.0
         steigungProMin = -0.9
         markerAuthorized = true
+        whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(1L)
         markerAt = start + 2 * 60_000L
 
         clock = start
         repeat(8) { cycle() }
-        assertTrue(!ledger.episodes.foundation.valid, "Schalter aus - keine Autorisierung")
-        assertEquals(0.0, ledger.episodes.deliveredSinceHandoverU, 1e-9)
+        assertTrue(ledger.episodes.primeArmedTs > 0L, "Vorbedingung: die Prime-Episode ist armiert")
+        assertNull(ledger.episodes.creditEnvelopeU, "Nur Marker - keine Huelle")
     }
 
     // ==== PUNKT 3: DER ECHTE TRANSPORT-E2E ==================================
@@ -3630,126 +3478,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         neuerRunner(l)
     }
 
-    /**
-     * DEN BEWEISZYKLUS RUHIG STELLEN.
-     *
-     * WARUM DAS NOETIG IST - und es ist ein Befund ueber das RIG, nicht ueber
-     * den Regler: bucht der Zyklus, in dem der Beweis wirkt, gleichzeitig eine
-     * NEUE Menge, dann bewegen sich dieselben Zaehler aus zwei Gruenden. Die
-     * erste Fassung dieser Tests hat daraus "der Zaehler ist unveraendert"
-     * gelesen, obwohl Entlastung und Neubuchung sich nur aufhoben. Genau die
-     * Sorte Testartefakt, an der der erste E2E gescheitert ist.
-     *
-     * Flach und ohne Anstieg fordert der Regler nichts an; die Zaehler
-     * aendern sich dann ausschliesslich durch die Entlastung. Die Tests
-     * pruefen das ausdruecklich nach, statt es zu unterstellen.
-     */
-    private fun ruhigStellen() {
-        flach = 100.0
-        steigungProMin = 0.0
-    }
-
-    /** Bis zur ersten wirklich gebuchten Phase-A-Menge fahren. */
-    private fun bisPhaseABuchung(dir: File, maxZyklen: Int = 12): FuseCycleRunner.Outcome {
-        repeat(maxZyklen) {
-            val o = transport(dir)
-            if (o.decision.smbU > 0.0 &&
-                ledger.episodes.settled?.foundationPhase == MealFoundation.Phase.PHASE_A
-            ) return o
-        }
-        throw AssertionError("kein Phase-A-Zyklus mit Menge - der Aufbau traegt den Test nicht")
-    }
-
-    // ---- DAS HISTORISCHE REBOUND-FENSTER UND DIE MAHLZEITENAUTORISIERUNG --
-    //
-    // Konsolidierung 2.0: der Sofortanteil und seine Direktdosis-Tests sind
-    // entfallen. Die Ausnahme der Mahlzeitenautorisierung vom rohen
-    // Rebound-Kennzeichen ([MealUpfrontAuthority]) lesen weiter der
-    // Phase-A-Uebertrag und die aufgeschobene Prime-Freigabe - der Test
-    // unten haelt das fest.
-    //
-    // Das Rebound-Fenster wird hier UEBER DEN ECHTEN MERKER gesetzt
-    // (`primeLastLowTs`), nicht ueber einen Zuckerverlauf unter 75: sonst
-    // liefe zugleich ein gemessenes Tief mit, und der Test koennte nicht
-    // mehr sagen, WELCHER Riegel greift.
-
-    /** Der gemeinsame Aufbau: armierte Direktdosis, gesunde steigende Lage,
-     *  ein historisches Tief im Ruecken. */
-    private fun reboundMahlzeit(dir: File, anteil: Double = 1.0, kennung: String? = "auth-9") {
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
-        upfrontAnteil = anteil
-        primeHuelleU = 4.0
-        fundamentAnteil = 0.8
-        aufschubAn = true
-        mahlzeit(dir)
-        // Die Autorisierungskennung wie produktiv VOR der Armierung setzen -
-        // `toggleMealMarker` schreibt sie am Bedienereignis.
-        kennung?.let {
-            ledger.episodes.markerAuth =
-                app.aaps.fuse.core.controller.MarkerReauthorization.Authorization(it, markerAt)
-        }
-        // DAS HISTORISCHE FENSTER: ein Tief funf Minuten vor dem Start.
-        runner.primeLastLowTs(start - 5 * 60_000L)
-        // Gesunde, steigende Lage weit ueber jedem Tief - kein gemessenes
-        // Tief, kein Abwaertsrisiko, kein Latch.
-        flach = 150.0
-        steigungProMin = 2.0
-    }
-
-    /**
-     * DIE NACHGELAGERTE REBOUND-STELLE DERSELBEN KETTE.
-     *
-     * Ausser dem Aufschub-Tor und der Wiederfreigabe las eine weitere
-     * Stelle das rohe Kennzeichen - sie gibt Phase-A-Rueckstand frei und
-     * haette den Aufschub eine Stufe spaeter wiederholt:
-     *
-     *  - `DescentDeferredCarry.eligibility` - der Sicherheitsuebertrag in
-     *    Phase B.
-     *
-     * Konsolidierung 2.0: die zweite Stelle, die aufgeschobene Prime-Freigabe
-     * (`DeferredPrime.releaseStep`), ist entfallen - mit ihr ihr Teil dieses Tests.
-     *
-     * Das Urteil wird typisiert exportiert, der Test liest es also und raet
-     * nicht aus einer Menge. Es bekommt eine HARTE Vorbedingung: ohne offenen
-     * Rueckstand waere die Rebound-Zeile gar nicht erreicht und der Test
-     * bestuende leer.
-     */
-    @Test
-    fun `auch der Uebertrag sieht den Rebound nicht mehr`(@TempDir dir: File) {
-        maxSmbU = 0.30
-        reboundMahlzeit(dir)
-
-        // (1) EINE AKTUELLE GEFAHR, laenger als das Prime-Fenster - so faellt
-        // der Phasenwechsel in die Riegelzeit.
-        flach = 150.0
-        steigungProMin = -3.0
-        bolusIobU = 2.0
-        repeat(24) { transport(dir) }
-        // Ein Sicherheitsuebertrag, der etwas zu uebertragen hat.
-        ledger.episodes.descentDeferredPhaseAU = 0.40
-
-        // (2) DIE GEFAHR FAELLT WEG - das Rebound-Fenster steht weiter.
-        steigungProMin = 0.8
-        flach = 130.0 - 0.8 * ((clock - start) / 60_000.0)
-        knickAbMin = null
-        bolusIobU = null
-        val nachher = (0 until 14).map { transport(dir) }
-
-        assertTrue(nachher.any { it.state?.reboundSuppressedByMarker == true }) {
-            "Vorbedingung: das Fenster steht bis zuletzt"
-        }
-
-        // ---- STELLE 1: DER SICHERHEITSUEBERTRAG -------------------------
-        val eignungen = nachher.map { it.mealFoundation.descentCarryEligibility.name }
-        assertTrue(eignungen.any { it != "NO_DEFERRED" && it != "NOT_PHASE_B" }) {
-            "Vorbedingung: der Uebertrag muss ueberhaupt beurteilt werden - " +
-                eignungen.distinct().joinToString(" ")
-        }
-        assertFalse(eignungen.any { it == "REBOUND_ACTIVE" }) {
-            "der Uebertrag darf am historischen Fenster nicht mehr scheitern - " +
-                eignungen.distinct().joinToString(" ")
-        }
-    }
+    // Konsolidierung 2.0: der Sicherheitsuebertrag der Phase A und sein Rebound-Test sind mit dem
+    // Mahlzeitenfundament entfallen.
 
     // ---- WIEDERHERSTELLUNG NACH UNTERBROCHENEM SPEICHERN, DURCH DEN RUNNER --
     //
@@ -3794,7 +3524,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             assertTrue(a.persistVerified(unter))
             clock = start
             if (unterbrechen) {
-                a.episodes.deliveredPhaseAU += 0.01
+                a.episodes.primeSpentU += 0.01
                 unterbrochenesVersiegeln(unter, a)
                 assertTrue(FuseLedgerAdapter().also { it.loadOnce(unter, "test-epoch", start) }.recoveryHold)
                 wiederherstellen(unter)
@@ -3822,964 +3552,12 @@ class TransportWiringTest : TestBaseWithProfile() {
     // steht weiter in `P6 Fall 4`.
 
 
-    // ---- FALL 1: BOLUS_IN_QUEUE in Phase A --------------------------------
+    // Konsolidierung 2.0: die Transport-E2E-Faelle der Phase A (Rueckbuchung, Uebertrag, fremde Kennung, Prime
+    // holt nach) sind mit dem Mahlzeitenfundament entfallen; Entlastung und Widerruf im Ledger pruefen
+    // ConstraintRevokeTest und MarkerNeuautorisierungPersistenzTest.
 
-    /**
-     * DER PFLICHTFALL BOLUS_IN_QUEUE, durch die ganze Kette.
-     *
-     * AAPS liess nach seinen Constraints eine positive Menge stehen, hat den
-     * Apply-Block aber nie betreten. [NotSentProof] nennt das
-     * `BOLUS_IN_QUEUE` - der Grund, den die urspruengliche Grundliste
-     * ausgelassen haette.
-     *
-     * Geprueft werden die BUECHER einzeln, die publizierte Menge und der
-     * Zustand NACH einem Neustart - nicht nur ein Summenwert.
-     */
-    @Test
-    fun `E2E BOLUS_IN_QUEUE in Phase A - exakte Rueckbuchung und Uebertrag`(@TempDir dir: File) {
-        mahlzeit(dir)
-        val o = bisPhaseABuchung(dir)
-        val menge = o.decision.smbU
-        // DEN BEWEISZYKLUS RUHIG STELLEN - s. [ruhigStellen].
-        ruhigStellen()
-        val vorher = ledger.episodes
-        val primeVor = vorher.primeSpentU
-        val evidenzVor = vorher.evidenceCommittedU
-        val phaseAVor = vorher.deliveredPhaseAU
-        val zeilenVor = vorher.mealDeliveries.size
-
-        // AAPS hat sie NIE KOMMANDIERT - der Beweis kommt im Folgezyklus.
-        letzterAusgang = Ausgang.NIE_KOMMANDIERT
-        val beweis = transport(dir)
-        assertEquals(
-            0.0, beweis.decision.smbU, 1e-9,
-            "der Beweiszyklus darf NICHTS buchen, sonst misst der Test zwei Vorgaenge auf einmal",
-        )
-
-        assertEquals(
-            QueueRejectReason.BOLUS_IN_QUEUE, letzterGrund,
-            "der Beweis MUSS aus der Beobachtung entstehen, nicht aus einer Liste",
-        )
-        val e = ledger.episodes
-        assertEquals(primeVor - menge, e.primeSpentU, 1e-9, "primeSpentU")
-        assertEquals(evidenzVor - menge, e.evidenceCommittedU, 1e-9, "evidenceCommittedU")
-        assertEquals(phaseAVor - menge, e.deliveredPhaseAU, 1e-9, "deliveredPhaseAU")
-        assertEquals(zeilenVor - 1, e.mealDeliveries.size, "die Mahlzeitenzeile verschwindet")
-        assertEquals(menge, e.confirmedNotSentPhaseAU, 1e-9, "und genau sie steht als Uebertrag")
-
-        // UND DURABEL: nach einem Neustart steht derselbe Befund in der Datei.
-        val nach = nachNeustart(dir)
-        assertEquals(
-            menge, nach.confirmedNotSentPhaseAU, 1e-9,
-            "der Uebertrag MUSS den Neustart ueberleben",
-        )
-        assertEquals(e.deliveredPhaseAU, nach.deliveredPhaseAU, 1e-9, "der Phase-A-Stand auch")
-    }
-
-    // ---- FALL 2: CONSTRAINT_ZERO in Phase A -------------------------------
-
-    /** Dieselbe Kette, anderer Beweis: AAPS hat selbst genullt. Der Grund
-     *  aendert am Ergebnis NICHTS - genau das ist der Vertrag. */
-    @Test
-    fun `E2E CONSTRAINT_ZERO in Phase A - dasselbe Ergebnis`(@TempDir dir: File) {
-        mahlzeit(dir)
-        val o = bisPhaseABuchung(dir)
-        val menge = o.decision.smbU
-        ruhigStellen()
-        val phaseAVor = ledger.episodes.deliveredPhaseAU
-
-        letzterAusgang = Ausgang.CONSTRAINT_NULL
-        val beweis = transport(dir)
-        assertEquals(0.0, beweis.decision.smbU, 1e-9, "der Beweiszyklus bucht nichts")
-
-        assertEquals(QueueRejectReason.CONSTRAINT_ZERO, letzterGrund)
-        assertEquals(menge, ledger.episodes.confirmedNotSentPhaseAU, 1e-9)
-        assertEquals(phaseAVor - menge, ledger.episodes.deliveredPhaseAU, 1e-9)
-        assertEquals(menge, nachNeustart(dir).confirmedNotSentPhaseAU, 1e-9, "durabel")
-    }
-
-    // ---- FALL 3: unklarer Ausgang -----------------------------------------
-
-    /**
-     * OHNE BEWEIS BLEIBT ALLES STEHEN - der konservative Ausgang.
-     *
-     * Die Buchung bleibt als geliefert stehen, FUSE liefert spaeter zu wenig
-     * statt zu viel. Das ist die einzige Richtung, die dieser Ledger raten
-     * darf.
-     */
-    @Test
-    fun `E2E unklarer Ausgang - keine Rueckbuchung, kein Uebertrag`(@TempDir dir: File) {
-        mahlzeit(dir)
-        bisPhaseABuchung(dir)
-        ruhigStellen()
-        val e = ledger.episodes
-        val primeVor = e.primeSpentU
-        val evidenzVor = e.evidenceCommittedU
-        val phaseAVor = e.deliveredPhaseAU
-        val zeilenVor = e.mealDeliveries.size
-
-        letzterAusgang = Ausgang.UNKLAR
-        val beweis = transport(dir)
-        assertEquals(0.0, beweis.decision.smbU, 1e-9, "der Beweiszyklus bucht nichts")
-        assertNull(letzterGrund, "ein unauswertbarer Ausgang ist KEIN Beweis")
-        assertEquals(0.0, e.confirmedNotSentPhaseAU, 1e-9, "und erzeugt keinen Uebertrag")
-        // EXAKT GLEICH, nicht ">= vorher" (Codex 19.08.). Der ruhige Zyklus
-        // bucht nichts, also darf sich kein Buch bewegen - in KEINE Richtung.
-        // Eine Ungleichung liesse eine Phantom-Buchung durch und der Test
-        // bliebe gruen.
-        assertEquals(primeVor, e.primeSpentU, 1e-9, "primeSpentU unveraendert")
-        assertEquals(evidenzVor, e.evidenceCommittedU, 1e-9, "evidenceCommittedU unveraendert")
-        assertEquals(phaseAVor, e.deliveredPhaseAU, 1e-9, "deliveredPhaseAU unveraendert")
-        assertEquals(zeilenVor, e.mealDeliveries.size, "und keine Zeile kommt oder geht")
-        assertEquals(0.0, nachNeustart(dir).confirmedNotSentPhaseAU, 1e-9, "auch nach Neustart nicht")
-    }
-
-    /**
-     * DIE ZWEITE GESTALT DES UNKLAREN AUSGANGS: die Beobachtung SAEHE aus wie
-     * ein Beweis - positive Menge nach Constraints, Apply-Block nie betreten -,
-     * beschreibt aber nachweislich einen ANDEREN Lauf.
-     *
-     * WARUM EIN EIGENER TEST UND KEIN ZWEITER SCHRITT IM VORIGEN: nach einem
-     * ruhigen Zyklus gibt es keine offene Zeile mehr, der Beleg wird also gar
-     * nicht mehr gebildet. Der Fall braucht eine frische Phase-A-Buchung
-     * unmittelbar davor.
-     *
-     * Und warum er ueberhaupt existiert: eine Mutationsprobe hat gezeigt, dass
-     * der unauswertbare Fall die Korrelationspruefung in [NotSentProof] gar
-     * nicht erreicht - dort sind ohnehin alle Werte null. Ohne diesen Test
-     * blieb das Entfernen der Pruefung gruen.
-     */
-    @Test
-    fun `E2E fremder Lauf - keine Rueckbuchung, kein Uebertrag`(@TempDir dir: File) {
-        mahlzeit(dir)
-        bisPhaseABuchung(dir)
-        ruhigStellen()
-        val e = ledger.episodes
-        val primeVor = e.primeSpentU
-        val phaseAVor = e.deliveredPhaseAU
-        val zeilenVor = e.mealDeliveries.size
-
-        letzterAusgang = Ausgang.UNKORRELIERT
-        val beweis = transport(dir)
-        assertEquals(0.0, beweis.decision.smbU, 1e-9, "der Beweiszyklus bucht nichts")
-
-        assertNull(letzterGrund, "ein fremder Lauf ist KEIN Beweis")
-        assertEquals(0.0, e.confirmedNotSentPhaseAU, 1e-9, "und erzeugt keinen Uebertrag")
-        assertEquals(primeVor, e.primeSpentU, 1e-9, "keine Entlastung")
-        assertEquals(phaseAVor, e.deliveredPhaseAU, 1e-9)
-        assertEquals(zeilenVor, e.mealDeliveries.size, "keine Zeile verschwindet")
-    }
-
-    // ---- FALL 4: bewiesenes Nicht-Senden in Phase B -----------------------
-
-    /**
-     * PHASE B WIRD ZURUECKGEBUCHT, BEKOMMT ABER KEINEN UEBERTRAG.
-     *
-     * `deliveredSinceHandoverU` sinkt - damit steht das zeitliche Soll von
-     * selbst wieder offen. Ein Uebertrag obendrauf waere dieselbe Menge
-     * ZWEIMAL.
-     */
-    @Test
-    fun `E2E Nicht-Senden in Phase B - Rueckbuchung ohne Uebertrag`(@TempDir dir: File) {
-        mahlzeit(dir)
-        // Weit hinter die Uebergabe fahren, bis eine PHASE_B-Menge gebucht ist.
-        //
-        // MIT ECHTEM ABBRUCH. Die erste Fassung hatte hier `return@repeat` -
-        // das verlaesst nur den EINEN Schleifendurchlauf, nicht die Schleife.
-        // Sie lief also weiter, `mengeB` trug am Ende irgendeine spaetere
-        // Menge, und `settled` gehoerte zu einem ganz anderen Zyklus.
-        var mengeB = 0.0
-        for (i in 0 until 40) {
-            val o = transport(dir)
-            if (o.decision.smbU > 0.0 &&
-                ledger.episodes.settled?.foundationPhase == MealFoundation.Phase.PHASE_B
-            ) {
-                mengeB = o.decision.smbU
-                break
-            }
-        }
-        assertTrue(mengeB > 0.0, "der Aufbau muss eine Phase-B-Buchung erzeugen")
-        ruhigStellen()
-        val bezahltVor = ledger.episodes.deliveredSinceHandoverU
-
-        letzterAusgang = Ausgang.NIE_KOMMANDIERT
-        val beweis = transport(dir)
-        assertEquals(0.0, beweis.decision.smbU, 1e-9, "der Beweiszyklus bucht nichts")
-
-        val e = ledger.episodes
-        assertTrue(
-            e.deliveredSinceHandoverU < bezahltVor - 1e-9,
-            "der Bezahlstand MUSS sinken: $bezahltVor -> ${e.deliveredSinceHandoverU}",
-        )
-        assertEquals(
-            0.0, e.confirmedNotSentPhaseAU, 1e-9,
-            "aber Phase B bekommt keinen Uebertrag - das waere die Menge zweimal",
-        )
-        assertEquals(0.0, nachNeustart(dir).confirmedNotSentPhaseAU, 1e-9, "auch durabel nicht")
-    }
-
-    // ---- FALL 5: fremde Kennung -------------------------------------------
-
-    /**
-     * EINE FREMDE KENNUNG AENDERT NICHTS.
-     *
-     * Der Beweis kommt ueber die `proposalId`; passt sie nicht, gibt es
-     * nichts zuzuordnen - und dann darf auch nichts geschehen. Sonst
-     * entlastete ein Beleg eine Buchung, die er gar nicht beschreibt.
-     */
-    @Test
-    fun `E2E fremde Kennung - alles unveraendert`(@TempDir dir: File) {
-        mahlzeit(dir)
-        bisPhaseABuchung(dir)
-        ruhigStellen()
-        val e = ledger.episodes
-        val primeVor = e.primeSpentU
-        val phaseAVor = e.deliveredPhaseAU
-        val zeilenVor = e.mealDeliveries.size
-
-        // (a) UNBEKANNTE KENNUNG: es gibt gar keine offene Zeile dazu, der
-        // Beleg wird also erst gar nicht gebildet.
-        pPropId = "e2e#fremd"
-        letzterAusgang = Ausgang.NIE_KOMMANDIERT
-        transport(dir)
-
-        assertEquals(0.0, e.confirmedNotSentPhaseAU, 1e-9, "kein Uebertrag ohne Zuordnung")
-        // EXAKT GLEICH - s. den unauswertbaren Fall.
-        assertEquals(primeVor, e.primeSpentU, 1e-9, "keine Entlastung")
-        assertEquals(phaseAVor, e.deliveredPhaseAU, 1e-9)
-        assertEquals(zeilenVor, e.mealDeliveries.size, "und keine Zeile kommt oder geht")
-    }
-
-
-    /**
-     * DIE ZWEITE GESTALT DER FALSCHEN KENNUNG: der Beleg nennt eine Zeile,
-     * die es SEHR WOHL gibt - nur gehoert die abgeschlossene Buchung zu einer
-     * anderen.
-     *
-     * WARUM DAS EIN EIGENER TEST IST, und das hat wieder erst eine
-     * Mutationsprobe gezeigt: bei einer voellig unbekannten Kennung greift
-     * schon `hasOpenProposal`, und der Beleg wird gar nicht erst gebildet.
-     * Die Kennungspruefung IN `revokeSettled` wurde damit nie erreicht - das
-     * Entfernen der Zeile `if (s.proposalId != proposalId) return NONE` blieb
-     * gruen.
-     *
-     * Hier ist die genannte Zeile offen, die Ablage traegt aber den
-     * NACHFOLGER. Genau die Lage, in der ein zu grosszuegiges Zuordnen eine
-     * fremde Menge entlasten wuerde.
-     */
-    @Test
-    fun `E2E offene aber fremde Kennung - alles unveraendert`(@TempDir dir: File) {
-        mahlzeit(dir)
-        bisPhaseABuchung(dir)
-        // Die Kennung des ERSTEN Zyklus merken - sie bleibt offen, bis ein
-        // IOB-Fakt sie bindet.
-        val alteId = pPropId ?: throw AssertionError("der erste Zyklus muss eine offene Zeile haben")
-
-        // Ein ZWEITER Buchungszyklus: die Ablage traegt jetzt ihn.
-        transport(dir)
-        assertTrue(
-            ledger.hasOpenProposal(alteId),
-            "die alte Zeile MUSS noch offen sein, sonst greift schon hasOpenProposal",
-        )
-        assertTrue(
-            ledger.episodes.settled?.proposalId != alteId,
-            "die Ablage MUSS den Nachfolger tragen - sonst prueft der Test nichts",
-        )
-
-        ruhigStellen()
-        val e = ledger.episodes
-        val primeVor = e.primeSpentU
-        val evidenzVor = e.evidenceCommittedU
-        val phaseAVor = e.deliveredPhaseAU
-        val zeilenVor = e.mealDeliveries.size
-
-        // DER BELEG NENNT DIE ALTE, OFFENE ZEILE.
-        pPropId = alteId
-        letzterAusgang = Ausgang.NIE_KOMMANDIERT
-        val beweis = transport(dir)
-        assertEquals(0.0, beweis.decision.smbU, 1e-9, "der Beweiszyklus bucht nichts")
-
-        assertEquals(
-            0.0, e.confirmedNotSentPhaseAU, 1e-9,
-            "eine fremde Buchung darf keinen Uebertrag erzeugen",
-        )
-        assertEquals(primeVor, e.primeSpentU, 1e-9, "primeSpentU unveraendert")
-        assertEquals(evidenzVor, e.evidenceCommittedU, 1e-9, "evidenceCommittedU unveraendert")
-        assertEquals(phaseAVor, e.deliveredPhaseAU, 1e-9, "deliveredPhaseAU unveraendert")
-        assertEquals(zeilenVor, e.mealDeliveries.size, "und keine Zeile kommt oder geht")
-    }
-
-    // ---- FALL 6: Prime holt vor der Uebergabe nach ------------------------
-
-    /** Die Fundament-Sicht auf den AKTUELLEN Ledger-Stand. */
-    private fun sicht(e: EpisodeBudgets = ledger.episodes) = MealFoundation.snapshot(
-        e.foundation, clock, e.primeWindowStartTs,
-        deliveredFromBudgetU = e.deliveredPhaseAU + e.deliveredSinceHandoverU,
-        deliveredSinceHandoverU = e.deliveredSinceHandoverU,
-        deliveredPhaseAU = e.deliveredPhaseAU,
-        confirmedNotSentPhaseAU = e.confirmedNotSentPhaseAU,
-        descentDeferredPhaseAU = e.descentDeferredPhaseAU,
-        descentCarryEligibility = app.aaps.fuse.core.controller.DescentDeferredCarry.Eligibility.NO_DEFERRED,
-        bolusStepU = 0.05,
-    )
-
-    /**
-     * DER MENGEN-ZEIT-VERTRAG, als echter VORHER/NACHHER-Beleg
-     * (Codex 19.08. - die erste Fassung bewies ihn NICHT).
-     *
-     * WAS AN DER ERSTEN FASSUNG FALSCH WAR, und es ist dieselbe Sorte Fehler
-     * wie beim zurueckgezogenen E2E:
-     *
-     *   `repeat(8)` garantierte nicht, dass Prime die Luecke ueberhaupt
-     *   schliesst - der Test lief eine feste Zahl Zyklen und behauptete
-     *   danach etwas ueber einen Zustand, den er nicht hergestellt hatte;
-     *
-     *   `effectiveCarryU <= menge` ist erfuellt, wenn der Uebertrag
-     *   UNVERAENDERT voll bleibt - die Zeile konnte den Fehler nicht finden,
-     *   gegen den sie stand;
-     *
-     *   und die Erwartungswerte wurden aus DEMSELBEN Snapshot
-     *   zurueckgerechnet, den sie pruefen sollten. Das prueft die Formel
-     *   gegen sich selbst, nicht den Uebergang.
-     *
-     * Hier stehen jetzt zwei ABSOLUTE Zustaende, aus der Autorisierung
-     * abgeleitet, und dazwischen laeuft die Schleife BIS ZUR BELEGTEN
-     * BEDINGUNG statt eine feste Zahl Zyklen.
-     *
-     * DASS PHASE A DAS BUDGET UEBERSCHREITEN KANN, ist kein Fehler im
-     * Aufbau: `deliveredPhaseAU` zaehlt ALLES, was in der Phase floss, und
-     * Korrektur- und Evidenzinsulin duerfen ausdruecklich ueber das
-     * Mahlzeitenbudget hinausgehen. Die Bedingung lautet deshalb
-     * "Rueckstand geschlossen", nicht "exakt gleich".
-     */
-    @Test
-    fun `E2E Prime holt nach - Rohzaehler bleibt, Wirkung und Rampe fallen`(@TempDir dir: File) {
-        mahlzeit(dir)
-        val o = bisPhaseABuchung(dir)
-        val menge = o.decision.smbU
-        val phaseABudget = ledger.episodes.foundation.phaseABudgetU
-        val phaseBBudget = ledger.episodes.foundation.phaseBBudgetU
-        assertTrue(phaseBBudget > 0.0, "der Aufbau braucht ein Phase-B-Budget")
-
-        // ---- (1) DIREKT NACH DEM BEWEIS: die Luecke ist offen ------------
-        ruhigStellen()
-        letzterAusgang = Ausgang.NIE_KOMMANDIERT
-        val beweis = transport(dir)
-        assertEquals(0.0, beweis.decision.smbU, 1e-9, "der Beweiszyklus bucht nichts")
-
-        val e = ledger.episodes
-        assertEquals(menge, e.confirmedNotSentPhaseAU, 1e-9, "der rohe Beweiszaehler")
-        assertTrue(
-            e.deliveredPhaseAU < phaseABudget - 1e-9,
-            "die Luecke MUSS offen sein: ${e.deliveredPhaseAU} von $phaseABudget",
-        )
-
-        val offen = sicht()
-        assertEquals(menge, offen.effectiveCarryU, 1e-9, "der Uebertrag gilt voll")
-        assertEquals(
-            minOf(phaseBBudget + menge, offen.totalBudgetU), offen.phaseBAllowanceU, 1e-9,
-            "und hebt die Erlaubnis",
-        )
-        val normaleRate = phaseBBudget / offen.effectiveWindowMin
-        assertTrue(
-            offen.effectiveRateUPerMin > normaleRate + 1e-9,
-            "die Rampe MUSS angehoben sein: ${offen.effectiveRateUPerMin} gegen $normaleRate",
-        )
-
-        // ---- (2) PRIME LIEFERT WIRKLICH NACH -----------------------------
-        //
-        // BIS ZUR BEDINGUNG, mit hartem Deckel. Eine feste Zyklenzahl wuerde
-        // wieder einen Zustand behaupten statt ihn herzustellen.
-        flach = 180.0
-        steigungProMin = 2.5
-        var zyklen = 0
-        while (ledger.episodes.deliveredPhaseAU < phaseABudget - 1e-9) {
-            assertTrue(
-                zyklen++ < 30,
-                "Prime hat die Luecke in 30 Zyklen nicht geschlossen: " +
-                    "${ledger.episodes.deliveredPhaseAU} von $phaseABudget",
-            )
-            transport(dir)
-        }
-
-        // ---- (3) DER ENDZUSTAND ------------------------------------------
-        val zu = sicht()
-        assertEquals(
-            menge, e.confirmedNotSentPhaseAU, 1e-9,
-            "der ROHE Zaehler bleibt - er ist ein Beweis, kein Konto",
-        )
-        assertEquals(0.0, zu.effectiveCarryU, 1e-9, "wirkt aber nicht mehr")
-        assertEquals(
-            phaseBBudget, zu.phaseBAllowanceU, 1e-9,
-            "Phase B rechnet wieder mit ihrem Teilbudget",
-        )
-        assertEquals(
-            phaseBBudget / zu.effectiveWindowMin, zu.effectiveRateUPerMin, 1e-9,
-            "UND DIE RAMPE FAELLT MIT - das ist der eigentliche Schaden, nicht die Summe",
-        )
-
-        // ---- (4) UND DER ENDZUSTAND UEBERLEBT DEN NEUSTART ---------------
-        val nach = nachNeustart(dir)
-        assertEquals(menge, nach.confirmedNotSentPhaseAU, 1e-9, "der Beweis bleibt durabel")
-        assertTrue(
-            nach.deliveredPhaseAU >= phaseABudget - 1e-9,
-            "und der geschlossene Rueckstand auch: ${nach.deliveredPhaseAU}",
-        )
-        val nachSicht = sicht(nach)
-        assertEquals(0.0, nachSicht.effectiveCarryU, 1e-9, "nach dem Neustart wirkt er ebenso wenig")
-        assertEquals(phaseBBudget, nachSicht.phaseBAllowanceU, 1e-9)
-        assertEquals(
-            phaseBBudget / nachSicht.effectiveWindowMin, nachSicht.effectiveRateUPerMin, 1e-9,
-            "sonst liefe Phase B nach jedem Neustart wieder zu schnell",
-        )
-    }
-
-
-    // ==== DER RUNNER-REPLAY (Toni/Codex 19.08.) =============================
-    //
-    // WAS IHN VOM OFFLINE-REPLAY UNTERSCHEIDET, und es ist genau das, was dort
-    // fehlte: hier laeuft der ECHTE Regler. Guard, Tail, iobTH, maxIOB,
-    // Transport und das Publikationsgate sind nicht simuliert, sondern
-    // wirksam - gemessen wird deshalb die PUBLIZIERTE Menge, nicht die
-    // Forderung.
-    //
-    // EIN-VARIABLEN-DISZIPLIN: Gesamtbudget (PrimeEnvelopeU) und Fenster
-    // (MealFoundationEndMin, PrimeWindowMin) bleiben ueber alle Laeufe
-    // konstant; variiert wird ausschliesslich der Phase-A-Anteil.
-    //
-    // DIE IOB-SPITZE wird aus den publizierten Mengen mit DEMSELBEN
-    // Insulinmodell gerechnet, das der Loop benutzt (`AapsUnitInsulinSampler`
-    // ueber das AAPS-Insulinplugin). Eine eigene Kurve waere eine zweite
-    // Wahrheit; der IOB-Wert des Rigs taugt nicht, er steht fest auf 0.
-    //
-    // DIE GRENZE DIESES RIGS, ausdruecklich: die Glukosebahn ist synthetisch
-    // (Grundwert + konstante Steigung). Sie ist ueber alle vier Aufteilungen
-    // IDENTISCH, der Vergleich ist also sauber - aber es ist keine echte
-    // Mahlzeitenkurve. Aussagen ueber Blutzuckerverlaeufe stehen hier
-    // nirgends.
-
-    private class Lauf(
-        val anteil: Double,
-        val form: String,
-        /** Kumulativ PUBLIZIERT bei T+15/30/45/60. */
-        val bei: Map<Int, Double>,
-        val publiziertU: Double,
-        val leerlaufMin: Int,
-        val iobSpitzeU: Double,
-        val iobSpitzeMin: Int,
-        /** Kumulativ: was der NORMALE Pfad vor dem Fundament wollte. */
-        val normalBei: Map<Int, Double>,
-        /** Kumulativ: was das FUNDAMENT darueber hinaus anhob. */
-        val fundamentBei: Map<Int, Double>,
-        /** Wieviele Zyklen hat das Fundament ueberhaupt angehoben. */
-        val fundamentZyklen: Int,
-        /** Davon: angehoben, aber am Ende NICHTS publiziert - der teure Fall. */
-        val fundamentGebremst: Int,
-        /** Welche Grenzen ueberhaupt gebunden haben - typisiert, gezaehlt. */
-        val bindungen: Map<String, Int>,
-        val fundamentBindung: String?,
-        val effektiverUebertragU: Double,
-        val restRueckstandU: Double,
-    )
-
-    /**
-     * Die IOB-Spitze aus den publizierten Mengen - mit dem Loop-Modell.
-     *
-     * @param gaben (Zeitstempel, Menge) jeder wirklich publizierten Abgabe.
-     */
-    private fun iobSpitze(gaben: List<Pair<Long, Double>>, bisTs: Long): Pair<Double, Int> {
-        if (gaben.isEmpty()) return 0.0 to 0
-        val start = gaben.first().first
-        var spitze = 0.0
-        var spitzeMin = 0
-        var t = start
-        while (t <= bisTs) {
-            var iob = 0.0
-            for ((ts, menge) in gaben) {
-                if (ts > t) continue
-                val sampler = AapsUnitInsulinSampler(insulin, diaHours = 9.0, deliveryTs = ts)
-                iob += sampler.sampleAfterDelivery(menge, ((t - ts) / 60_000L).toInt()).iobU
-            }
-            if (iob > spitze) {
-                spitze = iob
-                spitzeMin = ((t - start) / 60_000L).toInt()
-            }
-            t += 60_000L
-        }
-        return spitze to spitzeMin
-    }
-
-    /**
-     * EIN vollstaendiger Lauf ueber Marker + Fenster, mit echter Aktuation.
-     *
-     * @param anstieg die Mahlzeitenantwort [mg/dl/min]: schnell, langsam oder
-     *   ausbleibend.
-     */
-    private fun runnerLauf(dir: File, anteil: Double, form: String, anstieg: Double): Lauf {
-        fundamentAn = true
-        fundamentAnteil = anteil
-        fundamentEndeMin = 60
-        markerAuthorized = true
-        flach = 140.0
-        steigungProMin = anstieg
-        clock = start
-        transportReset()
-        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
-        neuerRunner(l)
-        markerAt = start + 2 * 60_000L
-
-        val gaben = mutableListOf<Pair<Long, Double>>()
-        val bindungen = mutableMapOf<String, Int>()
-        var leerlauf = 0
-        var maxLeerlauf = 0
-        val kumuliert = mutableMapOf<Int, Double>()
-        val kumNormal = mutableMapOf<Int, Double>()
-        val kumFundament = mutableMapOf<Int, Double>()
-        var summe = 0.0
-        var summeNormal = 0.0
-        var summeFundament = 0.0
-        var fundamentZyklen = 0
-        var fundamentGebremst = 0
-
-        for (min in 0..75) {
-            val o = transport(dir)
-            // DIE PUBLIZIERTE Menge - `letzteMengeU` ist der Stand NACH dem
-            // Gate, nicht die Forderung des Reglers.
-            val publiziert = letzteMengeU ?: 0.0
-            if (publiziert > 0.0) {
-                gaben += clock to publiziert
-                summe += publiziert
-                leerlauf = 0
-            } else {
-                leerlauf++
-                if (leerlauf > maxLeerlauf) maxLeerlauf = leerlauf
-            }
-            // BINDENDE GRENZEN, typisiert gezaehlt. `block` ist der harte
-            // Riegel des Reglers, `bindingLimit` die weiche Deckelung.
-            if (o.decision.block != FuseController.Block.NONE)
-                bindungen.merge(o.decision.block.name, 1, Int::plus)
-            o.decision.bindingLimit?.takeIf { it != "NONE" }
-                ?.let { bindungen.merge(it, 1, Int::plus) }
-            // DIE DREI SPUREN GETRENNT (Toni 19.08.): was der normale Pfad
-            // wollte, was das Fundament anhob, was wirklich hinausging.
-            summeNormal += o.preFoundationSmbU
-            summeFundament += o.foundationLiftU
-            if (o.foundationLiftU > 0.0) {
-                fundamentZyklen++
-                // ANGEHOBEN, ABER NICHTS PUBLIZIERT: das Fundament hat
-                // gefordert und ein Gate hat es ganz weggenommen.
-                if (publiziert <= 0.0) fundamentGebremst++
-            }
-            val seitMarker = ((clock - (markerAt)) / 60_000L).toInt()
-            if (seitMarker in listOf(15, 30, 45, 60)) {
-                kumuliert[seitMarker] = summe
-                kumNormal[seitMarker] = summeNormal
-                kumFundament[seitMarker] = summeFundament
-            }
-        }
-
-        val e = ledger.episodes
-        val sicht = sicht(e)
-        val (spitze, spitzeMin) = iobSpitze(gaben, clock)
-        return Lauf(
-            anteil = anteil, form = form,
-            bei = listOf(15, 30, 45, 60).associateWith { kumuliert[it] ?: summe },
-            publiziertU = summe, leerlaufMin = maxLeerlauf,
-            iobSpitzeU = spitze, iobSpitzeMin = spitzeMin,
-            normalBei = listOf(15, 30, 45, 60).associateWith { kumNormal[it] ?: summeNormal },
-            fundamentBei = listOf(15, 30, 45, 60).associateWith { kumFundament[it] ?: summeFundament },
-            fundamentZyklen = fundamentZyklen, fundamentGebremst = fundamentGebremst,
-            bindungen = bindungen, fundamentBindung = sicht.binding?.name,
-            effektiverUebertragU = sicht.effectiveCarryU,
-            restRueckstandU = max(0.0, sicht.phaseBAllowanceU - e.deliveredSinceHandoverU),
-        )
-    }
-
-    /**
-     * DIE VERGLEICHSTAFEL - ausgegeben, nicht festgeschrieben.
-     *
-     * Eine Replay-Zahl als Zusicherung zu setzen hiesse, eine Hypothese zur
-     * Regel zu machen. Festgeschrieben sind nur die Aussagen, die aus der
-     * Bauform folgen (darunter).
-     */
-    @Test
-    fun `Runner-Replay ueber Aufteilung und Mahlzeitenantwort`(@TempDir dir: File) {
-        val formen = listOf("schnell" to 2.5, "langsam" to 0.8, "ausbleibend" to 0.0)
-        // DREI SPUREN JE ZEITPUNKT: norm = was der normale Pfad wollte,
-        // fnd = was das Fundament anhob, pub = was publiziert wurde. Erst ihr
-        // Verhaeltnis unterscheidet "Fundament laeuft, Zusatzbedarf gebremst"
-        // von "Fundament selbst blockiert".
-        println(
-            "RUN anteil;form;" +
-                "pub15;pub30;pub45;pub60;norm60;fnd60;fndZyklen;fndGebremst;" +
-                "publiziertU;leerlaufMin;iobSpitzeU;iobSpitzeMin;" +
-                "fundamentBindung;effUebertragU;restRueckstandU;bindungen"
-        )
-        for ((form, anstieg) in formen) {
-            for (anteil in listOf(1.00, 0.80, 0.75, 0.67)) {
-                val r = runnerLauf(File(dir, "s${(anteil * 100).toInt()}_$form"), anteil, form, anstieg)
-                println(
-                    "RUN %.2f;%s;%.3f;%.3f;%.3f;%.3f;%.3f;%.3f;%d;%d;%.3f;%d;%.3f;%d;%s;%.3f;%.3f;%s".format(
-                        r.anteil, r.form, r.bei[15], r.bei[30], r.bei[45], r.bei[60],
-                        r.normalBei[60], r.fundamentBei[60], r.fundamentZyklen, r.fundamentGebremst,
-                        r.publiziertU, r.leerlaufMin, r.iobSpitzeU, r.iobSpitzeMin,
-                        r.fundamentBindung ?: "-", r.effektiverUebertragU, r.restRueckstandU,
-                        r.bindungen.entries.sortedBy { it.key }.joinToString("|") { "${it.key}=${it.value}" }
-                            .ifEmpty { "-" },
-                    )
-                )
-            }
-        }
-    }
-
-    /**
-     * DER GESAMTDECKEL HAELT - ueber jede Aufteilung und jede
-     * Mahlzeitenantwort.
-     *
-     * DAS IST DIE ZUSICHERUNG, die "kein neues Budget" wirklich bedeutet
-     * (Toni 19.08.): niemals mehr als das gepinnte Gesamtbudget aus Phase A,
-     * Phase B und Uebertrag zusammen. NICHT: dieselbe Menge wie bei 100/0 -
-     * dann koennte das Fundament gerade keine Versorgungsluecke schliessen.
-     *
-     * Gemessen wird der FUNDAMENT-Anteil, nicht die Gesamtabgabe: Korrektur-
-     * und Evidenzinsulin duerfen ausdruecklich zusaetzlich entstehen.
-     */
-    @Test
-    fun `ueber alle Aufteilungen bleibt das Fundament unter dem Gesamtbudget`(@TempDir dir: File) {
-        for ((form, anstieg) in listOf("schnell" to 2.5, "langsam" to 0.8, "ausbleibend" to 0.0)) {
-            for (anteil in listOf(1.00, 0.80, 0.75, 0.67)) {
-                runnerLauf(File(dir, "cap${(anteil * 100).toInt()}_$form"), anteil, form, anstieg)
-                val e = ledger.episodes
-                val budget = e.foundation.totalBudgetU
-                assertTrue(budget > 0.0, "$form/$anteil: die Autorisierung MUSS stehen")
-                // HIER STAND EINE FALSCHE ZUSICHERUNG, und sie ist beim ersten
-                // Lauf umgefallen: `deliveredPhaseAU + deliveredSinceHandoverU`
-                // sei durch das Budget begrenzt. Ist sie nicht - beide Zaehler
-                // zaehlen ALLES, was in ihrer Phase floss, auch gewoehnliche
-                // Korrektur, und die darf ausdruecklich zusaetzlich zum
-                // Mahlzeitenbudget entstehen (bestaetigter Vertrag). Gemessen
-                // wurde 1,2 + 0,1 bei Budget 1,2, und das ist gesund.
-                //
-                // Dieselbe Verwechslung wie beim vorgeschlagenen Codec-Riegel:
-                // "was das Fundament geben darf" ist nicht "was in seinem
-                // Fenster fliesst". Pruefbar ist deshalb die ERLAUBNIS.
-                val sicht = sicht(e)
-                assertTrue(
-                    sicht.phaseBAllowanceU <= budget + 1e-9,
-                    "$form/$anteil: die Phase-B-Erlaubnis MUSS unter dem Gesamtbudget bleiben",
-                )
-                // UND DIE FORDERUNG BLEIBT INNERHALB DER ERLAUBNIS - die
-                // zweite Haelfte desselben Vertrags. Ohne sie sagte der Test
-                // nur, dass die Erlaubnis klein ist, nicht dass sie gilt.
-                assertTrue(
-                    sicht.dueU <= sicht.remainingInWindowU + 1e-9,
-                    "$form/$anteil: das Fundament fordert nie mehr als offen ist: " +
-                        "${sicht.dueU} von ${sicht.remainingInWindowU}",
-                )
-                assertTrue(
-                    sicht.effectiveCarryU <= e.confirmedNotSentPhaseAU + 1e-9,
-                    "$form/$anteil: der effektive Uebertrag geht nie ueber den Beweis hinaus",
-                )
-            }
-        }
-    }
-
-    /**
-     * DIE HARTEN NULLFAELLE BLEIBEN HART - ueber jede Aufteilung.
-     *
-     * Ein gemessenes Tief, ein ungesundes Signal und der Widerruf duerfen vom
-     * Fundament NICHT ueberstimmt werden. Das ist die Zusicherung, die
-     * unabhaengig von jeder Aufteilung gelten muss - sonst waere die
-     * Aufteilung nicht nur eine Verteilungsfrage, sondern eine
-     * Sicherheitsfrage.
-     */
-    @Test
-    fun `harte Nullfaelle bleiben ueber jede Aufteilung hart`(@TempDir dir: File) {
-        for (anteil in listOf(1.00, 0.80, 0.75, 0.67)) {
-            // (a) GEMESSENES TIEF.
-            fundamentAn = true
-            fundamentAnteil = anteil
-            markerAuthorized = true
-            flach = 62.0
-            steigungProMin = -1.2
-            clock = start
-            transportReset()
-            neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, "tief$anteil").also(File::mkdirs), "test-epoch", start) })
-            markerAt = start + 2 * 60_000L
-            var abgegeben = 0.0
-            repeat(40) { transport(File(dir, "tief$anteil")); abgegeben += letzteMengeU ?: 0.0 }
-            assertEquals(
-                0.0, abgegeben, 1e-9,
-                "$anteil: bei gemessenem Tief darf das Fundament NICHTS publizieren",
-            )
-
-            // (b) WIDERRUF: der Marker wird zurueckgenommen.
-            fundamentAnteil = anteil
-            flach = 180.0
-            steigungProMin = 2.5
-            clock = start
-            transportReset()
-            val d2 = File(dir, "widerruf$anteil").also(File::mkdirs)
-            neuerRunner(FuseLedgerAdapter().also { it.loadOnce(d2, "test-epoch", start) })
-            markerAt = start + 2 * 60_000L
-            repeat(20) { transport(d2) }
-            markerAt = 0L
-            repeat(3) { transport(d2) }
-            assertTrue(
-                !ledger.episodes.foundation.valid,
-                "$anteil: der Widerruf MUSS die Autorisierung beenden",
-            )
-            assertEquals(
-                0.0, sicht().dueU, 1e-9,
-                "$anteil: und danach fordert das Fundament nichts mehr",
-            )
-
-            // (c) UNGESUNDES SIGNAL (Codex 19.08. - dieser Fall FEHLTE).
-            //
-            // Der Test hiess "gemessenes Tief, ungesundes Signal und
-            // Widerruf" und baute nur zwei davon. Eine Ueberschrift, die mehr
-            // verspricht als der Rumpf prueft, ist schlimmer als eine
-            // fehlende: sie laesst die Luecke geschlossen aussehen.
-            //
-            // Ungueltige IOB-Daten -> keine Aktivitaet -> ACTIVITY_MISSING.
-            // Das Signal ist damit nicht READY, und ohne gesundes Signal darf
-            // das Fundament nichts publizieren - so wenig wie jeder andere
-            // Kanal.
-            fundamentAnteil = anteil
-            flach = 180.0
-            steigungProMin = 2.5
-            knickAbMin = null
-            primeHuelleU = 3.0
-            clock = start
-            transportReset()
-            val d3 = File(dir, "signal$anteil").also(File::mkdirs)
-            neuerRunner(FuseLedgerAdapter().also { it.loadOnce(d3, "test-epoch", start) })
-            markerAt = start + 2 * 60_000L
-            iobGueltig = false
-            var abgegebenKrank = 0.0
-            var gesundGesehen = false
-            repeat(40) {
-                val o = transport(d3)
-                abgegebenKrank += letzteMengeU ?: 0.0
-                if (o.health == Health.READY) gesundGesehen = true
-            }
-            iobGueltig = true
-            assertTrue(
-                !gesundGesehen,
-                "$anteil: der Aufbau MUSS ein ungesundes Signal erzeugen - " +
-                    "sonst prueft dieser Fall nichts",
-            )
-            assertEquals(
-                0.0, abgegebenKrank, 1e-9,
-                "$anteil: bei ungesundem Signal darf das Fundament NICHTS publizieren",
-            )
-        }
-    }
-
-
-    // ==== DIE VIERTE FORM: der positive Funktionsnachweis ===================
-    //
-    // DIE DREI BISHERIGEN FORMEN SIND NEGATIVKONTROLLEN und bleiben es: sie
-    // belegen, dass das Fundament NICHT additiv eingreift, solange der
-    // normale Pfad die Mindestversorgung schon erfuellt. Gemessen: in allen
-    // zwoelf Laeufen `foundationLiftU == 0` bei `restRueckstandU == 0` - es
-    // gab schlicht nie eine Luecke.
-    //
-    // DIESE FORM ERZEUGT DIE LUECKE, und zwar ueber die GLUKOSEBAHN, nicht
-    // ueber kuenstlich genullte Entscheidungen:
-    //
-    //     T+0..15   klarer Anstieg  -> Prime arbeitet
-    //     T+15..60  Plateau         -> der Regler kommt von selbst zur Ruhe
-    //
-    // Erst danach ist ein Vergleich von 80/20 gegen 75/25 ueberhaupt
-    // sinnvoll.
-
-    private class Lift(
-        val min: Int,
-        val dueU: Double,
-        val preU: Double,
-        val liftU: Double,
-        val publiziertU: Double,
-        val block: String,
-        val grenze: String?,
-    ) {
-
-        /**
-         * Was vom Lift wirklich hinausging - GEDECKELT AN DER FORDERUNG
-         * (Codex 19.08.).
-         *
-         * Ohne die Deckelung wuerde jede spaetere Anhebung dem Fundament
-         * zugerechnet: publiziert die Pumpe mehr, als der normale Pfad
-         * wollte, muss das nicht am Fundament liegen. Nur bis zur Hoehe
-         * seiner eigenen Forderung ist die Differenz ihm zuzuschreiben - was
-         * darueber liegt, hat eine andere Quelle und darf den
-         * Funktionsnachweis nicht schoenen.
-         */
-        val durchU get() = min(liftU, max(0.0, publiziertU - preU))
-        val ganzGebremst get() = durchU <= 1e-9
-        val teilweiseGebremst get() = !ganzGebremst && durchU < liftU - 1e-9
-    }
-
-    private class Nachweis(
-        val anteil: Double,
-        val phaseBGesehen: Boolean,
-        val dueGesehen: Boolean,
-        val gesund: Boolean,
-        val tiefOderHold: Boolean,
-        val lifts: List<Lift>,
-        val bei: Map<Int, Double>,
-        val leerlaufMin: Int,
-        val iobSpitzeU: Double,
-        val iobSpitzeMin: Int,
-        val publiziertU: Double,
-    )
-
-    private fun plateauLauf(dir: File, anteil: Double): Nachweis {
-        fundamentAn = true
-        fundamentAnteil = anteil
-        fundamentEndeMin = 60
-        markerAuthorized = true
-        // EINE REALISTISCHE HUELLE. Mit 1,2 U war das gemeinsame Budget schon in
-        // Phase A erschoepft (gemessen: 3,6 U geflossen), und Phase B fand nur
-        // noch BUDGET_EXHAUSTED - die Vorbedingung \ schlug deshalb
-        // fehl, und das war richtig so.
-        primeHuelleU = 3.0
-        flach = 120.0
-        // Der Marker liegt bei start+2; der Knick soll T+15 NACH dem Marker
-        // liegen, also start+17. Die Steigung ist bewusst MASSVOLL: bei 2,2
-        // dosiert der Korrekturkanal die Huelle in Phase A leer.
-        steigungProMin = 1.0
-        knickAbMin = 17
-        steigungNachKnick = 0.1
-        clock = start
-        transportReset()
-        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
-        neuerRunner(l)
-        markerAt = start + 2 * 60_000L
-
-        val lifts = mutableListOf<Lift>()
-        val gaben = mutableListOf<Pair<Long, Double>>()
-        val kum = mutableMapOf<Int, Double>()
-        var summe = 0.0
-        var leerlauf = 0
-        var maxLeerlauf = 0
-        var phaseBGesehen = false
-        var dueGesehen = false
-        var gesund = false
-        var tiefOderHold = false
-
-        for (i in 0..75) {
-            val o = transport(dir)
-            val publiziert = letzteMengeU ?: 0.0
-            if (publiziert > 0.0) {
-                gaben += clock to publiziert
-                summe += publiziert
-                leerlauf = 0
-            } else {
-                leerlauf++
-                if (leerlauf > maxLeerlauf) maxLeerlauf = leerlauf
-            }
-            if (o.mealFoundation.phase == MealFoundation.Phase.PHASE_B) phaseBGesehen = true
-            if (o.mealFoundation.dueU > 0.0) dueGesehen = true
-            if (o.health == Health.READY) gesund = true
-            if (o.decision.block == FuseController.Block.SAFETY_HOLD ||
-                o.decision.block == FuseController.Block.LEDGER_HOLD
-            ) tiefOderHold = true
-            if (o.foundationLiftU > 0.0) lifts += Lift(
-                min = ((clock - markerAt) / 60_000L).toInt(),
-                dueU = o.mealFoundation.dueU, preU = o.preFoundationSmbU,
-                liftU = o.foundationLiftU, publiziertU = publiziert,
-                block = o.decision.block.name, grenze = o.decision.bindingLimit,
-            )
-            val seitMarker = ((clock - markerAt) / 60_000L).toInt()
-            if (seitMarker in listOf(15, 30, 45, 60)) kum[seitMarker] = summe
-        }
-        val (spitze, spitzeMin) = iobSpitze(gaben, clock)
-        return Nachweis(
-            anteil, phaseBGesehen, dueGesehen, gesund, tiefOderHold, lifts,
-            listOf(15, 30, 45, 60).associateWith { kum[it] ?: summe },
-            maxLeerlauf, spitze, spitzeMin, summe,
-        )
-    }
-
-    /**
-     * DER POSITIVE FUNKTIONSNACHWEIS - mit harten Vorbedingungen VOR jeder
-     * Auswertung (Toni 19.08.).
-     *
-     * Ohne sie waere eine Tafel voller Nullen von einem funktionierenden
-     * Fundament nicht zu unterscheiden - genau der Fehler der ersten drei
-     * Formen, nur unbemerkt. Die Vorbedingungen sind deshalb ZUSICHERUNGEN,
-     * nicht Ausgaben: schlaegt eine fehl, taugt der Aufbau nicht und die
-     * Zahlen daraus sind wertlos.
-     *
-     * UND DIE ZENTRALE UNTERSCHEIDUNG: `foundationLiftU` sagt, was das
-     * Fundament FORDERTE. Was davon hinausging, ist
-     * `max(0, publiziert - preFoundationSmbU)`. Die Differenz ist der Anteil,
-     * den Tail, Guard oder ein technisches Gate nachtraeglich weggenommen
-     * haben - aus der Forderung allein ist das nicht ablesbar.
-     */
-    @Test
-    fun `Plateau-Form - positiver Funktionsnachweis des Fundaments`(@TempDir dir: File) {
-        println(
-            "PLT anteil;liftZyklen;gefordertU;durchU;ganzGebremst;teilGebremst;" +
-                "pub15;pub30;pub45;pub60;publiziertU;leerlaufMin;iobSpitzeU;iobSpitzeMin;grenzen"
-        )
-        val ergebnisse = listOf(1.00, 0.80, 0.75, 0.67).map { anteil ->
-            val n = plateauLauf(File(dir, "plt${(anteil * 100).toInt()}"), anteil)
-            val gefordert = n.lifts.sumOf { it.liftU }
-            val durch = n.lifts.sumOf { it.durchU }
-            val grenzen = n.lifts.filter { it.ganzGebremst || it.teilweiseGebremst }
-                .groupingBy { it.grenze ?: it.block }.eachCount()
-                .entries.sortedBy { it.key }.joinToString("|") { "${it.key}=${it.value}" }
-                .ifEmpty { "-" }
-            println(
-                "PLT %.2f;%d;%.3f;%.3f;%d;%d;%.3f;%.3f;%.3f;%.3f;%.3f;%d;%.3f;%d;%s".format(
-                    n.anteil, n.lifts.size, gefordert, durch,
-                    n.lifts.count { it.ganzGebremst }, n.lifts.count { it.teilweiseGebremst },
-                    n.bei[15], n.bei[30], n.bei[45], n.bei[60],
-                    n.publiziertU, n.leerlaufMin, n.iobSpitzeU, n.iobSpitzeMin, grenzen,
-                )
-            )
-            n
-        }
-
-        // ---- HARTE VORBEDINGUNGEN, ohne die die Tafel nichts wert ist ----
-        //
-        // Bei 100/0 gibt es kein Phase B - dort MUSS das Fundament schweigen.
-        // Geprueft werden deshalb die drei geteilten Varianten.
-        for (n in ergebnisse.filter { it.anteil < 1.0 }) {
-            assertTrue(n.phaseBGesehen, "${n.anteil}: Phase B MUSS aktiv gewesen sein")
-            // KEINE ZUSICHERUNG AUF `mealFoundation.dueU` - und das ist ein
-            // BEFUND, kein Verzicht (gemessen 19.08.): der exportierte
-            // Snapshot entsteht ABSICHTLICH nach `buche`. In genau den
-            // Zyklen, in denen das Fundament geliefert hat, ist sein dueU
-            // deshalb schon wieder 0 - die Forderung ist ja bedient. Aus dem
-            // Trail allein war bisher also NICHT ablesbar, was das Fundament
-            // wollte. Genau diese Luecke schliesst `foundationLiftU`, und
-            // deshalb wird hier darauf geprueft.
-            assertTrue(n.gesund, "${n.anteil}: das Signal MUSS gesund gewesen sein")
-            assertTrue(!n.tiefOderHold, "${n.anteil}: kein gemessenes Tief und kein Hold im Lauf")
-            assertTrue(
-                n.lifts.isNotEmpty(),
-                "${n.anteil}: das Fundament MUSS mindestens einmal angehoben haben - " +
-                    "sonst ist dies wieder nur eine Negativkontrolle",
-            )
-            assertTrue(
-                n.lifts.any { it.preU < it.publiziertU - 1e-9 },
-                "${n.anteil}: in mindestens einem Lift-Zyklus MUSS die publizierte Menge " +
-                    "UEBER dem normalen Vorschlag gelegen haben - sonst hat das Fundament " +
-                    "zwar gefordert, aber nichts getragen",
-            )
-        }
-
-        // Und die Negativkontrolle in derselben Bahn: 100/0 hat kein Phase B.
-        val ohne = ergebnisse.first { it.anteil == 1.00 }
-        assertTrue(
-            ohne.lifts.isEmpty(),
-            "bei 100/0 darf das Fundament auch auf dem Plateau nichts anheben",
-        )
-    }
-
+    // Konsolidierung 2.0: Runner-Replay ueber die Aufteilung und der Funktionsnachweis des Mahlzeitenfundaments
+    // sind mit ihm entfallen.
 
     @Test
     fun `Wende-Klassifikation erkennt die Plateau-Wende`() {
@@ -4906,257 +3684,14 @@ class TransportWiringTest : TestBaseWithProfile() {
         // von signalEpochTs).
     }
 
-    // ==== DIE RISIKOLAEUFE (Toni/Codex 19.08.) =============================
-    //
-    // WAS SIE BEWEISEN SOLLEN: nicht "zwei synthetische Risikokurven", sondern
-    // dass GUARD beziehungsweise TAIL die Lage erzeugt haben. Deshalb steht in
-    // jedem Lauf als harte Vorbedingung, WAS vor dem Fundament gebunden hat -
-    // gemessen an `preFoundationBlock`/`preFoundationBindingLimit`, nicht an
-    // der Fundament-Bindung, die den urspruenglichen Grund ueberdecken kann.
-    //
-    // UND SIE SIND GETRENNT, weil eine zweite gleichzeitig bindende Grenze die
-    // Ursache unzuordenbar macht. Genau das wird geprueft, nicht gehofft.
-    //
-    // DIE GRENZE DIESER LAEUFE, ausdruecklich: der `aktivitaet`-Hebel erzeugt
-    // die pessimistische Bahn ueber das INSULINMODELL, nicht ueber die
-    // Glukose. Er prueft die REGELMECHANIK - er sagt NICHTS darueber, wie
-    // haeufig diese Lage im echten Betrieb auftritt. Das gemessene Tief bleibt
-    // eine eigene harte Nullkontrolle; hier bleibt der reale BG ausdruecklich
-    // oberhalb des Bodens, und auch das wird geprueft.
-
-    private class RisikoLauf(
-        val anteil: Double,
-        val lifts: List<Lift>,
-        val bgImLift: List<Double>,
-        val gesundImmer: Boolean,
-        val ursachen: Set<String>,
-        /** Der Fundament-Stand des LETZTEN Zyklus - fuer die ehrliche
-         *  Abschlussbilanz des Fensters (geliefert + verfallen = Erlaubnis). */
-        val stand: MealFoundation.Snapshot,
-    )
-
-    private fun risikoLauf(
-        dir: File,
-        anteil: Double,
-        aktivitaetsWert: Double,
-        tailAn: Boolean,
-        fensterMin: Int = 60,
-    ): RisikoLauf {
-        fundamentAn = true
-        fundamentAnteil = anteil
-        fundamentEndeMin = fensterMin
-        markerAuthorized = true
-        primeHuelleU = 3.0
-        // Deutlich ueber dem Boden (70) - das gemessene Tief soll NICHT die
-        // Ursache sein. Anstieg bis T+15, dann Plateau wie im
-        // Funktionsnachweis.
-        flach = 150.0
-        steigungProMin = 1.0
-        knickAbMin = 17
-        steigungNachKnick = 0.1
-        aktivitaet = aktivitaetsWert
-        tailGuard = tailAn
-        conditionalTail = tailAn
-        // IM TAIL-LAUF WIRD DER GUARD AUSDRUECKLICH GEOEFFNET. Gemessen band
-        // er sonst mit (GUARD_FLOOR stand in den Ursachen), und dann ist eine
-        // Bremsung nicht mehr zuzuordnen. Ein tiefer Boden kann bei einem
-        // realen Zucker weit darueber nicht binden.
-        guardBodenMgdl = if (tailAn) 40.0 else 70.0
-        clock = start
-        transportReset()
-        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
-        neuerRunner(l)
-        markerAt = start + 2 * 60_000L
-
-        val lifts = mutableListOf<Lift>()
-        val bgImLift = mutableListOf<Double>()
-        val ursachen = mutableSetOf<String>()
-        // GESUNDHEIT IN DEN LIFT-ZYKLEN, nicht ueber den ganzen Lauf: die
-        // ersten Zyklen nach dem Start sind WARMUP, und das ist kein Befund
-        // ueber die Risikolage. Die erste Fassung prueft den Vorlauf mit und
-        // war deshalb rot, ohne dass etwas falsch war.
-        var gesundImmer = true
-        var stand = MealFoundation.Snapshot.none()
-        for (i in 0..75) {
-            val o = transport(dir)
-            stand = o.mealFoundation
-            if (o.foundationLiftU > 0.0) {
-                if (o.health != Health.READY) gesundImmer = false
-                lifts += Lift(
-                    min = ((clock - markerAt) / 60_000L).toInt(),
-                    dueU = o.mealFoundation.dueU, preU = o.preFoundationSmbU,
-                    liftU = o.foundationLiftU, publiziertU = letzteMengeU ?: 0.0,
-                    block = o.preFoundationBlock.name,
-                    grenze = o.preFoundationBindingLimit,
-                )
-                o.bgMgdl?.let { bgImLift += it }
-                // DIE URSACHE VOR DEM FUNDAMENT - typisiert gesammelt.
-                if (o.preFoundationBlock != FuseController.Block.NONE)
-                    ursachen += o.preFoundationBlock.name
-                o.preFoundationBindingLimit?.takeIf { it != "NONE" }?.let { ursachen += it }
-            }
-        }
-        return RisikoLauf(anteil, lifts, bgImLift, gesundImmer, ursachen, stand)
-    }
-
-    private fun berichte(kopf: String, r: RisikoLauf) {
-        val gefordert = r.lifts.sumOf { it.liftU }
-        val durch = r.lifts.sumOf { it.durchU }
-        println(
-            "%s %.2f;lifts=%d;gefordertU=%.3f;durchU=%.3f;ganz=%d;teil=%d;ursachen=%s;bgMin=%.0f".format(
-                kopf, r.anteil, r.lifts.size, gefordert, durch,
-                r.lifts.count { it.ganzGebremst }, r.lifts.count { it.teilweiseGebremst },
-                r.ursachen.sorted().joinToString("|").ifEmpty { "-" },
-                r.bgImLift.minOrNull() ?: 0.0,
-            )
-        )
-    }
-
-    /**
-     * GUARD-LAUF: die pessimistische Bahn bindet, der reale Zucker steht
-     * klar oben.
-     *
-     * Der Tail ist ausdruecklich AUS - sonst waere bei einer Bremsung nicht
-     * zu sagen, welche der beiden Grenzen sie verursacht hat.
-     */
-    @Test
-    fun `Risikolage Guard - das Fundament unter bindender Guard-Bahn`(@TempDir dir: File) {
-        for (anteil in listOf(0.80, 0.75)) {
-            val r = risikoLauf(
-                File(dir, "guard${(anteil * 100).toInt()}"),
-                anteil, aktivitaetsWert = 0.02, tailAn = false,
-            )
-            berichte("GUARD", r)
-
-            assertTrue(r.gesundImmer, "$anteil: das Signal MUSS durchgehend READY sein")
-            assertTrue(
-                r.lifts.isNotEmpty(),
-                "$anteil: das Fundament MUSS angehoben haben - sonst prueft der Lauf nichts",
-            )
-            assertTrue(
-                r.bgImLift.all { it > 75.0 },
-                "$anteil: der REALE Zucker MUSS in jedem Lift-Zyklus klar ueber dem Boden " +
-                    "liegen - sonst waere ein gemessenes Tief die Ursache, nicht Guard: " +
-                    "min=${r.bgImLift.minOrNull()}",
-            )
-            assertTrue(
-                r.ursachen.contains(FuseController.Block.GUARD_FLOOR.name) ||
-                    r.ursachen.any { it.contains("guard", ignoreCase = true) },
-                "$anteil: vor dem Fundament MUSS ausdruecklich GUARD gebunden haben, " +
-                    "gemessen: ${r.ursachen}",
-            )
-            assertTrue(
-                r.ursachen.none { it.contains("tail", ignoreCase = true) },
-                "$anteil: KEINE zweite bindende Grenze - sonst ist die Ursache nicht " +
-                    "zuordenbar: ${r.ursachen}",
-            )
-        }
-    }
-
-    /**
-     * TAIL-LAUF: der Schwanz bindet, Guard ist ausdruecklich offen.
-     */
-    @Test
-    fun `Risikolage Tail - das Fundament unter bindendem Schwanz`(@TempDir dir: File) {
-        for (anteil in listOf(0.80, 0.75)) {
-            val r = risikoLauf(
-                File(dir, "tail${(anteil * 100).toInt()}"),
-                anteil, aktivitaetsWert = 0.0, tailAn = true,
-            )
-            berichte("TAIL", r)
-
-            assertTrue(r.gesundImmer, "$anteil: das Signal MUSS durchgehend READY sein")
-            assertTrue(r.lifts.isNotEmpty(), "$anteil: das Fundament MUSS angehoben haben")
-            assertTrue(
-                r.bgImLift.all { it > 75.0 },
-                "$anteil: der reale Zucker MUSS oben bleiben: min=${r.bgImLift.minOrNull()}",
-            )
-            assertTrue(
-                r.ursachen.any { it.contains("tail", ignoreCase = true) },
-                "$anteil: vor dem Fundament MUSS der TAIL gebunden haben, " +
-                    "gemessen: ${r.ursachen}",
-            )
-            assertTrue(
-                !r.ursachen.contains(FuseController.Block.GUARD_FLOOR.name),
-                "$anteil: Guard MUSS offen sein - sonst ist die Ursache nicht zuordenbar: " +
-                    "${r.ursachen}",
-            )
-        }
-    }
-
-    /**
-     * DAS 25-MIN-FUNDAMENT-FENSTER UNTER BINDENDEM GUARD (Bauauftrag
-     * Schritt C) - der e2e-Zwilling zum puren
-     * [FoundationWindow25Test]: dieselbe Guard-Lage wie im Risikolauf, nur
-     * das Fenster variiert (Ein-Variablen-Absicherung; das Fenster bleibt
-     * eine Preference, hier wird der 25er-WERT abgesichert).
-     *
-     * MENGENGLEICHHEIT WIRD HIER BEWUSST NICHT BEHAUPTET: mit der
-     * Rig-Uebergabe bei T+15 hat der 25er nur 10 Minuten Phase B, und ein
-     * Pumpenschritt je Zyklus traegt hoechstens 0,05 U/min - was nicht mehr
-     * floss, muss stattdessen EHRLICH als Rueckstand ausgewiesen sein
-     * (Nachweis 3, Lapse-Zweig). Die exakte Zielkonstellation (Uebergabe
-     * T+5, 1 U in 20 min) geht im puren Test vollstaendig auf.
-     *
-     * KEINE BG-BEHAUPTUNG (Nachweis 7): der Lauf ist rueckkopplungsblind.
-     */
-    @Test
-    fun `Fundament-Fenster 25 - Zeitabschluss und Bilanz unter bindendem Guard`(@TempDir dir: File) {
-        val r25 = risikoLauf(File(dir, "f25"), 0.80, aktivitaetsWert = 0.02, tailAn = false, fensterMin = 25)
-        val r45 = risikoLauf(File(dir, "f45"), 0.80, aktivitaetsWert = 0.02, tailAn = false, fensterMin = 45)
-
-        // Die Vorbedingungen des Guard-Laufs muessen auch hier gelten -
-        // sonst prueft der Lauf eine andere Lage.
-        for (r in listOf(r25, r45)) {
-            assertTrue(r.gesundImmer, "das Signal MUSS durchgehend READY sein")
-            assertTrue(r.lifts.isNotEmpty(), "das Fundament MUSS angehoben haben")
-            assertTrue(r.bgImLift.all { it > 75.0 }, "der reale Zucker bleibt klar ueber dem Boden")
-            assertTrue(
-                r.ursachen.contains(FuseController.Block.GUARD_FLOOR.name) ||
-                    r.ursachen.any { it.contains("guard", ignoreCase = true) },
-                "vor dem Fundament MUSS Guard gebunden haben: ${r.ursachen}",
-            )
-        }
-
-        // NACHWEIS 1 (e2e-Seite): das Fenster aendert an Phase A nichts.
-        assertEquals(r45.stand.phaseABudgetU, r25.stand.phaseABudgetU, 1e-9)
-        assertEquals(r45.stand.phaseBAllowanceU, r25.stand.phaseBAllowanceU, 1e-9)
-
-        // NACHWEIS 3+6 (ZEITABSCHLUSS, Mutationsziel): kein Fundament-Lift
-        // nach T+25 - was dann offen ist, verfaellt statt nachzulaufen.
-        assertTrue(r25.lifts.all { it.min <= 25 }) {
-            "ZEITABSCHLUSS verletzt - Lifts nach T+25: " +
-                r25.lifts.filter { it.min > 25 }.joinToString { "T+${it.min}" }
-        }
-        assertEquals(MealFoundation.Binding.AFTER_WINDOW, r25.stand.binding, "nach dem Lauf ist das Fenster zu")
-
-        // NACHWEIS 5: der 45er-Zwilling liefert dieselbe Mechanik, nur
-        // spaeter - er MUSS Lifts nach T+25 haben (sonst misst der
-        // 25er-Test gar kein Fenster).
-        assertTrue(r45.lifts.any { it.min > 25 }) {
-            "der 45er muss nach T+25 weiterliefern - Lifts: " +
-                r45.lifts.joinToString { "T+${it.min}" }
-        }
-        assertTrue(r45.lifts.all { it.min <= 45 })
-
-        // NACHWEIS 3 (Lapse-Zweig) + 4: die Bilanz schliesst EHRLICH -
-        // geliefert plus ausgewiesener Rueckstand ergibt die Erlaubnis,
-        // und geliefert bleibt unter ihr (Budget nie ueberschritten).
-        val geliefert25 = r25.stand.deliveredSinceHandoverU
-        assertTrue(geliefert25 <= r25.stand.phaseBAllowanceU + 1e-9)
-        assertEquals(
-            r25.stand.phaseBAllowanceU, geliefert25 + r25.stand.backlogU, 1e-9,
-            "was nicht floss, steht als Rueckstand da - nichts verschwindet still",
-        )
-        assertTrue(r45.stand.deliveredSinceHandoverU <= r45.stand.phaseBAllowanceU + 1e-9)
-        // Und der 45er holt mit seinem laengeren Fenster mindestens so viel
-        // ab wie der 25er - die Verschiebung kostet Menge nur im Rig-Takt,
-        // nie umgekehrt.
-        assertTrue(r45.stand.deliveredSinceHandoverU + 1e-9 >= geliefert25)
-    }
-
+    // Konsolidierung 2.0: die Risikolaeufe des Mahlzeitenfundaments (Guard, Tail, Fenster 25) sind mit ihm
+    // entfallen.
 
     // ==== DER FINALE RIEGEL AM GEMEINSAMEN AUSGANG (Toni 19.08., P0) ======
+    //
+    // Konsolidierung 2.0: die drei Proben des Riegels gegen markerfinanzierte Mengen (Prime, Fundament) sind mit
+    // diesen entfallen - ohne Konto dosiert ein Marker wie ohne Marker, im Konto pausiert das Fallen die fruehe
+    // Versorgung vor dem Riegel (s. ErwartungskontoRigTest, spaetes Abwaertsrisiko).
     //
     // ER SITZT NACH Prime-/Fundament-Lift, `finalVerify` und `MarkerFloor`,
     // aber VOR der Publikation. Ein frueher gesetzter Riegel koennte von einem
@@ -5168,106 +3703,6 @@ class TransportWiringTest : TestBaseWithProfile() {
     // allein wuerde nur die Rechnung pruefen, nicht ihre WIRKSAMKEIT am
     // Ausgang - und der Befund war ja gerade, dass eine richtige Rechnung
     // folgenlos blieb.
-
-    /** Die Abwaertslage des Abends: fallend, vom Bolus ueberdeckt, Boden nah. */
-    private fun abwaertslage(dir: File) {
-        fundamentAn = true
-        fundamentAnteil = 0.80
-        markerAuthorized = true
-        primeHuelleU = 3.9
-        // BG faellt deutlich, Boden 70 - bei 140 und -2,5/min sind es 28 min.
-        flach = 140.0
-        steigungProMin = -2.5
-        knickAbMin = null
-        // Bolus-IOB deckt die Strecke zum Boden weit ueber: 4,7 U x ISF.
-        bolusIobU = 4.7
-        clock = start
-        transportReset()
-        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
-        neuerRunner(l)
-        markerAt = start + 2 * 60_000L
-    }
-
-    /**
-     * DER ABENDFALL: trotz Marker-Autorisierung darf nichts mehr hinausgehen.
-     *
-     * Das ist die Zusicherung, an der der P0 haengt. Vorher hob der Marker den
-     * GUARD_FLOOR und lieferte weiter; jetzt greift der Riegel NACH allen
-     * Autorisierungen.
-     */
-    @Test
-    fun `bei gemessenem Abwaertsrisiko geht trotz Marker nichts hinaus`(@TempDir dir: File) {
-        abwaertslage(dir)
-        var summe = 0.0
-        var riegelGesehen = false
-        repeat(30) {
-            val o = cycle()
-            summe += o.decision.smbU
-            if (o.decision.block == FuseController.Block.MEASURED_DESCENT_RISK) riegelGesehen = true
-        }
-        assertTrue(riegelGesehen, "der Riegel MUSS gegriffen haben - sonst prueft der Test nichts")
-        assertEquals(0.0, summe, 1e-9, "kein positives Insulin bei gemessener Abwaertslage: $summe U")
-    }
-
-    @Test
-    fun `auch SafetyHold merkt den unvermeidbaren Phase-A-Rueckstand`(@TempDir dir: File) {
-        fundamentAn = true
-        fundamentAnteil = 0.80
-        markerAuthorized = true
-        primeHuelleU = 3.75
-        // Ein reales Tief, kein Modell-Guard. Die Phase-A-Autorisierung steht,
-        // darf aber nichts liefern; gegen Ende ihres Fensters muss der nicht
-        // mehr einholbare Anteil restartfest als Sicherheitsaufschub stehen.
-        flach = 72.0
-        steigungProMin = 0.0
-        knickAbMin = null
-        bolusIobU = 1.2
-        clock = start
-        transportReset()
-        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
-        markerAt = start + 2 * 60_000L
-
-        var safetyHoldSeen = false
-        repeat(25) {
-            val o = cycle()
-            if (o.decision.block == FuseController.Block.SAFETY_HOLD) safetyHoldSeen = true
-        }
-
-        assertTrue(safetyHoldSeen, "der Aufbau MUSS den gemessenen SafetyHold erreichen")
-        assertTrue(
-            ledger.episodes.descentDeferredPhaseAU > 0.0,
-            "SafetyHold darf die ausgefallene Phase-A-Versorgung nicht unsichtbar verfallen lassen",
-        )
-    }
-
-    /**
-     * UND DIE TBR BLEIBT DAVON UNBERUEHRT. Bei aktivem Risiko und unwirksamer
-     * Zero-TBR ist die richtige Antwort SMB 0 UND KEEP_CURRENT - keine
-     * nutzlose Null. "Basal zurueckhalten hilft nicht mehr" und "mehr Bolus
-     * ist sicher" sind zwei verschiedene Aussagen, und der Riegel beantwortet
-     * nur die zweite.
-     */
-    @Test
-    fun `der Riegel setzt die Menge auf null und laesst die TBR in Ruhe`(@TempDir dir: File) {
-        abwaertslage(dir)
-        var geprueft = false
-        repeat(30) {
-            val o = cycle()
-            if (o.decision.block == FuseController.Block.MEASURED_DESCENT_RISK) {
-                assertEquals(0.0, o.decision.smbU, 1e-9, "die Menge ist null")
-                // Die Basalantwort stammt weiterhin aus der Nutzenpruefung -
-                // der Riegel fasst sie nicht an.
-                assertTrue(
-                    o.decision.tbr == FuseController.TbrAction.KEEP_CURRENT ||
-                        o.decision.tbr == FuseController.TbrAction.ZERO_TEMP ||
-                        o.decision.tbr == FuseController.TbrAction.NO_NEW_POSITIVE,
-                    "die TBR bleibt Ergebnis des Basalnutzens: ${o.decision.tbr}",
-                )
-                geprueft = true
-            }
-        }
-        assertTrue(geprueft, "der Aufbau muss den Riegel erreichen")
-    }
 
     /**
      * DIE GEGENKONTROLLE: eine steigende schnelle Mahlzeit bleibt unberuehrt.
@@ -5359,203 +3794,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(positiveNachFreigabe > 0.0, "nach der Wende muss die Mahlzeit wieder versorgt werden")
     }
 
-    /**
-     * DER AUFGESCHOBENE PHASE-A-ANTEIL ERREICHT DEN ECHTEN PHASE-B-PFAD.
-     *
-     * Der Kern allein beweist nur die Mengenrechnung. Dieser Test zwingt den
-     * Runner durch dieselbe Reihenfolge wie produktiv: vorgefundener Latch,
-     * drei bestaetigte Wendezyklen, Phase B, Entscheidungssnapshot und Lift.
-     * Die Phase-A-Bilanz wird nach dem bewiesenen Wiederaufgehen eingesetzt,
-     * damit kein normaler Prime-Schritt den zu pruefenden Rueckstand nebenbei
-     * schliesst. Danach springt die Uhr ueber die Uebergabe; die Rohreihe
-     * bleibt dabei minuetlich lueckenlos und wird nicht umgeschrieben.
-     */
-    @Test
-    fun `nach bestaetigter Wende wird der Abwaertsaufschub in Phase B wieder faellig`(@TempDir dir: File) {
-        fundamentAn = true
-        fundamentAnteil = 0.80
-        markerAuthorized = true
-        primeHuelleU = 3.75
-        // Drei klare positive Zyklen fuer die Wende, danach ein ruhiges
-        // Plateau nahe Ziel: der normale Korrekturpfad soll das Fundament
-        // nicht bloss durch eine eigene grosse Anforderung verdecken.
-        flach = 90.0
-        steigungProMin = 2.2
-        knickAbMin = 6
-        steigungNachKnick = 0.0
-        bolusIobU = null
-        clock = start
-        transportReset()
-        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
-        l.episodes.descentRecoveryLatch = DescentRecoveryLatch.State(true, start - 60_000L)
-        neuerRunner(l)
-        markerAt = start + 2 * 60_000L
 
-        var recovered = false
-        var phaseBReached = false
-        for (ignored in 0 until 30) {
-            val o = cycle()
-            if (o.descentLatchReason == DescentRecoveryLatch.Reason.RECOVERED.name) recovered = true
-            if (o.mealFoundation.phase == MealFoundation.Phase.PHASE_B) {
-                phaseBReached = true
-                break
-            }
-        }
-        assertTrue(recovered, "die Wende MUSS bestaetigt sein - sonst darf der Aufschub nicht wirken")
-        assertTrue(phaseBReached, "der minuetlich lueckenlose Lauf MUSS Phase B erreichen")
-        assertTrue(ledger.episodes.foundation.valid, "die gepinnte Autorisierung MUSS stehen")
-
-        // Die Pflichtfall-Lage: 3,00 U Phase-A-Soll, 1,35 U
-        // geliefert, 1,65 U durch den harten Riegel unvermeidbar aufgeschoben.
-        ledger.episodes.deliveredPhaseAU = 1.35
-        ledger.episodes.deliveredSinceHandoverU = 0.0
-        ledger.episodes.confirmedNotSentPhaseAU = 0.0
-        ledger.episodes.descentDeferredPhaseAU = 1.65
-
-        // ECHTER Prozessschnitt: Autorisierung, wieder geoeffneter Latch und
-        // Aufschub kommen gemeinsam aus der versiegelten Generation. Die
-        // halbe Erholungsserie ist absichtlich nicht Teil davon; hier ist die
-        // Wende bereits vollstaendig bestaetigt.
-        assertTrue(ledger.persistVerified(dir), "der vorbereitete Zustand muss versiegelt werden")
-        val restarted = FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch-2", clock) }
-        neuerRunner(restarted)
-        markerPress = 0L
-        assertEquals(1.65, ledger.episodes.descentDeferredPhaseAU, 1e-9, "restartfester Aufschub")
-        assertFalse(ledger.episodes.descentRecoveryLatch.active, "die bestaetigte Wende bleibt offen")
-
-        var eligibleSeen = false
-        var liftSum = 0.0
-        repeat(3) {
-            val o = cycle()
-            if (o.mealFoundation.phase == MealFoundation.Phase.PHASE_B) {
-                assertEquals(
-                    DescentDeferredCarry.Eligibility.ELIGIBLE,
-                    o.mealFoundation.descentCarryEligibility,
-                    "nach der bestaetigten Wende muss genau dieser Aufschub freigegeben sein",
-                )
-                assertEquals(1.65, o.mealFoundation.effectiveDescentCarryU, 1e-9)
-                assertEquals(2.40, o.mealFoundation.phaseBAllowanceU, 1e-9)
-                eligibleSeen = true
-                liftSum += o.foundationLiftU
-            }
-        }
-
-        assertTrue(eligibleSeen, "der echte Runner MUSS Phase B erreicht haben")
-        assertTrue(liftSum > 0.0, "der Aufschub muss ueber den echten Fundament-Lift wieder fliessen koennen")
-
-        // TONIS BESTAETIGTE REGEL (21.08.): ein manueller NORMAL-Bolus nach
-        // dem Marker beendet NUR diesen Sicherheitsaufschub. Er wird nicht
-        // als Fundament-Lieferung umgedeutet; das regulaere B-Teilbudget
-        // bleibt deshalb exakt 0,75 U.
-        boluses = listOf(BS(timestamp = clock, amount = 3.0, type = BS.Type.NORMAL))
-        val manual = cycle()
-        assertEquals(3.0, manual.manualBolusAfterMarkerU!!, 1e-9)
-        assertEquals(
-            DescentDeferredCarry.Eligibility.MANUAL_BOLUS_AFTER_MARKER,
-            manual.mealFoundation.descentCarryEligibility,
-        )
-        assertEquals(0.0, manual.mealFoundation.effectiveDescentCarryU, 1e-9)
-        assertEquals(0.75, manual.mealFoundation.phaseBAllowanceU, 1e-9)
-
-        // Die Behandlungshistorie ist eine Freigabevoraussetzung fuer den
-        // zusaetzlichen Sicherheitsaufschub. Ein Lesefehler darf deshalb nie
-        // als "kein manueller Bolus" durchgehen. Das regulaere B-Teilbudget
-        // bleibt auch in diesem fail-closed-Fall erhalten.
-        whenever(persistenceLayer.getBolusesFromTimeToTime(any(), any(), any()))
-            .thenThrow(IllegalStateException("Bolushistorie nicht lesbar"))
-        val unreadable = cycle()
-        assertNull(unreadable.manualBolusAfterMarkerU)
-        assertEquals(
-            DescentDeferredCarry.Eligibility.MANUAL_BOLUS_UNKNOWN,
-            unreadable.mealFoundation.descentCarryEligibility,
-        )
-        assertEquals(0.0, unreadable.mealFoundation.effectiveDescentCarryU, 1e-9)
-        assertEquals(0.75, unreadable.mealFoundation.phaseBAllowanceU, 1e-9)
-    }
-
-    @Test
-    fun `nur NORMAL strikt nach Marker gilt als manuelle Deckung`() {
-        val auth = MealFoundation.arm(
-            markerTs = start,
-            foundationEnabled = true,
-            totalBudgetU = 3.75,
-            phaseAShare = 0.80,
-            phaseAUpfrontShare = 0.0,
-            primeWindowMin = 20,
-            wallCeilingMin = 45,
-            pressObservedInThisProcess = true,
-            primeDeclinedByUser = false,
-            markerAuthorized = true,
-            phaseBUntilMin = 60,
-        )
-        val view = FuseCycleRunner.TreatmentView(
-            boluses = listOf(
-                BS(timestamp = start - 1L, amount = 2.0, type = BS.Type.NORMAL),
-                BS(timestamp = start + 1L, amount = 0.3, type = BS.Type.SMB),
-                BS(timestamp = start + 2L, amount = 0.5, type = BS.Type.PRIMING),
-                BS(timestamp = start + 3L, amount = 3.0, type = BS.Type.NORMAL),
-            ),
-            facts = emptyList(),
-            snapshotHash = "test",
-            latestBolusTs = start + 3L,
-            diaHours = 5.0,
-        )
-
-        assertEquals(3.0, runner.manualBolusAfterMarkerU(auth, view)!!, 1e-9)
-        assertNull(runner.manualBolusAfterMarkerU(auth, null), "unlesbar bleibt unbekannt")
-    }
-
-
-
-    /**
-     * DER RIEGEL DARF KEINE SPUR IN DER BUCHFUEHRUNG HINTERLASSEN
-     * (Codex 19.08.).
-     *
-     * `actuatedU` entsteht erst aus `combined.decision.smbU`. Greift der
-     * Riegel, muessen Prime-, Fundament- und Evidenzzaehler sowie die
-     * Reservierung unberuehrt bleiben - sonst waere die Autorisierung als
-     * verbraucht gebucht, ohne dass etwas floss, und die naechste Mahlzeit
-     * begaenne mit einer Huelle, die sie nie bekommen hat.
-     *
-     * DER `grant` BLEIBT BEWUSST STEHEN. Er zeigt im Trail, dass eine
-     * Autorisierung vorhanden war und vom gemessenen Riegel gestoppt wurde.
-     * Entscheidend ist, dass niemand daraus ohne `smbU > 0` eine Aktuation
-     * ableitet - genau das prueft dieser Test.
-     */
-    @Test
-    fun `der Riegel bucht nichts und meldet die Lage als unsicher`(@TempDir dir: File) {
-        abwaertslage(dir)
-        val e = ledger.episodes
-        var geprueft = false
-        var primeVor = 0.0
-        var evidenzVor = 0.0
-        var phaseAVor = 0.0
-        var seitUVor = 0.0
-
-        repeat(30) {
-            primeVor = e.primeSpentU
-            evidenzVor = e.evidenceCommittedU
-            phaseAVor = e.deliveredPhaseAU
-            seitUVor = e.deliveredSinceHandoverU
-            val o = cycle()
-            if (o.decision.block == FuseController.Block.MEASURED_DESCENT_RISK) {
-                assertEquals(0.0, o.decision.smbU, 1e-9, "die Menge ist null")
-                assertTrue(
-                    o.decision.unsafeSituation,
-                    "eine GEMESSENE Abwaertslage MUSS als unsicher gemeldet werden - " +
-                        "nachgelagerte Sicherheitslogik darf sie nicht als sicher lesen",
-                )
-                // KEINE Buchung, keine Reservierung.
-                assertEquals(primeVor, e.primeSpentU, 1e-9, "primeSpentU unveraendert")
-                assertEquals(evidenzVor, e.evidenceCommittedU, 1e-9, "evidenceCommittedU unveraendert")
-                assertEquals(phaseAVor, e.deliveredPhaseAU, 1e-9, "deliveredPhaseAU unveraendert")
-                assertEquals(seitUVor, e.deliveredSinceHandoverU, 1e-9, "deliveredSinceHandoverU unveraendert")
-                assertNull(e.pendingReservation, "und keine Reservierung")
-                geprueft = true
-            }
-        }
-        assertTrue(geprueft, "der Aufbau muss den Riegel erreichen")
-    }
 
 
     // ==== PUNKT 6: DER MARKER-PRIME-AUFSCHUB (Tonis 7 Replay-Pflichtfaelle) =
@@ -5590,9 +3829,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     /**
      * Replay-Fall 4: keine Erholung bis zur Frist -> der Pin verfaellt typisiert.
      *
-     * Konsolidierung 2.0: Rueckhalt in den offenen Betrag und Freigabe sind entfallen. Der markerfinanzierte
-     * Anteil wird unter dem gepinnten Horizont weiter gekappt, aber nicht mehr als offener Rest gefuehrt - an
-     * der Frist verfaellt deshalb der Pin, ohne Menge.
+     * Konsolidierung 2.0: Rueckhalt in den offenen Betrag und Freigabe sind entfallen, und mit Prime und
+     * Fundament auch die markerfinanzierte Menge, die gekappt wurde (der Erwartungsanteil faellt unter dem Pin mit
+     * eigenem Grund weg). Pin, Frist und Verfall bleiben - an der Frist verfaellt der Pin, ohne Menge.
      */
     @Test
     fun `P6 Fall 4 - ohne Erholung verfaellt der Pin sichtbar an der gepinnten Frist`(@TempDir dir: File) {
@@ -5602,17 +3841,18 @@ class TransportWiringTest : TestBaseWithProfile() {
         steigungNachKnick = -0.05
         var lapseReason: String? = null
         var lapseU = -1.0
-        var gekapptU = 0.0
+        var gepinnt = false
         repeat(55) {
             val o = cycle()
             if (o.deferredPrimeLapseReason == "EXPIRED" && lapseReason == null) {
                 lapseReason = o.deferredPrimeLapseReason
                 lapseU = o.deferredPrimeLapseU
             }
-            gekapptU += o.deferredPrimeWithheldU
+            if (o.deferredPrimePinnedForTs == markerAt) gepinnt = true
+            assertEquals(0.0, o.deferredPrimeWithheldU, 1e-9, "ohne markerfinanzierte Menge wird nichts gekappt")
             assertEquals(0.0, o.deferredPrimeOpenU, 1e-9, "es entsteht kein offener Rest mehr")
         }
-        assertTrue(gekapptU > 0.0, "Vorbedingung: unter dem gepinnten Horizont wurde gekappt: $gekapptU")
+        assertTrue(gepinnt, "Vorbedingung: der Druck ist gepinnt")
         assertEquals("EXPIRED", lapseReason, "der Verfall MUSS typisiert im Trail stehen")
         assertEquals(0.0, lapseU, 1e-9, "verfallen ist kein Rest - es wird keiner mehr gefuehrt")
     }
@@ -5669,487 +3909,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(liftZyklen >= 4, "der Kanal muss den Guard-Deadlock tragen: $liftZyklen")
     }
 
-    // ==== HALTE-ANHEBUNG IM KANALBEDARF (Tonis Auftrag 15.09.) ================
-    //
-    // Jede Form laeuft ZWEIMAL auf derselben Lage - Schalter AUS und AN - mit
-    // geschlossener Rueckfuehrung (nur bestaetigte Abgaben wirken auf die
-    // Reihe). Synthetische Bahnen, keine Messwerte. Die Parameter der
-    // Anhebung (20 min, 40 mg/dl, 2 Zyklen) stehen fest; hier wird nur
-    // geprueft, nicht abgestimmt. UKF-Reaktion: nach einem Formwechsel sind
-    // hoechstens REAKTION_MIN Minuten ohne Aussage.
-
-    private val halteReaktionMin = 5
-
-    private fun minuteVon(o: FuseCycleRunner.Outcome) = (o.computeTs - start) / 60_000L
-
-    /** Zyklus, in dem der Mahlzeiten-Marker gedrueckt wird (Minute = Zyklusnummer).
-     *  NACH dem Signal-Anlauf: ein waehrend der Abbruchzyklen gesetzter Marker
-     *  wird beim ersten vollstaendigen Zyklus nur VORGEFUNDEN (MARKER_NOT_PINNED)
-     *  und traegt keine MEAL-Vollmacht - im Rig gesehen. */
-    private val halteMarkerZyklus = 8
-
-    /**
-     * @param meal true = Marker in Zyklus [halteMarkerZyklus] gedrueckt (MEAL-Vollmacht),
-     *   false = kein Marker (CORRECTION).
-     * @param vorZyklus wird VOR dem Zyklus mit dieser Nummer aufgerufen - fuer
-     *   Markerwechsel u. a. mitten im Lauf.
-     */
-    private fun halteLauf(
-        dir: File, name: String, an: Boolean, zyklen: Int, meal: Boolean = true,
-        vorZyklus: (Int) -> Unit = {}, loopTaktMs: Long = 60_000L, form: () -> Unit,
-    ): List<FuseCycleRunner.Outcome> {
-        val d = File(dir, name + (if (meal) "" else "_korr") + (if (loopTaktMs != 60_000L) "_t$loopTaktMs" else "") + if (an) "_an" else "_aus").also(File::mkdirs)
-        abgaben.clear(); boluses = emptyList(); rueckfuehrung = false
-        lueckeVonMin = null; lueckeBisMin = null; rohSerie = null; formZusatz = null
-        markerAt = 0L; mealPowerMin = 120; kalibrierStart = -1L; messTaktMs = null; taktMs = 60_000L
-        livenessLage(d)
-        steigungNachKnick = 2.0
-        form()
-        halteAnhebungAn = an
-        abgaben += Abgabe(start - 30 * 60_000L, 4.5 / 0.9, wirktAufReihe = false, isfMgdlPerU = 61.0)
-        bolusIobU = null
-        rueckfuehrung = true
-        // Loop-Takt getrennt vom Messtakt: die CGM-Werte bleiben im 60-s-Takt.
-        messTaktMs = 60_000L
-        taktMs = loopTaktMs
-        var gedrueckt = false
-        val anzahl = (zyklen * 60_000L / loopTaktMs).toInt()
-        return (1..anzahl).map { i ->
-            if (meal && !gedrueckt && clock + taktMs >= start + halteMarkerZyklus * 60_000L) {
-                markerAt = clock + taktMs; gedrueckt = true
-            }
-            vorZyklus(((clock + taktMs - start) / 60_000L).toInt())
-            transport(d)
-        }.also {
-            formZusatz = null; halteAnhebungAn = false; markerAt = 0L; mealPowerMin = 120
-            kalibrierStart = -1L; messTaktMs = null; taktMs = 60_000L; lueckeVonMin = null; lueckeBisMin = null
-        }
-    }
-
-    /** Gemeinsame Zusagen jedes Laufs: AUS hebt nie; AN hebt nur bewaffnet, bestaetigt und gekappt. */
-    private fun halteGrundzusagen(aus: List<FuseCycleRunner.Outcome>, an: List<FuseCycleRunner.Outcome>) {
-        for (o in aus) assertTrue((o.livenessHold.upliftMgdl ?: 0.0) == 0.0, "AUS hebt nie: min ${minuteVon(o)}")
-        for (o in an) {
-            val up = o.livenessHold.upliftMgdl ?: continue
-            if (up <= 0.0) continue
-            assertTrue(o.livenessActive, "Anhebung nur im bewaffneten Lauf: min ${minuteVon(o)}")
-            assertTrue(o.livenessHold.streak >= app.aaps.fuse.core.controller.MeasuredRiseEvidence.CONFIRM_BLOCKS, "Anhebung nur messbestaetigt: min ${minuteVon(o)}")
-            assertEquals("MEAL", o.livenessProfile, "Anhebung nur unter MEAL: min ${minuteVon(o)}")
-            assertTrue(up <= app.aaps.fuse.core.controller.LivenessDriveHold.UPLIFT_CAP_MGDL + 1e-9)
-        }
-    }
-
-    private fun summeAb(l: List<FuseCycleRunner.Outcome>, abMin: Long) =
-        l.filter { minuteVon(it) >= abMin }.sumOf { it.decision.smbU }
-
-    private fun halteZeilen(name: String, aus: List<FuseCycleRunner.Outcome>, an: List<FuseCycleRunner.Outcome>) {
-        println("HALTE $name: AUS ${"%.2f".format(aus.sumOf { it.decision.smbU })} U, AN ${"%.2f".format(an.sumOf { it.decision.smbU })} U")
-        for ((a, b) in aus.zip(an)) println(
-            "HALTE $name min ${minuteVon(b)} q1 ${"%.0f".format(a.signal?.q1 ?: Double.NaN)}/${"%.0f".format(b.signal?.q1 ?: Double.NaN)} " +
-                "smb ${a.decision.smbU}/${b.decision.smbU} aktiv ${a.livenessActive}/${b.livenessActive} " +
-                "up ${"%.1f".format(b.livenessHold.upliftMgdl ?: Double.NaN)} streak ${b.livenessHold.streak} ${b.livenessHold.denial} " +
-                "beleg ${b.livenessHold.evidenceDenial}/${b.livenessHold.evidenceBlockMedianMgdl?.let { "%.0f".format(it) }} " +
-                "profil ${b.livenessProfile}/${b.livenessProfileReason} lv ${b.livenessDenial}/${b.livenessExit}"
-        )
-    }
-
-    @Test
-    fun `Halte-Anhebung 1 - anhaltender Anstieg hebt bestaetigt und gekappt`(@TempDir dir: File) {
-        val aus = halteLauf(dir, "anstieg", false, 45) {}
-        val an = halteLauf(dir, "anstieg", true, 45) {}
-        halteZeilen("anstieg", aus, an)
-        halteGrundzusagen(aus, an)
-        assertTrue(aus.count { it.livenessActive } >= 5, "Vorbedingung: der Kanal ist im AUS-Lauf bewaffnet")
-        val hebend = an.count { (it.livenessHold.upliftMgdl ?: 0.0) > 0.0 }
-        assertTrue(hebend >= 3, "positiver Nachweis: die Anhebung wirkt im anhaltenden Anstieg ($hebend Zyklen)")
-        // Export-Vertrag: needU enthaelt die Anhebung, releaseMeanMgdl nicht.
-        for (o in an.filter { hebt(it) }) {
-            val erwartet = kotlin.math.max(0.0, (o.livenessReleaseMeanMgdl!! + o.livenessHold.upliftMgdl!! - o.targetMgdl!!) / o.isfMgdlPerU!!)
-            assertEquals(erwartet, o.livenessNeedU!!, 1e-9, "needU traegt die Anhebung: min ${minuteVon(o)}")
-        }
-        // Unter MEAL zieht die Anhebung Abgabe VOR (kumuliert zeitweise mehr),
-        // die Gesamtmenge bleibt durch Raster und Deckel begrenzt - im Rig gesehen.
-        var kumAn = 0.0; var kumAus = 0.0; var vorsprung = 0.0
-        for ((a, b) in aus.zip(an)) {
-            kumAus += a.decision.smbU; kumAn += b.decision.smbU
-            vorsprung = kotlin.math.max(vorsprung, kumAn - kumAus)
-        }
-        println("HALTE anstieg: groesster kumulierter Vorsprung ${"%.2f".format(vorsprung)} U")
-        assertTrue(vorsprung > 1e-9, "und sie erreicht die Menge frueher")
-        // Obergrenze der Mehrmenge: je hebendem Zyklus hoechstens Ratio 0,35 x Kappe / ISF plus ein Rasterschritt.
-        val isf = an.mapNotNull { it.isfMgdlPerU }.minOrNull()!!
-        val grenze = hebend * (0.35 * app.aaps.fuse.core.controller.LivenessDriveHold.UPLIFT_CAP_MGDL / isf + 0.05)
-        assertTrue(an.sumOf { it.decision.smbU } - aus.sumOf { it.decision.smbU } <= grenze + 1e-9, "Mehrmenge begrenzt")
-    }
-
-    // Formwechsel bei min 18 - MITTEN in der aktiven Anhebung des Anstiegs
-    // (mit Messbestaetigung dort min 17-23 gehoben). Ein spaeterer Wechsel
-    // waere vakuos: ab min 24 hebt der Anstieg selbst nicht mehr.
-    private val halteWechselMin = 18L
-
-    private fun hebt(o: FuseCycleRunner.Outcome) = (o.livenessHold.upliftMgdl ?: 0.0) > 0.0
-
-    /** Mehrmenge AN minus AUS in [von, bis]. */
-    private fun mehrmenge(aus: List<FuseCycleRunner.Outcome>, an: List<FuseCycleRunner.Outcome>, von: Long, bis: Long) =
-        an.filter { minuteVon(it) in von..bis }.sumOf { it.decision.smbU } -
-            aus.filter { minuteVon(it) in von..bis }.sumOf { it.decision.smbU }
-
-    /** Vorbedingung gegen vakuose Pruefung: unmittelbar vor dem Wechsel hebt AN. */
-    private fun heberVorWechsel(an: List<FuseCycleRunner.Outcome>) =
-        assertTrue(an.any { minuteVon(it) == halteWechselMin - 1 && hebt(it) }, "Vorbedingung: Anhebung aktiv vor dem Wechsel")
-
-    /** Formen, die NACH dem Wechsel nicht weiter anhaltend steigen: Anhebung endet binnen Reaktionszeit, danach nie mehr. */
-    private fun endetNachWechsel(name: String, an: List<FuseCycleRunner.Outcome>, bisMin: Long = 60L) {
-        val nach = an.filter { minuteVon(it) in halteWechselMin..bisMin && hebt(it) }.map { minuteVon(it) }
-        println("HALTE $name: Anhebung nach dem Wechsel in Minuten $nach")
-        assertTrue(nach.all { it < halteWechselMin + halteReaktionMin }, "$name: Anhebung nach Reaktionszeit $nach")
-    }
-
-    @Test
-    fun `Halte-Anhebung 2 - Plateau beendet die Anhebung`(@TempDir dir: File) {
-        val form = { knick2AbMin = halteWechselMin.toInt(); steigungNachKnick2 = 0.0 }
-        val aus = halteLauf(dir, "plateau", false, 60, form = form)
-        val an = halteLauf(dir, "plateau", true, 60, form = form)
-        halteZeilen("plateau", aus, an)
-        halteGrundzusagen(aus, an)
-        heberVorWechsel(an)
-        endetNachWechsel("plateau", an)
-        assertTrue(mehrmenge(aus, an, halteWechselMin + halteReaktionMin, 60L) <= 1e-9, "im Plateau keine Mehrmenge")
-    }
-
-    @Test
-    fun `Halte-Anhebung 3 - Dip und Wiederanstieg brauchen neue Bestaetigung`(@TempDir dir: File) {
-        // Netto: bis 18 +2, 18-26 -2, ab 26 wieder +2 mg/dl/min.
-        val w = halteWechselMin.toDouble()
-        val form = { formZusatz = { m: Double -> if (m < w) 0.0 else if (m < w + 8.0) -(m - w) * 4.0 else -32.0 } }
-        val aus = halteLauf(dir, "dip", false, 60, form = form)
-        val an = halteLauf(dir, "dip", true, 60, form = form)
-        halteZeilen("dip", aus, an)
-        halteGrundzusagen(aus, an)
-        heberVorWechsel(an)
-        endetNachWechsel("dip", an, bisMin = halteWechselMin + 8)
-        // Nach dem Dip: jede neue Anhebung steht auf einer frischen Folge - irgendwo
-        // zwischen Dip und ihr liegt ein Zyklus mit Folge 1 (NOT_CONFIRMED).
-        val erste = an.firstOrNull { minuteVon(it) > halteWechselMin + 8 && hebt(it) }
-        println("HALTE dip: erste Anhebung nach dem Dip ${erste?.let { minuteVon(it) }}")
-        if (erste != null) assertTrue(
-            an.any { minuteVon(it) in (halteWechselMin + 1)..<minuteVon(erste) && it.livenessHold.streak < app.aaps.fuse.core.controller.MeasuredRiseEvidence.CONFIRM_BLOCKS },
-            "Wiederanstieg hebt erst nach neuer Bestaetigung",
-        )
-    }
-
-    @Test
-    fun `Halte-Anhebung 4 - nachhaltiges Fallen hebt nie`(@TempDir dir: File) {
-        val form = { knick2AbMin = halteWechselMin.toInt(); steigungNachKnick2 = -1.5 }
-        val aus = halteLauf(dir, "fallen", false, 60, form = form)
-        val an = halteLauf(dir, "fallen", true, 60, form = form)
-        halteZeilen("fallen", aus, an)
-        halteGrundzusagen(aus, an)
-        heberVorWechsel(an)
-        endetNachWechsel("fallen", an)
-        assertTrue(mehrmenge(aus, an, halteWechselMin + halteReaktionMin, 60L) <= 1e-9, "beim Fallen keine Mehrmenge")
-    }
-
-    /**
-     * Artefakte auf dem ANHALTENDEN Anstieg, gemessen gegen denselben Anstieg
-     * ohne Artefakt: die Mehrmenge AN-AUS darf im Artefaktfenster nicht
-     * groesser sein als ohne Artefakt.
-     *  A  Ausreisser +30 mg/dl bei min 28 - dort hebt der Anstieg NICHT
-     *     (Folge 0 seit min 24): der Ausreisser darf keine Anhebung starten.
-     *  B  Kompressionstief -35 mg/dl bei min 15-16 - mitten in der Anhebung.
-     */
-    @Test
-    fun `Halte-Anhebung 5 - Sensorartefakte heben nicht`(@TempDir dir: File) {
-        val refAus = halteLauf(dir, "ref", false, 45) {}
-        val refAn = halteLauf(dir, "ref", true, 45) {}
-
-        assertTrue(refAn.none { minuteVon(it) in 28L..34L && hebt(it) }, "Vorbedingung: ohne Artefakt keine Anhebung im Fenster")
-
-        // A1 grosser Ausreisser: die BESTEHENDE Schutzfunktion beendet den Lauf
-        // sofort (im Rig gesehen) - geprueft wird nur, dass die Anhebung dem
-        // nichts hinzufuegt. Das ist kein Nachweis ueber die Anhebung selbst.
-        val spike = { formZusatz = { m: Double -> if (m >= 28.0 && m < 29.0) 30.0 else 0.0 } }
-        val aAus = halteLauf(dir, "ausreisser", false, 45, form = spike)
-        val aAn = halteLauf(dir, "ausreisser", true, 45, form = spike)
-        halteZeilen("ausreisser", aAus, aAn)
-        halteGrundzusagen(aAus, aAn)
-        assertTrue(aAus.none { minuteVon(it) == 28L && it.livenessActive }, "Vorbedingung A1: der Schutz beendet den Lauf")
-        assertTrue(aAn.none { minuteVon(it) in 28L..34L && hebt(it) }, "A1: keine Anhebung")
-        assertTrue(mehrmenge(aAus, aAn, 28L, 45L) <= mehrmenge(refAus, refAn, 28L, 45L) + 1e-9, "A1: keine Mehrmenge")
-
-
-        // Kompression mitten in der messbestaetigten Anhebung (min 17-23).
-        val kompression = { formZusatz = { m: Double -> if (m >= 19.0 && m < 21.0) -35.0 else 0.0 } }
-        val kAus = halteLauf(dir, "kompression", false, 45, form = kompression)
-        val kAn = halteLauf(dir, "kompression", true, 45, form = kompression)
-        halteZeilen("kompression", kAus, kAn)
-        halteGrundzusagen(kAus, kAn)
-        assertTrue(kAn.any { minuteVon(it) == 18L && hebt(it) }, "Vorbedingung: Anhebung aktiv vor der Kompression")
-        assertTrue(mehrmenge(kAus, kAn, 19L, 45L) <= mehrmenge(refAus, refAn, 19L, 45L) + 1e-9, "Kompression: keine Mehrmenge")
-    }
-
-    // ---- GEGENFAELLE ZUM UMFANG (Tonis Review 15.09.): nur MEAL ----------
-
-    /** CORRECTION, sonst dieselbe Lage: keine Anhebung, Entscheidungen AN == AUS zeichengleich. */
-    @Test
-    fun `Halte-Anhebung Umfang 1 - CORRECTION hebt nie`(@TempDir dir: File) {
-        val mealAn = halteLauf(dir, "umfang", true, 45) {}
-        val aus = halteLauf(dir, "umfang", false, 45, meal = false) {}
-        val an = halteLauf(dir, "umfang", true, 45, meal = false) {}
-        halteZeilen("korrektur", aus, an)
-        halteGrundzusagen(aus, an)
-        assertTrue(mealAn.any { hebt(it) }, "Vorbedingung: dieselbe Form hebt unter MEAL")
-        val aktiv = an.filter { it.livenessActive && it.livenessHold.upliftMgdl != null }
-        assertTrue(aktiv.size >= 5, "Vorbedingung: der Kanal rechnet im Korrekturprofil")
-        aktiv.forEach {
-            assertEquals("CORRECTION", it.livenessProfile)
-            assertEquals("NOT_MEAL_AUTHORIZED", it.livenessHold.denial, "min ${minuteVon(it)}")
-        }
-        assertTrue(an.none { hebt(it) }, "CORRECTION hebt nie")
-        assertEquals(aus.map { bitgleichZeile(it) }, an.map { bitgleichZeile(it) }, "AN == AUS im Korrekturprofil")
-    }
-
-    /**
-     * Autorisierungsverlust mitten in der Anhebung, zwei Wege:
-     *  a) Frist endet: Marker min 8 + kleinste zulaessige Frist 15 min -> min 23
-     *     (die Anhebung des Anstiegs laeuft bis min 23),
-     *  b) Ruecknahme des Markers bei min 18.
-     * Ab dem Verlust keine Anhebung; wo die Anhebung ausgewertet wird, steht
-     * NOT_MEAL_AUTHORIZED mit Folge 0.
-     */
-    @Test
-    fun `Halte-Anhebung Umfang 2 - Autorisierungsverlust setzt zurueck`(@TempDir dir: File) {
-        fun pruefe(name: String, l: List<FuseCycleRunner.Outcome>, verlustMin: Long) {
-            halteZeilen(name, l, l)
-            assertTrue(l.any { minuteVon(it) == verlustMin - 1 && hebt(it) }, "$name Vorbedingung: Anhebung vor dem Verlust")
-            val nach = l.filter { minuteVon(it) >= verlustMin }
-            assertTrue(nach.none { hebt(it) }, "$name: nach dem Verlust keine Anhebung")
-            val rechnend = nach.filter { it.livenessHold.upliftMgdl != null }
-            rechnend.forEach {
-                assertEquals("NOT_MEAL_AUTHORIZED", it.livenessHold.denial, "$name min ${minuteVon(it)}")
-                assertEquals(0, it.livenessHold.streak)
-            }
-            println("HALTE $name: rechnende Zyklen nach dem Verlust ${rechnend.size}, Profile ${nach.map { it.livenessProfileReason }.distinct()}")
-        }
-        val frist = halteLauf(dir, "frist", true, 40) { mealPowerMin = 15 }
-        pruefe("frist", frist, halteMarkerZyklus + 15L)
-        val ruecknahme = halteLauf(dir, "ruecknahme", true, 40, vorZyklus = { i -> if (i == halteWechselMin.toInt()) markerAt = 0L }) {}
-        pruefe("ruecknahme", ruecknahme, halteWechselMin)
-    }
-
-    /** Markerwechsel (neuer Druck bei min 18, mitten in der Anhebung): die Folge beginnt neu. */
-    @Test
-    fun `Halte-Anhebung Umfang 3 - Markerwechsel setzt die Bestaetigung zurueck`(@TempDir dir: File) {
-        val an = halteLauf(dir, "wechsel", true, 40, vorZyklus = { i -> if (i == halteWechselMin.toInt()) markerAt = clock + taktMs }) {}
-        halteZeilen("wechsel", an, an)
-        assertTrue(an.any { minuteVon(it) == halteWechselMin - 1 && hebt(it) }, "Vorbedingung: Anhebung vor dem Wechsel")
-        val beimWechsel = an.first { minuteVon(it) == halteWechselMin }
-        assertEquals(beimWechsel.computeTs, beimWechsel.markerPowerPinnedFor, "Vorbedingung: der neue Marker ist gepinnt")
-        assertTrue(!hebt(beimWechsel), "im Wechselzyklus keine Anhebung")
-        assertTrue(beimWechsel.livenessHold.streak <= 1, "Folge neu: ${beimWechsel.livenessHold.streak}")
-        // Im Rig beendet der Markerwechsel den Liveness-Lauf selbst (Exit
-        // MARKER_CHANGED), die Anhebung wird im Wechselzyklus gar nicht
-        // ausgewertet - die Folge ist schon durch das Nullen am Zyklusbeginn
-        // weg. Der Identitaetsvergleich ist hier zweite Sicherung; direkt
-        // geprueft wird er im Kerntest.
-        val erste = an.firstOrNull { minuteVon(it) > halteWechselMin && hebt(it) }
-        println("HALTE wechsel: Wechselzyklus hold=${beimWechsel.livenessHold.denial} exit=${beimWechsel.livenessExit}, erste Anhebung danach ${erste?.let { minuteVon(it) }}")
-        if (erste != null) assertTrue(
-            an.any { minuteVon(it) in halteWechselMin..<minuteVon(erste) && it.livenessHold.streak < app.aaps.fuse.core.controller.MeasuredRiseEvidence.CONFIRM_BLOCKS },
-            "nach dem Wechsel erst neue Bestaetigung",
-        )
-    }
-
-    // ---- MESSBESTAETIGUNG (Tonis Vertrag 15.09. abends) --------------------
-
-    /** Bedarf dieses Zyklus erfuellt (bewaffnet, MEAL, bereinigte Rate >= Antrieb) - unabhaengig von der Messbestaetigung. */
-    private fun bedarfErfuellt(o: FuseCycleRunner.Outcome) =
-        o.livenessActive && o.livenessProfile == "MEAL" &&
-            (o.livenessHold.denial == null || o.livenessHold.denial == "MEASURED_NOT_CONFIRMED")
-
-    /** Minute, ab der die FRUEHERE Regel (Bedarf in zwei Zyklen in Folge) gehoben haette.
-     *  Gueltig bis zur ersten Anhebung des Laufs - bis dahin sind AN und AUS gleich. */
-    private fun alteRegelAb(l: List<FuseCycleRunner.Outcome>, von: Long = 0L, bis: Long = Long.MAX_VALUE) =
-        l.indices.firstOrNull { minuteVon(l[it]) in von..bis && it > 0 && bedarfErfuellt(l[it]) && bedarfErfuellt(l[it - 1]) }
-            ?.let { minuteVon(l[it]) }
-
-    /**
-     * GEGENBEFUND, DOKUMENTIERT (15.09.): ein kleiner Sprung (+8 mg/dl, zwei
-     * Messwerte) UNTER der Schutzschwelle traegt den BGI-bereinigten Bedarf in
-     * zwei Zyklen hintereinander - die fruehere Ratenbestaetigung hob damit
-     * (min 29). Die Schwaeche der RATE bleibt hier sichtbar festgehalten;
-     * geprueft wird zusaetzlich, dass die Messbestaetigung ihn abweist.
-     */
-    @Test
-    fun `Halte-Anhebung Gegenbefund - kleiner Sensorsprung traegt den Bedarf, die Messbestaetigung weist ihn ab`(@TempDir dir: File) {
-        val sprung = { formZusatz = { m: Double -> if (m >= 28.0 && m < 30.0) 8.0 else 0.0 } }
-        val refAn = halteLauf(dir, "ref", true, 45) {}
-        val sAus = halteLauf(dir, "sprung", false, 45, form = sprung)
-        val sAn = halteLauf(dir, "sprung", true, 45, form = sprung)
-        halteZeilen("sprung", sAus, sAn)
-        halteGrundzusagen(sAus, sAn)
-        assertTrue(sAus.count { minuteVon(it) in 28L..30L && it.livenessActive } == 3, "Vorbedingung: Kanal bewaffnet, als der Sprung kommt")
-        assertTrue(alteRegelAb(refAn, 28L, 34L) == null, "Vorbedingung: ohne Sprung traegt der Bedarf im Fenster nicht")
-        val alt = alteRegelAb(sAn, 28L, 34L)
-        assertTrue(alt != null, "Gegenbefund: der Sprung traegt den Bedarf zwei Zyklen in Folge")
-        val sprungHebt = sAn.filter { minuteVon(it) in 28L..34L && hebt(it) }.map { minuteVon(it) }
-        println("HALTE sprung: alte Regel haette ab min $alt gehoben, Messbestaetigung hebt in $sprungHebt")
-        assertTrue(sprungHebt.isEmpty(), "die Messbestaetigung weist den kleinen Sprung ab")
-    }
-
-    /**
-     * Verzoegerung bei ECHTEN Anstiegen: erste Anhebung mit Messbestaetigung
-     * gegen die Minute, ab der die fruehere Ratenregel gehoben haette. Eine
-     * Bestaetigung, die den fruehen Nutzen verliert, erfuellt das Ziel nicht -
-     * deshalb wird die Verzoegerung gemessen und ausgegeben, nicht versteckt.
-     */
-    @Test
-    fun `Halte-Anhebung Messbestaetigung 1 - Verzoegerung bei echten Anstiegen`(@TempDir dir: File) {
-        val faelle = listOf<Pair<String, () -> Unit>>(
-            "anstieg" to {},
-            "langsam" to { steigungNachKnick = 1.2 },
-            "rauschen" to { formZusatz = { m: Double -> if (kotlin.math.floor(m).toInt() % 2 == 0) 1.5 else -1.5 } },
-        )
-        var mitAnhebung = 0
-        for ((name, form) in faelle) {
-            val aus = halteLauf(dir, "verz_$name", false, 45, form = form)
-            val an = halteLauf(dir, "verz_$name", true, 45, form = form)
-            halteZeilen("verz_$name", aus, an)
-            halteGrundzusagen(aus, an)
-            val alt = alteRegelAb(an)
-            val neu = an.firstOrNull { hebt(it) }?.let { minuteVon(it) }
-            println(
-                "HALTE verzoegerung $name: alte Ratenregel ab min $alt, Messbestaetigung ab min $neu, " +
-                    "Verzoegerung ${if (alt != null && neu != null) neu - alt else null} min, hebende Zyklen ${an.count { hebt(it) }}, " +
-                    "Mehrmenge bis min 30 ${"%.2f".format(mehrmenge(aus, an, 0L, 30L))} U, gesamt ${"%.2f".format(mehrmenge(aus, an, 0L, 45L))} U",
-            )
-            if (neu != null) {
-                mitAnhebung++
-                assertTrue(alt != null && neu >= alt, "$name: die Messbestaetigung hebt nie frueher als die alte Regel")
-            }
-        }
-        assertTrue(mitAnhebung >= 1, "positiver Nachweis: mindestens ein echter Anstieg hebt mit Messbestaetigung")
-    }
-
-    /**
-     * Artefakte auf dem anhaltenden Anstieg im Fenster, in dem der Bedarf ohne
-     * Artefakt NICHT traegt (ab min 24). Vergleich jeweils AUS/AN und gegen die
-     * artefaktfreie Referenz. Zwei Klassen:
-     *  - ABZUWEISEN: Kompressionserholung (Tief -25, Rueckkehr ueber 5 min) -
-     *    waehrend der Rueckkehr keine Anhebung,
-     *  - NICHT UNTERSCHEIDBAR (dokumentiert, nicht als abgewiesen behauptet):
-     *    mehrstufiger Sprung im Blocktakt und langsame Artefaktrampe - sie
-     *    bilden neue Hochs wie ein echter Anstieg. Geprueft wird nur, dass die
-     *    Mehrmenge durch die Kappe begrenzt bleibt.
-     */
-    @Test
-    fun `Halte-Anhebung Messbestaetigung 2 - mehrstufige Spruenge, Artefaktrampe, Kompressionserholung`(@TempDir dir: File) {
-        val refAus = halteLauf(dir, "art_ref", false, 45) {}
-        val refAn = halteLauf(dir, "art_ref", true, 45) {}
-        assertTrue(refAn.none { minuteVon(it) in 27L..40L && hebt(it) }, "Vorbedingung: ohne Artefakt keine Anhebung im Fenster")
-
-        fun lauf(name: String, zusatz: (Double) -> Double): Pair<List<FuseCycleRunner.Outcome>, List<FuseCycleRunner.Outcome>> {
-            val aus = halteLauf(dir, name, false, 45) { formZusatz = zusatz }
-            val an = halteLauf(dir, name, true, 45) { formZusatz = zusatz }
-            halteZeilen(name, aus, an)
-            halteGrundzusagen(aus, an)
-            val hebend = an.filter { minuteVon(it) in 27L..45L && hebt(it) }.map { minuteVon(it) }
-            println(
-                "HALTE $name: alte Ratenregel ab min ${alteRegelAb(an, 27L, 45L)}, Anhebung in $hebend, " +
-                    "Mehrmenge 27-45 ${"%.2f".format(mehrmenge(aus, an, 27L, 45L))} U (Referenz ${"%.2f".format(mehrmenge(refAus, refAn, 27L, 45L))} U), " +
-                    "Kanal aktiv ${aus.count { minuteVon(it) in 27L..45L && it.livenessActive }} Zyklen",
-            )
-            return aus to an
-        }
-
-        // Kompressionserholung GROSS (-25 bei min 28-29, Rueckkehr min 30-35): im Rig
-        // beendet der bestehende Schutz den Kanal - kein Nachweis ueber die Anhebung.
-        val (kAus, kAn) = lauf("kompr_erholung") { m ->
-            when {
-                m < 28.0 -> 0.0
-                m < 30.0 -> -25.0
-                m < 35.0 -> -25.0 + (m - 30.0) * 5.0
-                else -> 0.0
-            }
-        }
-        assertTrue(kAn.none { minuteVon(it) in 30L..35L && hebt(it) }, "keine Anhebung waehrend der Kompressionserholung")
-        assertTrue(mehrmenge(kAus, kAn, 27L, 45L) <= mehrmenge(refAus, refAn, 27L, 45L) + 1e-9, "Kompressionserholung: keine Mehrmenge")
-        // Kompressionserholung KLEIN (-10 bei min 28-29, Rueckkehr min 30-35). Auch hier
-        // beendet der bestehende Wendeausstieg den Kanal (TURN_EXIT, Sperre bis ~min 37) -
-        // die Anhebung selbst wird nicht erreicht. Geprueft wird deshalb die
-        // MESSBESTAETIGUNG direkt, die unabhaengig vom Kanal fortgeschrieben wird: waehrend
-        // Tief und Erholung bis unter das alte Niveau keine Bestaetigung. Danach (neues Hoch
-        // durch den weiterlaufenden echten Anstieg) ist sie nicht zu trennen - dokumentiert.
-        val (kkAus, kkAn) = lauf("kompr_klein") { m ->
-            when {
-                m < 28.0 -> 0.0
-                m < 30.0 -> -10.0
-                m < 35.0 -> -10.0 + (m - 30.0) * 2.0
-                else -> 0.0
-            }
-        }
-        val bestaetigung = app.aaps.fuse.core.controller.MeasuredRiseEvidence.CONFIRM_BLOCKS
-        assertTrue(kkAn.count { minuteVon(it) in 28L..34L && it.livenessHold.evidenceDenial != null } >= 5, "Vorbedingung: die Messbestaetigung wird im Fenster ausgewertet")
-        assertTrue(kkAn.none { minuteVon(it) in 28L..34L && it.livenessHold.streak >= bestaetigung }, "kleine Kompression: keine Messbestaetigung waehrend Tief und Erholung")
-        println("HALTE kompr_klein: Messbestaetigung ab min ${kkAn.firstOrNull { minuteVon(it) > 34L && it.livenessHold.streak >= bestaetigung }?.let { minuteVon(it) }} (nicht unterscheidbar: neues Hoch durch den echten Anstieg), Kanal-Exits ${kkAus.mapNotNull { it.livenessExit }.distinct()}")
-        assertTrue(mehrmenge(kkAus, kkAn, 27L, 45L) <= kkAn.count { hebt(it) } * (0.35 * app.aaps.fuse.core.controller.LivenessDriveHold.UPLIFT_CAP_MGDL / refAn.mapNotNull { it.isfMgdlPerU }.minOrNull()!! + 0.05) + 1e-9, "kleine Kompression: Mehrmenge durch die Kappe begrenzt")
-
-        val isf = refAn.mapNotNull { it.isfMgdlPerU }.minOrNull()!!
-        val proZyklus = 0.35 * app.aaps.fuse.core.controller.LivenessDriveHold.UPLIFT_CAP_MGDL / isf + 0.05
-        // NICHT UNTERSCHEIDBAR: gehaltene Stufen +5/+10/+15 im 3-min-Blocktakt.
-        val (sAus, sAn) = lauf("stufen_blocktakt") { m -> if (m < 27.0) 0.0 else if (m < 30.0) 5.0 else if (m < 33.0) 10.0 else 15.0 }
-        assertTrue(mehrmenge(sAus, sAn, 27L, 45L) <= sAn.count { hebt(it) } * proZyklus + 1e-9, "Stufen: Mehrmenge durch die Kappe begrenzt")
-        // NICHT UNTERSCHEIDBAR: langsame Artefaktrampe +1 mg/dl/min ueber 12 min, dann gehalten.
-        val (rAus, rAn) = lauf("artefaktrampe") { m -> if (m < 27.0) 0.0 else if (m < 39.0) m - 27.0 else 12.0 }
-        assertTrue(mehrmenge(rAus, rAn, 27L, 45L) <= rAn.count { hebt(it) } * proZyklus + 1e-9, "Rampe: Mehrmenge durch die Kappe begrenzt")
-    }
-
-    /** Luecke (> 3 min) und Kalibrierwechsel mitten in der Anhebung beginnen die Bestaetigung neu. */
-    @Test
-    fun `Halte-Anhebung Messbestaetigung 3 - Luecke und Kalibrierwechsel beginnen neu`(@TempDir dir: File) {
-        fun pruefe(name: String, an: List<FuseCycleRunner.Outcome>, bruchMin: Long) {
-            halteZeilen(name, an, an)
-            assertTrue(an.any { minuteVon(it) == bruchMin - 1 && hebt(it) }, "$name Vorbedingung: Anhebung vor dem Bruch")
-            val nach = an.filter { minuteVon(it) >= bruchMin }
-            // Nach dem Bruch braucht die Bestaetigung zwei frische Bloecke ueber einem neuen Bezug:
-            // mindestens neun neue Werte - vorher keine Anhebung.
-            val erste = nach.firstOrNull { hebt(it) }?.let { minuteVon(it) }
-            println("HALTE $name: erste Anhebung nach dem Bruch bei min $erste, Belege ${nach.take(12).map { it.livenessHold.evidenceDenial }}")
-            assertTrue(nach.filter { minuteVon(it) < bruchMin + 6 }.none { hebt(it) }, "$name: keine Anhebung vor neuer Bestaetigung")
-            assertTrue(nach.any { it.livenessHold.streak == 0 }, "$name: die Folge beginnt neu")
-        }
-        // Bruch bei min 19 - mitten in der messbestaetigten Anhebung des Anstiegs (min 17-23).
-        val luecke = halteLauf(dir, "luecke", true, 45) { lueckeVonMin = 19; lueckeBisMin = 24 }
-        pruefe("luecke", luecke, 19L)
-        val kalib = halteLauf(dir, "kalibrierung", true, 45, vorZyklus = { m -> if (m == 19 && kalibrierStart < 0L) kalibrierStart = clock }) {}
-        pruefe("kalibrierung", kalib, 19L)
-    }
-
-    /** Doppelt so viele Loop-Laeufe ueber dieselben CGM-Werte bestaetigen nicht frueher. */
-    @Test
-    fun `Halte-Anhebung Messbestaetigung 4 - zusaetzliche Loop-Laeufe mit denselben Daten zaehlen nicht`(@TempDir dir: File) {
-        val einfach = halteLauf(dir, "takt", true, 45) {}
-        val doppelt = halteLauf(dir, "takt", true, 45, loopTaktMs = 30_000L) {}
-        halteZeilen("takt30", doppelt, doppelt)
-        fun bestaetigtAb(l: List<FuseCycleRunner.Outcome>) =
-            l.firstOrNull { it.livenessHold.streak >= app.aaps.fuse.core.controller.MeasuredRiseEvidence.CONFIRM_BLOCKS }
-                ?.let { (it.computeTs - start) / 1000L }
-        val e = bestaetigtAb(einfach)
-        val d = bestaetigtAb(doppelt)
-        println("HALTE takt: bestaetigt ab s $e (60-s-Loop) / $d (30-s-Loop)")
-        assertTrue(e != null && d != null, "Vorbedingung: beide Laeufe bestaetigen")
-        assertTrue(d!! >= e!!, "der doppelte Loop-Takt bestaetigt nicht frueher")
-        // Im Rig bricht der Runner Laeufe ohne neuen CGM-Wert bereits vorher ab (keine
-        // Auswertung) - die Zaehlung der Messbestaetigung selbst prueft der Kerntest.
-        // Hier: die Folge waechst nur mit abgeschlossenen Bloecken, also frueestens alle
-        // drei CGM-Werte - auch wenn doppelt so oft gerechnet wird.
-        val gerechnet = doppelt.filter { it.livenessHold.evidenceDenial != null || it.livenessHold.streak > 0 }
-        val zuwachsTs = gerechnet.zipWithNext().filter { (a, b) -> b.livenessHold.streak > a.livenessHold.streak }.map { it.second.computeTs }
-        val abstaende = zuwachsTs.zipWithNext { a, b -> (b - a) / 1000L }
-        println("HALTE takt: Zuwachs-Abstaende s $abstaende, ausgewertete Laeufe ${gerechnet.size} von ${doppelt.size}")
-        assertTrue(zuwachsTs.isNotEmpty(), "Vorbedingung: die Folge waechst im doppelten Takt")
-        assertTrue(abstaende.all { it >= 3 * 60L - 1 }, "Zuwachs hoechstens je drei neue CGM-Werte: $abstaende")
-    }
+    // Konsolidierung 2.0: die Halte-Anhebung im Kanalbedarf und ihre Messbestaetigung sind entfallen (sie wirkten nur
+    // im Mahlzeitkontext ohne Konto).
 
     private fun livenessLage(dir: File): FuseLedgerAdapter {
         livenessAn = true
@@ -6184,88 +3945,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
         neuerRunner(adapter)
         return adapter
-    }
-
-    /**
-     * M2 (Bauauftrag 7.5.2, Toni 29.08.): DER FOUNDATION-TROPF DARF DIE
-     * BEWAFFNUNG NICHT MASKIEREN.
-     *
-     * Livefall zweimal gemessen (an zwei Fruehstuecken): der kleinste
-     * Phase-B-Schritt (plus MarkerFloor-Restauration nach dem Guard-Veto)
-     * machte aus GUARD_FLOOR ein publiziertes NONE, und das Bewaffnungstor
-     * las NORMAL_PATH_OPEN - ausgerechnet im Streak-3-Zyklus. Dieses Rig
-     * stellt den Tropf DICHT (Phase-B-Budget 2,0 U ueber 40 min = ein
-     * Schritt je Zyklus): unter dem alten Tor waere JEDER Druckzyklus
-     * maskiert und der Kanal bewaffnete waehrend des gesamten Tropfs nie.
-     * Die Mutation (Tor zurueck auf den publizierten Block) macht genau
-     * dieses Rig rot - beide Asserts.
-     */
-    @Test
-    fun `M2 - der Foundation-Tropf maskiert die Bewaffnung nicht mehr`(@TempDir dir: File) {
-        livenessAn = true
-        corrExpLimit = 7.2; mealExpLimit = 7.2 // frueher 90 % x maxIOB 8
-        livenessBgMin = 160.0
-        livenessReArmMin = 10
-        tailGuard = true
-        fundamentAn = true
-        fundamentAnteil = 0.5
-        upfrontAnteil = 0.0
-        primeHuelleU = 4.0
-        fundamentEndeMin = 60
-        markerAuthorized = true
-        // Rig-Falle: unstubbt faellt PrimeWindowMin auf 15 zurueck - hier
-        // ausdruecklich der Geraetewert, damit Phase B ab Minute 22 laeuft.
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
-        // Ruhiger Unterlauf, Knick AUFWAERTS (der Filter konvergiert von
-        // unten - keine Scheinwende), die 160er-Schwelle faellt in Phase B.
-        flach = 150.0
-        steigungProMin = 0.2
-        knickAbMin = 18
-        steigungNachKnick = 1.4
-        knick2AbMin = null
-        bolusIobU = 4.5
-        clock = start
-        markerAt = start + 2 * 60_000L
-        transportReset()
-        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
-        neuerRunner(adapter)
-
-        var armZyklus: FuseCycleRunner.Outcome? = null
-        var maskiert = 0
-        var liftImDruck = false
-        repeat(50) {
-            val o = cycle()
-            if (o.livenessDenial == "NORMAL_PATH_OPEN" &&
-                o.underlyingNormalBlock in listOf("GUARD_FLOOR", "TAIL")
-            ) maskiert++
-            if (!o.livenessActive && o.livenessStreak > 0 && o.foundationLiftU > 0.0) liftImDruck = true
-            if (armZyklus == null && o.livenessActive) armZyklus = o
-        }
-        // Vorbedingung des Rigs: die Ziel-Konstellation wurde erreicht -
-        // mindestens ein Druckzyklus trug wirklich einen Foundation-Schritt.
-        assertTrue(liftImDruck, "der Aufbau MUSS Druckzyklen mit Foundation-Schritt erzeugen")
-        assertTrue(armZyklus != null, "der Kanal MUSS sich trotz laufendem Tropf bewaffnen")
-        assertEquals(
-            0, maskiert,
-            "kein Zyklus darf mit verdecktem GUARD/TAIL als NORMAL_PATH_OPEN abgelehnt werden",
-        )
-        // DIE GEMEINSAME BESTAETIGUNG AM ERSTEN BEWAFFNETEN ZYKLUS (Toni
-        // 29.08.): exakt die Live-Signatur der Maskierung - Streak 3
-        // (erster armierbarer Zyklus, nichts davor verloren), ein
-        // Foundation-Schritt IN diesem Zyklus, unterliegend GUARD/TAIL,
-        // publizierter Block offen. Unter dem alten Tor waere genau dieser
-        // Zyklus NORMAL_PATH_OPEN gewesen.
-        val arm = armZyklus!!
-        assertEquals(3, arm.livenessStreak, "bewaffnet im ERSTEN armierbaren Zyklus")
-        assertTrue(arm.foundationLiftU > 0.0, "der Bewaffnungszyklus traegt einen Foundation-Schritt")
-        assertTrue(
-            arm.underlyingNormalBlock in listOf("GUARD_FLOOR", "TAIL"),
-            "unterliegend im Deadlock: ${arm.underlyingNormalBlock}",
-        )
-        assertEquals(
-            FuseController.Block.NONE, arm.decision.block,
-            "und der publizierte Block ist offen - die Maskierungs-Signatur",
-        )
     }
 
     /**
@@ -6313,54 +3992,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
         assertTrue(mealGesehen, "die gepinnte Markervollmacht MUSS als MEAL-Kontext erscheinen - gesehen: $gesehen")
         assertTrue(letzter!!.dosingContextProfile != null, "kein Zyklus ohne Kontextentscheidung")
-    }
-
-    /**
-     * M1 (Bauauftrag 7.5.1): unter GUELTIGER MEAL-Vollmacht gilt die eigene
-     * MEAL-Druckschwelle - der Kanal bewaffnet UNTERHALB der Tagesschwelle.
-     * Beleg: ein 55-min-Loch an einem Abend, 35 min an einem Fruehstueck -
-     * die Korrektur-Schwelle blockte die Druckzaehlung unter stehender
-     * Vollmacht. Die Prime-Drip-Zyklen des offenen Markerfensters maskieren
-     * dank M2 (underlyingNormalBlock) nicht mehr.
-     */
-    @Test
-    fun `M1 - die MEAL-Schwelle bewaffnet unterhalb der Tagesschwelle`(@TempDir dir: File) {
-        livenessAn = true
-        corrExpLimit = 7.2; mealExpLimit = 7.2 // frueher 90 % x maxIOB 8
-        livenessBgMin = 160.0
-        livenessReArmMin = 10
-        tailGuard = true
-        markerAuthorized = true
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
-        mealBgMin = 120.0
-        flach = 100.0
-        steigungProMin = 0.3
-        knickAbMin = 12
-        steigungNachKnick = 1.2
-        knick2AbMin = null
-        bolusIobU = 4.5
-        clock = start
-        transportReset()
-        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
-        neuerRunner(adapter)
-
-        // Erst gesunde Zyklen, DANN der Druck (vorgefundene Marker pinnen nie).
-        repeat(7) { cycle() }
-        markerAt = clock + 60_000L
-
-        var armZyklus: FuseCycleRunner.Outcome? = null
-        repeat(40) {
-            val o = cycle()
-            if (armZyklus == null && o.livenessActive) armZyklus = o
-        }
-        assertTrue(armZyklus != null, "der Kanal MUSS unter der Vollmacht bewaffnen")
-        val arm = armZyklus!!
-        assertTrue(
-            arm.signal!!.q1 < 160.0,
-            "und zwar UNTERHALB der Tagesschwelle: q1=${arm.signal!!.q1}",
-        )
-        assertEquals("MEAL", arm.livenessBgMinSource, "die wirksame Schwelle ist die MEAL-Schwelle")
-        assertEquals(120.0, arm.livenessBgMinEffectiveMgdl!!, 1e-9)
     }
 
     /** GEGENPROBE: ohne Vollmacht bleibt die Tagesschwelle - dieselbe Lage
@@ -6426,21 +4057,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         repeat(7) { cycle() }
         markerAt = clock + 60_000L
         return adapter
-    }
-
-    /** M3 (Bauauftrag 7.5.5), Pflichtfall 1: MealArmCycles = 1 bewaffnet
-     *  unter der Vollmacht im ERSTEN Druckzyklus. */
-    @Test
-    fun `M3 - ein Zyklus bewaffnet unter Vollmacht sofort`(@TempDir dir: File) {
-        mealArmZyklen = 1
-        m3Lage(dir)
-        var armZyklus: FuseCycleRunner.Outcome? = null
-        repeat(40) {
-            val o = cycle()
-            if (armZyklus == null && o.livenessActive) armZyklus = o
-        }
-        assertTrue(armZyklus != null, "der Kanal MUSS bewaffnen")
-        assertEquals(1, armZyklus!!.livenessStreak, "im ERSTEN Druckzyklus")
     }
 
     /** M3, Pflichtfall 3: der Default 3 ist der Altbestand - bewaffnet wird
@@ -6550,46 +4166,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         return adapter
     }
 
-    /**
-     * P1 v45, Positivfall: das markergebundene Rebound-Sonderrecht
-     * entwaffnet auch das HARTE Liveness-Tor. Vorher blieb der Kanal in
-     * genau dieser Lage jeden Zyklus `EXCLUDED/REBOUND_ACTIVE`, waehrend
-     * der Normalpfad laengst entwaffnet und dann GUARD-geschlossen war -
-     * die serielle Blockade des Livefalls (hoher q1, steiles r, reichlich freier
-     * MEAL-Headroom, keine Abgabe). Die Mutation `reboundRaw ->
-     * REBOUND_ACTIVE` (ohne Sonderrechtspruefung) macht diesen Test rot.
-     */
-    @Test
-    fun `P1 - das Rebound-Sonderrecht entwaffnet auch das Liveness-Tor`(@TempDir dir: File) {
-        val adapter = reboundOverrideLage(dir)
-        var armZyklus: FuseCycleRunner.Outcome? = null
-        var liftZyklus: FuseCycleRunner.Outcome? = null
-        repeat(60) {
-            val o = cycle()
-            // Solange das Sonderrecht gilt, darf das Tor nie mit dem ROHEN
-            // Fenster sperren - der Kern des Fixvertrags.
-            if (o.evidenceMayOverrideRebound) assertTrue(
-                o.livenessProfileReason != "REBOUND_ACTIVE",
-                "Tor liest das Rohsignal statt des Sonderrechts (Zyklus $it)",
-            )
-            if (armZyklus == null && o.livenessActive) armZyklus = o
-            if (liftZyklus == null && o.livenessLiftU > 0.0) liftZyklus = o
-        }
-        val arm = armZyklus ?: throw AssertionError("der Kanal MUSS unter dem Sonderrecht bewaffnen")
-        assertTrue(arm.evidenceMayOverrideRebound, "die Bewaffnung steht auf dem Sonderrecht")
-        assertTrue(
-            (arm.state?.reboundRestMin ?: 0) > 0,
-            "und zwar IM rohen Rebound-Fenster - sonst prueft der Fall nichts",
-        )
-        assertTrue(adapter.episodes.markerPowerPinnedFor > 0L, "der MEAL-Pin steht")
-        val lift = liftZyklus ?: throw AssertionError("ein positiver Liveness-Lift MUSS entstehen")
-        assertEquals(
-            LivenessChannel.quantize(lift.livenessCandidateU, 0.05), lift.decision.smbU, 1e-9,
-            "der Kanal-Kandidat traegt die Endmenge",
-        )
-        assertEquals("LIVENESS", lift.exposureRequestedSource, "typisierte Quelle der Endmenge")
-    }
-
     /** Gegenproben 1+8: OHNE Marker (CORRECTION, kein Kredit, kein Pin)
      *  bleibt das Tor im ganzen rohen Fenster scharf - Druck hin oder her.
      *  Tagesschwelle hier 140, damit Druckzyklen INS Fenster fallen. */
@@ -6631,30 +4207,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(0L, adapter.episodes.markerPowerPinnedFor, "der Power-Pin bleibt leer")
     }
 
-    /** Gegenprobe 2: nach ABLAUF der Sonderrechtsfrist sperrt das rohe
-     *  Fenster wieder - auch wenn der Kredit weiter fliesst. Frist 12 min:
-     *  der Druck (q1 > 120) entsteht erst NACH dem Ablauf. */
-    @Test
-    fun `P1 - nach Fristablauf sperrt das Rebound-Tor wieder`(@TempDir dir: File) {
-        reboundOverrideLage(dir)
-        reboundOverrideMaxMin = 15
-        var sonderrechtGesehen = false
-        var wiederGesperrt = false
-        repeat(60) {
-            val o = cycle()
-            if (o.evidenceMayOverrideRebound) sonderrechtGesehen = true
-            if (!o.evidenceMayOverrideRebound && (o.state?.reboundRestMin ?: 0) > 0 &&
-                o.livenessProfileReason == "REBOUND_ACTIVE"
-            ) wiederGesperrt = true
-            // NACH dem Fensterende ist Bewaffnung legitim - die Behauptung
-            // gilt IM rohen Fenster (dort ist das Sonderrecht abgelaufen).
-            if ((o.state?.reboundRestMin ?: 0) > 0 && !o.evidenceMayOverrideRebound)
-                assertTrue(!o.livenessActive, "nach Fristablauf darf im Fenster nie bewaffnet werden")
-        }
-        assertTrue(sonderrechtGesehen, "die Frist muss erst einmal GELTEN (sonst prueft der Fall nichts)")
-        assertTrue(wiederGesperrt, "nach dem Ablauf muss das rohe Fenster wieder sperren")
-    }
-
     /** Gegenprobe 4: die RUECKNAHME beendet das Sonderrecht sofort - der
      *  Kanal entwaffnet und das rohe Fenster sperrt wieder. */
     @Test
@@ -6676,119 +4228,6 @@ class TransportWiringTest : TestBaseWithProfile() {
             "REBOUND_ACTIVE", o.livenessProfileReason,
             "das rohe Fenster sperrt wieder",
         )
-    }
-
-    /**
-     * Sicherheitsproben 5+6: das Sonderrecht entwaffnet NUR das Rebound-Tor.
-     * Faellt die Kurve nach der Bewaffnung steil, beenden die GEMESSENEN
-     * Riegel (FALLING/DESCENT/LOW/LATCH/TURN) den Lauf trotz gueltigem
-     * Sonderrecht - kein Zyklus im Fall traegt einen Liveness-Lift.
-     * (MODEL_UNAVAILABLE/LEDGER_HOLD/SIGNAL/VIEW stehen in der when-Kette
-     * VOR der Rebound-Zeile und sind damit strukturell unumgehbar; sie sind
-     * aus diesem Rig nicht organisch ausloesbar - dieselbe dokumentierte
-     * Grenze wie bei den Predictor-Ablehnungen.)
-     */
-    @Test
-    fun `P1 - das Sonderrecht entwaffnet nur das Rebound-Tor, nicht die Gefahrenriegel`(@TempDir dir: File) {
-        val adapter = reboundOverrideLage(dir)
-        // Sanfter Fall VOR der Bewaffnungsschwelle 120 (Peak ~113): kein
-        // Lift-Abzug verfaelscht den Topf, und die Messriegel zuenden im
-        // Fall nacheinander (FALLING, dann Low-Naehe).
-        knick2AbMin = 24
-        steigungNachKnick2 = -0.8
-        repeat(15) { cycle() }
-        // Topf VORLADEN (etabliertes Rig-Idiom, wie der vorgeladene
-        // Prime-Verbrauch): organisch stirbt der einnahmegespeiste Kredit
-        // an der Wende FRUEHER, als die Messriegel zuenden - im Leben
-        // traegt ein grosser Mahlzeiten-Topf den Kredit ueber die Wende
-        // (im Livefall stand das Sonderrecht bei T+52 trotz mehrerer Einheiten Abzug). Der
-        // Test braucht genau diesen Ueberlapp: Sonderrecht GILT, und die
-        // Gefahrenriegel muessen trotzdem greifen.
-        adapter.episodes.evidenceState = adapter.episodes.evidenceState.copy(stockMgdl = 60.0)
-        val fallRiegel = setOf(
-            "FALLING", "DESCENT_RISK", "DESCENT_RISK_MARKER", "MEASURED_LOW", "LATCH_ACTIVE",
-        )
-        var riegelTrotzSonderrecht = false
-        repeat(45) {
-            val o = cycle()
-            if (o.evidenceMayOverrideRebound &&
-                (o.livenessProfileReason in fallRiegel || o.livenessExit in fallRiegel ||
-                    o.livenessExit == "TURN_EXIT")
-            ) riegelTrotzSonderrecht = true
-            if (o.livenessProfileReason in fallRiegel || o.livenessDenial in fallRiegel) assertTrue(
-                o.livenessLiftU == 0.0,
-                "unter einem Gefahrenriegel darf nie ein Lift entstehen (Zyklus $it)",
-            )
-        }
-        assertTrue(
-            riegelTrotzSonderrecht,
-            "mindestens ein gemessener Riegel muss TROTZ gueltigem Sonderrecht greifen",
-        )
-    }
-
-    /**
-     * FLASH-RELEVANTE WECHSELWIRKUNG (Tonis Review 30.08., ausdruecklich
-     * akzeptiert): mit v45 darf die Wiederbewaffnung nach einem manuellen
-     * NORMAL-Bolus bereits WAEHREND des entwaffneten Rebound-Fensters
-     * erfolgen, nicht erst nach dessen Ende - so im Pflichtfall (4 U
-     * manuell, kurze Sperre, danach eine weitere kleine Abgabe bei hohem Bolus-IOB).
-     * Drei Zusagen in einem Lauf:
-     *  1. innerhalb ReArmMin: MANUAL_INTERVENTION, kein Hub;
-     *  2. nach ReArmMin: Bewaffnung grundsaetzlich erlaubt - im noch
-     *     LAUFENDEN rohen Fenster (restMin > 0), unter geltendem
-     *     Sonderrecht;
-     *  3. das manuelle Bolus-IOB steht VOLLSTAENDIG im 7-U-MEAL-CAP:
-     *     der freie Kanalraum ist hoechstens 7,0 - capIob.
-     */
-    @Test
-    fun `P1 - Manualbolus im entwaffneten Fenster sperrt, dann traegt das CAP die Wiederbewaffnung`(@TempDir dir: File) {
-        reboundOverrideLage(dir)
-        var armZyklus: FuseCycleRunner.Outcome? = null
-        var zyklen = 0
-        while (zyklen < 45 && armZyklus == null) {
-            val o = cycle(); zyklen++
-            if (o.livenessActive) armZyklus = o
-        }
-        assertTrue(armZyklus != null, "die Lage muss erst bewaffnen (sonst prueft der Fall nichts)")
-        // Der Nutzer uebernimmt: 4 U NORMAL (wie im Pflichtfall); der statische
-        // Rig-IOB uebernimmt die Rolle des gewachsenen Bolus-IOB (5,5 in der
-        // Groessenordnung des Pflichtfalls). GEMESSEN (Rig-Debug): der Manualbolus
-        // bucht NICHT in den Evidenz-Topf - er wirkt ueber IOB und
-        // Deckungs-Abschlag; das Sonderrecht kann ihn daher ueberleben.
-        boluses = listOf(BS(timestamp = clock, amount = 4.0, type = BS.Type.NORMAL))
-        bolusIobU = 5.5
-        // 1. Innerhalb ReArmMin: nie bewaffnet, kein Hub - und der manuelle
-        // Riegel muss unter GELTENDEM Sonderrecht sichtbar greifen (nicht
-        // vom Rebound-Riegel maskiert; genau das prueft, dass die
-        // when-Kette den Manual-Check noch erreicht).
-        var manualRiegelGesehen = false
-        repeat(livenessReArmMin - 1) {
-            val x = cycle()
-            assertTrue(!x.livenessActive, "innerhalb ReArmMin darf nicht bewaffnet werden (Zyklus $it)")
-            assertEquals(0.0, x.livenessLiftU, 1e-9, "innerhalb ReArmMin kein Hub (Zyklus $it)")
-            if (x.evidenceMayOverrideRebound &&
-                (x.livenessDenial == "MANUAL_INTERVENTION" || x.livenessExit == "MANUAL_INTERVENTION")
-            ) manualRiegelGesehen = true
-        }
-        assertTrue(
-            manualRiegelGesehen,
-            "der manuelle Riegel muss unter geltendem Sonderrecht greifen",
-        )
-        // 2.+3. Nach ReArmMin: Wiederbewaffnung grundsaetzlich erlaubt -
-        // IM noch laufenden rohen Fenster (die ausdruecklich akzeptierte
-        // v45-Folge), und der freie Kanalraum traegt das manuelle
-        // Bolus-IOB vollstaendig im 7-U-MEAL-CAP.
-        var wieder: FuseCycleRunner.Outcome? = null
-        repeat(14) { val x = cycle(); if (wieder == null && x.livenessActive) wieder = x }
-        val w = wieder ?: throw AssertionError("nach ReArmMin muss die Bewaffnung grundsaetzlich erlaubt sein")
-        assertTrue((w.state?.reboundRestMin ?: 0) > 0, "und zwar IM noch laufenden rohen Fenster")
-        assertTrue(w.evidenceMayOverrideRebound, "unter geltendem Sonderrecht")
-        val frei = w.livenessHeadroomU ?: throw AssertionError("der Kanalraum muss beziffert sein")
-        assertTrue(
-            frei <= 7.0 - 5.5 + 1e-6,
-            "das manuelle Bolus-IOB steht vollstaendig im 7-U-CAP: frei $frei",
-        )
-        assertTrue(w.livenessLiftU <= frei + 1e-9, "kein Hub ueber den freien Raum")
     }
 
     // ---- P0 v46: Episodenstatistik bis zur MEAL-Deadline ------------------
@@ -7036,10 +4475,12 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /** B1: unter MEAL-Vollmacht gilt die MEAL-Grenze - dieselbe knappe
-     *  Correction-Grenze bindet dann nicht. */
+     *  Correction-Grenze bindet dann nicht. Konsolidierung 2.0: mit Konto -
+     *  ohne Konto gilt der Rueckfall (Probe darunter). */
     @Test
     fun `B1 - unter Vollmacht gilt die MEAL-Grenze im Gate`(@TempDir dir: File) {
         b1Lage(dir, corrLimit = 1.5)
+        kontoAn()
         markerAuthorized = true
         repeat(7) { cycle() }
         markerAt = clock + 60_000L
@@ -7059,6 +4500,30 @@ class TransportWiringTest : TestBaseWithProfile() {
             }
         }
         assertTrue(mealGeprueft, "die Vollmacht muss das Gate im MEAL-Profil erreichen")
+    }
+
+    /**
+     * RUECKFALL OHNE KONTO (Toni): dieselbe Lage, dieselbe Vollmacht, aber kein Konto - dann gilt die Korrekturgrenze
+     * wie ohne Marker. Die Vollmacht bleibt sichtbar, der Rueckfall steht mit Grund im Block.
+     */
+    @Test
+    fun `B1 - im Rueckfall ohne Konto gilt unter Vollmacht die Korrekturgrenze`(@TempDir dir: File) {
+        b1Lage(dir, corrLimit = 1.5)
+        markerAuthorized = true
+        repeat(7) { cycle() }
+        markerAt = clock + 60_000L
+        var geblockt = false
+        repeat(30) {
+            val o = cycle()
+            if (o.dosingContextProfile == "MEAL") {
+                assertEquals("NO_CURVE", o.erwartungskonto?.rueckfall, "der Rueckfall MUSS ausgewiesen sein")
+                if (o.exposureGateBindet == true) assertEquals(
+                    "correctionExposureLimit", o.exposureGateBinding, "im Rueckfall bindet die Korrekturgrenze",
+                )
+                if (o.decision.block == FuseController.Block.EXPOSURE_LIMIT) geblockt = true
+            }
+        }
+        assertTrue(geblockt, "die knappe Korrekturgrenze MUSS im Rueckfall unter der Vollmacht blocken")
     }
 
     /**
@@ -9168,6 +6633,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `eine belegte mahlzeit hinter der kinematik nimmt den schutz heraus`(@TempDir dir: File) {
         reversalLage(dir)
+        kontoAn()
         reversalAn = true
         reversalConfirmWert = 6
         markerAuthorized = true
@@ -9322,6 +6788,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `der marker nimmt der v-erholung den korrekturkontext`(@TempDir dir: File) {
         reversalLage(dir)
+        kontoAn()
         reversalAn = true
         val outs = (0 until 56).map { i ->
             // Druck an der Wende (Kurvenminimum 101 liegt auf Zyklus 33).
@@ -9466,7 +6933,8 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     /**
      * MEAL/CORRECTION-BAUAUFTRAG (Toni 23.08. nachts), Profilwahl: der
-     * Marker ist eine ZEITLICH BEGRENZTE Leistungsautorisierung. Kein
+     * Marker ist eine ZEITLICH BEGRENZTE Leistungsautorisierung (Konsolidierung
+     * 2.0: geprueft am Dosierkontext - der Kanal kennt kein MEAL-Profil mehr). Kein
      * Marker -> CORRECTION; beobachteter Marker -> MEAL mit gepinnter
      * Frist; exakt an der (halb offenen) Deadline -> CORRECTION mit
      * POWER_EXPIRED, obwohl der Marker (und damit die Evidenzepisode)
@@ -9478,15 +6946,17 @@ class TransportWiringTest : TestBaseWithProfile() {
         livenessLage(dir)
         repeat(6) { cycle() } // Signal-Warm-up: die ersten Zyklen aborten
         val o1 = cycle()
-        assertEquals("CORRECTION", o1.livenessProfile)
-        assertEquals("NO_MARKER", o1.livenessProfileReason)
+        assertEquals("CORRECTION", o1.dosingContextProfile)
+        assertEquals("NO_MARKER", o1.dosingContextReason)
 
         markerAt = clock // beobachteter Wechsel
         // Der ERSTE Zyklus nach dem Druck ist die Evidenz-Rebase (EXCLUDED-
         // Blip, bestehendes v18-Verhalten) - danach gilt MEAL.
         repeat(2) { cycle() }
         val o2 = cycle()
-        assertEquals("MEAL", o2.livenessProfile, "Grund=${o2.livenessProfileReason}")
+        assertEquals("MEAL", o2.dosingContextProfile, "Grund=${o2.dosingContextReason}")
+        // Konsolidierung 2.0: ohne Konto dosiert der Kanal dabei wie ohne Marker (Rueckfall).
+        assertEquals("CORRECTION", o2.livenessProfile)
         assertEquals(markerAt, o2.markerPowerPinnedFor)
         assertEquals(markerAt + 120 * 60_000L, o2.markerPowerDeadlineTs)
 
@@ -9503,13 +6973,13 @@ class TransportWiringTest : TestBaseWithProfile() {
         repeat(5) { cycle() }
         val o4 = cycle()
         assertEquals(o2.markerPowerDeadlineTs, o4.computeTs, "Zyklus liegt exakt auf der Deadline")
-        assertEquals("CORRECTION", o4.livenessProfile)
-        assertEquals("POWER_EXPIRED", o4.livenessProfileReason)
+        assertEquals("CORRECTION", o4.dosingContextProfile)
+        assertEquals("POWER_EXPIRED", o4.dosingContextReason)
 
         // Zweiter Marker eroeffnet eine neue Frist (Test 5).
         markerAt = clock
         val o5 = cycle()
-        assertEquals("MEAL", o5.livenessProfile)
+        assertEquals("MEAL", o5.dosingContextProfile)
         assertEquals(markerAt + 120 * 60_000L, o5.markerPowerDeadlineTs)
     }
 
@@ -9527,7 +6997,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         markerAt = clock
         repeat(2) { cycle() } // Evidenz-Rebase-Blip nach dem Druck
         val o = cycle()
-        assertEquals("MEAL", o.livenessProfile)
+        assertEquals("MEAL", o.dosingContextProfile)
         assertTrue(adapter.persistVerified(lage), "versiegeln")
 
         // T7+T15: Identitaet passt -> Restfrist laeuft weiter.
@@ -9535,7 +7005,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         val n = cycle()
         assertEquals(o.markerPowerPinnedFor, n.markerPowerPinnedFor, "Codec-Roundtrip identisch")
         assertEquals(o.markerPowerDeadlineTs, n.markerPowerDeadlineTs)
-        assertEquals("MEAL", n.livenessProfile, "Restfrist wird fortgesetzt")
+        assertEquals("MEAL", n.dosingContextProfile, "Restfrist wird fortgesetzt")
 
         // T8 + Identitaetsvergleich: anderer Marker, nur vorgefunden (kein
         // im Prozess beobachteter Wechsel) -> KEIN rueckwirkendes MEAL.
@@ -9543,8 +7013,8 @@ class TransportWiringTest : TestBaseWithProfile() {
         neuerRunner(FuseLedgerAdapter().also { it.loadOnce(lage, "test-epoch", clock) })
         clock += 120_000L
         val f = cycle()
-        assertEquals("CORRECTION", f.livenessProfile, "vorgefundener fremder Marker pinnt nicht")
-        assertEquals("MARKER_NOT_PINNED", f.livenessProfileReason)
+        assertEquals("CORRECTION", f.dosingContextProfile, "vorgefundener fremder Marker pinnt nicht")
+        assertEquals("MARKER_NOT_PINNED", f.dosingContextReason)
     }
 
     /**
@@ -9659,105 +7129,6 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * DER 0,15-LIVEFALL (Bauauftrag Toni 24.08. abends): Marker +~60 min
-     * (Sonderrechte nach 45 min abgelaufen -> mealWindow FALSE), r ueber
-     * der Rampen-Unterkante, Tail-Deadlock. Vorher uebernahm der Kanal
-     * blind state.effectiveSmbRatio - die faellt ausserhalb des
-     * Normalpfad-Fensters auf die Korrektur-Ratio, und "Live M" dosierte
-     * unsichtbar mit dem K-Tempo (Live-Trail: hohes r, liveRatio 0,15).
-     * Jetzt rampt der Kanal fensterunabhaengig (Pflichttests 5/9), der
-     * Normalpfad bleibt bitgleich auf der Korrektur-Ratio (Pflichttest
-     * 10), an der Deadline gilt sofort das K-Profil - seit Tonis
-     * v27-Korrektur heisst das: GLEICHE Rampenbasis, aber der K-DECKEL
-     * kappt (Pflichttest 11, halb offen) - und gemessenes Fallen bleibt
-     * ein absoluter Riegel (Abnahme c).
-     *
-     * LAGE: UKF-Steigung 1,2 bleibt UNTER der Rampen-Unterkante 1,5
-     * (kein Kinematik-Fenster, kein FALLING), waehrend die
-     * Insulinaktivitaet r darueber hebt - genau die Livefall-Signatur.
-     * Der Onset-Kanal ist AUS, sonst oeffnete sein Fenster-Zweig das
-     * Normalpfad-Fenster und der Diskriminator waere blind.
-     */
-    @Test
-    fun `liveness meal-profil traegt die r-rampe selbst - der 0,15-livefall`(@TempDir dir: File) {
-        whenever(preferences.get(FuseDoubleKey.RiseRampLowR)).thenReturn(1.5)
-        whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(3.0)
-        whenever(preferences.get(FuseBooleanKey.OnsetChannelEnabled)).thenReturn(false)
-        // K-Deckel eng, M-Deckel offen (Migration 1,0): der Fristuebergang
-        // wird damit als DECKEL-Wechsel messbar - gleiche Rampenbasis,
-        // engere Kappe (Tonis v27-Korrektur). maxSMB offen, sonst bindet es
-        // vor dem Ratio-Deckel und traegt dessen Namen davon.
-        maxSmbU = 1.0
-        livenessLage(dir)
-        corrRatioCapZ = 0.20
-        steigungProMin = 0.9
-        knickAbMin = 55
-        steigungNachKnick = 1.2
-        aktivitaet = 0.028
-        repeat(6) { cycle() } // Signal-Warm-up
-        markerAt = clock
-        val deadline = markerAt + 120 * 60_000L
-
-        // Bis kurz vor die Deadline laufen; ab Marker-Alter 60 min sind die
-        // Sonderrechte (45) samt 10-min-Nachlauf sicher weg.
-        val alle = ArrayList<FuseCycleRunner.Outcome>()
-        while (clock < deadline - 60_000L) alle.add(cycle())
-        val disk = alle.filter {
-            it.computeTs - markerAt in (60 * 60_000L)..(75 * 60_000L) && it.livenessLiftU > 0.0
-        }
-        assertTrue(disk.size >= 8, "die Lage muss im Diskriminator-Fenster heben: ${disk.size}")
-        disk.forEach { o ->
-            assertEquals("MEAL", o.livenessProfile)
-            // Pflichttest 10 + Mutationsprobe "Normalpfad nutzt Profilwahl":
-            // das Fenster-Trio ist zu, der Normalpfad steht auf der
-            // Korrektur-Ratio - bitgleich.
-            assertEquals(0.15, o.state!!.effectiveSmbRatio, 1e-9, "Normalpfad bleibt Korrektur-Ratio")
-            // Pflichttest 9 + Mutationsprobe "Rueckfall auf
-            // effectiveSmbRatio": die Kanal-Basis ist die Rampe.
-            val erwartet = FuseController.rampSmbRatio(
-                0.15, 0.35, o.state!!.rSignedMgdlPerMin, 1.5, 3.0,
-            )
-            assertEquals(erwartet, o.livenessBaseRatio!!, 1e-9, "Basis == geteilte Rampe")
-            assertTrue(o.livenessBaseRatio!! >= 0.20, "die Rampe muss real heben: ${o.livenessBaseRatio}")
-            // Pflichttest 5: M-Cap Default 1,0 = kein zusaetzlicher Deckel.
-            assertEquals(o.livenessBaseRatio!!, o.livenessLiveRatio!!, 1e-9)
-            assertTrue(o.livenessBinding != "demandRatioCap", "Default 1,0 bindet nie")
-            // Endmenge bleibt der rasterisierte Kanal-Kandidat.
-            assertEquals(LivenessChannel.quantize(o.livenessCandidateU, 0.05), o.decision.smbU, 1e-9)
-        }
-
-        // Pflichttest 11 (halb offen): der Zyklus EXAKT auf der Deadline
-        // traegt bereits das K-Profil - gleiche Rampenbasis, aber der
-        // K-DECKEL 0,20 kappt (v27: der Deckel ist der einzige
-        // Profilunterschied der Ratio).
-        var anDeadline: FuseCycleRunner.Outcome? = null
-        while (anDeadline == null) { val o = cycle(); if (o.computeTs >= deadline) anDeadline = o }
-        assertEquals(deadline, anDeadline!!.computeTs, "Zyklus liegt exakt auf der Deadline")
-        assertEquals("CORRECTION", anDeadline!!.livenessProfile)
-        val nachDeadline = (0 until 3).map { cycle() }.filter { it.livenessBaseRatio != null }
-        assertTrue(nachDeadline.isNotEmpty(), "auch nach der Frist rechnet der Kanal")
-        nachDeadline.forEach {
-            val erwartet = FuseController.rampSmbRatio(
-                0.15, 0.35, it.state!!.rSignedMgdlPerMin, 1.5, 3.0,
-            )
-            assertEquals(erwartet, it.livenessBaseRatio!!, 1e-9, "K-Profil: dieselbe Rampenbasis")
-            assertTrue(it.livenessBaseRatio!! > 0.20 + 1e-9, "die Basis steht ueber dem K-Deckel: ${it.livenessBaseRatio}")
-            assertEquals(0.20, it.livenessLiveRatio!!, 1e-9, "der K-Deckel 0,20 kappt ab der Frist")
-            assertEquals("demandRatioCap", it.livenessBinding, "und nennt sich als Grenze")
-        }
-
-        // Abnahme c: gemessenes Fallen bleibt im MEAL-Vertragssinn ein
-        // absoluter Riegel - hier nach der Frist, der Riegel ist
-        // profilunabhaengig HART (dieselbe hart-Kette wie im MEAL-Lauf).
-        knick2AbMin = ((clock - start) / 60_000L).toInt()
-        steigungNachKnick2 = -1.0
-        repeat(6) { cycle() }
-        val fallend = cycle()
-        assertEquals(0.0, fallend.livenessLiftU, 1e-9, "im gemessenen Fall hebt nichts")
-        assertEquals("EXCLUDED", fallend.livenessProfile, "harte Riegel setzen EXCLUDED")
-    }
-
-    /**
      * K-PROFIL SKALIERT UEBER DIE RAMPE BIS ZUM K-DECKEL (Tonis
      * v27-Korrektur, 24.08. spaet): die v26-Fassung liess CORRECTION fest
      * auf der Korrektur-Ratio stehen - der K-Deckel 0,20 wurde nur als
@@ -9814,41 +7185,6 @@ class TransportWiringTest : TestBaseWithProfile() {
             assertEquals(o.livenessBaseRatio!!, o.livenessLiveRatio!!, 1e-9, "unter dem Deckel folgt die Ratio der Rampe")
             assertTrue(o.livenessLiveRatio!! > 0.15 + 1e-9, "und skaliert ueber 0,15 hinaus: ${o.livenessLiveRatio}")
             assertTrue(o.livenessBinding != "demandRatioCap", "der offene Deckel bindet nicht")
-        }
-    }
-
-    /**
-     * M-RATIO-DECKEL AUF DER RAMPENBASIS (Abnahme e, Pflichttest 6): erst
-     * die Basis (Rampe), DANN der Deckel. Cap 0,20 unter einer Basis
-     * >= 0,25 -> liveRatio 0,20, Binding livenessRatioCap (Mutations-
-     * proben "Profildeckel ignoriert" und "min durch max ersetzt").
-     */
-    @Test
-    fun `m-ratio-deckel kappt die rampenbasis und nennt sich`(@TempDir dir: File) {
-        whenever(preferences.get(FuseDoubleKey.RiseRampLowR)).thenReturn(1.5)
-        whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(3.0)
-        whenever(preferences.get(FuseBooleanKey.OnsetChannelEnabled)).thenReturn(false)
-        // maxSMB offen, sonst bindet es VOR dem Ratio-Deckel (0,20 x
-        // ~2,5 U Bedarf > 0,3) und der Test saehe nie den Cap als Grenze.
-        maxSmbU = 1.0
-        livenessLage(dir)
-        mealRatioCapZ = 0.20; corrRatioCapZ = 0.15
-        steigungProMin = 0.9
-        knickAbMin = 55
-        steigungNachKnick = 1.2
-        aktivitaet = 0.028
-        repeat(6) { cycle() } // Signal-Warm-up
-        markerAt = clock
-        val alle = (0 until 80).map { cycle() }
-        val disk = alle.filter {
-            it.computeTs - markerAt in (60 * 60_000L)..(75 * 60_000L) && it.livenessLiftU > 0.0
-        }
-        assertTrue(disk.size >= 8, "die Lage muss im Diskriminator-Fenster heben: ${disk.size}")
-        disk.forEach { o ->
-            assertEquals("MEAL", o.livenessProfile)
-            assertTrue(o.livenessBaseRatio!! >= 0.20 + 1e-9, "die Basis liegt ueber dem Cap: ${o.livenessBaseRatio}")
-            assertEquals(0.20, o.livenessLiveRatio!!, 1e-9, "der M-Cap kappt die Rampenbasis")
-            assertEquals("demandRatioCap", o.livenessBinding, "und nennt sich als Grenze")
         }
     }
 
@@ -10163,43 +7499,6 @@ class TransportWiringTest : TestBaseWithProfile() {
             ersterLiftTs >= sperreBis + 2 * 60_000L,
             "drei FRISCHE Druckzyklen nach Ablauf: Sperre bis $sperreBis, Hub $ersterLiftTs",
         )
-    }
-
-    /**
-     * Gegenprobe 7 (Audit 22.08.): das ZWEITE unbeobachtete Loch neben dem
-     * Abort - der predictorfreie Marker-Fallback-Zyklus. Er dosiert, laeuft
-     * aber ohne die Kanalstufe; ein aktiver Lauf muss auch dort enden.
-     * Ohne diese Probe ueberlebte das Loeschen genau dieses Aufrufs die
-     * gesamte Suite.
-     */
-    @Test
-    fun `Liveness Gegenprobe - auch der Marker-Fallback-Zyklus beendet den Lauf`(@TempDir dir: File) {
-        livenessLage(dir)
-        markerAuthorized = true
-        var aktiv = false
-        repeat(22) { val o = cycle(); if (o.livenessActive) aktiv = true }
-        assertTrue(aktiv, "der Lauf muss stehen")
-        // Druck UND ueberstimmbare Bahn-Ablehnung im SELBEN Zyklus: nur so
-        // trifft ein Fallback-Zyklus auf einen noch aktiven Lauf. Zwei
-        // Zyklen frueher ginge es nicht - unter offenem Markerfenster ist
-        // der Normalpfad nie GUARD/TAIL-gedeckelt (der Kanal bewaffnet
-        // dann korrekt nicht, NORMAL_PATH_OPEN), und ein Druck in einen
-        // Hauptpfad-Zyklus beendet den Lauf schon selbst als
-        // Segmentbruch-EXCLUDED - beides im Rig gesehen.
-        markerAt = clock
-        predictReject = PredictorReason.PENDING_MODEL_TOO_SHORT
-        val fb = cycle()
-        assertTrue(fb.markerFallbackUsed, "der Aufbau muss wirklich den Fallback-Pfad treffen")
-        assertEquals("OBSERVATION_LOST", fb.livenessExit, "der aktive Lauf endet im Fallback-Zyklus")
-        assertTrue(fb.livenessReArmUntilTs > fb.computeTs, "mit Sperre")
-        predictReject = null
-        var liftInSperre = 0
-        repeat(9) {
-            val x = cycle()
-            assertEquals(false, x.livenessActive, "kein Weiterlaufen nach dem Fallback-Zyklus")
-            if (x.livenessLiftU > 0.0) liftInSperre++
-        }
-        assertEquals(0, liftInSperre)
     }
 
     /**
@@ -10819,10 +8118,9 @@ class TransportWiringTest : TestBaseWithProfile() {
         knickAbMin = 25
         steigungNachKnick = 0.0
         bolusIobU = 2.5
-        fundamentAn = true
-        fundamentAnteil = 0.8
-        upfrontAnteil = 1.0
-        primeHuelleU = 3.75
+        // Konsolidierung 2.0: der Mahlzeitengrant kommt aus dem Erwartungskonto (Anfangsportion mit G1/G2), nicht
+        // mehr aus Prime und Fundament.
+        kontoMitFruehVersorgung()
         aufschubAn = true
         markerAuthorized = true
         markerAt = 0L                      // noch KEIN Marker
@@ -10845,9 +8143,10 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * B) NACH ABBRUCH UND NEUEM MARKER MUSS DAS FUNDAMENT NEU BEWAFFNET
+     * B) NACH ABBRUCH UND NEUEM MARKER MUSS DIE HUELLE NEU BEWAFFNET
      * WERDEN - innerhalb des Markerfensters, in dem die Fensterregel es
-     * bisher verhindert hat.
+     * bisher verhindert hat (Konsolidierung 2.0: die Kredit-Huelle am Platz
+     * des Mahlzeitenfundaments).
      *
      * Der Aufbau setzt den Autorisierungszustand so, wie ihn das
      * Bedienereignis hinterlaesst (Kennung + verbrauchte Widerrufsmarke);
@@ -10855,11 +8154,8 @@ class TransportWiringTest : TestBaseWithProfile() {
      * und ist dort durch die reinen Vertragstests abgedeckt.
      */
     @Test
-    fun `B ein neuer Marker nach Abbruch bewaffnet das Fundament neu`(@TempDir dir: File) {
-        fundamentAn = true
-        upfrontAnteil = 1.0
+    fun `B ein neuer Marker nach Abbruch bewaffnet die Huelle neu`(@TempDir dir: File) {
         primeHuelleU = 3.75
-        fundamentAnteil = 0.8
         markerAuthorized = true
         markerAt = start + 2 * 60_000L
         clock = start
@@ -10867,7 +8163,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
         neuerRunner(l)
         repeat(6) { cycle() }
-        assertTrue(l.episodes.foundation.valid) { "Ausgangslage: die erste Huelle steht" }
+        assertTrue(l.episodes.creditEnvelopeU != null) { "Ausgangslage: die erste Huelle steht" }
         val ersteArmierung = l.episodes.primeArmedTs
         // Etwas ist bereits verbraucht - das darf der Abbruch NICHT loeschen.
         l.episodes.primeSpentU = 1.0
@@ -10891,7 +8187,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals("auth-2", l.episodes.foundationArmedByAuthId) {
             "die Kennung muss mitgeschrieben sein, sonst greift die Wiederholungssperre nicht"
         }
-        assertTrue(l.episodes.foundation.valid) { "und die neue Autorisierung steht" }
+        assertTrue(l.episodes.creditEnvelopeU != null) { "und die neue Autorisierung steht" }
         assertTrue(vorher != l.episodes.foundationArmedByAuthId)
 
         // ---- WIEDERHOLUNG: derselbe Druck, weitere Zyklen ---------------
@@ -10913,7 +8209,6 @@ class TransportWiringTest : TestBaseWithProfile() {
      */
     @Test
     fun `B ein im Ledger widerrufener Marker wirkt trotz alter Preference nicht mehr`(@TempDir dir: File) {
-        fundamentAn = true
         markerAuthorized = true
         markerAt = start + 2 * 60_000L
         clock = start
@@ -10921,7 +8216,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
         neuerRunner(l)
         repeat(6) { cycle() }
-        assertTrue(l.episodes.foundation.valid) { "Ausgangslage: die Autorisierung steht" }
+        assertTrue(l.episodes.creditEnvelopeU != null) { "Ausgangslage: die Autorisierung steht" }
 
         // Der Absturzzustand: Widerruf im Ledger, Preference unveraendert.
         l.episodes.markerRevocation = MarkerReauthorization.widerrufe(
@@ -11179,243 +8474,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(besitz().leer) { "und es wird auch nichts gebucht: ${besitz()}" }
     }
 
-    // ---- Rechenspur fuer Fehlermeldungen der Rebound-Evidenz-Ausnahme ----------
-
-    private fun zeile(o: FuseCycleRunner.Outcome): String = listOf(
-        "t=" + (o.computeTs - start) / 60_000L,
-        "q1=" + "%.1f".format(o.signal?.q1 ?: Double.NaN),
-        "raw=" + "%.1f".format(o.signal?.rawBg ?: Double.NaN),
-        "ukf=" + "%.2f".format(o.signal?.ukfRatePerMin ?: Double.NaN),
-        "rb=" + (o.state?.reboundRestMin ?: -1),
-        "ovr=" + o.evidenceMayOverrideRebound,
-        "cr=" + "%.3f".format(o.evidenceCreditMgdlPerMin ?: Double.NaN),
-        "ph=" + o.evidencePhase,
-        "inf=" + o.livenessEvidenceInflowMgdl?.let { "%.2f".format(it) },
-        "stab=" + o.livenessMeasuredStability,
-        "exc=" + o.livenessReboundExceptionAllowed + "/" + o.livenessReboundExceptionDenial,
-        "lift=" + o.livenessReboundVetoLifted,
-        "act=" + o.livenessActive,
-        "rsn=" + o.livenessProfileReason,
-        "den=" + o.livenessDenial,
-        "exit=" + o.livenessExit,
-        "cand=" + "%.2f".format(o.livenessCandidateU),
-        "liftU=" + "%.2f".format(o.livenessLiftU),
-        "smb=" + "%.2f".format(o.decision.smbU),
-        "nl=" + o.livenessNoLiftReason,
-        "turn=" + o.turnResponseShadow?.classification?.phase,
-        "abort=" + o.abortReason,
-    ).joinToString(" ")
-
-    // ---- ERKUNDUNG Rueckfuehrung und Sperrzeit (nur mit FUSE_ERKUNDUNG_OUT) --
-
-    @Test
-    fun `ERKUNDUNG Rueckfuehrung und Sperrzeit`(@TempDir dir: File) {
-        val out = System.getenv("FUSE_ERKUNDUNG_OUT")
-        org.junit.jupiter.api.Assumptions.assumeTrue(out != null)
-        val zeilen = mutableListOf(
-            "v,t,q1,raw,iob,akt,rb,ovr,cr,ph,stock,vorAbzug,abzug,inf,stab,exc,loss,vL,aktiv,rsn,den,exit,normal,fundament,shNeed,shCand,shHead,cand,lift,smb,sperreBis," +
-                "primeAktiv,primeBoden,primeRest,primeGrund,mfLift,grantQuelle,fPhase,fFaellig,fSeitUebergabe,fPhaseBFrei," +
-                "normalBlock,tailHeadroom,preFoundation,upfrontState,fArmed,recoveryDenial,hazard,authOk,rueckgang,gefahren,buchungOhneGefahr",
-        )
-        // "U" = Foundation mit Sofortanteil 1,0 wie in der Produktionslage: nur dann traegt
-        // MealUpfrontAuthority, und die Foundation-Kette ist im rohen
-        // Rebound-Fenster nicht gesperrt. Schluessel: U<Steigung>_h<Huelle>_a<Anteil>.
-        // "G" = eine produktionsnahe Konstellation: Huelle 5 U,
-        // Phase-A-Anteil 0,80, Sofortanteil 1,00, Uebergabe T+5, Fensterende
-        // 25 -> Phase B 1,0 U ueber 20 min, ein 0,05er-Schritt je Zyklus.
-        // Tail-Riegel als Variante: der Foundation-Lift wird vom Tail-
-        // Deckelrest gekappt, der Prime-Boden setzt sich ueber MarkerFloor durch.
-        // Ausgewertet und berichtet ist Lage B (grosser Lift, fortbestehender
-        // Anstieg) mit 10 und 5 min Sperre, mit und ohne Rueckfuehrung. Die
-        // Varianten F/U/G/R waren Versuche, eine Foundation-Ueberlappung zu
-        // erzeugen; keiner hob die Foundation in Phase B (Befund 14.09.). Sie
-        // bleiben als benannte Aufbauten stehen, laufen hier aber nicht mit.
-        val lagen = listOf("B")
-        for (lage in lagen) for (sperre in listOf(10, 5)) for (rueck in listOf(false, true)) {
-            val name = "${lage}_sperre${sperre}_rueck$rueck"
-            val d = File(dir, name).also(File::mkdirs)
-            fundamentAn = false; primeHuelleU = 1.2; fundamentAnteil = 0.75; upfrontAnteil = 0.0; fundamentEndeMin = 60
-            knick2AbMin = null; lueckeVonMin = null; lueckeBisMin = null; rohSerie = null
-            abgaben.clear(); boluses = emptyList(); rueckfuehrung = false; rueckIsf = 61.0; bolusIobU = 4.5
-            aufschubAn = false
-            if (lage.startsWith("R")) {
-                val s = lage.drop(1).substringBefore("_iob").toDouble()
-                val iob = lage.substringAfter("_iob").toDouble()
-                reboundMahlzeit(d)
-                livenessAn = true; livenessAusnahmeAn = true; maxSmbU = 0.3
-                whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(5)
-                primeHuelleU = 5.0; fundamentAnteil = 0.8; fundamentEndeMin = 25; upfrontAnteil = 1.0
-                livenessReArmMin = sperre; reboundOverrideMaxMin = 120
-                mealBgMin = 120.0; livenessBgMin = 160.0; mealArmZyklen = 1
-                corrExpLimit = 3.0; mealExpLimit = 7.0; tailGuard = true
-                steigungProMin = s; knickAbMin = null
-                bolusIobU = iob
-            } else {
-            ausnahmeLage(d)
-            maxSmbU = 0.3
-            livenessReArmMin = sperre
-            if (lage.startsWith("G")) {
-                fundamentAn = true; upfrontAnteil = 1.0; fundamentAnteil = 0.80; primeHuelleU = 5.0
-                fundamentEndeMin = 25
-                // Wie produktiv: die Autorisierungskennung steht VOR der
-                // Armierung (toggleMealMarker schreibt sie beim Druck), und
-                // der Marker-Prime-Aufschub ist an - sonst traegt die
-                // Direktdosis-Kette das rohe Rebound-Fenster nicht.
-                aufschubAn = true
-                ledger.episodes.markerAuth =
-                    app.aaps.fuse.core.controller.MarkerReauthorization.Authorization("auth-g", markerAt)
-                whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(5)
-                steigungNachKnick = lage.drop(1).substringBefore("_").toDouble()
-                tailGuard = lage.endsWith("tailtrue")
-                whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
-            } else if (lage.startsWith("U")) {
-                val teile = lage.drop(1).split("_")
-                fundamentAn = true; upfrontAnteil = 1.0
-                steigungNachKnick = teile[0].toDouble()
-                primeHuelleU = teile[1].drop(1).toDouble()
-                fundamentAnteil = teile[2].drop(1).toDouble()
-                whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
-            } else if (lage.startsWith("F")) {
-                // Foundation-Tropf wie im M2-Rig: Huelle 4,0, Anteil 0,5 ->
-                // Phase B (ab Marker +20 = Minute 34) mit einem Schritt je
-                // Zyklus, ueberlappend mit dem rohen Rebound-Fenster.
-                fundamentAn = true; fundamentAnteil = 0.5; primeHuelleU = 4.0
-                steigungNachKnick = lage.drop(1).toDouble()
-                whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
-            } else steigungNachKnick = 2.5
-            }
-            if (rueck) {
-                // Vor-IOB als echter Bolus 30 min vor Start: ~4,5 U IOB zu Beginn,
-                // mit Aktivitaet; seine Wirkung steckt bereits in der Kurve.
-                val vorIob = bolusIobU ?: 4.5
-                bolusIobU = null
-                abgaben += Abgabe(start - 30 * 60_000L, vorIob / 0.9, wirktAufReihe = false, isfMgdlPerU = 61.0)
-                rueckfuehrung = true
-            }
-            repeat(70) {
-                val o = transport(d)
-                zeilen += listOf(
-                    name, (o.computeTs - start) / 60_000L, o.signal?.q1, o.signal?.rawBg, o.iobU, o.signal?.activityAtAnchor,
-                    rb(o), o.evidenceMayOverrideRebound, o.evidenceCreditMgdlPerMin, o.evidencePhase, o.evidenceStockMgdl,
-                    o.evidenceStockBeforeDeductionMgdl, o.evidenceDeductionMgdl, o.livenessEvidenceInflowMgdl,
-                    o.livenessMeasuredStability, o.livenessReboundExceptionDenial, o.livenessEvidenceLossCause,
-                    o.livenessReboundVetoLifted, o.livenessActive, o.livenessProfileReason, o.livenessDenial, o.livenessExit,
-                    o.livenessNormalSmbU, o.foundationLiftU, o.livenessShadowNeedU, o.livenessShadowCandidateU,
-                    o.livenessShadowHeadroomU, o.livenessCandidateU, o.livenessLiftU, o.decision.smbU,
-                    (o.livenessReArmUntilTs - start) / 60_000L,
-                    o.prime?.active, o.prime?.floorU, o.prime?.remainingU, o.prime?.reason?.replace(",", ";"),
-                    o.upfrontChain?.markerFloorLiftU, o.upfrontChain?.grantSource,
-                    o.mealFoundation.phase, o.mealFoundation.dueU, o.mealFoundation.deliveredSinceHandoverU,
-                    o.mealFoundation.phaseBAllowanceU,
-                    o.underlyingNormalBlock, o.decision.tail?.headroomU, o.preFoundationSmbU,
-                    o.phaseAUpfrontState, o.mealFoundation.armed, o.upfrontChain?.recoveryDenial,
-                    o.upfrontChain?.currentHazard?.toString()?.replace(",", ";"), o.upfrontChain?.reboundExemptByAuthority,
-                    o.evidenceDeclineMgdl, o.livenessConcurrentHazards?.joinToString("|"), o.livenessBookingWithoutCapturedHazard,
-                ).joinToString(",")
-            }
-        }
-        File(out!!).also { it.parentFile?.mkdirs() }.writeText(zeilen.joinToString("\n"))
-    }
-
-    /**
-     * Die Geraetekette fuer eine echte Foundation-Ueberlappung: in diesem
-     * Prozess gedrueckter Marker (MEAL- und Rebound-Pin), Autorisierungskennung
-     * vor der Armierung, Direktdosis in Phase A, Foundation in Phase B, Tief vor
-     * dem Druck, Guard-/Schwanz-Deadlock des Normalpfads.
-     */
-    private fun foundationUeberlappungLage(
-        dir: File, sofortAnteil: Double, mealSchwelle: Double, steigung: Double, rueck: Boolean,
-    ): FuseLedgerAdapter {
-        val a = ausnahmeLage(dir)
-        // RIG-FALLE (Befund 14.09. spaet): `ausnahmeLage` stempelt den Marker
-        // auf Minute 14, waehrend die Uhr erst bei Minute 7 steht. Der erste
-        // Zyklus sieht den Druck dann VOR dem Markerzeitpunkt, der Marker ist
-        // dort noch nicht aktiv - und das Fundament wird mit
-        // pinnedMarkerAuthorized = false armiert. Hier deshalb wie produktiv:
-        // erst bis kurz vor dem Druck laufen, dann auf den naechsten Zyklus
-        // stempeln.
-        markerAt = 0L
-        maxSmbU = 0.3
-        fundamentAn = true
-        aufschubAn = true
-        upfrontAnteil = sofortAnteil
-        primeHuelleU = 4.0
-        fundamentAnteil = 0.5
-        fundamentEndeMin = 60
-        mealBgMin = mealSchwelle
-        steigungNachKnick = steigung
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
-        whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
-        while (clock < start + 13 * 60_000L) cycle()
-        a.episodes.markerAuth = app.aaps.fuse.core.controller.MarkerReauthorization.Authorization("auth-fu", clock + 60_000L)
-        markerAt = clock + 60_000L
-        if (rueck) {
-            abgaben += Abgabe(start - 30 * 60_000L, 4.5 / 0.9, wirktAufReihe = false, isfMgdlPerU = 61.0)
-            bolusIobU = null
-            rueckfuehrung = true
-        }
-        return a
-    }
-
-    @Test
-    fun `ERKUNDUNG Gefahren beim Bestandsverlust`(@TempDir dir: File) {
-        val out = System.getenv("FUSE_ERKUNDUNG_OUT")
-        org.junit.jupiter.api.Assumptions.assumeTrue(out != null)
-        val zeilen = mutableListOf("v,zeile,loss,haz,bwh,rueckgang,abzug,vorAbzug,descentRisk,sperreBis")
-        for (knick in listOf<Int?>(38, 39)) for (s2 in listOf(-1.0, -2.0, -4.0, -8.0)) {
-            val name = "k${knick}_s$s2"
-            val d = File(dir, name).also(File::mkdirs)
-            abgaben.clear(); boluses = emptyList(); rueckfuehrung = false; bolusIobU = 4.5
-            lueckeVonMin = null; lueckeBisMin = null; rohSerie = null
-            ausnahmeLage(d)
-            maxSmbU = 0.3
-            knick2AbMin = knick
-            steigungNachKnick2 = s2
-            repeat(60) {
-                val o = transport(d)
-                zeilen += listOf(
-                    name, zeile(o).replace(",", ";"), o.livenessEvidenceLossCause, o.livenessConcurrentHazards?.joinToString("|"),
-                    o.livenessBookingWithoutCapturedHazard, o.evidenceDeclineMgdl, o.evidenceDeductionMgdl, o.evidenceStockBeforeDeductionMgdl,
-                    o.descentRiskActive, (o.livenessReArmUntilTs - start) / 60_000L,
-                ).joinToString(",")
-            }
-        }
-        File(out!!).also { it.parentFile?.mkdirs() }.writeText(zeilen.joinToString("\n"))
-    }
-
-    @Test
-    fun `ERKUNDUNG Foundation-Ueberlappung`(@TempDir dir: File) {
-        val out = System.getenv("FUSE_ERKUNDUNG_OUT")
-        org.junit.jupiter.api.Assumptions.assumeTrue(out != null)
-        val zeilen = mutableListOf("v,zeile,fPhase,fDue,fLift,grant,mfLift,normal,upState,upReq,stock,abzug,rueckgang,haz,bwh,preBlock,preLimit,fRest,fAuth,shHead,recDen,curHaz,finalLimit")
-        for (rueck in listOf(false, true)) for (schwelle in listOf(170.0, 190.0, 210.0)) for (s in listOf(3.5, 4.0)) {
-            val sofort = 1.0
-            val name = "u${sofort}_m${schwelle}_s${s}_r$rueck"
-            val d = File(dir, name).also(File::mkdirs)
-            abgaben.clear(); boluses = emptyList(); rueckfuehrung = false; bolusIobU = 4.5
-            knick2AbMin = null; lueckeVonMin = null; lueckeBisMin = null; rohSerie = null
-            foundationUeberlappungLage(d, sofort, schwelle, s, rueck = rueck)
-            repeat(70) {
-                val o = transport(d)
-                zeilen += listOf(
-                    name, zeile(o).replace(",", ";"), o.mealFoundation.phase, o.mealFoundation.dueU, o.foundationLiftU,
-                    o.upfrontChain?.grantSource, o.upfrontChain?.markerFloorLiftU, o.livenessNormalSmbU,
-                    o.phaseAUpfrontState, o.phaseAUpfrontRequestedU, o.evidenceStockMgdl, o.evidenceDeductionMgdl,
-                    o.evidenceDeclineMgdl, o.livenessConcurrentHazards?.joinToString("|"), o.livenessBookingWithoutCapturedHazard,
-                    o.preFoundationBlock, o.preFoundationBindingLimit?.replace(",", ";"), o.mealFoundation.remainingInWindowU,
-                    o.mealFoundation.markerAuthorized, o.livenessShadowHeadroomU, o.upfrontChain?.recoveryDenial,
-                    o.upfrontChain?.currentHazard?.toString()?.replace(",", ";"), o.decision.bindingLimit?.replace(",", ";"),
-                ).joinToString(",")
-            }
-        }
-        File(out!!).also { it.parentFile?.mkdirs() }.writeText(zeilen.joinToString("\n"))
-    }
-
-    // ==== REBOUND-EVIDENZ-AUSNAHME: PFLICHTFAELLE (Toni 14.09.) ==============
+    // ==== DIE LAGE DER REBOUND-EVIDENZ-AUSNAHME (Toni) =======================
     //
-    // Alles ueber die echte Runner-Kette, wo verlangt mit dem echten
-    // Publikations-Gate. Jede Behauptung hat eine harte Vorbedingung gegen
-    // leeres Bestehen; `zeile` oben liefert die Rechenspur fuer Fehlermeldungen.
+    // Konsolidierung 2.0: die Rebound-Evidenz-Ausnahme, ihre Pflichtfaelle, die
+    // Erkundungen und die Gefahrenproben sind entfallen. Ihre Lage bleibt - die
+    // Rig-Vertraege der Rueckfuehrung unten fahren sie.
 
     /**
      * Die P1-Lage (Tief bis etwa Minute 11, Anstieg 2,5/min, Guard-Deadlock),
@@ -11443,427 +8506,6 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     /** Die Zyklen, die `ausnahmeLage` vor dem Druck faehrt (Tief, Rebound-Beginn) - fuer Auswertungen, die sie brauchen. */
     private val lageVorlauf = mutableListOf<FuseCycleRunner.Outcome>()
-
-    private fun rb(o: FuseCycleRunner.Outcome) = o.state?.reboundRestMin ?: 0
-
-    private val bestandPhasen = setOf("ACTIVE", "PENDING_SEAL")
-
-    /** Das echte Publikations-Gate fuer einen bereits gerechneten Zyklus. */
-    private fun veroeffentliche(o: FuseCycleRunner.Outcome, persistDir: File) =
-        (o.decision.smbU.takeIf { it > 0.0 }).let { units ->
-            val id = "e2e#${o.computeTs}"
-            val rt = RT(
-                algorithm = APSResult.Algorithm.FUSE, timestamp = o.computeTs,
-                rate = null, duration = null, units = units, deliverAt = units?.let { o.computeTs },
-            )
-            val expected = LedgerPublicationGate.commitmentOf(units = rt.units, treatmentViewPresent = true, proposalId = id)
-            val p = LedgerPublicationGate.publish(
-                rt = rt, adapter = ledger, dir = persistDir, expected = expected,
-                published = InterventionStamp.Published(smbU = rt.units, tbrChanged = o.tbrChanged),
-                events = {
-                    if (expected is LedgerPublicationGate.Commitment.Proposal && rt.units != null)
-                        ledger.onPublished(
-                            proposalId = id, unitsU = rt.units!!, decisionTs = o.computeTs,
-                            latestBolusTs = clock, bolusStepU = 0.05,
-                        )
-                },
-            )
-            ledger.resolveReservation(o.computeTs, p.rt.units ?: 0.0, proposalId = id)
-            p
-        }
-
-    /** Pflichtfall 1: frueher bestaetigter Anstieg, gueltige Autorisierung,
-     *  Kandidat ueber dem Normalpfad, ausschliesslich historischer Rebound. */
-    @Test
-    fun `Ausnahme 1 - PENDING_SEAL mit verbrauchtem Kredit traegt den laufenden Kanal`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        val o = (1..60).map { cycle() }
-        val aufgehoben = o.filter { it.livenessReboundVetoLifted }
-        val beleg = aufgehoben.firstOrNull {
-            it.livenessLiftU > 0.0 && !it.evidenceMayOverrideRebound &&
-                (it.evidenceCreditMgdlPerMin ?: 0.0) == 0.0 && it.evidencePhase == "PENDING_SEAL" && rb(it) > 0
-        } ?: throw AssertionError("kein Aufhebungszyklus mit PENDING_SEAL, Kredit 0 und Lift:\n" + o.joinToString("\n") { zeile(it) })
-        assertEquals("MARKER_POWER", beleg.livenessProfileReason)
-        assertEquals("MEAL", beleg.dosingContextProfile)
-        aufgehoben.forEach {
-            assertTrue(it.livenessProfileReason != "REBOUND_ACTIVE" && it.livenessExit != "REBOUND_ACTIVE") { zeile(it) }
-            // Wirkungsbereich: nur im rohen Fenster und vor der Frist.
-            assertTrue(rb(it) > 0 && it.computeTs < it.reboundOverrideDeadlineTs) { zeile(it) }
-        }
-        // Max-Verknuepfung, nie Addition.
-        o.filter { it.livenessActive }.forEach {
-            val normal = it.livenessNormalSmbU ?: 0.0
-            val live = LivenessChannel.quantize(it.livenessCandidateU, 0.05)
-            assertTrue(it.decision.smbU <= maxOf(normal, live) + 1e-9) { "Summe statt Maximum: ${zeile(it)}" }
-        }
-    }
-
-    /** Gegenprobe: derselbe Aufbau ohne Schalter endet am Rebound-Veto. */
-    @Test
-    fun `Ausnahme 1b - ohne Schalter endet dieselbe Lage am Rebound-Veto`(@TempDir dir: File) {
-        ausnahmeLage(dir, an = false)
-        val o = (1..60).map { cycle() }
-        assertTrue(o.none { it.livenessReboundVetoLifted })
-        assertTrue(o.all { it.livenessReboundExceptionDenial == null || it.livenessReboundExceptionDenial == "DISABLED" })
-        assertTrue(o.any { it.livenessExit == "REBOUND_ACTIVE" && it.evidencePhase in bestandPhasen }) {
-            "die Lage muss ohne Schalter mit Bestand am Veto enden:\n" + o.joinToString("\n") { zeile(it) }
-        }
-    }
-
-    /** Pflichtfall 2: wiederholte Buchungen unter PENDING_SEAL - die Buchhaltung
-     *  bleibt korrekt, kein Kredit wird erstattet, jede Entscheidung folgt dem
-     *  Vertrag. Mit dem echten Publikations-Gate. */
-    @Test
-    fun `Ausnahme 2 - wiederholte Buchungen unter PENDING_SEAL, Buchhaltung und Vertrag`(@TempDir dir: File) {
-        val adapter = ausnahmeLage(dir)
-        val startCommitted = adapter.episodes.evidenceCommittedU
-        var publiziert = 0.0
-        var letzterCommitted = startCommitted
-        val o = (1..60).map {
-            val z = transport(dir)
-            publiziert += letzteMengeU ?: 0.0
-            assertTrue(ledger.episodes.evidenceCommittedU >= letzterCommitted - 1e-9) { "Evidenzbuchung sank: ${zeile(z)}" }
-            letzterCommitted = ledger.episodes.evidenceCommittedU
-            z
-        }
-        val gehoben = o.filter { it.livenessReboundVetoLifted && it.livenessLiftU > 0.0 && it.evidencePhase == "PENDING_SEAL" }
-        assertTrue(gehoben.size >= 2) { "es braucht WIEDERHOLTE Buchungen unter PENDING_SEAL:\n" + o.joinToString("\n") { zeile(it) } }
-        gehoben.forEach { assertEquals(0.0, it.evidenceCreditMgdlPerMin ?: 0.0, 1e-12, "kein Kredit erstattet: ${zeile(it)}") }
-        assertEquals(publiziert, ledger.episodes.evidenceCommittedU - startCommitted, 1e-9, "jede publizierte Menge genau einmal im Evidenzzaehler")
-        // Jede ausgewertete Entscheidung folgt dem Vertrag (Lage: Tief vor dem Druck, Pin passt).
-        o.filter { it.livenessReboundExceptionAllowed != null }.forEach {
-            val erwartet = it.dosingContextProfile == "MEAL" && it.evidencePhase in bestandPhasen &&
-                it.livenessMeasuredStability == "STABLE" && it.computeTs < it.reboundOverrideDeadlineTs
-            assertEquals(erwartet, it.livenessReboundExceptionAllowed, zeile(it))
-        }
-    }
-
-    /** Pflichtfall 3a: Kandidat unter dem Pumpenraster - keine Abgabe, typisiert. */
-    @Test
-    fun `Ausnahme 3a - Kandidat unter dem Raster gibt nichts ab`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        maxSmbU = 0.04
-        val o = (1..60).map { cycle() }
-        val raster = o.filter { it.livenessActive && it.livenessNoLiftReason == "BELOW_PUMP_STEP" }
-        assertTrue(raster.isNotEmpty()) { o.joinToString("\n") { zeile(it) } }
-        raster.forEach {
-            assertEquals(0.0, it.livenessLiftU, 1e-12)
-            assertEquals("NO_HEADROOM", it.livenessDenial, "Denial bleibt zeichengleich")
-            assertEquals(it.livenessNormalSmbU ?: 0.0, it.decision.smbU, 1e-9)
-        }
-    }
-
-    /** Pflichtfall 3b + 6: ausgeschoepfter Deckel - zugelassen ist nicht Menge. */
-    @Test
-    fun `Ausnahme 3b - ausgeschoepfter Deckel gibt nichts ab`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        maxSmbU = 0.3
-        mealExpLimit = 3.0 // Bolus-IOB 4,5 U steht ueber der Kontextgrenze
-        val o = (1..60).map { cycle() }
-        val deckel = o.filter { it.livenessActive && it.livenessNoLiftReason == "CAP_EXHAUSTED" }
-        assertTrue(deckel.isNotEmpty()) { o.joinToString("\n") { zeile(it) } }
-        assertTrue(o.none { it.livenessLiftU > 0.0 }) { "unter erschoepftem Deckel darf der Kanal nie heben" }
-    }
-
-    /** Pflichtfall 4a: ohne Marker keine Ausnahme. */
-    @Test
-    fun `Ausnahme 4a - ohne Marker keine Ausnahme`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        markerAt = 0L
-        val o = (1..60).map { cycle() }
-        assertTrue(o.none { it.livenessReboundVetoLifted || it.livenessReboundExceptionAllowed == true })
-        assertTrue(o.any { it.livenessReboundExceptionDenial == "NOT_MEAL_AUTHORIZED" })
-        o.filter { rb(it) > 0 }.forEach { assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it)) }
-    }
-
-    /** Pflichtfall 4b: fremde Zuordnung - ein ohne beobachteten Druck geaenderter
-     *  Marker bekommt kein Rebound-Sonderrecht und damit keine Ausnahme. */
-    @Test
-    fun `Ausnahme 4b - fremder Marker ohne Druck oeffnet nichts`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        var n = 0
-        while (n < 60) { n++; if (cycle().livenessReboundVetoLifted) break }
-        assertTrue(n < 60, "die Lage muss erst einmal aufheben (sonst prueft der Fall nichts)")
-        markerAt = clock
-        markerPress = 0L // geaendert, aber in diesem Prozess nie gedrueckt
-        val o = (1..20).map { cycle() }
-        assertTrue(o.none { it.livenessReboundVetoLifted || it.livenessReboundExceptionAllowed == true }) { o.joinToString("\n") { zeile(it) } }
-        assertTrue(o.any { it.livenessReboundExceptionDenial == "OVERRIDE_PIN_MISMATCH" || it.livenessReboundExceptionDenial == "NOT_MEAL_AUTHORIZED" })
-    }
-
-    /** Pflichtfall 4c: die Ruecknahme schliesst die Ausnahme sofort. */
-    @Test
-    fun `Ausnahme 4c - Ruecknahme schliesst sofort`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        var n = 0
-        while (n < 60) { n++; if (cycle().livenessReboundVetoLifted) break }
-        assertTrue(n < 60, "die Lage muss erst einmal aufheben")
-        markerAt = 0L
-        val o = cycle()
-        assertTrue(!o.livenessReboundVetoLifted && o.livenessReboundExceptionAllowed == false && !o.livenessActive, zeile(o))
-        assertEquals("NOT_MEAL_AUTHORIZED", o.livenessReboundExceptionDenial)
-        assertEquals(0.0, o.livenessLiftU, 1e-12)
-    }
-
-    /** Pflichtfall 4d: nach Ablauf der Rebound-Frist keine Ausnahme. */
-    @Test
-    fun `Ausnahme 4d - abgelaufene Frist oeffnet nichts`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        reboundOverrideMaxMin = 21 // beim Druck (Minute 14) gepinnt: Frist Minute 35
-        val frist = start + 35 * 60_000L
-        val o = (1..60).map { cycle() }
-        // Vor der Frist darf die Ausnahme gelten - danach nie.
-        o.filter { it.computeTs >= frist }.forEach {
-            assertTrue(!it.livenessReboundVetoLifted && it.livenessReboundExceptionAllowed != true, zeile(it))
-        }
-        assertTrue(o.any { it.livenessReboundExceptionDenial == "OVERRIDE_EXPIRED" && rb(it) > 0 && it.evidencePhase in bestandPhasen && it.computeTs >= frist }) {
-            "die Frist muss IM rohen Fenster bei vorhandenem Bestand ablaufen:\n" + o.joinToString("\n") { zeile(it) }
-        }
-    }
-
-    /** Pflichtfall 5: echter Codec-Neustart - Pins und Evidenz aus der Datei,
-     *  der wiederholte Messpunkt dosiert nicht, keine neue Huelle, keine
-     *  doppelte Evidenzverwertung. */
-    @Test
-    fun `Ausnahme 5 - Neustart ueber den Codec`(@TempDir dir: File) {
-        val adapter = ausnahmeLage(dir)
-        var beleg: FuseCycleRunner.Outcome? = null
-        var n = 0
-        while (beleg == null && n < 60) {
-            val o = transport(dir); n++
-            if (o.livenessReboundVetoLifted && o.livenessLiftU > 0.0) beleg = o
-        }
-        assertTrue(beleg != null, "die Lage muss unter der Ausnahme heben")
-        val datei = nachNeustart(dir)
-        assertEquals(adapter.episodes.evidenceCommittedU, datei.evidenceCommittedU, 1e-12, "der Aufhebungszyklus steht versiegelt auf Platte")
-        assertEquals(adapter.episodes.evidenceState, datei.evidenceState)
-        assertEquals(markerAt, datei.markerReboundOverridePinnedFor)
-        assertEquals(markerAt, datei.markerPowerPinnedFor)
-        val huelleVorher = Triple(datei.foundation.valid, datei.foundation.armedTs, datei.foundation.phaseAUpfrontU)
-        val primeVorher = datei.primeSpentU
-
-        // Prozessneustart: neuer Adapter aus der Datei, neuer Runner, kein Druck im Prozess.
-        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) })
-        markerPress = 0L
-        // Derselbe Messpunkt noch einmal: der Neustart-Dedupe verwirft ihn.
-        val wiederholt = runner.run(false, testPumpe())
-        assertTrue(wiederholt.abortReason?.contains("already consumed") == true, zeile(wiederholt))
-        assertEquals(0.0, wiederholt.decision.smbU, 1e-12)
-
-        val committedNachLaden = ledger.episodes.evidenceCommittedU
-        var publiziert = 0.0
-        val danach = (1..8).map { transport(dir).also { publiziert += letzteMengeU ?: 0.0 } }
-        // Der erste neue Zyklus rechnet genau EIN Intervall ab dem gespeicherten Anker.
-        val erster = danach.first()
-        assertTrue((erster.livenessEvidenceInflowMgdl ?: 0.0) <= (beleg!!.livenessEvidenceInflowMgdl ?: 0.0) + 0.5) {
-            "kein Nachholen ueber den Neustart: ${zeile(erster)} vs ${zeile(beleg!!)}"
-        }
-        assertEquals(publiziert, ledger.episodes.evidenceCommittedU - committedNachLaden, 1e-9)
-        assertEquals(
-            huelleVorher,
-            Triple(ledger.episodes.foundation.valid, ledger.episodes.foundation.armedTs, ledger.episodes.foundation.phaseAUpfrontU),
-            "keine neue Huelle",
-        )
-        assertEquals(primeVorher, ledger.episodes.primeSpentU, 1e-12)
-        danach.filter { it.livenessReboundExceptionAllowed == true }.forEach {
-            assertTrue(it.evidencePhase in bestandPhasen && it.livenessMeasuredStability == "STABLE") { zeile(it) }
-        }
-    }
-
-    /** Pflichtfall Persistenz: scheitert der Persist im Aufhebungszyklus, geht
-     *  keine Menge hinaus, der Evidenzstand rollt zurueck, und der Neustart
-     *  sieht weder Buchung noch Evidenzverbrauch dieses Zyklus. */
-    @Test
-    fun `Ausnahme 6 - gescheiterter Persist publiziert nichts und verliert nichts`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        val blockiert = File(dir, "datei-statt-verzeichnis").also { it.writeText("x") }
-        var geprueft = false
-        var n = 0
-        while (!geprueft && n < 60) {
-            n++
-            val vorEvidenz = ledger.episodes.evidenceState
-            val vorCommitted = ledger.episodes.evidenceCommittedU
-            val o = cycle()
-            if (o.livenessReboundVetoLifted && o.decision.smbU > 0.0) {
-                val p = veroeffentliche(o, File(blockiert, "unter"))
-                assertTrue(!p.sealed, "der Persist muss scheitern")
-                assertEquals(null, p.rt.units, "ohne Siegel keine SMB-Publikation")
-                ledger.sealCycleState(p.sealed, vorEvidenz)
-                assertEquals(vorEvidenz, ledger.episodes.evidenceState, "Evidenz rollt auf den versiegelten Stand zurueck")
-                // Absturz direkt danach: die Datei kennt den Zyklus nicht.
-                val datei = nachNeustart(dir)
-                assertEquals(vorCommitted, datei.evidenceCommittedU, 1e-12)
-                assertEquals(vorEvidenz, datei.evidenceState)
-                assertTrue(!FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) }.hasOpenProposal("e2e#${o.computeTs}"))
-                geprueft = true
-            } else assertTrue(veroeffentliche(o, dir).sealed, "vorlaufende Zyklen muessen sauber versiegeln")
-        }
-        assertTrue(geprueft, "es muss einen Aufhebungszyklus mit Menge geben")
-    }
-
-    /**
-     * Pflicht-Gegenfall: RAW faellt bereits, UKF noch nicht, bereinigte Evidenz
-     * positiv - der Messverlauf verweigert die Ausnahme.
-     *
-     * Organisch leert der Rig-Fall im ersten Fallzyklus zugleich den Bestand und
-     * loest die Wende aus (gemessen). Deshalb wird der Topf VORGELADEN
-     * (etabliertes Idiom, s. P1-Sicherheitsproben) und die ENTSCHEIDUNG selbst
-     * geprueft: sie muss mit MEASURED_NOT_STABLE verweigern, obwohl
-     * Autorisierung und Bestand tragen und UKF noch ueber dem Fallboden liegt.
-     *
-     * ZWEI PFADE, GETRENNT ZU LESEN (Tonis Review 14.09.):
-     *  - NEUE AUSNAHME: verweigert hier nachweislich. Organisch (ohne
-     *    Vorladen) leert der Rohfall zuerst den Bestand, die Verweigerung
-     *    lautet dann NO_EVIDENCE_STOCK - in keinem Rasterzyklus ein Lift.
-     *  - ALTES KREDIT-SONDERRECHT (v45, hier durch das Vorladen aktiv): es
-     *    prueft die Rohreihe NICHT. Dass der Kanal im Raster trotzdem nichts
-     *    hob, lag an Wiederbewaffnungssperre und Wende-Exit, nicht an einem
-     *    RAW-Schutz. Deshalb gilt die Lift-Zusicherung unten nur OHNE Kredit;
-     *    eine globale RAW-Schutzwirkung des Kanals ist damit NICHT belegt.
-     */
-    @Test
-    fun `Ausnahme 7 - RAW faellt waehrend UKF und Evidenz noch positiv sind`(@TempDir dir: File) {
-        val adapter = ausnahmeLage(dir)
-        knick2AbMin = 36
-        steigungNachKnick2 = -3.0
-        while (clock < start + 34 * 60_000L) cycle() // bis Minute 34, der Rohfall beginnt nach Minute 36
-        adapter.episodes.evidenceState = adapter.episodes.evidenceState.copy(stockMgdl = 60.0)
-        val o = (1..20).map { cycle() }
-        val gegenfall = o.filter {
-            it.livenessMeasuredStability == "FALLING" && rb(it) > 0 &&
-                (it.signal?.ukfRatePerMin ?: -9.0) >= LivenessChannel.UKF_FLOOR_MGDL_PER_MIN &&
-                it.evidencePhase in bestandPhasen && it.dosingContextProfile == "MEAL" &&
-                it.computeTs < it.reboundOverrideDeadlineTs
-        }
-        assertTrue(gegenfall.isNotEmpty()) {
-            "Vorbedingung: fallende Rohreihe, UKF ueber dem Boden, Bestand, Vollmacht:\n" + o.joinToString("\n") { zeile(it) }
-        }
-        gegenfall.forEach {
-            assertEquals(false, it.livenessReboundExceptionAllowed, zeile(it))
-            assertEquals("MEASURED_NOT_STABLE", it.livenessReboundExceptionDenial, zeile(it))
-            assertTrue(!it.livenessReboundVetoLifted, zeile(it))
-            if (!it.evidenceMayOverrideRebound) assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it))
-        }
-    }
-
-    /** Pflicht-Gegenfall Wende: frueher Anstieg, dann Wende - keine fortgesetzte
-     *  Freigabe aus dem frueheren Anstieg, alle Fall-Riegel greifen. */
-    @Test
-    fun `Ausnahme 8 - nach der Wende keine Freigabe aus dem frueheren Anstieg`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        knick2AbMin = 38
-        steigungNachKnick2 = -0.8
-        val o = (1..60).map { cycle() }
-        val ersteAufhebung = o.indexOfFirst { it.livenessReboundVetoLifted }
-        assertTrue(ersteAufhebung >= 0, "vor der Wende muss die Ausnahme gegolten haben")
-        val fallRiegel = setOf("FALLING", "DESCENT_RISK", "DESCENT_RISK_MARKER", "MEASURED_LOW", "LATCH_ACTIVE")
-        var riegel = 0
-        o.forEach {
-            val wende = it.turnResponseShadow?.classification?.phase == app.aaps.fuse.core.controller.TurnResponseShadow.Phase.TURNING_DOWN
-            if (wende || it.livenessMeasuredStability == "FALLING" || it.livenessProfileReason in fallRiegel ||
-                it.livenessExit == "TURN_EXIT"
-            ) {
-                riegel++
-                assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it))
-                assertTrue(!it.livenessReboundVetoLifted || !wende) { zeile(it) }
-            }
-        }
-        assertTrue(riegel > 0) { "die Wende muss im Lauf liegen:\n" + o.joinToString("\n") { zeile(it) } }
-    }
-
-    /** Pflicht-Gegenfall Sensorbruch: nach einer CGM-Luecke gilt die Ausnahme
-     *  nicht, bis Messbasis und Messlage wieder stehen. */
-    @Test
-    fun `Ausnahme 9 - Sensorbruch schliesst die Ausnahme`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        lueckeVonMin = 38
-        lueckeBisMin = 43
-        val o = (1..60).map { cycle() }
-        assertTrue(o.any { it.livenessReboundVetoLifted && it.computeTs < start + 38 * 60_000L }) {
-            "vor der Luecke muss die Ausnahme gegolten haben:\n" + o.joinToString("\n") { zeile(it) }
-        }
-        val nachLuecke = o.first { it.abortReason == null && it.computeTs >= start + 43 * 60_000L }
-        assertTrue(!nachLuecke.livenessReboundVetoLifted && nachLuecke.livenessLiftU == 0.0, zeile(nachLuecke))
-        assertTrue(nachLuecke.livenessReboundExceptionAllowed != true, zeile(nachLuecke))
-    }
-
-    /** Wirkungsbereich + Gegen-KH: ein neues Tief NACH dem Markerdruck nimmt
-     *  der Ausnahme die Grundlage - fuer den Rest des Markerfensters. */
-    @Test
-    fun `Ausnahme 10 - neues Tief nach dem Marker, Gegen-KH danach, keine Ausnahme`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        rohSerie = (0..120).map { m ->
-            val v = when {
-                m <= 6 -> 80.0 - 2.0 * m
-                m <= 30 -> 68.0 + 2.5 * (m - 6)
-                m <= 45 -> 128.0 - 4.0 * (m - 30)
-                m <= 50 -> 68.0 - 2.0 * (m - 45)
-                else -> 58.0 + 3.0 * (m - 50)
-            }
-            (start + m * 60_000L) to v
-        }
-        val o = (1..100).map { cycle() }
-        val zweitesTief = o.indexOfFirst { it.computeTs > markerAt && (it.signal?.q1 ?: 999.0) < 75.0 }
-        assertTrue(zweitesTief > 0, "das neue Tief muss nach dem Marker liegen")
-        val danach = o.drop(zweitesTief + 1)
-        assertTrue(danach.none { it.livenessReboundVetoLifted || it.livenessReboundExceptionAllowed == true }) {
-            danach.joinToString("\n") { zeile(it) }
-        }
-        val nurReihenfolge = danach.filter {
-            it.dosingContextProfile == "MEAL" && it.evidencePhase in bestandPhasen &&
-                it.livenessMeasuredStability == "STABLE" && rb(it) > 0
-        }
-        assertTrue(nurReihenfolge.isNotEmpty()) { "Vorbedingung: Gegen-KH-Anstieg mit Bestand und stabiler Messlage im Fenster:\n" + danach.joinToString("\n") { zeile(it) } }
-        nurReihenfolge.forEach { assertEquals("LOW_AFTER_AUTHORIZATION", it.livenessReboundExceptionDenial, zeile(it)) }
-        danach.filter { rb(it) > 0 && !it.evidenceMayOverrideRebound }.forEach { assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it)) }
-    }
-
-    /**
-     * FOLGEVERLAUF NACH GROSSEM FRUEHEM LIFT (Tonis Review 14.09.). BEOBACHTUNG,
-     * KEINE ERWARTETE FREIGABE: gemessen wird, ob der weiter steigende Bedarf
-     * bedient wird oder eine neue DORMANT-/Rebound-Sackgasse entsteht. Der Test
-     * erzwingt keine Mengen; er sichert nur, dass JEDER unbediente Zyklus mit
-     * Bedarf, Bestand, Kandidat und bindendem Sperrgrund exportiert ist, und
-     * dass kein Lift unter einem Sperrgrund entsteht. Die Rechenspur steht in
-     * der Testausgabe.
-     *
-     * Befund dieses Aufbaus (14.09.): nach jedem 0,30-U-Lift zieht der
-     * Buchungsabzug (0,30 x 61 = 18,3 mg/dl) den GESAMTEN Bestand fuer einen
-     * Zyklus auf 0; dieser eine DORMANT-Zyklus beendet den Lauf mit
-     * REBOUND_ACTIVE und 10 min Wiederbewaffnungssperre, obwohl der Bestand
-     * danach sofort wieder waechst und der Schattenbedarf steigt.
-     *
-     * GRENZEN (Tonis Review 14.09.): 10 min Sperre (die untersuchte
-     * Abendkonfiguration hatte 5), statisches IOB ohne Rueckfuehrung der
-     * Abgaben in IOB, Aktivitaet und Messreihe. Der Test zeigt wiederholte
-     * Sperren unter SEINEN Eingaben; er quantifiziert weder reale
-     * Unterversorgung noch den spaeteren Insulinbedarf, und seine Zyklenzahlen
-     * sind nicht auf den Abend uebertragbar.
-     */
-    @Test
-    fun `Ausnahme 13 - Folgeverlauf nach grossem fruehem Lift ist vollstaendig erklaert`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        maxSmbU = 0.3
-        val o = (1..60).map { cycle() }
-        println("Ausnahme 13 Verlauf:\n" + o.joinToString("\n") {
-            zeile(it) + " stock=${it.evidenceStockMgdl} shNeed=${it.livenessShadowNeedU} shCand=${it.livenessShadowCandidateU} shHead=${it.livenessShadowHeadroomU} normal=${it.livenessNormalSmbU}"
-        })
-        val sperrgruende = setOf("REBOUND_ACTIVE", "REARM_BLOCKED", "NOT_CONFIRMED", "TURN_STANDING", "NORMAL_PATH_OPEN")
-        assertTrue(o.count { it.livenessLiftU > 0.0 } >= 2, "es muss mindestens einen grossen Lift und einen Folgeverlauf geben")
-        o.forEach {
-            assertTrue(it.livenessShadowNeedU != null && it.livenessShadowCandidateU != null && it.livenessShadowHeadroomU != null) {
-                "Schattenbedarf fehlt: ${zeile(it)}"
-            }
-            if (it.livenessProfileReason in sperrgruende || it.livenessDenial in sperrgruende)
-                assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it))
-            val unbedient = rb(it) > 0 && it.dosingContextProfile == "MEAL" &&
-                LivenessChannel.quantize(it.livenessShadowCandidateU ?: 0.0, 0.05) > it.decision.smbU + 1e-9
-            if (unbedient) assertTrue(
-                it.evidencePhase != null &&
-                    (it.livenessProfileReason != "MARKER_POWER" || it.livenessDenial != null || it.livenessExit != null || it.livenessNoLiftReason != null),
-            ) { "unbedienter Zyklus ohne benannten Grund: ${zeile(it)}" }
-        }
-    }
 
     // ==== NACHWEISE DRITTE RUNDE (Tonis Review 14.09. spaet) ==================
 
@@ -11973,519 +8615,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(mitSpaeterer < series(spaeter).last().value - 1e-6, "die spaetere Abgabe wirkt nur nach vorn")
     }
 
-    /**
-     * GEFAHREN UNABHAENGIG VON DER TORREIHENFOLGE (Punkt 2). Im Tief vor dem
-     * Druck meldet das Tor REBOUND_ACTIVE - und verdeckt damit Tief,
-     * Abwaertsrisiko, Riegel und Fallen. Die Gefahrenliste fuehrt sie trotzdem.
-     * Dazu die Konsistenz jeder einzelnen Gefahr mit ihrer Quelle in JEDEM
-     * Zyklus, und "buchungsbedingt ohne Gefahr" nur ohne jede Gefahr.
-     */
-    @Test
-    fun `Gefahren 1 - erfasst unabhaengig von Tor- und Ablehnungsreihenfolge`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        maxSmbU = 0.3
-        rueckfuehrungAn()
-        // Der Vorlauf vor dem Druck gehoert dazu: dort liegt das Tief.
-        val o = lageVorlauf.toList() + (1..60).map { transport(dir) }
-        val verdeckt = o.filter {
-            it.livenessProfileReason == "REBOUND_ACTIVE" &&
-                it.livenessConcurrentHazards.orEmpty().containsAll(listOf("MEASURED_LOW", "DESCENT_RISK", "LATCH_ACTIVE", "FALLING"))
-        }
-        assertTrue(verdeckt.isNotEmpty()) { "Vorbedingung: Tor REBOUND_ACTIVE bei gleichzeitigen Abwaertsgefahren:\n" + o.joinToString("\n") { zeile(it) + " haz=${it.livenessConcurrentHazards}" } }
-        o.filter { it.livenessConcurrentHazards != null }.forEach {
-            val h = it.livenessConcurrentHazards!!
-            val kontext = zeile(it) + " haz=$h"
-            assertEquals((it.evidenceDeclineMgdl ?: 0.0) > 0.0, "EVIDENCE_DECLINE" in h, kontext)
-            assertEquals(it.livenessMeasuredStability != "STABLE", "MEASURED_NOT_STABLE" in h, kontext)
-            assertEquals(it.descentRiskActive, "DESCENT_RISK" in h, kontext)
-            val ukf = it.signal?.ukfRatePerMin ?: Double.NaN
-            assertEquals(!ukf.isFinite() || ukf < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN, "FALLING" in h, kontext)
-            assertEquals(it.livenessEvidenceLossCause == "BOOKING_DEDUCTION" && h.isEmpty(), it.livenessBookingWithoutCapturedHazard, kontext)
-        }
-    }
-
-    /**
-     * BUCHUNG PLUS RUECKGANG UND INSTABILE MESSREIHE (Punkt 2). Organisch: der
-     * Lift bei Minute 39 zieht im Folgezyklus den Bestand unter die Schwelle
-     * (ohne Abzug stuende er darueber -> BOOKING_DEDUCTION), und genau ab
-     * Minute 39 faellt die Reihe steil. Die Ursache heisst weiter Buchung, aber
-     * Rueckgang und Messlage stehen daneben - "buchungsbedingt ohne Gefahr" gilt
-     * NICHT. Rig ohne Rueckfuehrung (die Lage stammt aus dem Erkundungslauf).
-     */
-    @Test
-    fun `Gefahren 2 - Buchung plus Rueckgang und instabile Messreihe ist nicht gefahrlos`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        maxSmbU = 0.3
-        knick2AbMin = 39
-        steigungNachKnick2 = -8.0
-        val o = (1..60).map { transport(dir) }
-        val beleg = o.firstOrNull {
-            it.livenessEvidenceLossCause == "BOOKING_DEDUCTION" &&
-                it.livenessConcurrentHazards.orEmpty().containsAll(listOf("EVIDENCE_DECLINE", "MEASURED_NOT_STABLE"))
-        } ?: throw AssertionError("Vorbedingung: Buchungsverlust mit Rueckgang und instabiler Messreihe:\n" +
-            o.joinToString("\n") { zeile(it) + " loss=${it.livenessEvidenceLossCause} haz=${it.livenessConcurrentHazards} decl=${it.evidenceDeclineMgdl}" })
-        assertTrue((beleg.evidenceDeclineMgdl ?: 0.0) > 0.0 && (beleg.evidenceDeductionMgdl ?: 0.0) > 0.0, zeile(beleg))
-        assertFalse(beleg.livenessBookingWithoutCapturedHazard, "Buchung plus Gefahr ist nicht gefahrlos: ${zeile(beleg)}")
-        assertEquals(0.0, beleg.livenessLiftU, 1e-12, zeile(beleg))
-    }
-
-    /**
-     * AKTIVER ABSTIEGSSCHUTZ HINTER DEM REBOUND-TOR (Punkt 2). Organisch nach
-     * steilem Fall: Tor REBOUND_ACTIVE, zugleich DESCENT_RISK - der Bestand ist
-     * dort durch Rueckgang leer, nicht durch Buchung. Eine Kombination
-     * "Buchung plus Abstiegsschutz" trat in den gezielten Lagen nicht auf; sie
-     * ist in der reinen Diagnose (Kern) geprueft.
-     */
-    @Test
-    fun `Gefahren 3 - Abstiegsschutz wird hinter dem Rebound-Tor erfasst`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        maxSmbU = 0.3
-        knick2AbMin = 38
-        steigungNachKnick2 = -4.0
-        val o = (1..60).map { transport(dir) }
-        val verdeckt = o.filter {
-            it.computeTs > markerAt && it.livenessProfileReason == "REBOUND_ACTIVE" && it.descentRiskActive &&
-                "DESCENT_RISK" in it.livenessConcurrentHazards.orEmpty()
-        }
-        assertTrue(verdeckt.isNotEmpty()) { "Vorbedingung: Abstiegsschutz aktiv hinter REBOUND_ACTIVE:\n" +
-            o.joinToString("\n") { zeile(it) + " dr=${it.descentRiskActive} haz=${it.livenessConcurrentHazards}" } }
-        verdeckt.forEach {
-            assertFalse(it.livenessBookingWithoutCapturedHazard, zeile(it))
-            assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it))
-        }
-    }
-
-    /**
-     * PUNKT 4, BEOBACHTUNG - KEINE REGELAENDERUNG: loest reine
-     * Bestandserschoepfung OHNE Gefahr eine Wiederanlaufsperre aus?
-     * Abendkonfiguration 5 min Sperre, Rueckfuehrung nur bestaetigter Abgaben.
-     * Gesichert wird nur, was geschieht und dass es vollstaendig benannt ist:
-     * ein REBOUND_ACTIVE-Ausgang mit buchungsbedingtem Verlust und leerer
-     * Gefahrenliste, danach Sperrzyklen, in denen die Ausnahme wieder gilt und
-     * keine Gefahr anliegt. Evidenzabzug und alle Tore bleiben unveraendert;
-     * die Zyklenzahlen sind Rig-Werte, nicht auf den Abend uebertragbar.
-     */
-    @Test
-    fun `Ausnahme 16 - reine Bestandserschoepfung ohne Gefahr fuehrt in die Sperre (Beobachtung)`(@TempDir dir: File) {
-        ausnahmeLage(dir)
-        maxSmbU = 0.3
-        livenessReArmMin = 5
-        rueckfuehrungAn()
-        val o = (1..60).map { transport(dir) }
-        val exit = o.indexOfFirst {
-            it.livenessExit == "REBOUND_ACTIVE" && it.livenessEvidenceLossCause == "BOOKING_DEDUCTION" &&
-                it.livenessBookingWithoutCapturedHazard && it.livenessConcurrentHazards.orEmpty().isEmpty()
-        }
-        assertTrue(exit >= 0) { "Vorbedingung: buchungsbedingter Ausgang ohne Gefahr:\n" + o.joinToString("\n") { zeile(it) + " loss=${it.livenessEvidenceLossCause} haz=${it.livenessConcurrentHazards}" } }
-        val sperre = o.drop(exit + 1).takeWhile { it.livenessDenial == "REARM_BLOCKED" }
-        assertTrue(sperre.isNotEmpty(), "nach dem Ausgang folgt die Sperre")
-        assertTrue(sperre.any { it.livenessReboundExceptionAllowed == true && it.livenessConcurrentHazards.orEmpty().isEmpty() }) {
-            "in der Sperre gilt die Ausnahme wieder ohne Gefahr:\n" + sperre.joinToString("\n") { zeile(it) + " haz=${it.livenessConcurrentHazards}" }
-        }
-        sperre.forEach { assertEquals(0.0, it.livenessLiftU, 1e-12, zeile(it)) }
-        println("Ausnahme 16: Ausgang t=${(o[exit].computeTs - start) / 60_000L}, Sperrzyklen=${sperre.size}, davon ohne Gefahr=${sperre.count { it.livenessConcurrentHazards.orEmpty().isEmpty() }}")
-    }
-
-    /**
-     * RIG-FALLE ALS FEHLERFALL ERHALTEN (Tonis Review 15.09.): ein Marker, der
-     * beim ersten Zyklus in der ZUKUNFT liegt, armiert das Fundament ohne
-     * Autorisierung - es hebt dann nie. Produktiv kann das nicht entstehen (der
-     * Druck stempelt die Wanduhr); produktiv gemeinte Rig-Faelle duerfen diese
-     * Stempelung deshalb nicht verwenden.
-     */
-    @Test
-    fun `Rig-Falle - Zukunftsmarker armiert das Fundament ohne Autorisierung`(@TempDir dir: File) {
-        markerAt = 0L
-        reboundOverrideLage(dir)
-        livenessAusnahmeAn = true
-        maxSmbU = 0.3
-        fundamentAn = true
-        whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
-        markerAt = start + 14 * 60_000L // Uhr steht bei Minute 7
-        val o = (1..60).map { transport(dir) }
-        val phaseB = o.filter { it.mealFoundation.phase == MealFoundation.Phase.PHASE_B }
-        assertTrue(phaseB.isNotEmpty(), "Vorbedingung: das Fundament ist armiert und erreicht Phase B")
-        phaseB.forEach { assertFalse(it.mealFoundation.markerAuthorized, zeile(it)) }
-        assertTrue(o.none { it.foundationLiftU > 0.0 }, "ohne Autorisierung hebt das Fundament nie")
-    }
-
-    /**
-     * EXPERIMENT WIEDERANLAUFSPERRE - GETRENNT, NUR IM RIG (Tonis Review 15.09.).
-     *
-     * Kein Produktionscode wird geaendert. Zwei Laeufe mit identischen Eingaben
-     * (korrekt gestempelter Marker, 5 min Sperre, Rueckfuehrung nur bestaetigter
-     * Abgaben). Im Gegenstueck wird NACH einem Zyklus, der mit REBOUND_ACTIVE
-     * endete und buchungsbedingt ohne ERFASSTE Gefahr war, genau die Sperre
-     * dieses Zyklus zurueckgenommen (auf den Stand davor - aeltere Sperren
-     * bleiben). Evidenzabzug, Bewaffnung, Wende, alle Gefahren- und Mengentore
-     * laufen unveraendert.
-     *
-     * Nachweis: bis zum ersten Unterschied sind beide Laeufe zyklusgleich; im
-     * ersten abweichenden Zyklus sperrt der Basislauf mit REARM_BLOCKED, und das
-     * Gegenstueck gibt einen groesseren Kandidaten tatsaechlich ab (Gate, Buchung),
-     * ohne erfasste Gefahr und mit geltender Ausnahme. Danach wird der Verlauf
-     * beider Laeufe nur AUSGEGEBEN - kein Nutzen wird behauptet.
-     */
-    @Test
-    fun `Experiment Sperre - buchungsbedingter Ausgang ohne Sperre, gleicher Zustand`(@TempDir dir: File) {
-        fun lauf(name: String, gegenstueck: Boolean): Pair<List<FuseCycleRunner.Outcome>, List<Double>> {
-            val d = File(dir, name).also(File::mkdirs)
-            abgaben.clear(); boluses = emptyList(); rueckIsf = 61.0; rueckfuehrung = false
-            ausnahmeLage(d)
-            maxSmbU = 0.3
-            livenessReArmMin = 5
-            rueckfuehrungAn()
-            val pub = mutableListOf<Double>()
-            val o = (1..60).map {
-                val sperreVorher = ledger.episodes.livenessReArmUntilTs
-                val z = transport(d)
-                pub += letzteMengeU ?: 0.0
-                if (gegenstueck && z.livenessExit == "REBOUND_ACTIVE" && z.livenessBookingWithoutCapturedHazard)
-                    ledger.episodes.livenessReArmUntilTs = sperreVorher
-                z
-            }
-            return o to pub
-        }
-        val (basis, basisPub) = lauf("basis", gegenstueck = false)
-        val (gegen, gegenPub) = lauf("gegen", gegenstueck = true)
-        fun gleich(a: FuseCycleRunner.Outcome, b: FuseCycleRunner.Outcome) =
-            a.decision.smbU == b.decision.smbU && a.livenessDenial == b.livenessDenial && a.livenessExit == b.livenessExit &&
-                a.evidenceStockMgdl == b.evidenceStockMgdl && a.signal?.q1 == b.signal?.q1
-        val i = basis.indices.firstOrNull { !gleich(basis[it], gegen[it]) }
-            ?: throw AssertionError("die Laeufe unterscheiden sich nie:\n" + basis.joinToString("\n") { zeile(it) })
-        val ausgang = basis.subList(0, i).indexOfLast { it.livenessExit == "REBOUND_ACTIVE" && it.livenessBookingWithoutCapturedHazard }
-        assertTrue(ausgang >= 0, "vor dem Unterschied liegt ein buchungsbedingter Ausgang ohne erfasste Gefahr")
-        val b = basis[i]
-        val g = gegen[i]
-        val kontext = "basis: ${zeile(b)} haz=${b.livenessConcurrentHazards}\ngegen: ${zeile(g)} haz=${g.livenessConcurrentHazards}"
-        assertEquals("REARM_BLOCKED", b.livenessDenial, kontext)
-        assertEquals(0.0, b.livenessLiftU, 1e-12, kontext)
-        assertTrue(g.livenessLiftU > 0.0 && g.decision.smbU > b.decision.smbU + 1e-9, kontext)
-        assertEquals(g.decision.smbU, gegenPub[i], 1e-9, "das Gegenstueck gibt die Menge tatsaechlich ab: $kontext")
-        assertTrue(g.livenessReboundExceptionAllowed == true || g.evidenceMayOverrideRebound, kontext)
-        assertTrue(b.livenessConcurrentHazards.orEmpty().isEmpty() && g.livenessConcurrentHazards.orEmpty().isEmpty(), kontext)
-        // Nur die Sperre war verschieden: Eingaben und Bestand im Entscheidungszyklus gleich.
-        assertEquals(b.signal?.q1, g.signal?.q1)
-        assertEquals(b.evidenceStockMgdl, g.evidenceStockMgdl)
-        assertEquals(b.livenessShadowCandidateU, g.livenessShadowCandidateU)
-        fun verlauf(n: String, o: List<FuseCycleRunner.Outcome>, p: List<Double>) = "$n: abgegeben=${"%.2f".format(p.sum())} U, " +
-            "q1max=${"%.1f".format(o.mapNotNull { it.signal?.q1 }.maxOrNull())}, q1min(ab Marker)=${"%.1f".format(o.filter { it.computeTs > markerAt }.mapNotNull { it.signal?.q1 }.minOrNull())}, " +
-            "reboundExits=${o.count { it.livenessExit == "REBOUND_ACTIVE" }}, rearm=${o.count { it.livenessDenial == "REARM_BLOCKED" }}, " +
-            "gefahrZyklen=${o.count { it.livenessConcurrentHazards.orEmpty().isNotEmpty() && it.computeTs > markerAt }}, " +
-            "tief=${o.count { it.livenessConcurrentHazards.orEmpty().contains("MEASURED_LOW") && it.computeTs > markerAt }}"
-        println("Experiment Sperre: erster Unterschied t=${(b.computeTs - start) / 60_000L}\n" + verlauf("basis", basis, basisPub) + "\n" + verlauf("gegen", gegen, gegenPub))
-    }
-
-    // ==== BUCHUNGSBEDINGTER AUSGANG OHNE NEUE SPERRE (Vertrag Toni 15.09.) =====
-    //
-    // Gemeinsame Lage: korrekt gestempelter Marker, grosser Lift (maxSMB 0,30),
-    // 5 min Sperre, Rueckfuehrung nur bestaetigter Abgaben, Schalter per Parameter.
-
-    private fun buchungsLage(dir: File, an: Boolean) {
-        abgaben.clear(); boluses = emptyList(); rueckIsf = 61.0; rueckfuehrung = false
-        ausnahmeLage(dir)
-        maxSmbU = 0.3
-        livenessReArmMin = 5
-        rueckfuehrungAn()
-        buchungsAusgangAn = an
-    }
-
-    /** Zeitpunkt des ersten Ausgangs ohne neue Sperre im unveraenderten Lauf (Schalter AN). */
-    private fun ersterBuchungsAusgang(dir: File): Long {
-        buchungsLage(File(dir, "sonde").also(File::mkdirs), an = true)
-        val d = File(dir, "sonde")
-        val o = (1..60).map { transport(d) }
-        return o.firstOrNull { it.livenessBookingExitSkipReArm }?.computeTs
-            ?: throw AssertionError("Vorbedingung: ein Ausgang ohne neue Sperre:\n" + o.joinToString("\n") { zeile(it) + " be=${it.livenessBookingExitDenial}" })
-    }
-
-    private fun sperrZeile(o: FuseCycleRunner.Outcome) =
-        zeile(o) + " skip=${o.livenessBookingExitSkipReArm} be=${o.livenessBookingExitDenial} haz=${o.livenessConcurrentHazards} sperreBis=${(o.livenessReArmUntilTs - start) / 60_000L}"
-
-    /**
-     * POSITIV + GLEICHWERTIGKEIT: Schalter AN verhaelt sich zyklusgleich zum
-     * Rig-Gegenstueck des Experiments (Sperre nach dem Zyklus zurueckgenommen) -
-     * aber OHNE nachtraegliches Zuruecksetzen: die Sperre entsteht gar nicht,
-     * und der persistierte Stand ist derselbe wie im Speicher. Im Ausgangszyklus
-     * bleibt die Ausnahme verweigert, es wird nicht gehoben (Vertrag 1 und 2).
-     */
-    @Test
-    fun `Buchungsausgang 1 - Schalter an entspricht dem Gegenstueck und persistiert konsistent`(@TempDir dir: File) {
-        val dAn = File(dir, "an").also(File::mkdirs)
-        buchungsLage(dAn, an = true)
-        val an = (1..60).map {
-            val sperreVorher = ledger.episodes.livenessReArmUntilTs
-            val o = transport(dAn)
-            if (o.livenessBookingExitSkipReArm) {
-                val k = sperrZeile(o)
-                assertEquals("REBOUND_ACTIVE", o.livenessExit, k)
-                assertFalse(o.livenessActive, k)
-                assertEquals(0, o.livenessStreak, k)
-                assertEquals(false, o.livenessReboundExceptionAllowed, k)
-                assertEquals(0.0, o.livenessLiftU, 1e-12, k)
-                assertEquals(sperreVorher, ledger.episodes.livenessReArmUntilTs, "keine neue Sperre: $k")
-                assertEquals(ledger.episodes.livenessReArmUntilTs, nachNeustart(dAn).livenessReArmUntilTs, "persistiert wie im Speicher: $k")
-                assertTrue(o.livenessConcurrentHazards.orEmpty().isEmpty() && o.livenessEvidenceLossCause == "BOOKING_DEDUCTION", k)
-            }
-            o
-        }
-        assertTrue(an.count { it.livenessBookingExitSkipReArm } >= 1) { an.joinToString("\n") { sperrZeile(it) } }
-
-        val dGegen = File(dir, "gegen").also(File::mkdirs)
-        buchungsLage(dGegen, an = false)
-        val gegen = (1..60).map {
-            val sperreVorher = ledger.episodes.livenessReArmUntilTs
-            val z = transport(dGegen)
-            if (z.livenessExit == "REBOUND_ACTIVE" && z.livenessBookingWithoutCapturedHazard) ledger.episodes.livenessReArmUntilTs = sperreVorher
-            z
-        }
-        an.zip(gegen).forEach { (a, g) ->
-            val k = "an: ${sperrZeile(a)}\ngegen: ${sperrZeile(g)}"
-            assertEquals(g.decision.smbU, a.decision.smbU, 1e-12, k)
-            assertEquals(g.livenessDenial, a.livenessDenial, k)
-            assertEquals(g.livenessExit, a.livenessExit, k)
-            assertEquals(g.evidenceStockMgdl, a.evidenceStockMgdl, k)
-        }
-    }
-
-    /** GEGENFALL: neue Gefahr unmittelbar nach dem Ausgang - kein Lift unter Gefahr, jeder Gefahrenausgang sperrt. */
-    @Test
-    fun `Buchungsausgang 2 - neue Gefahr unmittelbar danach`(@TempDir dir: File) {
-        val tE = ersterBuchungsAusgang(dir)
-        val d = File(dir, "fall").also(File::mkdirs)
-        buchungsLage(d, an = true)
-        knick2AbMin = ((tE - start) / 60_000L).toInt()
-        steigungNachKnick2 = -8.0
-        val o = (1..60).map { transport(d) }
-        val ausgang = o.first { it.computeTs == tE }
-        assertTrue(ausgang.livenessBookingExitSkipReArm, "der Ausgang selbst liegt vor dem Fall: ${sperrZeile(ausgang)}")
-        val danach = o.filter { it.computeTs > tE }
-        assertTrue(danach.any { it.livenessConcurrentHazards.orEmpty().isNotEmpty() }) { "Vorbedingung: Gefahr danach\n" + danach.joinToString("\n") { sperrZeile(it) } }
-        danach.filter { it.livenessConcurrentHazards.orEmpty().isNotEmpty() }.forEach { assertEquals(0.0, it.livenessLiftU, 1e-12, sperrZeile(it)) }
-        danach.filter { it.livenessExit != null && it.livenessConcurrentHazards.orEmpty().isNotEmpty() }.forEach {
-            assertFalse(it.livenessBookingExitSkipReArm, sperrZeile(it))
-        }
-    }
-
-    /** GEGENFALL: eine bestehende aeltere Sperre bleibt unveraendert und wirkt. */
-    @Test
-    fun `Buchungsausgang 3 - bestehende aeltere Sperre bleibt`(@TempDir dir: File) {
-        val tE = ersterBuchungsAusgang(dir)
-        val d = File(dir, "alt").also(File::mkdirs)
-        buchungsLage(d, an = true)
-        var alteSperre = 0L
-        val o = (1..60).map {
-            if (clock + taktMs == tE) {
-                alteSperre = clock + 20 * 60_000L
-                ledger.episodes.livenessReArmUntilTs = alteSperre
-            }
-            transport(d)
-        }
-        val ausgang = o.first { it.computeTs == tE }
-        assertTrue(ausgang.livenessBookingExitSkipReArm, sperrZeile(ausgang))
-        assertEquals(alteSperre, ausgang.livenessReArmUntilTs, "weder verlaengert noch verkuerzt")
-        o.filter { it.computeTs in (tE + 1)..(alteSperre - 1) }.forEach {
-            assertEquals(0.0, it.livenessLiftU, 1e-12, sperrZeile(it))
-            assertFalse(it.livenessActive, sperrZeile(it))
-        }
-    }
-
-    /** GEGENFALL: manuelle Intervention - die Sonderbehandlung gilt nicht, die Sperre entsteht. */
-    @Test
-    fun `Buchungsausgang 4 - manuelle Intervention verweigert`(@TempDir dir: File) {
-        val tE = ersterBuchungsAusgang(dir)
-        val d = File(dir, "manuell").also(File::mkdirs)
-        buchungsLage(d, an = true)
-        val o = (1..60).map {
-            if (clock + taktMs == tE) boluses = boluses + BS(timestamp = tE - 30_000L, amount = 1.0, type = BS.Type.NORMAL)
-            transport(d)
-        }
-        val ausgang = o.first { it.computeTs == tE }
-        assertFalse(ausgang.livenessBookingExitSkipReArm, sperrZeile(ausgang))
-        assertEquals("MANUAL_INTERVENTION", ausgang.livenessBookingExitDenial, sperrZeile(ausgang))
-        assertTrue(ausgang.livenessReArmUntilTs >= tE + livenessReArmMin * 60_000L, "die Sperre entsteht: ${sperrZeile(ausgang)}")
-    }
-
-    /** GEGENFALL: Markerwechsel im Ausgangszyklus - keine Sonderbehandlung. */
-    @Test
-    fun `Buchungsausgang 5 - Markerwechsel`(@TempDir dir: File) {
-        val tE = ersterBuchungsAusgang(dir)
-        val d = File(dir, "marker").also(File::mkdirs)
-        buchungsLage(d, an = true)
-        val o = (1..60).map {
-            if (clock + taktMs == tE) markerAt = tE
-            transport(d)
-        }
-        val ausgang = o.first { it.computeTs == tE }
-        assertFalse(ausgang.livenessBookingExitSkipReArm, sperrZeile(ausgang))
-        assertTrue(ausgang.livenessExit != "REBOUND_ACTIVE" || ausgang.livenessBookingExitDenial != null, sperrZeile(ausgang))
-    }
-
-    /** GEGENFALL: Neustart direkt nach dem Ausgang - Stand aus der Datei, keine Sperre nachtraeglich, frische Bewaffnung noetig. */
-    @Test
-    fun `Buchungsausgang 6 - Neustart nach dem Ausgang`(@TempDir dir: File) {
-        val d = File(dir, "neustart").also(File::mkdirs)
-        buchungsLage(d, an = true)
-        // ZWEI Bestaetigungszyklen (Tonis Review 15.09.): mit einem faellt die
-        // Bewaffnung mit dem Lift in denselben Zyklus, und eine FRISCH aufgebaute
-        // Serie waere nicht von einer uebernommenen zu unterscheiden. Vor dem
-        // Druck gesetzt - kein Konfigurationswechsel waehrend eines Laufs.
-        mealArmZyklen = 2
-        var ausgang: FuseCycleRunner.Outcome? = null
-        val vorAusgang = mutableListOf<FuseCycleRunner.Outcome>()
-        var n = 0
-        while (ausgang == null && n < 60) { n++; transport(d).also { vorAusgang += it }.takeIf { it.livenessBookingExitSkipReArm }?.let { ausgang = it } }
-        val a = ausgang ?: throw AssertionError("Vorbedingung: Ausgang ohne neue Sperre")
-        val sperreImSpeicher = ledger.episodes.livenessReArmUntilTs
-        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(d, "test-epoch", clock) })
-        // Wie der Produktionsstart (FusePlugin -> FuseLowMemory): das juengste
-        // gemessene Tief aus der Historie laden - sonst liefe der Wiederanlauf
-        // ohne Rebound-Fenster und damit milder als am Geraet.
-        letztesTief(lageVorlauf + vorAusgang)?.let { runner.primeLastLowTs(it) }
-        markerPress = 0L
-        assertEquals(sperreImSpeicher, ledger.episodes.livenessReArmUntilTs, "die Datei kennt keine Sperre aus dem Ausgang")
-        assertTrue(sperreImSpeicher < a.computeTs + livenessReArmMin * 60_000L, "keine Sperre aus diesem Ausgang")
-        transportReset()
-        val danach = (1..25).map { transport(d) }
-        val kontext = danach.joinToString("\n") { sperrZeile(it) + " streak=${it.livenessStreak}" }
-        danach.forEach { assertTrue(it.livenessDenial != "REARM_BLOCKED" || it.livenessReArmUntilTs > sperreImSpeicher, sperrZeile(it)) }
-        // (a) Zurueckgesetzt nach dem Laden: kein laufender Lauf, keine uebernommene Serie.
-        assertFalse(danach.first().livenessActive, "nach dem Laden laeuft kein Lauf:\n$kontext")
-        assertTrue(danach.first().livenessStreak <= 1, "nach dem Laden keine uebernommene Serie:\n$kontext")
-        // (b) Ein tatsaechlicher Wiederanlauf ist PFLICHT - der Test besteht nicht ohne ihn.
-        val wiederanlauf = danach.indexOfFirst { it.livenessActive && it.livenessLiftU > 0.0 }
-        assertTrue(wiederanlauf >= 1) { "ein tatsaechlicher Wiederanlauf nach Bestaetigung muss beobachtet werden:\n$kontext" }
-        // (c) Kein vorzeitiger Lift.
-        danach.take(wiederanlauf).forEach {
-            assertEquals(0.0, it.livenessLiftU, 1e-12, sperrZeile(it))
-            assertFalse(it.livenessActive, sperrZeile(it))
-        }
-        // (d) Frisch aufgebaute Bestaetigung: unmittelbar vor dem Wiederanlauf
-        // ein unbestaetigter Druckzyklus mit Serie 1, im Wiederanlauf Serie 2.
-        val vorher = danach[wiederanlauf - 1]
-        assertEquals(1, vorher.livenessStreak, "Serie beginnt neu: ${sperrZeile(vorher)}")
-        assertEquals("NOT_CONFIRMED", vorher.livenessDenial, sperrZeile(vorher))
-        assertEquals(2, danach[wiederanlauf].livenessStreak, "bewaffnet erst nach zwei frischen Bestaetigungen: ${sperrZeile(danach[wiederanlauf])}")
-    }
-
-    /** GEGENFALL: wiederholte Erschoepfung, danach Fall - kein Lift unter Gefahr, Gefahrenausgaenge sperren. */
-    @Test
-    fun `Buchungsausgang 7 - wiederholte Erschoepfung mit anschliessendem Fall`(@TempDir dir: File) {
-        val d = File(dir, "serie").also(File::mkdirs)
-        buchungsLage(d, an = true)
-        knick2AbMin = 52
-        steigungNachKnick2 = -6.0
-        val o = (1..60).map { transport(d) }
-        val vorFall = o.filter { it.computeTs <= start + 52 * 60_000L }
-        assertTrue(vorFall.count { it.livenessBookingExitSkipReArm } >= 2) { "Vorbedingung: wiederholte Ausgaenge ohne neue Sperre\n" + o.joinToString("\n") { sperrZeile(it) } }
-        val nachFall = o.filter { it.computeTs > start + 52 * 60_000L }
-        assertTrue(nachFall.any { it.livenessConcurrentHazards.orEmpty().isNotEmpty() }) { "Vorbedingung: Gefahr nach dem Fall\n" + nachFall.joinToString("\n") { sperrZeile(it) } }
-        nachFall.filter { it.livenessConcurrentHazards.orEmpty().isNotEmpty() }.forEach {
-            assertEquals(0.0, it.livenessLiftU, 1e-12, sperrZeile(it))
-            assertFalse(it.livenessBookingExitSkipReArm, sperrZeile(it))
-        }
-    }
-
-    /**
-     * OFFENER PRUEFPUNKT VOR DER AKTIVIERUNG (Tonis Review zu cbcbc794a8):
-     * WIEDERHOLTES STOPPEN UND WIEDERANLAUFEN. Jeder Ausgang ohne neue Sperre
-     * wird von einem Prozessneustart gefolgt, ueber mehrere Runden. Zusagen je
-     * Runde:
-     *  (a) der Ausgang erzeugt keine Sperre - weder im Speicher noch in der Datei,
-     *  (b) nach dem Laden laeuft kein Lauf und es gibt keine uebernommene Serie,
-     *  (c) jede Wiederbewaffnung wird FRISCH bestaetigt (Serie 1 NOT_CONFIRMED
-     *      direkt davor, Serie 2 im Wiederanlauf), kein Lift davor,
-     *  (d) unter erfasster Gefahr nie ein Lift, Gefahrenausgaenge sperren.
-     * Zusaetzlich: dieselbe Lage ohne Neustarts - die Neustarts duerfen die
-     * abgegebene Menge nicht erhoehen (ein Neustart kostet Bewaffnung, er schenkt
-     * keine).
-     */
-    @Test
-    fun `Buchungsausgang 8 - wiederholtes Stoppen und Wiederanlaufen mit Neustart`(@TempDir dir: File) {
-        fun lauf(name: String, neustarts: Boolean): Pair<List<FuseCycleRunner.Outcome>, Int> {
-            val d = File(dir, name).also(File::mkdirs)
-            buchungsLage(d, an = true)
-            mealArmZyklen = 2
-            val alle = mutableListOf<FuseCycleRunner.Outcome>()
-            var runden = 0
-            var geprueft = 0
-            var nachLaden: MutableList<FuseCycleRunner.Outcome>? = null
-            repeat(90) {
-                val sperreVorher = ledger.episodes.livenessReArmUntilTs
-                val o = transport(d)
-                alle += o
-                nachLaden?.add(o)
-                if (o.livenessBookingExitSkipReArm) {
-                    val k = sperrZeile(o)
-                    assertEquals(sperreVorher, ledger.episodes.livenessReArmUntilTs, "(a) keine Sperre im Speicher: $k")
-                    if (neustarts) {
-                        // Vorherige Runde auswerten, bevor die naechste beginnt.
-                        nachLaden?.let { pruefeWiederanlauf(it, runden); geprueft++ }
-                        val sperreImSpeicher = ledger.episodes.livenessReArmUntilTs
-                        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(d, "test-epoch", clock) })
-                        // Tief-Gedaechtnis wie der Produktionsstart aus der Historie.
-                        letztesTief(lageVorlauf + alle)?.let { runner.primeLastLowTs(it) }
-                        markerPress = 0L
-                        transportReset()
-                        assertEquals(sperreImSpeicher, ledger.episodes.livenessReArmUntilTs, "(a) keine Sperre in der Datei: $k")
-                        runden++
-                        nachLaden = mutableListOf()
-                    }
-                }
-                if (o.livenessConcurrentHazards.orEmpty().isNotEmpty()) {
-                    assertEquals(0.0, o.livenessLiftU, 1e-12, "(d) ${sperrZeile(o)}")
-                    assertFalse(o.livenessBookingExitSkipReArm, "(d) ${sperrZeile(o)}")
-                }
-            }
-            // LETZTE RUNDE (Tonis Review zu 4914842d86): sie endet nicht an einem
-            // weiteren Ausgang und blieb bisher ungeprueft. Weiterlaufen bis zur
-            // Wiederbewaffnung (hoechstens 30 Zyklen), dann dieselben Zusagen.
-            // Die Mengen-Gegenprobe bleibt auf den ersten 90 Zyklen.
-            nachLaden?.let { letzte ->
-                var extra = 0
-                while (letzte.none { it.livenessActive } && extra < 30) {
-                    val o = transport(d)
-                    letzte += o
-                    extra++
-                    if (o.livenessConcurrentHazards.orEmpty().isNotEmpty()) assertEquals(0.0, o.livenessLiftU, 1e-12, "(d) ${sperrZeile(o)}")
-                }
-                pruefeWiederanlauf(letzte, runden)
-                geprueft++
-            }
-            if (neustarts) assertEquals(runden, geprueft, "jede Runde nach einem Neustart ist geprueft, auch die letzte")
-            return alle to runden
-        }
-        val (mit, runden) = lauf("mit_neustart", neustarts = true)
-        val (ohne, _) = lauf("ohne_neustart", neustarts = false)
-        val mitU = mit.sumOf { it.decision.smbU }
-        val ohneU = ohne.sumOf { it.decision.smbU }
-        println(
-            "Buchungsausgang 8: Runden mit Neustart $runden, Ausgaenge ohne Sperre ${mit.count { it.livenessBookingExitSkipReArm }} / " +
-                "${ohne.count { it.livenessBookingExitSkipReArm }}, abgegeben ${"%.2f".format(mitU)} U / ${"%.2f".format(ohneU)} U, " +
-                "Wiederanlaeufe ${mit.zipWithNext().count { (a, b) -> !a.livenessActive && b.livenessActive }}",
-        )
-        assertTrue(runden >= 2) { "Vorbedingung: mindestens zwei Runden Ausgang + Neustart\n" + mit.joinToString("\n") { sperrZeile(it) + " streak=${it.livenessStreak}" } }
-        assertTrue(mitU <= ohneU + 1e-9, "Neustarts erhoehen die abgegebene Menge nicht: $mitU vs $ohneU")
-    }
-
-    /** Juengstes gemessenes Tief (q1 unter der Rebound-Schwelle) einer Zyklusfolge -
-     *  dieselbe Groesse, die FuseLowMemory beim Start aus dem Trail zurueckholt. */
-    private fun letztesTief(l: List<FuseCycleRunner.Outcome>): Long? =
-        l.lastOrNull { (it.signal?.q1 ?: Double.MAX_VALUE) < FuseController.REBOUND_LOW_MGDL }?.signal?.sourceTs
-
-    /** Zusagen (b) und (c) fuer die Zyklen nach einem Laden bis zum naechsten Ausgang. */
-    private fun pruefeWiederanlauf(danach: List<FuseCycleRunner.Outcome>, runde: Int) {
-        if (danach.isEmpty()) return
-        val kontext = "Runde $runde:\n" + danach.joinToString("\n") { sperrZeile(it) + " streak=${it.livenessStreak}" }
-        assertFalse(danach.first().livenessActive, "(b) nach dem Laden laeuft kein Lauf\n$kontext")
-        assertTrue(danach.first().livenessStreak <= 1, "(b) keine uebernommene Serie\n$kontext")
-        val wiederanlauf = danach.indexOfFirst { it.livenessActive }
-        assertTrue(wiederanlauf >= 1, "(c) ein Wiederanlauf nach frischer Bestaetigung\n$kontext")
-        danach.take(wiederanlauf).forEach { assertEquals(0.0, it.livenessLiftU, 1e-12, "(c) kein Lift vor der Bewaffnung\n$kontext") }
-        assertEquals(1, danach[wiederanlauf - 1].livenessStreak, "(c) Serie 1 direkt davor\n$kontext")
-        assertEquals("NOT_CONFIRMED", danach[wiederanlauf - 1].livenessDenial, "(c) unbestaetigt direkt davor\n$kontext")
-        assertEquals(2, danach[wiederanlauf].livenessStreak, "(c) Serie 2 im Wiederanlauf\n$kontext")
-    }
+    // Konsolidierung 2.0: der buchungsbedingte Ausgang ohne neue Sperre und seine Proben sind entfallen.
 
     // ---- BITGLEICH-AUFZEICHNUNG (nur mit FUSE_BITGLEICH_OUT) ----------------
     //
@@ -12494,489 +8624,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     // Stand mit ausgeschaltetem Schalter dieselben Entscheidungen trifft. Ohne
     // die Umgebungsvariable wird nichts ausgefuehrt.
 
-    // ==== FRUEHER ADAPTIVER MEAL-BEDARF H8 (Bauauftrag Toni 18.09.) ===========
-    //
-    // Dieselbe Lage wie die Halte-Anhebung (Liveness-Rig, Schwanzlast, Marker
-    // in Zyklus [halteMarkerZyklus]), mit den Live-Werten fuer W10 und die
-    // untere Rise-Schwelle 1,5. Jede Form laeuft mit geschlossener
-    // Rueckfuehrung: nur publizierte Abgaben wirken auf IOB und Reihe.
-    // Synthetische Bahnen, keine Messwerte.
-
-    private fun fruehLauf(
-        dir: File, name: String, horizont: Int, zyklen: Int, meal: Boolean = true,
-        vorZyklus: (Int) -> Unit = {}, schwanzU: Double = 4.5 / 0.9, rueck: Boolean = true,
-        form: () -> Unit = {},
-    ): List<FuseCycleRunner.Outcome> {
-        val d = File(dir, name + (if (meal) "" else "_korr") + "_h$horizont").also(File::mkdirs)
-        abgaben.clear(); boluses = emptyList(); rueckfuehrung = false
-        lueckeVonMin = null; lueckeBisMin = null; rohSerie = null; formZusatz = null
-        markerAt = 0L; mealPowerMin = 120; kalibrierStart = -1L; messTaktMs = null; taktMs = 60_000L
-        livenessLage(d)
-        theilSenFensterMin = 10
-        riseRampLowRWert = 1.5
-        // Frueher Mahlzeiten-Deadlock: BG nahe Ziel, Anstieg ab dem Marker,
-        // MEAL-Druckschwelle 110 wie live. Die Schwanzlast haelt die
-        // produktive 60-min-Bahn niedrig, waehrend W10 den Anstieg zeigt.
-        mealBgMin = 110.0
-        flach = 120.0
-        steigungProMin = 0.2
-        knickAbMin = halteMarkerZyklus
-        steigungNachKnick = 2.5
-        form()
-        fruehHorizont = horizont
-        abgaben += Abgabe(start - 30 * 60_000L, schwanzU, wirktAufReihe = false, isfMgdlPerU = 61.0)
-        bolusIobU = null
-        rueckfuehrung = rueck
-        messTaktMs = 60_000L
-        var gedrueckt = false
-        return (1..zyklen).map {
-            if (meal && !gedrueckt && clock + taktMs >= start + halteMarkerZyklus * 60_000L) {
-                markerAt = clock + taktMs; gedrueckt = true
-            }
-            vorZyklus(((clock + taktMs - start) / 60_000L).toInt())
-            transport(d)
-        }.also {
-            fruehHorizont = 0; theilSenFensterMin = 18; riseRampLowRWert = 0.5; riseRampHighRWert = 2.0; mealBgMin = 160.0
-            formZusatz = null; markerAt = 0L; mealPowerMin = 120
-            kalibrierStart = -1L; messTaktMs = null; taktMs = 60_000L; lueckeVonMin = null; lueckeBisMin = null
-        }
-    }
-
-    private fun fruehZeilen(name: String, aus: List<FuseCycleRunner.Outcome>, an: List<FuseCycleRunner.Outcome>) {
-        println("H8 $name: AUS ${"%.2f".format(aus.sumOf { it.decision.smbU })} U, AN ${"%.2f".format(an.sumOf { it.decision.smbU })} U")
-        for ((a, b) in aus.zip(an)) {
-            val e = b.earlyAdaptiveMeal
-            println(
-                "H8 $name min ${minuteVon(b)} q1 ${"%.0f".format(b.signal?.q1 ?: Double.NaN)} smb ${a.decision.smbU}/${b.decision.smbU} " +
-                    "geeignet ${e.eligible} gewaehlt ${e.selected} ${e.denial} alter ${e.markerAgeMin?.let { "%.1f".format(it) }} w10 ${e.w10DriveMgdlPerMin?.let { "%.2f".format(it) }} " +
-                    "ukf ${e.ukfRatePerMin?.let { "%.2f".format(it) }} frueh ${e.earlyReleaseMeanMgdl?.let { "%.0f".format(it) }} " +
-                    "prod ${e.productionReleaseMeanMgdl?.let { "%.0f".format(it) }} eff ${e.effectiveReleaseMeanMgdl?.let { "%.0f".format(it) }} " +
-                    "kand ${b.livenessCandidateU} nachDeckel ${e.candidateAfterHeadroomU} head ${b.livenessHeadroomU?.let { "%.2f".format(it) }} " +
-                    "iob ${b.iobU?.let { "%.2f".format(it) }} lv ${a.livenessDenial}/${b.livenessDenial} ${b.livenessBinding} profil ${b.livenessProfile}"
-            )
-        }
-    }
-
-    private fun fruehAlterMin(o: FuseCycleRunner.Outcome) =
-        o.markerPowerPinnedFor.takeIf { it > 0L }?.let { (o.computeTs - it) / 60_000.0 }
-
-    /** A: Schalter 0 und jeder unzulaessige Wert sind Zyklus fuer Zyklus dasselbe AUS. */
-    @Test
-    fun `H8 A - Schalter 0 und unzulaessige Werte sind bitgleich AUS`(@TempDir dir: File) {
-        val aus = fruehLauf(dir, "a", 0, 60)
-        val sieben = fruehLauf(dir, "a", 7, 60)
-        val sechzig = fruehLauf(dir, "a", 60, 60)
-        assertEquals(aus.map { bitgleichZeile(it) }, sieben.map { bitgleichZeile(it) }, "7 ist AUS")
-        assertEquals(aus.map { bitgleichZeile(it) }, sechzig.map { bitgleichZeile(it) }, "60 ist AUS")
-        for (o in aus + sieben + sechzig) {
-            assertTrue(!o.earlyAdaptiveMeal.eligible, "min ${minuteVon(o)}")
-            assertEquals(0, o.earlyAdaptiveMeal.horizonMin)
-            if (o.abortReason == null) assertEquals("DISABLED", o.earlyAdaptiveMeal.denial)
-            o.earlyAdaptiveMeal.effectiveReleaseMeanMgdl?.let {
-                assertEquals(o.earlyAdaptiveMeal.productionReleaseMeanMgdl!!, it, 0.0, "AUS: wirksame Bahn = produktive Bahn")
-                assertEquals(o.livenessReleaseMeanMgdl!!, it, 0.0)
-            }
-        }
-        assertEquals(7, sieben.last().earlyAdaptiveMeal.configuredHorizonMin, "der Trail traegt den konfigurierten Wert")
-        assertTrue(aus.any { it.livenessActive }, "Vorbedingung: der Kanal arbeitet in dieser Lage")
-    }
-
-    /** B: H8 wirkt ausschliesslich unter MEAL, Marker +10..+45, W10 >= 1,5 und UKF >= 0. */
-    @Test
-    fun `H8 B - nur im frueh autorisierten MEAL-Fenster`(@TempDir dir: File) {
-        val aus = fruehLauf(dir, "b", 0, 70)
-        val an = fruehLauf(dir, "b", 8, 70)
-        fruehZeilen("b", aus, an)
-        val aktiv = an.filter { it.earlyAdaptiveMeal.eligible }
-        assertTrue(aktiv.size >= 5, "positiver Nachweis: H8 wird im Fenster gebildet (${aktiv.size})")
-        for (o in aktiv) {
-            val alter = fruehAlterMin(o)!!
-            assertTrue(alter in 10.0..45.0, "Alter $alter")
-            assertEquals("MEAL", o.dosingContextProfile, "min ${minuteVon(o)}")
-            assertTrue(o.earlyAdaptiveMeal.w10DriveMgdlPerMin!! >= LivenessChannel.R_MIN_MGDL_PER_MIN)
-            assertTrue(o.earlyAdaptiveMeal.ukfRatePerMin!! >= 0.0)
-            // Quelle nur, wenn die H8-Bahn die Mittelbahn gestellt hat (Review 18.09.).
-            assertEquals(if (o.earlyAdaptiveMeal.selected) "EARLY_ADAPTIVE_MEAL_H8" else null, o.earlyAdaptiveMeal.source)
-        }
-        for (o in an.filter { o -> fruehAlterMin(o)?.let { it < 10.0 } == true && o.abortReason == null })
-            assertEquals("MARKER_TOO_YOUNG", o.earlyAdaptiveMeal.denial, "min ${minuteVon(o)}")
-        for (o in an.filter { o -> fruehAlterMin(o)?.let { it > 45.0 } == true && o.abortReason == null })
-            assertEquals("MARKER_TOO_OLD", o.earlyAdaptiveMeal.denial, "min ${minuteVon(o)}")
-        // Vor dem Marker und im CORRECTION-Profil nie; dort ist AN == AUS.
-        val korrAus = fruehLauf(dir, "b", 0, 70, meal = false)
-        val korrAn = fruehLauf(dir, "b", 8, 70, meal = false)
-        assertTrue(korrAn.none { it.earlyAdaptiveMeal.eligible }, "CORRECTION bildet nie")
-        assertEquals(korrAus.map { bitgleichZeile(it) }, korrAn.map { bitgleichZeile(it) }, "CORRECTION: AN == AUS")
-        // Fallende Form ab Marker +15: negative UKF sperrt.
-        val fallAn = fruehLauf(dir, "bfall", 8, 50) { knick2AbMin = halteMarkerZyklus + 15; steigungNachKnick2 = -3.0 }
-        val negativ = fallAn.filter { it.earlyAdaptiveMeal.ukfRatePerMin?.let { u -> u < 0.0 } == true && it.abortReason == null &&
-            fruehAlterMin(it)?.let { a -> a in 10.0..45.0 } == true }
-        assertTrue(negativ.isNotEmpty(), "Vorbedingung: negative UKF im Fenster")
-        negativ.forEach { assertTrue(!it.earlyAdaptiveMeal.eligible, "negative UKF sperrt: min ${minuteVon(it)}") }
-    }
-
-    /** C: target + W10 x 8, max mit der produktiven Bahn, danach alle bestehenden Grenzen. */
-    @Test
-    fun `H8 C - Mengenvertrag max statt Summe und alle Grenzen`(@TempDir dir: File) {
-        val weit = { mealExpLimit = 12.0 }
-        val aus = fruehLauf(dir, "c", 0, 60, form = weit)
-        val an = fruehLauf(dir, "c", 8, 60, form = weit)
-        fruehZeilen("c", aus, an)
-        val gerechnet = an.filter { it.earlyAdaptiveMeal.eligible && it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl != null }
-        assertTrue(gerechnet.size >= 3, "Vorbedingung: der Kanal rechnet mit H8 (${gerechnet.size})")
-        for (o in gerechnet) {
-            val e = o.earlyAdaptiveMeal
-            val target = o.targetMgdl!!
-            val isf = o.isfMgdlPerU!!
-            assertEquals(target + e.w10DriveMgdlPerMin!! * 8, e.earlyReleaseMeanMgdl!!, 1e-9, "target + W10 x 8")
-            assertEquals(maxOf(e.productionReleaseMeanMgdl!!, e.earlyReleaseMeanMgdl!!), e.effectiveReleaseMeanMgdl!!, 1e-9, "max")
-            assertEquals(e.productionReleaseMeanMgdl!!, o.livenessReleaseMeanMgdl!!, 0.0, "Export bleibt die produktive Bahn")
-            assertEquals(kotlin.math.max(0.0, (e.effectiveReleaseMeanMgdl!! - target) / isf), o.livenessNeedU!!, 1e-9, "Bedarf aus der gewaehlten Bahn")
-            val nachDeckel = e.candidateAfterHeadroomU!!
-            assertEquals(LivenessChannel.quantize(kotlin.math.min(o.livenessCandidateU, o.livenessHeadroomU!!), 0.05), nachDeckel, 1e-9, "Deckelrest und Raster")
-            assertTrue(o.livenessCandidateU <= o.livenessLiveRatio!! * o.livenessNeedU!! + 1e-9, "Ratio-Deckel")
-            assertTrue(o.livenessLiveRatio!! <= o.livenessSelectedRatioCap!! + 1e-9, "MEAL-Demand-Ratio-Cap bindet: min ${minuteVon(o)}")
-            val schritte = o.decision.smbU / 0.05
-            assertEquals(Math.round(schritte).toDouble(), schritte, 1e-6, "Pumpenraster: ${o.decision.smbU}")
-            if (o.livenessLiftU > 0.0) {
-                assertEquals(nachDeckel, o.decision.smbU, 1e-9, "Endmenge = Kanalkandidat, nie normal + Kanal")
-                assertTrue(o.decision.smbU <= o.livenessHeadroomU!! + 1e-9, "Headroom")
-            }
-        }
-        assertTrue(gerechnet.any { it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl!! > it.earlyAdaptiveMeal.productionReleaseMeanMgdl!! + 1e-9 },
-            "positiver Nachweis: die fruehe Bahn uebersteigt die produktive mindestens einmal")
-        // Wirkung gegen AUS: H8 gibt im Fenster frueher mehr (Vorsprung > 0).
-        var kumAn = 0.0; var kumAus = 0.0; var vorsprung = 0.0
-        for ((a, b) in aus.zip(an)) { kumAus += a.decision.smbU; kumAn += b.decision.smbU; vorsprung = maxOf(vorsprung, kumAn - kumAus) }
-        println("H8 c: groesster kumulierter Vorsprung ${"%.2f".format(vorsprung)} U")
-        assertTrue(vorsprung > 1e-9, "H8 zieht Abgabe vor")
-    }
-
-    /**
-     * C, Foundation: ein 0,05-U-Fundamentschritt wird durch den groesseren
-     * adaptiven Kandidaten ERSETZT, nie ergaenzt.
-     */
-    @Test
-    fun `H8 C - Foundation wird ersetzt, nie addiert`(@TempDir dir: File) {
-        val form = {
-            fundamentAn = true; fundamentAnteil = 0.5; upfrontAnteil = 0.0; primeHuelleU = 4.0; fundamentEndeMin = 60
-            markerAuthorized = true
-            whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
-            // Deckelraum, damit H8 sichtbar werden kann (sonst bindet iobTH vor H8).
-            mealExpLimit = 12.0; iobThPct = 100
-            Unit
-        }
-        val aus = fruehLauf(dir, "cf", 0, 60, form = form)
-        val an = fruehLauf(dir, "cf", 8, 60, form = form)
-        fruehZeilen("cf", aus, an)
-        val ersetzt = an.filter { it.earlyAdaptiveMeal.eligible && it.livenessLiftU > 0.0 && it.livenessNormalSmbU != null && it.livenessNormalSmbU!! > 0.0 }
-        println("H8 cf: Zyklen mit Normal-/Fundamentmenge und Kanalhub: ${ersetzt.map { "${minuteVon(it)}:${it.livenessNormalSmbU}->${it.decision.smbU}" }}")
-        for (o in ersetzt) {
-            assertEquals(o.earlyAdaptiveMeal.candidateAfterHeadroomU!!, o.decision.smbU, 1e-9, "max, nie Summe: min ${minuteVon(o)}")
-            assertTrue(o.decision.smbU > o.livenessNormalSmbU!!)
-        }
-        // Der Fall aus dem Auftrag: H8 stellt die Bahn, der Normalpfad liefert nur
-        // den 0,05-U-Fundamentschritt, und der groessere adaptive Kandidat ERSETZT
-        // ihn (Endmenge = Kandidat, nie Schritt + Kandidat).
-        val durchH8 = an.filter { b ->
-            b.earlyAdaptiveMeal.eligible && b.livenessNormalSmbU != null &&
-                kotlin.math.abs(b.livenessNormalSmbU!! - 0.05) < 1e-9 &&
-                b.earlyAdaptiveMeal.effectiveReleaseMeanMgdl != null &&
-                b.earlyAdaptiveMeal.effectiveReleaseMeanMgdl!! > b.earlyAdaptiveMeal.productionReleaseMeanMgdl!! + 1e-9 &&
-                b.decision.smbU > 0.05 + 1e-9
-        }
-        println("H8 cf: H8-Bahn ersetzt den Fundamentschritt ${durchH8.map { "${minuteVon(it)}: 0,05 -> ${it.decision.smbU}" }}")
-        assertTrue(durchH8.isNotEmpty(), "positiver Nachweis: unter der H8-Bahn ersetzt der Kandidat den 0,05-U-Schritt")
-        for (b in durchH8) {
-            assertEquals(b.earlyAdaptiveMeal.candidateAfterHeadroomU!!, b.decision.smbU, 1e-9, "Endmenge = Kandidat")
-            assertTrue(kotlin.math.abs(b.decision.smbU - (b.earlyAdaptiveMeal.candidateAfterHeadroomU!! + 0.05)) > 1e-9, "nie Schritt + Kandidat")
-        }
-    }
-
-    /**
-     * C, MEAL-Demand-Ratio-Cap: auch unter der H8-Bahn begrenzt der Kontext-Cap die
-     * Kanal-Ratio. Cap 0,2 unter einer Rampen-Ratio bis 0,35 (Korrektur-Cap 0,15 -
-     * K nie offener als M), sonst Lage wie C. Mutationsprobe M11b (Cap umgangen)
-     * muss hier rot werden.
-     */
-    @Test
-    fun `H8 C - MEAL-Ratio-Deckel bindet auch unter der H8-Bahn`(@TempDir dir: File) {
-        val an = fruehLauf(dir, "cr", 8, 60, form = { mealExpLimit = 12.0; corrRatioCapZ = 0.15; mealRatioCapZ = 0.2 })
-        fruehZeilen("cr", an, an)
-        val h8 = an.filter { it.earlyAdaptiveMeal.eligible && it.livenessBaseRatio != null && it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl != null }
-        val capRelevant = h8.filter { it.livenessBaseRatio!! > it.livenessSelectedRatioCap!! + 1e-9 }
-        println("H8 cr: Basis ueber dem Cap in Minuten ${capRelevant.map { "${minuteVon(it)}:${it.livenessBaseRatio}>${it.livenessSelectedRatioCap}" }}")
-        assertTrue(capRelevant.isNotEmpty(), "Vorbedingung: die Rampen-Ratio liegt unter H8 ueber dem MEAL-Cap")
-        for (o in h8) {
-            assertEquals(0.2, o.livenessSelectedRatioCap!!, 1e-12, "MEAL-Cap des Kontexts: min ${minuteVon(o)}")
-            assertEquals(kotlin.math.min(o.livenessBaseRatio!!, o.livenessSelectedRatioCap!!), o.livenessLiveRatio!!, 1e-12, "liveRatio = min(Basis, Cap): min ${minuteVon(o)}")
-            assertTrue(o.livenessCandidateU <= o.livenessLiveRatio!! * o.livenessNeedU!! + 1e-9, "Kandidat unter Cap-Ratio: min ${minuteVon(o)}")
-        }
-        assertTrue(capRelevant.any { it.livenessBinding == "demandRatioCap" || it.livenessBinding?.contains("Limit") == true || it.livenessBinding == "globalIobTh" || it.livenessBinding == "maxSmb" },
-            "die bindende Grenze ist benannt")
-    }
-
-    /**
-     * D (korrigiert, Toni 18.09.): H8 bildet einen Bruttokandidaten, der nach
-     * einer Abgabe bestehen bleiben darf. Die publizierte Menge erscheint im
-     * Folgezyklus in IOB und im Deckelrest; die vorhandenen mengenabhaengigen
-     * Grenzen reduzieren oder sperren den freigegebenen Kandidaten, und die
-     * Gesamt-IOB ueberschreitet die bindende Grenze nie. Lage wie C: H8 stellt
-     * die Bahn, der globale iobTH bindet.
-     */
-    @Test
-    fun `H8 D - eigene Abgaben begrenzen ueber die vorhandenen Grenzen`(@TempDir dir: File) {
-        val an = fruehLauf(dir, "d", 8, 60, form = { mealExpLimit = 12.0 })
-        fruehZeilen("d", an, an)
-        val fenster = an.filter { it.earlyAdaptiveMeal.eligible && it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl != null }
-        // (1) H8 stellt die Bahn: der Bruttokandidat stammt aus target + W10 x 8.
-        val h8Bahn = fenster.filter { it.earlyAdaptiveMeal.effectiveReleaseMeanMgdl!! > it.earlyAdaptiveMeal.productionReleaseMeanMgdl!! + 1e-9 }
-        assertTrue(h8Bahn.size >= 3, "Vorbedingung: H8 stellt die Bahn (${h8Bahn.size})")
-        // (2) Jede Abgabe im Fenster erscheint im Folgezyklus in IOB und Deckelrest.
-        var geprueft = 0
-        for ((a, b) in an.zipWithNext()) {
-            if (a.decision.smbU <= 0.0 || !a.earlyAdaptiveMeal.eligible) continue
-            if (a.iobU == null || b.iobU == null || a.livenessHeadroomU == null || b.livenessHeadroomU == null) continue
-            assertTrue(b.iobU!! > a.iobU!! + 0.5 * a.decision.smbU - 0.05, "IOB traegt die Abgabe: min ${minuteVon(b)}")
-            assertTrue(b.livenessHeadroomU!! < a.livenessHeadroomU!! - 0.5 * a.decision.smbU + 0.05, "Deckelrest sinkt: min ${minuteVon(b)}")
-            geprueft++
-        }
-        assertTrue(geprueft >= 2, "Vorbedingung: Abgaben im H8-Fenster ($geprueft)")
-        // (3) + (4) Der Bruttobedarf besteht weiter, freigegeben wird weniger oder nichts.
-        val begrenzt = h8Bahn.filter { it.livenessNeedU!! > 0.0 && it.earlyAdaptiveMeal.candidateAfterHeadroomU!! < it.livenessCandidateU - 1e-9 }
-        println("H8 d: Bruttobedarf besteht, Grenze reduziert/sperrt in Minuten ${begrenzt.map { "${minuteVon(it)}:${it.livenessBinding}" }}")
-        assertTrue(begrenzt.size >= 3, "die vorhandenen Grenzen reduzieren oder sperren den H8-Kandidaten")
-        assertTrue(begrenzt.any { it.earlyAdaptiveMeal.candidateAfterHeadroomU!! == 0.0 }, "und sperren ihn zeitweise ganz")
-        // (5) Keine unkontrollierte Zusatzabgabe: die IOB bleibt unter der bindenden
-        // Grenze (plus ein Rasterschritt), und jede Zunahme ist durch die eigene
-        // publizierte Menge des Vorzyklus gedeckt (genau einmal, keine Doppelbuchung).
-        for (o in an.filter { it.earlyAdaptiveMeal.eligible }) {
-            val grenze = minOf(o.iobThU ?: Double.MAX_VALUE, 12.0)
-            assertTrue(o.iobU!! <= grenze + 0.05 + 1e-9, "IOB ${o.iobU} ueber der Grenze $grenze: min ${minuteVon(o)}")
-        }
-        for ((a, b) in an.zipWithNext()) {
-            if (a.iobU == null || b.iobU == null) continue
-            assertTrue(b.iobU!! <= a.iobU!! + a.decision.smbU + 1e-6, "Zunahme nur aus der eigenen Abgabe: min ${minuteVon(b)}")
-        }
-    }
-
-    /**
-     * J (Review 18.09.): die Diagnose trennt Eignung, Auswahl und Kanalangebot.
-     * `eligible` heisst nicht "H8 stellt die Bahn", `selected` heisst nicht
-     * "abgegeben". Lage wie D - dort sperrt der Deckelrest den Kandidaten
-     * zeitweise ganz.
-     */
-    @Test
-    fun `H8 J - Diagnose trennt Eignung, Auswahl und Kanalangebot`(@TempDir dir: File) {
-        val an = fruehLauf(dir, "j", 8, 60, form = { mealExpLimit = 12.0 })
-        for (o in an) {
-            val e = o.earlyAdaptiveMeal
-            val m = "min ${minuteVon(o)}"
-            if (e.selected) assertTrue(e.eligible, "gewaehlt setzt Eignung voraus: $m")
-            val prod = e.productionReleaseMeanMgdl
-            if (prod == null) {
-                assertFalse(e.selected, "ohne Kanalrechnung keine Auswahl: $m")
-            } else {
-                val frueh = e.earlyReleaseMeanMgdl
-                assertEquals(e.eligible && frueh != null && frueh > prod, e.selected, "gewaehlt = echt ueber der produktiven Bahn: $m")
-                assertEquals(if (e.selected) frueh!! else prod, e.effectiveReleaseMeanMgdl!!, 0.0, "wirksame Bahn folgt der Auswahl: $m")
-            }
-            assertEquals(if (e.selected) "EARLY_ADAPTIVE_MEAL_H8" else null, e.source, "Quelle nur bei Auswahl: $m")
-        }
-        val nurGeeignet = an.filter { it.earlyAdaptiveMeal.eligible && !it.earlyAdaptiveMeal.selected }
-        val gewaehltOhneHub = an.filter { it.earlyAdaptiveMeal.selected && it.livenessLiftU == 0.0 }
-        println(
-            "H8 j: geeignet ohne Auswahl ${nurGeeignet.map { "${minuteVon(it)}:${it.livenessDenial ?: "prod>=frueh"}" }}; " +
-                "gewaehlt ohne Hub ${gewaehltOhneHub.map { "${minuteVon(it)}:${it.earlyAdaptiveMeal.candidateAfterHeadroomU}/${it.livenessDenial}" }}",
-        )
-        assertTrue(an.any { it.earlyAdaptiveMeal.selected }, "positiver Nachweis: H8 stellt die Bahn")
-        assertTrue(nurGeeignet.isNotEmpty(), "geeignet ist nicht gewaehlt")
-        assertTrue(
-            gewaehltOhneHub.any { it.earlyAdaptiveMeal.candidateAfterHeadroomU == 0.0 },
-            "gewaehlt ist nicht abgegeben: der Deckelrest sperrt den Kandidaten ganz",
-        )
-    }
-
-    /**
-     * K (Toni 18.09., Geraetebefund): auch ein Abbruchzyklus zeigt den
-     * konfigurierten und den wirksamen H8-Horizont, mit dem ausdruecklichen Grund
-     * NOT_EVALUATED - nach der Konfiguration (NO_INPUT nach einer CGM-Luecke) wie
-     * davor (Neustart-Dublette). Dosierneutral.
-     */
-    @Test
-    fun `H8 K - Abbruchzyklen tragen konfigurierten und wirksamen Horizont`(@TempDir dir: File) {
-        fun pruefe(o: FuseCycleRunner.Outcome, konfiguriert: Int, wirksam: Int) {
-            val e = o.earlyAdaptiveMeal
-            val m = "min ${minuteVon(o)} ${o.abortReason}"
-            assertEquals(konfiguriert, e.configuredHorizonMin, "konfiguriert: $m")
-            assertEquals(wirksam, e.horizonMin, "wirksam: $m")
-            assertEquals(FuseCycleRunner.EarlyAdaptiveMealDiagnosis.NOT_EVALUATED, e.denial, m)
-            assertTrue(!e.eligible && !e.selected && e.source == null && e.earlyReleaseMeanMgdl == null, m)
-        }
-        val luecke = { lueckeVonMin = halteMarkerZyklus + 12; lueckeBisMin = halteMarkerZyklus + 20 }
-        for ((name, h, wirksam) in listOf(Triple("k8", 8, 8), Triple("k7", 7, 0))) {
-            // Nach readConfig: nach der Luecke ist der Antrieb einige Zyklen nicht schaetzbar.
-            val lauf = fruehLauf(dir, name, h, 45, form = luecke)
-            val spaet = lauf.filter { it.abortReason?.startsWith("drive not estimable") == true }
-            println("H8 k $name: spaete Abbrueche in Minuten ${spaet.map { minuteVon(it) }}")
-            assertTrue(spaet.isNotEmpty(), "Vorbedingung: Abbruch nach der Konfiguration ($name)")
-            spaet.forEach { pruefe(it, h, wirksam) }
-            // Die regulaeren Zyklen desselben Laufs sind unberuehrt: dort ist der Grund nie NOT_EVALUATED.
-            assertTrue(lauf.filter { it.abortReason == null }.none { it.earlyAdaptiveMeal.denial == FuseCycleRunner.EarlyAdaptiveMealDiagnosis.NOT_EVALUATED })
-            // Vor readConfig: derselbe Laufname teilt das Ledger, jeder Zyklus ist eine Neustart-Dublette.
-            val dublette = fruehLauf(dir, name, h, 5, form = luecke)
-            val frueh = dublette.filter { it.abortReason?.contains("restart dedupe") == true }
-            assertTrue(frueh.isNotEmpty(), "Vorbedingung: Neustart-Dublette ($name)")
-            frueh.forEach { pruefe(it, h, wirksam) }
-        }
-    }
-
-    /**
-     * Rollen der Schwellen (Tonis Korrektur 18.09.): H8 darf ab W10 >= 1,0 aktiv
-     * werden; zwischen 1,0 und riseRampLowR (hier 1,5 wie live) bleibt die Ratio
-     * am unteren Rampenwert (Korrektur-Ratio 0,15 im Rig). Kleine Schwanzlast und
-     * flacher Anstieg: W10 liegt im Fenster zwischen 1,0 und 1,5 bei UKF >= 0.
-     */
-    private val flacherAnstieg = { flach = 125.0; steigungProMin = 0.1; steigungNachKnick = 0.5 }
-
-    @Test
-    fun `H8 F - Eintritt ab 1,0, Ratio bis riseRampLowR am unteren Rampenwert`(@TempDir dir: File) {
-        val an = fruehLauf(dir, "f", 8, 60, schwanzU = 2.0, form = flacherAnstieg)
-        fruehZeilen("f", an, an)
-        val zwischen = an.filter {
-            it.earlyAdaptiveMeal.eligible && it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! < it.earlyAdaptiveMeal.riseRampLowR!!
-        }
-        println("H8 f: aktiv mit 1,0 <= W10 < 1,5 in Minuten ${zwischen.map { "${minuteVon(it)}:${"%.2f".format(it.earlyAdaptiveMeal.w10DriveMgdlPerMin)}" }}")
-        assertTrue(zwischen.isNotEmpty(), "positiver Nachweis: H8 aktiv zwischen 1,0 und riseRampLowR")
-        zwischen.forEach { assertTrue(it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! >= LivenessChannel.R_MIN_MGDL_PER_MIN) }
-        val mitRatio = zwischen.filter { it.livenessBaseRatio != null }
-        println("H8 f: Kanal-Ratio in diesen Zyklen ${mitRatio.map { "${minuteVon(it)}:${it.livenessBaseRatio}" }}")
-        mitRatio.forEach { rampeGilt(it) }
-        mitRatio.forEach { assertEquals(0.15, it.livenessBaseRatio!!, 1e-9, "unterer Rampenwert (Korrektur-Ratio des Rigs): min ${minuteVon(it)}") }
-        val unter = an.filter { it.abortReason == null && it.earlyAdaptiveMeal.denial == "DRIVE_BELOW_THRESHOLD" }
-        unter.forEach { assertTrue(it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! < LivenessChannel.R_MIN_MGDL_PER_MIN, "min ${minuteVon(it)}") }
-    }
-
-    /**
-     * riseRampLowR verschiebt die H8-Eintrittsschwelle nicht: dieselbe Lage ohne
-     * Rueckfuehrung (weder Schwanz noch Abgaben wirken auf die Reihe; W10 ist der
-     * gemessene Anstieg 1,2 und in allen Laeufen gleich) mit Rampen-Unterkante 0,5,
-     * 1,5 und 1,9 (Rig-Oberkante 2,0) - Eignung, Grund und Bruttobahn sind je
-     * Zyklus identisch.
-     */
-    @Test
-    fun `H8 G - riseRampLowR verschiebt die Eintrittsschwelle nicht`(@TempDir dir: File) {
-        fun lauf(rampe: Double) = fruehLauf(dir, "g$rampe", 8, 60, rueck = false) {
-            flacherAnstieg(); steigungNachKnick = 1.2; riseRampLowRWert = rampe
-        }
-        val tief = lauf(0.5); val live = lauf(1.5); val hoch = lauf(1.9)
-        fun zeile(o: FuseCycleRunner.Outcome) = listOf(minuteVon(o), o.earlyAdaptiveMeal.eligible, o.earlyAdaptiveMeal.denial, o.earlyAdaptiveMeal.earlyReleaseMeanMgdl)
-        assertTrue(live.any { it.earlyAdaptiveMeal.eligible && it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! < it.earlyAdaptiveMeal.riseRampLowR!! },
-            "Vorbedingung: H8 aktiv unterhalb der Rampen-Unterkante")
-        assertEquals(live.map { zeile(it) }, tief.map { zeile(it) }, "Rampe 0,5 aendert den Eintritt nicht")
-        assertTrue(hoch.none { it.abortReason != null && minuteVon(it) > 8 }, "Vorbedingung: gueltige Rampe 1,9")
-        assertEquals(live.map { zeile(it) }, hoch.map { zeile(it) }, "Rampe 1,9 aendert den Eintritt nicht")
-    }
-
-    /**
-     * Die Kanal-Ratio folgt der im Zyklus gelesenen Rampe: Basis = Rampe(Antrieb,
-     * riseRampLowR, riseRampHighR) mit Korrektur-Ratio 0,15 und Rise-Ratio 0,35 des
-     * Rigs. Rechnet mit den exportierten Werten, nie mit Literalen fuer die Rampe.
-     */
-    private fun rampeGilt(o: FuseCycleRunner.Outcome) {
-        val e = o.earlyAdaptiveMeal
-        val erwartet = LivenessChannel.baseRatio(
-            smbRatioCorrection = 0.15, smbRatioRise = 0.35, rSignedMgdlPerMin = e.ratioDriveMgdlPerMin,
-            riseRampLowRPerMin = e.riseRampLowR!!, riseRampHighRPerMin = e.riseRampHighR!!,
-        )
-        assertEquals(erwartet, o.livenessBaseRatio!!, 1e-9, "Ratio folgt der Zyklus-Rampe: min ${minuteVon(o)}")
-    }
-
-    /**
-     * Nichtstandard-Rampe 0,8 bis 2,2 (Tonis Klarstellung 18.09.): der Eintritt folgt
-     * weiter der Liveness-Schwelle 1,0; die Ratio rampt ab 0,8 - bei W10 zwischen 1,0
-     * und 2,2 liegt sie ueber der Korrektur-Ratio. Ein hartkodiertes 1,5 hielte sie dort
-     * auf dem unteren Wert.
-     */
-    @Test
-    fun `H8 H - Rampe 0,8 bis 2,2 - Eintritt ab 1,0, Ratio ab 0,8`(@TempDir dir: File) {
-        val an = fruehLauf(dir, "h", 8, 60, schwanzU = 2.0) {
-            flacherAnstieg(); riseRampLowRWert = 0.8; riseRampHighRWert = 2.2
-        }
-        fruehZeilen("h", an, an)
-        val aktiv = an.filter { it.earlyAdaptiveMeal.eligible }
-        assertTrue(aktiv.isNotEmpty(), "Vorbedingung: H8 aktiv")
-        aktiv.forEach {
-            assertEquals(0.8, it.earlyAdaptiveMeal.riseRampLowR!!, 0.0, "Trail traegt die Zyklus-Rampe")
-            assertEquals(2.2, it.earlyAdaptiveMeal.riseRampHighR!!, 0.0)
-            assertTrue(it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! >= LivenessChannel.R_MIN_MGDL_PER_MIN)
-        }
-        val gerampt = aktiv.filter { it.livenessBaseRatio != null && it.earlyAdaptiveMeal.ratioDriveMgdlPerMin!! > 0.8 + 0.05 &&
-            it.earlyAdaptiveMeal.ratioDriveMgdlPerMin!! < 2.2 }
-        println("H8 h: Ratio in der Rampe ${gerampt.map { "${minuteVon(it)}:${"%.2f".format(it.earlyAdaptiveMeal.ratioDriveMgdlPerMin)}->${"%.3f".format(it.livenessBaseRatio)}" }}")
-        assertTrue(gerampt.isNotEmpty(), "Vorbedingung: Kanal rechnet mit Antrieb innerhalb der Rampe")
-        gerampt.forEach {
-            rampeGilt(it)
-            assertTrue(it.livenessBaseRatio!! > 0.15 + 1e-9, "die Rampe hat bei 0,8 begonnen: min ${minuteVon(it)}")
-        }
-    }
-
-    /**
-     * Nichtstandard-Rampe 2,0 bis 4,0: H8 kann ab der Liveness-Schwelle 1,0 aktiv
-     * sein, bleibt unter 2,0 aber auf der unteren Ratio; der Anstieg beginnt erst bei
-     * 2,0 (zweiter, steilerer Lauf mit Antrieb zwischen 2,0 und 4,0).
-     */
-    @Test
-    fun `H8 I - Rampe 2,0 bis 4,0 - H8 ab 1,0, Rampe erst ab 2,0`(@TempDir dir: File) {
-        val flach = fruehLauf(dir, "i", 8, 60, schwanzU = 2.0) {
-            flacherAnstieg(); riseRampLowRWert = 2.0; riseRampHighRWert = 4.0
-        }
-        fruehZeilen("i", flach, flach)
-        val unter = flach.filter { it.earlyAdaptiveMeal.eligible && it.earlyAdaptiveMeal.ratioDriveMgdlPerMin!! < 2.0 }
-        assertTrue(unter.isNotEmpty(), "Vorbedingung: H8 aktiv mit Antrieb unter 2,0")
-        unter.forEach { assertTrue(it.earlyAdaptiveMeal.w10DriveMgdlPerMin!! >= LivenessChannel.R_MIN_MGDL_PER_MIN) }
-        unter.filter { it.livenessBaseRatio != null }.also { assertTrue(it.isNotEmpty(), "Vorbedingung: Kanal rechnet") }.forEach {
-            rampeGilt(it)
-            assertEquals(0.15, it.livenessBaseRatio!!, 1e-9, "unter 2,0 unterer Rampenwert: min ${minuteVon(it)}")
-        }
-        val steil = fruehLauf(dir, "isteil", 8, 60, schwanzU = 2.0) {
-            flacherAnstieg(); steigungNachKnick = 2.0; riseRampLowRWert = 2.0; riseRampHighRWert = 4.0
-        }
-        fruehZeilen("isteil", steil, steil)
-        val inRampe = steil.filter { it.earlyAdaptiveMeal.eligible && it.livenessBaseRatio != null &&
-            it.earlyAdaptiveMeal.ratioDriveMgdlPerMin!! > 2.0 + 0.05 && it.earlyAdaptiveMeal.ratioDriveMgdlPerMin!! < 4.0 }
-        println("H8 isteil: Ratio in der Rampe ${inRampe.map { "${minuteVon(it)}:${"%.2f".format(it.earlyAdaptiveMeal.ratioDriveMgdlPerMin)}->${"%.3f".format(it.livenessBaseRatio)}" }}")
-        assertTrue(inRampe.isNotEmpty(), "Vorbedingung: Antrieb zwischen 2,0 und 4,0 im Kanal")
-        inRampe.forEach {
-            rampeGilt(it)
-            assertTrue(it.livenessBaseRatio!! > 0.15 + 1e-9, "ab 2,0 steigt die Ratio: min ${minuteVon(it)}")
-        }
-    }
-
-    /**
-     * E: kein neuer Laufzustand - nach einem Prozessneustart rekonstruiert der
-     * Runner die H8-Eignung allein aus persistierter Autorisierung und
-     * Behandlungen: Entscheidung, Grund, Alter und Bahn sind je Zyklus
-     * dieselben wie im ungestoerten Lauf.
-     */
-    @Test
-    fun `H8 E - Neustart rekonstruiert die Eignung aus persistierten Daten`(@TempDir dir: File) {
-        val ungestoert = fruehLauf(dir, "e", 8, 50)
-        val neustartMin = halteMarkerZyklus + 20
-        val mitNeustart = fruehLauf(dir, "eneu", 8, 50, vorZyklus = { i ->
-            if (i == neustartMin) neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, "eneu_h8"), "test-epoch", clock) })
-        })
-        val vergleich = ungestoert.zip(mitNeustart).filter { (a, _) -> minuteVon(a) >= neustartMin }
-        assertTrue(vergleich.any { it.first.earlyAdaptiveMeal.eligible }, "Vorbedingung: H8 aktiv nach dem Neustartzeitpunkt")
-        for ((a, b) in vergleich) {
-            val x = a.earlyAdaptiveMeal; val y = b.earlyAdaptiveMeal
-            assertEquals(x.eligible, y.eligible, "geeignet min ${minuteVon(a)}")
-            assertEquals(x.selected, y.selected, "gewaehlt min ${minuteVon(a)}")
-            assertEquals(x.denial, y.denial, "Grund min ${minuteVon(a)}")
-            assertEquals(x.markerAgeMin, y.markerAgeMin, "Alter min ${minuteVon(a)}")
-            assertEquals(a.markerPowerPinnedFor, b.markerPowerPinnedFor, "Autorisierung min ${minuteVon(a)}")
-        }
-    }
+    // Konsolidierung 2.0: der fruehe adaptive MEAL-Bedarf (H8) und seine Proben sind entfallen.
 
     private fun bitgleichZeile(o: FuseCycleRunner.Outcome): String = listOf(
         (o.computeTs - start) / 1000L, o.abortReason, o.decision.smbU, o.decision.block, o.tbr,
@@ -12998,13 +8646,6 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     @Test
     fun `BITGLEICH rebound vorgefunden`(@TempDir dir: File) = bitgleich("rebound_vorgefunden", 60) { reboundOverrideLage(dir, druecken = false) }
-
-    @Test
-    fun `BITGLEICH rebound mit Fundament`(@TempDir dir: File) = bitgleich("rebound_fundament", 60) {
-        reboundOverrideLage(dir)
-        fundamentAn = true
-        whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(0L)
-    }
 
     @Test
     fun `BITGLEICH rebound mit Fall`(@TempDir dir: File) = bitgleich("rebound_fall", 60) {

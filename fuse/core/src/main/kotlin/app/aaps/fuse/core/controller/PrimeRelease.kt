@@ -1,17 +1,13 @@
 package app.aaps.fuse.core.controller
 
-import kotlin.math.floor
-import kotlin.math.max
-import kotlin.math.min
-
 /**
  * Die Sofort-Freigabe am Mahlzeiten-Marker - verteilte Abgabe AB KNOPFDRUCK,
  * ohne auf CGM-Evidenz zu warten.
  *
- * Konsolidierung 2.0: die Anhebung (`lift`) ist entfallen. [plan] bleibt, weil
- * der Hauptpfad bei CLEARANCE den Fensterstart verschiebt und damit den
- * Uebergabeanker des Mahlzeitenfundaments; die Fenster-Konstanten lesen
- * Fundament und Buchung. Die Beschreibung unten ist der Stand davor.
+ * Konsolidierung 2.0: Anhebung (`lift`) und Plan (`plan`, samt CLEARANCE-Verschiebung des Fensterstarts) sind
+ * entfallen - der Plan speiste zuletzt nur den Uebergabeanker des ebenfalls entfallenen Mahlzeitenfundaments. Es
+ * bleiben die Fenster-Konstanten (Buchung von `primeSpentU`, Rueckweg auf 1.x) und der Typ [Plan] fuer den Trail.
+ * Die Beschreibung unten ist der Stand davor.
  *
  * WARUM ES SIE GIBT, gemessen an einem Fruehstueck: zwischen Essen (Marker)
  * und der ersten CGM-Regung vergingen viele Minuten, der Gipfel kam spaet,
@@ -63,17 +59,17 @@ import kotlin.math.min
  * WAS DAS FUER DIE PUNKTE UNTEN HEISST: sie beschreiben den Fall OHNE
  * Autorisierung. Mit Autorisierung entfaellt die Freigangsprobe, der
  * Schwanz-Deckel in `lift` entfaellt ebenfalls, und die Bahn darf sogar
- * ganz fehlen (s. [Input.safetyMinLowerMgdl] und [MarkerFallback]).
+ * ganz fehlen (s. `Input.safetyMinLowerMgdl` und [MarkerFallback]).
  *
  *  - CLEARANCE-Gate: die Guardbahn muss den Boden um die 60-min-Wirkung der
- *    RESTLICHEN Huelle ueberragen (Anteil [CLEARANCE_60MIN_FRACTION] bei
+ *    RESTLICHEN Huelle ueberragen (Anteil `CLEARANCE_60MIN_FRACTION` bei
  *    DIA 9). Das ist die ehrliche Ersatzpruefung, solange CandidateSearch
  *    nicht verdrahtet ist - konservativ genug fuer die Nacht (Bahn nahe am
  *    Boden -> gesperrt), durchlaessig am Mahlzeitenbeginn (Bahn ~100 bei
  *    Boden 70 -> offen).
  *    WELCHE Guardbahn, seit C1/C2 (Codex-Adjudication H1/H2, K2 Punkte 6/8):
  *    die pessimistischste ueber ALLE glaubwuerdigen Bahnen - Haupt UND Bremse -
- *    und PRIOR-FREI. S. [Input.safetyMinLowerMgdl].
+ *    und PRIOR-FREI. S. `Input.safetyMinLowerMgdl`.
  *  - Verteilung statt Klumpen: der Rest der Huelle wird gleichmaessig ueber
  *    das restliche Fenster gestreckt. JEDE im Fenster gelieferte Einheit
  *    zaehlt gegen die Huelle - auch evidenzgetriebene; sobald die Mahlzeit
@@ -107,96 +103,8 @@ object PrimeRelease {
      */
     const val WALL_CEILING_MIN = 45
 
-    /** Realisierter Wirkanteil einer Dosis nach 60 min bei DIA 9 (~20 %,
-     *  aus dem Einheitskern vermessen). Das Clearance-Gate rechnet damit:
-     *  minLower - Anteil*restU*ISF >= guardFloor. */
-    const val CLEARANCE_60MIN_FRACTION = 0.2
-
-    // Konsolidierung 2.0: MARKER_PRIOR_MGDL_PER_MIN ist nach [MarkerScope] umgezogen (Wert unveraendert).
-
-    private const val TICK_EPS = 1e-9
-
-    data class Input(
-        val enabled: Boolean,
-        val mealMarkerActive: Boolean,
-        /** Zeitpunkt des Knopfdrucks [ms] - Anker der WANDUHR-Kappe. */
-        val armedTsMs: Long,
-        /**
-         * Beginn des LIEFERBAREN Fensters [ms]; `<= armedTsMs` heisst "noch
-         * nie gesperrt gewesen", dann gilt der Knopfdruck.
-         *
-         * Der Aufrufer schiebt diesen Stempel vor, solange die Clearance
-         * sperrt - s. [WALL_CEILING_MIN]. Er darf NIE hinter [armedTsMs]
-         * zurueckfallen und wird durch die Wanduhr-Kappe begrenzt.
-         */
-        val windowStartTsMs: Long,
-        val nowMs: Long,
-        val envelopeU: Double,
-        val spentU: Double,
-        /**
-         * Die Bahn, gegen die die Clearance rechnet [mg/dl] - BEREITS
-         * MINIMIERT vom Aufrufer (C1/C2).
-         *
-         * Der Name traegt die Auflage: hier gehoert das punktweise Minimum
-         * ueber ALLE glaubwuerdigen Bahnen hinein (Haupt- UND Bremsbahn), je
-         * Bahn die PRIOR-FREIE Kante - im Runner
-         * `minSafetyLowerOf(prediction, restraint)`. Frueher hiess das Feld
-         * `minLowerMgdl` und bekam die Hauptbahn samt Marker-Prior; beides war
-         * zu guenstig (Codex C1/C2).
-         *
-         * Die Minimierung steht bewusst beim Aufrufer und nicht hier: nur er
-         * weiss, welche Bahnen dieser Zyklus ueberhaupt hat.
-         */
-        /**
-         * Die pessimistischste Sicherheitsbahn ueber Haupt- UND Bremsbahn,
-         * prior-frei. `null` heisst AUSDRUECKLICH "es gibt keine Bahn" -
-         * der predictorfreie Markerpfad (s. [MarkerFallback]) hat keine.
-         *
-         * Nullbar statt NaN, und das ist keine Stilfrage: NaN waere hier
-         * durch die Finitheitspruefung gefallen und haette denselben
-         * off("NOT_FINITE") ausgeloest wie eine kaputte Bahn. Zwei
-         * verschiedene Lagen unter einem Grund - genau die Verwechslung,
-         * die im Export nicht mehr aufloesbar gewesen waere.
-         *
-         * Ohne Bahn ist NUR die Freigangsprobe unmoeglich, und die
-         * entfaellt bei [markerAuthorized] ohnehin. Ohne diese
-         * Autorisierung ist `null` deshalb ein Nein.
-         */
-        val safetyMinLowerMgdl: Double?,
-        val guardFloorMgdl: Double,
-        val isfMgdlPerU: Double,
-        val pumpIncrementU: Double,
-        /**
-         * Der bewusste Markerdruck autorisiert Insulin - dann entfaellt die
-         * Freigangsprobe gegen den Guard-Boden.
-         *
-         * Der Aufrufer hat geprueft, dass die Einstellung an ist UND ein Marker
-         * laeuft. NICHT, dass ein Tief vorliegt: hier stand "trotz gemessenem
-         * Tief", und diese Verschraenkung war der Fehler, den ein Livefall
-         * aufgedeckt hat (BG normal und fallend, alle Tore frei, 0 U).
-         */
-        val markerAuthorized: Boolean = false,
-        /** Die Episoden-Wahl "ohne Vorschuss" aus dem Marker-Dialog (Toni
-         *  15.08.). Ein eigenes Feld statt envelopeU=0, damit die Telemetrie
-         *  ABGEWAEHLT von VERBRAUCHT unterscheidet - ENVELOPE_SPENT hiesse
-         *  "die Huelle ist weg", und das waere hier schlicht falsch. AM ENDE,
-         *  weil die Tests Input positionsbasiert bauen. */
-        val declinedByUser: Boolean = false,
-        /**
-         * Ueber wieviele Minuten die Huelle verteilt wird (Toni 16.08.).
-         *
-         * WARUM EINSTELLBAR: dieselbe Menge wirkt anders, je nachdem wie
-         * schnell sie kommt. Bei einem realen Fruehstueck floss die volle
-         * Huelle in zehn Minuten ab; danach sperrte der Guard bei hohem IOB
-         * zwei Stunden, genau als die Resorption lief. Ueber laengere Zeit
-         * verteilt haette derselbe Vorlauf eine kleinere IOB-Spitze zum
-         * Resorptionszeitpunkt - gleiche Menge, andere Kante.
-         *
-         * Die Wanduhr-Kappe [WALL_CEILING_MIN] bleibt die harte Grenze; ein
-         * groesseres Fenster kann sie nicht ueberschreiten.
-         */
-        val windowMin: Int = WINDOW_MIN,
-    )
+    // Konsolidierung 2.0: MARKER_PRIOR_MGDL_PER_MIN ist nach [MarkerScope] umgezogen (Wert unveraendert); der
+    // Clearance-Anteil und die Eingabe des Plans sind mit ihm entfallen.
 
     data class Plan(
         val active: Boolean,
@@ -206,89 +114,6 @@ object PrimeRelease {
         val reason: String,
     )
 
-    fun plan(input: Input): Plan {
-        val remaining = max(0.0, input.envelopeU - input.spentU)
-        fun off(reason: String) = Plan(false, 0.0, remaining, reason)
-
-        if (!input.enabled) return off("DISABLED")
-        if (input.declinedByUser) return off("USER_NO_PRIME")
-        if (!input.mealMarkerActive || input.armedTsMs <= 0) return off("NO_MARKER")
-        val wallAgeMin = (input.nowMs - input.armedTsMs) / 60_000.0
-        if (wallAgeMin < 0.0) return off("CLOCK_SKEW")
-        if (wallAgeMin >= WALL_CEILING_MIN) return off("WINDOW_OVER_WALL")
-        // Der spaetere der beiden Anker: ein zurueckgefallener Stempel (Uhr,
-        // beschaedigter Zustand) darf das Fenster nicht verlaengern.
-        val start = max(input.armedTsMs.toDouble(), input.windowStartTsMs.toDouble())
-        val ageMin = (input.nowMs - start) / 60_000.0
-        if (ageMin < 0.0) return off("CLOCK_SKEW")
-        val fenster = input.windowMin.coerceIn(5, WALL_CEILING_MIN).toDouble()
-        if (ageMin >= fenster) return off("WINDOW_OVER")
-        if (!input.isfMgdlPerU.isFinite() || input.isfMgdlPerU <= 0.0) return off("NOT_FINITE")
-        // OHNE BAHN gibt es keine Freigangsprobe. Das ist nur dann kein
-        // Mangel, wenn der bewusste Markerdruck autorisiert - denn
-        // dann waere die Probe ohnehin uebersprungen worden. Ohne
-        // Autorisierung ist eine fehlende Bahn ein Nein, und zwar unter
-        // eigenem Namen: NO_TRAJECTORY sagt "es gab nichts zu pruefen",
-        // NOT_FINITE sagt "die Zahl war kaputt".
-        val minLower = input.safetyMinLowerMgdl
-        if (minLower == null && !input.markerAuthorized) return off("NO_TRAJECTORY")
-        if (minLower != null && !minLower.isFinite()) return off("NOT_FINITE")
-        if (input.pumpIncrementU <= 0.0 || !input.pumpIncrementU.isFinite()) return off("NO_PUMP_STEP")
-        // TICKZAHL statt `<`: `remaining` ist eine Differenz aufsummierter
-        // Tickvielfacher, und die trifft die Huelle nicht exakt. Gemessen bei
-        // Huelle 0,8: spent 0,7500000000000001, remaining 0,04999999999999993 -
-        // ein voller Schritt, der als "verbraucht" durchfiel. Die Richtung war
-        // konservativ (es wurde zurueckgehalten), aber es war ein stiller
-        // Dosisverlust, keine Telemetriefrage.
-        if (FuseController.ticksOf(remaining, input.pumpIncrementU) < 1) return off("ENVELOPE_SPENT")
-
-        // Gleichmaessig ueber das Restfenster; mindestens ein Pumpenschritt,
-        // sonst schoebe die Rundung alles ans Fensterende.
-        val minutesLeft = max(1.0, fenster - ageMin)
-        val target = remaining / minutesLeft
-        val stepped = floor(target / input.pumpIncrementU + TICK_EPS) * input.pumpIncrementU
-        val floorU = min(remaining, max(input.pumpIncrementU, stepped))
-
-        // CLEARANCE gegen den ZYKLUS-ANTEIL, nicht gegen die ganze Huelle
-        // (Tonis Entscheidung 09.08. nach dem gemessenen Fall).
-        //
-        // WAS SCHIEF WAR: das Tor verlangte Reserve fuer die gesamte
-        // Resthuelle: 0,2 x Huelle x ISF, bei einer grossen Huelle mehrere Dutzend mg/dl - also
-        // ein minLower weit ueber dem Boden, auch bei erhoehtem BG - die SCHNELLSTE Mahlzeit bekam
-        // damit den SCHWERSTEN Start, obwohl sie den Vorschuss am dringendsten
-        // braucht. Im gemessenen Fall fehlten so nur wenige mg/dl und die komplette Huelle
-        // verfiel ungenutzt.
-        //
-        // WAS DIE AUSSAGE JETZT IST, ehrlich benannt: gedeckt ist die Dosis
-        // DIESES Zyklus, nicht mehr die Wette als Ganzes. Das ist schwaecher.
-        // Was es traegt: die Pruefung laeuft JEDE Minute neu und gegen die
-        // dann aktuelle Bahn - in der die vorherigen Teildosen bereits als IOB
-        // stecken. Die Huelle wird also nicht auf einmal riskiert, sondern
-        // Schritt fuer Schritt gegen eine jedesmal neu gemessene Lage; sobald
-        // die Bahn faellt, endet die Serie sofort. Zusaetzlich bleiben
-        // Wanduhr-Kappe, Huelle, maxSmb, iobTH und maxIOB unveraendert
-        // (s. `lift`).
-        //
-        // NICHT MEHR WAHR seit dem 11.08., und der Satz stand hier noch:
-        // "der Schwanz-Waechter kappt weiterhin unabhaengig". Er tut es nur
-        // OHNE Autorisierung. Mit ihr ist er in `lift` ausdruecklich
-        // uebersprungen - er ist eine Prognose ueber H, und Prognosen duerfen
-        // den markerfinanzierten Anteil nicht nullen.
-        // Die Freigangsprobe gegen den Guard-Boden. Sie ENTFAELLT bei
-        // ausdruecklicher manueller Autorisierung - sonst waere die Freigabe
-        // dort schon hier tot, und die Lockerung der Bloecke oben bliebe
-        // wirkungslos. Genau diese Falle (ein Tor geoeffnet, das naechste
-        // uebernimmt) ist in dieser Reihe schon zweimal zugeschnappt.
-        val clearance = CLEARANCE_60MIN_FRACTION * floorU * input.isfMgdlPerU
-        // minLower ist hier nicht-null, wenn die Probe ueberhaupt laeuft:
-        // ohne Autorisierung hat der NO_TRAJECTORY-Ausstieg oben schon
-        // gesperrt, mit Autorisierung faellt die Probe weg.
-        if (!input.markerAuthorized &&
-            minLower!! - clearance < input.guardFloorMgdl
-        ) return off("CLEARANCE")
-
-        return Plan(true, floorU, remaining, "PRIME")
-    }
-
-    // Konsolidierung 2.0: die Anhebung (`lift`, Quelle PRIME) und ihre Blocklisten sind entfallen.
+    // Konsolidierung 2.0: die Anhebung (`lift`, Quelle PRIME) samt Blocklisten und der Plan (`plan`) sind
+    // entfallen.
 }

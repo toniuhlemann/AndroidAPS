@@ -17,23 +17,11 @@ import app.aaps.fuse.core.signal.GlucoseStability
  * Deshalb werden Ursache und Gefahren UNABHAENGIG von beiden Reihenfolgen
  * erfasst. Das Label allein darf keine Wiederanlaufsperre aufheben.
  *
- * BEGRENZT (Tonis Review 15.09.): [bookingWithoutCapturedHazard] heisst nur
- * "keine der HIER erfassten Gefahren". Nicht enthalten sind u. a. unlesbare
- * Behandlungssicht, Modell-Integritaet, manuelle Intervention, Konfigurations-
- * wechsel, Markerwechsel und bestehende Sperren - die prueft der Runner
- * getrennt. Die Groesse ist eine Diagnose, KEIN eigenstaendiger
- * Freigabenachweis: jede spaetere Sperraenderung muss alle uebrigen
- * Voraussetzungen weiterhin unabhaengig verlangen.
+ * Konsolidierung 2.0: die Rebound-Evidenz-Ausnahme ist entfallen und mit ihr die Verlustursache und
+ * `bookingWithoutCapturedHazard`. Es bleibt die Gefahrenliste - unabhaengig von Tor- und Ablehnungsreihenfolge
+ * erfasst, rein beschreibend.
  */
 object EvidenceLossDiagnosis {
-
-    enum class Cause {
-        /** Ohne den Buchungsabzug dieses Zyklus stuende der Bestand ueber der Schwelle. */
-        BOOKING_DEDUCTION,
-
-        /** Auch ohne Abzug unter der Schwelle: Verfall oder Rueckgang. */
-        DECAY_OR_DECLINE,
-    }
 
     /** Gefahren in fester Reihenfolge - unabhaengig von der Torreihenfolge. */
     enum class Hazard {
@@ -47,19 +35,6 @@ object EvidenceLossDiagnosis {
         MEASURED_NOT_STABLE,
         EVIDENCE_DECLINE,
         TURNING_DOWN,
-    }
-
-    /** null = die Ausnahme scheitert nicht an einem eingeschlafenen Bestand. */
-    fun cause(
-        denial: MealReboundEvidenceException.Denial?,
-        phase: EvidenceStock.Phase?,
-        deductionMgdl: Double?,
-        stockBeforeDeductionMgdl: Double?,
-        stockFloorMgdl: Double,
-    ): Cause? {
-        if (denial != MealReboundEvidenceException.Denial.NO_EVIDENCE_STOCK || phase != EvidenceStock.Phase.DORMANT) return null
-        return if ((deductionMgdl ?: 0.0) > 0.0 && (stockBeforeDeductionMgdl ?: 0.0) >= stockFloorMgdl)
-            Cause.BOOKING_DEDUCTION else Cause.DECAY_OR_DECLINE
     }
 
     data class Observation(
@@ -89,8 +64,4 @@ object EvidenceLossDiagnosis {
         if ((o.declineMgdl ?: 0.0) > 0.0) add(Hazard.EVIDENCE_DECLINE)
         if (o.turningDown) add(Hazard.TURNING_DOWN)
     }
-
-    /** Buchungsbedingter Verlust UND keine der erfassten Gefahren - s. Begrenzung oben. */
-    fun bookingWithoutCapturedHazard(cause: Cause?, hazards: List<Hazard>): Boolean =
-        cause == Cause.BOOKING_DEDUCTION && hazards.isEmpty()
 }

@@ -466,10 +466,8 @@ object FuseLedgerSealRecovery {
                     .append('#').append(d.interventionStamp?.sequence ?: -1L)
                     .append(", auth=").append(e.markerAuth?.id ?: "keine")
                     .append(", foundationAuth=").append(e.foundationArmedByAuthId ?: "keine").append('\n')
-                append("  foundation=").append(e.foundation.armedTs)
-                    .append("/").append(f3(e.foundation.totalBudgetU)).append("U")
-                    .append(", phaseA=").append(f3(e.deliveredPhaseAU))
-                    .append(", seitUebergabe=").append(f3(e.deliveredSinceHandoverU))
+                // Konsolidierung 2.0: statt des entfallenen Fundaments die am Druck gepinnte Kredit-Huelle.
+                append("  kreditHuelle=").append(e.creditEnvelopeU?.let { f3(it) + "U" } ?: "keine")
                     .append(", evidenz=").append(f3(e.evidenceCommittedU))
                     .append('@').append(e.evidenceCommitmentRevision).append('\n')
                 append("  sourceTs=").append(e.lastAcceptedSourceTs)

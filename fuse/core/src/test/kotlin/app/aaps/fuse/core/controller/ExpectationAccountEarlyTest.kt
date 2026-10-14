@@ -190,9 +190,9 @@ class ExpectationAccountEarlyTest {
             s = s2
         }
         assertTrue(s.released) { "Probe zeigt nichts: die Strecke gibt die Freigabe zurueck, nur die Sperre haelt" }
-        // v1-Konten kennen die Regel nicht.
-        val v1 = ExpectationAccount.arm(t0, t0 + 120 * 60_000L, 3.0, params, true, t0, 100.0, 50.0)
-        assertFalse(zyklus(schritt(v1, 0).first, 5, tief = true).first.earlyLowLocked)
+        // Konsolidierung 2.0: das Konto v1 (ohne die Regel) ist entfallen - auch ein Konto ohne Budget sperrt.
+        val ohneBudget = ExpectationAccount.armWithoutExpectation(t0, t0 + 120 * 60_000L, true, t0, 100.0, 50.0)
+        assertTrue(zyklus(schritt(ohneBudget, 0).first, 5, tief = true).first.earlyLowLocked)
     }
 
     /** Bank N2, W3: das Tief kam, waehrend die Freigabe noch auf die Strecke wartete - es sperrte bisher nichts. */

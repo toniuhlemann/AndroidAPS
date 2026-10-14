@@ -1267,10 +1267,7 @@ object FuseController {
     /** Stufe, aus der eine Kappenliste stammt - s. [Decision.capsStage]. */
     const val STAGE_BASE = "base"
     const val STAGE_CANDIDATE = "candidate"
-    // Konsolidierung 2.0: STAGE_PRIME (Stufe der Sofort-Freigabe) ist entfallen.
-
-    /** Die nachlaufende Mindestversorgung des Mahlzeitenfundaments. */
-    const val STAGE_FOUNDATION = "foundation"
+    // Konsolidierung 2.0: STAGE_PRIME (Sofort-Freigabe) und STAGE_FOUNDATION (Mahlzeitenfundament) sind entfallen.
     const val STAGE_SUBSTEP = "subStep"
 
     /** Die Guard-Ausnahme des Erwartungsanteils (Vorregistrierung E-034). */

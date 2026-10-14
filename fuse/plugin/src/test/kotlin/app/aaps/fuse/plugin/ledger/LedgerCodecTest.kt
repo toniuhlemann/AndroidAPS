@@ -75,38 +75,39 @@ class LedgerCodecTest {
     }
 
     /**
-     * UEBERTRAG UND VERFALL ueberleben den Codec GETRENNT (Review 25.08.
-     * spaet, Punkt 3) - mit unterschiedlichen Werten, damit eine
-     * Vertauschung auffiele.
+     * DIE KREDIT-HUELLE UEBERLEBT DEN CODEC (Konsolidierung 2.0) - gepinnt als Zahl, nicht gepinnt als null, und ein
+     * ALTER Stand ohne das Feld liest sie aus der gueltigen Fundament-Autorisierung (heutige Regel: gepinntes
+     * Phase-A-Budget); ohne Fundament-Block bleibt sie ungepinnt.
      */
     @Test
-    fun `uebertrag und verfall des sofortanteils ueberleben getrennt`() {
-        // Beide Posten gehoeren ZUR AUTORISIERUNG - ohne gueltige
-        // Autorisierung schreibt der Codec den ganzen Fundament-Block
-        // nicht, und sie sind bedeutungslos. Genau deshalb ist ihr Reset
-        // beim Ende der Autorisierung strukturell gegeben.
-        val ep = EpisodeBudgets().apply {
-            foundation = app.aaps.fuse.core.controller.MealFoundation.arm(
-                markerTs = t0, foundationEnabled = true, totalBudgetU = 4.0,
-                phaseAShare = 0.8, phaseAUpfrontShare = 1.0,
-                primeWindowMin = 20, wallCeilingMin = 45, phaseBUntilMin = 60,
-                markerAuthorized = true, pressObservedInThisProcess = true,
-                primeDeclinedByUser = false,
-            )
-            upfrontTransferredU = 2.40
-            upfrontLapsedU = 0.20
-            upfrontBatchDeferredSince = t0
-        }
-        val decoded = LedgerCodec.decode(
+    fun `die Kredit-Huelle ueberlebt den Codec und ein alter Stand liest sie aus dem Fundament`() {
+        fun rundlauf(ep: EpisodeBudgets) = LedgerCodec.decode(
             JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L)).toString()),
         ).episodes
-        assertEquals(2.40, decoded.upfrontTransferredU, 1e-12)
-        assertEquals(0.20, decoded.upfrontLapsedU, 1e-12)
-        assertEquals(t0, decoded.upfrontBatchDeferredSince)
-        // Altdatei ohne die Felder: konservativ 0, kein Raten.
-        val json = LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L))
-        json.getJSONObject("episodes").getJSONObject("foundation").remove("upfrontLapsedU")
-        assertEquals(0.0, LedgerCodec.decode(JSONObject(json.toString())).episodes.upfrontLapsedU, 1e-12)
+        assertEquals(2.5, rundlauf(EpisodeBudgets().apply { creditEnvelopeU = 2.5 }).creditEnvelopeU!!, 1e-12)
+        assertNull(rundlauf(EpisodeBudgets()).creditEnvelopeU, "nicht gepinnt bleibt nicht gepinnt")
+
+        // Ein alter Stand: kein Feld, aber ein gueltiger Fundament-Block (so schrieb ihn der Rueckweg 1.x).
+        val json = LedgerCodec.encode(LedgerState(), EpisodeBudgets(), 0L, InterventionStamp("test-epoche", 42L))
+        val ep = json.getJSONObject("episodes")
+        ep.remove("creditEnvelopeU")
+        assertNull(LedgerCodec.decode(JSONObject(json.toString())).episodes.creditEnvelopeU, "ohne Fundament: eingestellte Huelle")
+        ep.put(
+            "foundation",
+            JSONObject()
+                .put("armedTs", t0).put("totalBudgetU", 4.0).put("phaseAShare", 0.75).put("phaseAUpfrontShare", 0.0)
+                .put("pinnedPrimeWindowMin", 15).put("pinnedWallCeilingMin", 45).put("endTs", t0 + 60 * 60_000L)
+                .put("latchedHandoverTs", 0L).put("pinnedMarkerAuthorized", true).put("deliveredSinceHandoverU", 0.0)
+                .put("confirmedNotSentPhaseAU", 0.0).put("descentDeferredPhaseAU", 0.0).put("deliveredPhaseAU", 0.5),
+        )
+        assertEquals(3.0, LedgerCodec.decode(JSONObject(json.toString())).episodes.creditEnvelopeU!!, 1e-12)
+        // Der Block wird nicht mehr geschrieben - neutral fuer den Rueckweg (dort optional).
+        val wieder = LedgerCodec.encode(LedgerState(), LedgerCodec.decode(JSONObject(json.toString())).episodes, 0L, InterventionStamp("test-epoche", 42L))
+        assertFalse(wieder.getJSONObject("episodes").has("foundation"))
+        assertEquals(3.0, wieder.getJSONObject("episodes").getDouble("creditEnvelopeU"), 1e-12)
+        // Ein kaputter Block bleibt Korruption: die Generation faellt wie bisher.
+        ep.getJSONObject("foundation").put("endTs", t0 - 1L)
+        assertThrows(IllegalArgumentException::class.java) { LedgerCodec.decode(JSONObject(json.toString())) }
     }
 
     @Test
@@ -1111,7 +1112,6 @@ class LedgerCodecTest {
                 openU = 2.0, pinnedForMarkerTs = t0,
                 deadlineTs = t0 + 120 * 60_000L, horizonMin = 60,
             )
-            postFoundationDeliveredU = 0.35
         }
         val decoded = LedgerCodec.decode(
             JSONObject(LedgerCodec.encode(LedgerState(), ep, 0L, InterventionStamp("test-epoche", 42L)).toString()),
@@ -1120,7 +1120,6 @@ class LedgerCodecTest {
         assertEquals(t0, decoded.deferredPrime.pinnedForMarkerTs)
         assertEquals(t0 + 120 * 60_000L, decoded.deferredPrime.deadlineTs)
         assertEquals(60, decoded.deferredPrime.horizonMin)
-        assertEquals(0.35, decoded.postFoundationDeliveredU, 1e-9)
     }
 
     /** Eine Altdatei ohne Aufschub liest sich als "kein Aufschub". */

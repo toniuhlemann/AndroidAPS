@@ -618,7 +618,9 @@ object LedgerCodec {
                 .put("pinnedForMarkerTs", e.deferredPrime.pinnedForMarkerTs)
                 .put("deadlineTs", e.deferredPrime.deadlineTs)
                 .put("horizonMin", e.deferredPrime.horizonMin)
-                .put("postFoundationDeliveredU", e.postFoundationDeliveredU),
+                // Konsolidierung 2.0: der Nachfenster-Zaehler des Fundaments ist entfallen - neutral, weil der
+                // Rueckweg auf 1.x das Feld in diesem Block verlangt.
+                .put("postFoundationDeliveredU", 0.0),
         )
         // Liveness-Kanal: nur die restartfeste Sperre. Der aktive Zustand
         // und der Bewaffnungs-Streak sind bewusst prozesslokal - ein
@@ -656,41 +658,16 @@ object LedgerCodec {
                 }
             )
         )
-        .apply { encodeFoundation(e)?.let { put("foundation", it) } }
+        // Konsolidierung 2.0: der Fundament-Block wird nicht mehr geschrieben (der Rueckweg auf 1.x liest ihn
+        // optional); an seine Stelle tritt die am Druck gepinnte Kredit-Huelle. null = nicht gepinnt - das Feld steht
+        // trotzdem da, damit ein neuer Stand von einem alten ohne Feld unterscheidbar bleibt (s. decodeEpisodes).
+        .put("creditEnvelopeU", e.creditEnvelopeU ?: JSONObject.NULL)
         // E-034: optional - eine aeltere APK liest es nicht (Rueckweg 1.x).
         // v2 (fruehe Versorgung) unter EIGENEM Schluessel: ein Stand ohne v2
         // sieht dann gar kein Konto, statt ein Gesamtbudget als Huellenbudget
         // zu lesen - weniger Insulin, nie mehr.
         .apply { encodeExpectation(e)?.let { put(if (e.expectation?.early != null) "earlySupply" else "expectation", it) } }
 
-    /**
-     * DIE MAHLZEITEN-AUTORISIERUNG UND IHRE BEZAHLUNG - ein Objekt, nicht
-     * neun Felder nebeneinander (Punkt 7, Toni 18.08.).
-     *
-     * ZUSAMMEN ODER GAR NICHT. Der Zaehler `deliveredSinceHandoverU` ist ohne
-     * die Autorisierung bedeutungslos, und die Autorisierung ohne Zaehler
-     * gefaehrlich: Phase B faende dann eine unbezahlte Mahlzeit vor und
-     * lieferte ihr Budget ein zweites Mal. Sie stehen deshalb in EINEM
-     * Unterobjekt, das nur ganz oder gar nicht gelesen wird.
-     *
-     * OHNE VERSIONSSPRUNG, und das ist eine bewusste Abweichung von "neues
-     * Schema" - aus demselben Grund wie beim Interventionsstempel: ein Bump
-     * auf v5 laesst `require(v in LEGACY_VERSION..VERSION)` in einer AELTEREN
-     * Fassung werfen. Ein Rollback nach einem Feldlauf faende die Datei dann
-     * unlesbar und ginge in den Repair-Hold - schlimmer als das, was ohne
-     * Bump passiert.
-     *
-     * Ohne Bump liest eine aeltere Fassung das Feld schlicht nicht. Sie kennt
-     * kein Fundament, gibt also das volle Budget wie heute frei: das ist
-     * exakt die Verhaltensparitaet von "Schalter aus", nicht mehr Insulin.
-     *
-     * STRIKT NACH INNEN: ist das Objekt DA, sind alle Felder Pflicht
-     * (`getLong`/`getDouble`, kein `opt`). Eine halb geschriebene
-     * Autorisierung ist Korruption und keine faellige Migration.
-     *
-     * `null` heisst "keine laufende Autorisierung" - dann steht das Feld gar
-     * nicht in der Datei, statt als Leerobjekt Platz zu belegen.
-     */
     // ---- ERWARTUNGSKONTO (Testkandidat E-034) ------------------------------
 
     /**
@@ -845,7 +822,10 @@ object LedgerCodec {
             stabilityFallMgdlPerMin = fallGrenze,
             cancelledU = menge("cancelledU"),
         ).let { basis ->
-            if (!early) return@let basis
+            // Konsolidierung 2.0: das Konto v1 ist entfallen. Ein v1-Konto eines aelteren Standes wird als Konto ohne
+            // fruehe Versorgung weitergefuehrt (neutrale Pins): Verbrauch, Freigabe und Strecke bleiben, sein Vorgriff
+            // fliesst nicht mehr - weniger Insulin, nie mehr. Geschrieben wird es danach unter dem v2-Schluessel.
+            if (!early) return@let basis.copy(early = app.aaps.fuse.core.controller.EarlySupply.Pins.NEUTRAL)
             val f = o.getJSONObject("early")
             fun anteil(name: String) = f.getDouble(name).also { require(it.isFinite() && it in 0.0..1.0) { "$name $it" } }
             fun grenze(name: String, max: Double) =
@@ -889,60 +869,6 @@ object LedgerCodec {
             )
         }
     }.getOrNull()
-
-    fun encodeFoundation(e: EpisodeBudgets): JSONObject? {
-        val a = e.foundation
-        if (!a.valid) return null
-        return JSONObject()
-            .put("armedTs", a.armedTs)
-            .put("totalBudgetU", a.totalBudgetU)
-            .put("phaseAShare", a.phaseAShare)
-            // Der gepinnte Sofortanteil (iLet, v27). Die Sofort-MENGE ist
-            // abgeleitet und steht bewusst nicht hier - eine Wahrheit.
-            .put("phaseAUpfrontShare", a.phaseAUpfrontShare)
-            .put("pinnedPrimeWindowMin", a.pinnedPrimeWindowMin)
-            .put("pinnedWallCeilingMin", a.pinnedWallCeilingMin)
-            .put("endTs", a.endTs)
-            .put("latchedHandoverTs", a.latchedHandoverTs)
-            // Die beim Armen gepinnte Marker-Autorisierung. Sie MUSS mit:
-            // ohne sie laese ein Neustart den aktuellen Preference-Wert, und
-            // genau das soll das Pinning verhindern.
-            .put("pinnedMarkerAuthorized", a.pinnedMarkerAuthorized)
-            .put("deliveredSinceHandoverU", e.deliveredSinceHandoverU)
-            // DER UEBERTRAG GEHOERT IN DIESES OBJEKT, nicht daneben.
-            //
-            // Er ist ohne die Autorisierung ebenso bedeutungslos wie die
-            // Bezahlung - und gefaehrlicher: allein wiedergefunden erlaubte er
-            // der NAECHSTEN Mahlzeit zusaetzliches Insulin fuer eine Luecke,
-            // die zu einer laengst beendeten gehoert. "Zusammen oder gar
-            // nicht" ist hier also nicht nur Ordnung, sondern die Zusicherung.
-            //
-            // Ein Feld MEHR in einem bestehenden Objekt: eine aeltere Fassung
-            // liest es schlicht nicht und faellt damit auf das Verhalten ohne
-            // Uebertrag zurueck - weniger Insulin, nicht mehr. Die
-            // Gegenrichtung (neue Fassung, alte Datei) kann es nicht geben:
-            // das Fundament ist nie geflasht worden, es existiert keine Datei
-            // mit einem `foundation`-Objekt ohne dieses Feld.
-            .put("confirmedNotSentPhaseAU", e.confirmedNotSentPhaseAU)
-            // Sicherheitsaufschub aus dem gemessenen Abwaertsriegel. Das Feld
-            // ist ab RULE_SET_VERSION 14 vorhanden; beim ersten Upgrade einer
-            // bereits laufenden v13-Autorisierung fehlt es und bedeutet
-            // konservativ 0, nicht Korruption.
-            .put("descentDeferredPhaseAU", e.descentDeferredPhaseAU)
-            // Der Phase-A-Bezahlstand gehoert aus demselben Grund hierher wie
-            // die anderen beiden: er hat die Lebensdauer der Autorisierung,
-            // nicht die der Evidenzepisode. Ginge er verloren, saehe ein
-            // Neustart einen Phase-A-Rueckstand in voller Hoehe - und der
-            // Uebertrag wuerde wirken, obwohl Prime laengst geliefert hat.
-            .put("deliveredPhaseAU", e.deliveredPhaseAU)
-            // Der Aufschub-Merker des Sofort-Batches: ohne ihn faellt ein
-            // Neustart im Aufschub in eine sofortige Freigabe - die
-            // Fehlrichtung waere "mehr Insulin". Additiv; eine Altdatei
-            // ohne Feld heisst "nie aufgeschoben".
-            .put("upfrontBatchDeferredSince", e.upfrontBatchDeferredSince)
-            .put("upfrontTransferredU", e.upfrontTransferredU)
-            .put("upfrontLapsedU", e.upfrontLapsedU)
-    }
 
     /**
      * Der Evidenzbestand, Feld fuer Feld. KEIN Reflexions- oder
@@ -1199,10 +1125,10 @@ object LedgerCodec {
             // NICHT persistiert - er ist Trail-Anzeige, kein Zustand.
             require(restored.valid) { "invalid deferred prime state" }
             require(restored.openU <= MAX_MEAL_DELIVERY_U * 10) { "deferred prime open out of range" }
+            // Konsolidierung 2.0: der Nachfenster-Zaehler wird nur noch geprueft (lesbar), nicht mehr gehalten.
             val post = dp.getDouble("postFoundationDeliveredU")
             require(post.isFinite() && post >= 0.0) { "postFoundationDeliveredU out of range: $post" }
             e.deferredPrime = restored
-            e.postFoundationDeliveredU = post
         }
         if (o.has("livenessReArmUntilTs")) {
             val sperre = o.getLong("livenessReArmUntilTs")
@@ -1247,13 +1173,16 @@ object LedgerCodec {
             e.markerPowerPinnedFor = pin
             e.markerPowerDeadlineTs = frist
         }
-        // KEINE MIGRATION, die ein Fundament ERFINDET: fehlt das Objekt, gibt
-        // es keine laufende Autorisierung. Eine Altdatei mitten in einer
-        // Mahlzeit liest sich damit als "kein Fundament" - Prime finanziert
-        // wie bisher weiter, also heutiges Verhalten. Wuerde hier stattdessen
-        // aus Budget und Anteil eine Autorisierung nachgebildet, entstuende
-        // eine Insulinfreigabe, die niemand erteilt hat.
-        if (o.has("foundation")) decodeFoundation(o.getJSONObject("foundation"), e)
+        // DIE KREDIT-HUELLE (Konsolidierung 2.0). Ein neuer Stand traegt sie selbst (null = nicht gepinnt). Ein ALTER
+        // Stand ohne das Feld: dann gilt die Regel von bisher - das gueltig armierte Fundament hatte die Huelle
+        // gepinnt (Phase-A-Budget), ohne Fundament galt die eingestellte. Der Fundament-Block wird dafuer weiter
+        // vollstaendig geprueft - eine kaputte Generation faellt wie bisher; erfunden wird nichts.
+        val altHuelleU = if (o.has("foundation")) decodeFoundation(o.getJSONObject("foundation")) else null
+        e.creditEnvelopeU = when {
+            !o.has("creditEnvelopeU") -> altHuelleU
+            o.isNull("creditEnvelopeU") -> null
+            else -> requireAmount("creditEnvelopeU", o.getDouble("creditEnvelopeU"))
+        }
         // E-034: fehlt das Objekt, gibt es kein Konto (Altdatei oder Konto aus).
         // Ist es da und ungueltig, wird NUR das Konto verworfen - s.
         // [decodeExpectation].
@@ -1342,8 +1271,12 @@ object LedgerCodec {
      * die Generation ungueltig; die Wahl faellt dann auf eine aeltere oder in
      * den Repair-Hold - beides sichtbar. Nur das FEHLENDE Objekt heisst
      * "Legacy / kein Fundament" (s. [decodeEpisodes]).
+     *
+     * Konsolidierung 2.0: das Fundament ist entfallen. Der Block eines alten Standes wird weiter so geprueft und
+     * liefert nur noch die Kredit-Huelle, die er gepinnt hatte (das Phase-A-Budget); Bezahlstaende, Uebertraege und
+     * Sofortanteil-Merker werden geprueft und verworfen.
      */
-    fun decodeFoundation(o: JSONObject, e: EpisodeBudgets) {
+    fun decodeFoundation(o: JSONObject): Double {
         val a = app.aaps.fuse.core.controller.MealFoundation.Authorization.restore(
             armedTs = requireTs("foundation.armedTs", o.getLong("armedTs")),
             totalBudgetU = requireAmount("foundation.totalBudgetU", o.getDouble("totalBudgetU")),
@@ -1359,13 +1292,13 @@ object LedgerCodec {
             latchedHandoverTs = requireTs("foundation.latchedHandoverTs", o.getLong("latchedHandoverTs")),
             pinnedMarkerAuthorized = o.getBoolean("pinnedMarkerAuthorized"),
         )
-        val bezahlt = requireAmount("foundation.deliveredSinceHandoverU", o.getDouble("deliveredSinceHandoverU"))
+        requireAmount("foundation.deliveredSinceHandoverU", o.getDouble("deliveredSinceHandoverU"))
         val uebertrag =
             requireAmount("foundation.confirmedNotSentPhaseAU", o.getDouble("confirmedNotSentPhaseAU"))
         val abwaertsAufschub = if (o.has("descentDeferredPhaseAU"))
             requireAmount("foundation.descentDeferredPhaseAU", o.getDouble("descentDeferredPhaseAU"))
         else 0.0
-        val phaseA = requireAmount("foundation.deliveredPhaseAU", o.getDouble("deliveredPhaseAU"))
+        requireAmount("foundation.deliveredPhaseAU", o.getDouble("deliveredPhaseAU"))
         // KEIN stilles none(): s. den Blockkommentar. Die Felder waren alle da
         // und einzeln plausibel - erst ihre Beziehung ist kaputt, und das kann
         // keine faellige Migration sein.
@@ -1401,20 +1334,13 @@ object LedgerCodec {
         // nicht negativ, im Mengenrahmen. Mehr ist ueber diese Felder ehrlich
         // nicht zu sagen - und ein Riegel, der gesunde Zustaende abweist, ist
         // teurer als gar keiner.
-        e.foundation = a
-        e.deliveredSinceHandoverU = bezahlt
-        e.confirmedNotSentPhaseAU = uebertrag
-        e.descentDeferredPhaseAU = abwaertsAufschub
-        e.deliveredPhaseAU = phaseA
         if (o.has("upfrontBatchDeferredSince"))
-            e.upfrontBatchDeferredSince =
-                requireTs("foundation.upfrontBatchDeferredSince", o.getLong("upfrontBatchDeferredSince"))
+            requireTs("foundation.upfrontBatchDeferredSince", o.getLong("upfrontBatchDeferredSince"))
         if (o.has("upfrontTransferredU"))
-            e.upfrontTransferredU =
-                requireAmount("foundation.upfrontTransferredU", o.getDouble("upfrontTransferredU"))
+            requireAmount("foundation.upfrontTransferredU", o.getDouble("upfrontTransferredU"))
         if (o.has("upfrontLapsedU"))
-            e.upfrontLapsedU =
-                requireAmount("foundation.upfrontLapsedU", o.getDouble("upfrontLapsedU"))
+            requireAmount("foundation.upfrontLapsedU", o.getDouble("upfrontLapsedU"))
+        return a.phaseABudgetU
     }
 
     // ---- Verbrauchte Bindungs-Identitaeten (Fix 6, NEU-BS-02) -------------

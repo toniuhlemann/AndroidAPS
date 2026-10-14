@@ -70,6 +70,12 @@ object EarlySupply {
                 if (periodMin !in MIN_PERIOD_MIN..MAX_PERIOD_MIN) return null
                 return Settings(scaleStable, scaleAfterLow, budgetMaxU, initialShare, maxPortionU, maxPerPeriodU, periodMin)
             }
+
+            /**
+             * Konsolidierung 2.0: die Einstellungen eines Kontos OHNE fruehe Versorgung (Hauptschalter aus oder
+             * ungueltige Werte): kein Budget, keine Portion - es fliesst nur der gemessene Anteil.
+             */
+            val NEUTRAL = Settings(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, MAX_PERIOD_MIN)
         }
     }
 
@@ -120,7 +126,16 @@ object EarlySupply {
         val periodMin: Int,
         val switches: Switches,
         val withdrawn: Boolean = false,
-    )
+    ) {
+        companion object {
+            /**
+             * Konsolidierung 2.0: die Pins eines Kontos OHNE fruehe Versorgung - keine Anfangsportion, keine weitere
+             * Portion, kein Schalter. So laeuft ein Konto bei ausgeschalteter oder ungueltiger frueher Versorgung, bei
+             * ungueltigen Kontoparametern und ein v1-Konto eines aelteren Standes.
+             */
+            val NEUTRAL = Pins(0.0, 0.0, 0.0, MAX_PERIOD_MIN, Switches.NONE)
+        }
+    }
 
     /** Eine weitere Portion im Zeitraumbuch: Zeitpunkt und Erwartungsanteil [U]. */
     data class Portion(val ts: Long, val amountU: Double)

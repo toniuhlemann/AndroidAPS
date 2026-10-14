@@ -410,9 +410,9 @@ class DecisionTelemetryTest {
     @Test
     fun `eine leere Liste traegt trotzdem ihre Stufe`() {
         val d = FuseController.decide(state(), flat(), evidenceCreditActive = false, evidenceMayOverrideRebound = false, lowThreat = LowThreatGate.Verdict.NONE)
-            .copy(caps = emptyList(), capsStage = FuseController.STAGE_FOUNDATION)
+            .copy(caps = emptyList(), capsStage = FuseController.STAGE_EXPECTATION)
         assertTrue(d.caps.isEmpty())
-        assertEquals(FuseController.STAGE_FOUNDATION, d.capsStage)
+        assertEquals(FuseController.STAGE_EXPECTATION, d.capsStage)
     }
 
     // ---- NaN: lieber keine Markierung als eine falsche -------------------

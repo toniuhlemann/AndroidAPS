@@ -60,15 +60,17 @@ class LedgerHoldGateTest {
         assertEquals(FuseController.TbrAction.ZERO_TEMP, LedgerHoldGate.apply(zero, hold = true).tbr)
     }
 
-    /** Der Kernfall des Audits: die Sofort-Freigabe hebt eine NO_DEMAND-Basis
-     *  an - und der Hold muss AUCH diese gehobene Menge nullen, sonst waere
-     *  er ueber den Lift umgehbar. Konsolidierung 2.0: die Sofort-Freigabe ist
-     *  entfallen; dieselbe Hebung laeuft hier ueber die gemeinsame Stufe. */
+    /** Der Kernfall des Audits: eine autorisierte Hebung hebt die Basis an -
+     *  und der Hold muss AUCH diese gehobene Menge nullen, sonst waere er ueber
+     *  den Lift umgehbar. Konsolidierung 2.0: Sofort-Freigabe und Fundament sind
+     *  entfallen; dieselbe Hebung laeuft hier ueber die Portion der fruehen
+     *  Versorgung. */
     @Test
     fun `Hold greift nach dem Lift durch`() {
         val lifted = AuthorizedLift.lift(
-            base(0.0, FuseController.Block.NO_DEMAND), AuthorizedLift.Source.FOUNDATION,
-            floorU = 0.20, remainingU = 1.0, state = state(), authorized = false, tickEps = 1e-9,
+            base(0.0, FuseController.Block.NONE), AuthorizedLift.Source.EXPECTATION,
+            floorU = 0.20, remainingU = 1.0, state = state(), authorized = true, tickEps = 1e-9,
+            early = AuthorizedLift.EarlyLift(guardLift = false, tailLift = false),
         )
         assertEquals(0.20, lifted.smbU, 1e-9)
 

@@ -63,13 +63,10 @@ import app.aaps.fuse.core.profile.ProfileSlots
 import app.aaps.fuse.core.controller.CandidateSearch
 import app.aaps.fuse.core.controller.EvidenceStock
 import app.aaps.fuse.core.controller.MarkerFallback
-import app.aaps.fuse.core.controller.MealFoundation
-import app.aaps.fuse.core.controller.MealUpfrontAuthority
 import app.aaps.fuse.core.controller.MarkerFloor
 import app.aaps.fuse.core.controller.CorrectionReversalGuard
 import app.aaps.fuse.core.controller.DescentRecoveryLatch
 import app.aaps.fuse.core.controller.PositiveCorrectionRearm
-import app.aaps.fuse.core.controller.DescentDeferredCarry
 import app.aaps.fuse.core.controller.MeasuredDescentGate
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PrimeRelease
@@ -309,17 +306,21 @@ class FuseCycleRunner(
          * Wird die Reservierung vom Gate zurueckgedreht, sinken die Zaehler,
          * und die Anzeige DIESES Zyklus muss den gesunkenen Stand zeigen;
          * sonst meldet sie eine Menge verbraucht, die nie hinausging.
+         *
+         * Konsolidierung 2.0: das Mahlzeitenfundament ist entfallen - es gilt die Rechnung, die schon ohne
+         * armiertes Fundament galt: die Huelle gegen `primeSpentU` (Verbrauch dieser Autorisierung im
+         * Freigabefenster). Die Huelle ist die am Druck gepinnte Kredit-Huelle, sonst die eingestellte.
          */
         fun envelopeUseOf(
             episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
             livePrimeEnvelopeU: Double,
-        ): MealFoundation.EnvelopeUse = MealFoundation.envelopeUse(
-            auth = episodes.foundation,
-            primeSpentU = episodes.primeSpentU,
-            deliveredPhaseAU = episodes.deliveredPhaseAU,
-            deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
-            livePrimeEnvelopeU = livePrimeEnvelopeU,
+        ): HuellenStand = HuellenStand(
+            envelopeU = episodes.creditEnvelopeU ?: livePrimeEnvelopeU,
+            spentU = episodes.primeSpentU.coerceAtLeast(0.0),
         )
+
+        /** Kredit-Huelle und ihr Verbrauch [U] - "verbucht" heisst an AAPS uebergeben, nicht pumpenbestaetigt. */
+        data class HuellenStand(val envelopeU: Double, val spentU: Double)
 
         fun mealStatsOf(
             episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
@@ -617,12 +618,13 @@ class FuseCycleRunner(
          * Zwei verschiedene Aussagen, die nicht verwechselt werden duerfen:
          * `state.reboundSuppressedByMarker` sagt, dass die HEURISTIK-Bremse
          * durch den Boost entwaffnet ist; dieses Feld sagt, ob die
-         * ausdrueckliche Autorisierung DIESE Kette traegt
-         * ([MealUpfrontAuthority]). Die Anzeige hat beides bis 02.09. in
-         * einen Satz gezogen und damit eine Freigabe behauptet, die im
-         * Direktdosis-Pfad nicht galt.
+         * ausdrueckliche Autorisierung DIESE Kette traegt. Die Anzeige hat
+         * beides frueher in einen Satz gezogen und damit eine Freigabe
+         * behauptet, die im Direktdosis-Pfad nicht galt.
          *
-         * `null` = es lag ueberhaupt kein Rebound-Fenster an.
+         * `null` = es lag ueberhaupt kein Rebound-Fenster an. Konsolidierung
+         * 2.0: die Direktdosis-Autorisierung ist entfallen - bei anliegendem
+         * Fenster steht das Feld deshalb auf false.
          */
         val reboundExemptByAuthority: Boolean?,
         /**
@@ -868,34 +870,13 @@ class FuseCycleRunner(
         val computeDurationMs: Long?,
         /** Abgabe-Bilanz seit Marker-Druck - null ohne Marker. */
         val mealStats: MealStats?,
-        /**
-         * DIE SICHT AUFS MAHLZEITENFUNDAMENT (Punkt 12).
-         *
-         * Immer gesetzt, auch ohne Autorisierung - dann traegt sie
-         * `armed = false` und lauter Nullen. Das ist Absicht: ein FEHLENDER
-         * Abschnitt im Export waere von "der Zyklus kam nicht so weit" nicht
-         * zu unterscheiden, und genau diese Verwechslung hat hier schon
-         * einmal Arbeit gekostet.
-         *
-         * Solange `arm()` nicht verdrahtet ist, steht hier dauerhaft
-         * [MealFoundation.Snapshot.none] - der Export zeigt dann, dass kein
-         * Fundament laeuft, und das ist die richtige Aussage.
-         */
-        val mealFoundation: MealFoundation.Snapshot = MealFoundation.Snapshot.none(),
-        /** Gueltige manuelle NORMAL-Boli strikt nach dem laufenden Marker.
-         *  null = DB-Sicht unlesbar; der Sicherheitsuebertrag sperrt dann
-         *  fail-closed. Die regulaere Phase B bleibt davon unberuehrt. */
-        val manualBolusAfterMarkerU: Double? = null,
-        /** Der SMB-Stand VOR der Fundament-Anhebung [U] - reine Messung. */
+        // Konsolidierung 2.0: die Sicht aufs Mahlzeitenfundament (`mealFoundation`) und die manuelle Deckung nach
+        // dem Marker (`manualBolusAfterMarkerU`) sind mit dem Fundament entfallen - der Export schreibt den Block bis
+        // Schritt 5 mit neutralen Werten.
+        /** Der SMB-Stand VOR der (entfallenen) Fundament-Anhebung [U] - reine Messung, die Normalentscheidung. */
         val preFoundationSmbU: Double = 0.0,
         /**
          * DIE URSACHE DER LAGE, gemessen VOR dem Fundament (Codex 19.08.).
-         *
-         * WOZU: [MealFoundation.Snapshot.binding] ist die Bindung DES
-         * FUNDAMENTS. Sie kann den urspruenglichen Guard oder Tail
-         * ueberdecken - ein Test oder eine Auswertung, die daraus "Guard hat
-         * gebunden" liest, behauptet dann nur, wodurch die Lage entstehen
-         * SOLLTE, nicht was wirklich band.
          *
          * Beide Werte stammen aus DEMSELBEN Moment wie [preFoundationSmbU] -
          * Groessen aus verschiedenen Zeitpunkten zu paaren war in diesem
@@ -903,10 +884,8 @@ class FuseCycleRunner(
          */
         val preFoundationBlock: FuseController.Block = FuseController.Block.NONE,
         val preFoundationBindingLimit: String? = null,
-        /** Was das Fundament ueber den normalen Vorschlag hinaus angehoben
-         *  hat [U]. Zusammen mit [preFoundationSmbU] und der publizierten
-         *  Menge beantwortet es, WER die Dosis wollte und wer sie gebremst
-         *  hat - aus der Summe allein ist das nicht ablesbar. */
+        /** Was das Fundament ueber den normalen Vorschlag hinaus angehoben hat [U]. Konsolidierung 2.0: das Fundament
+         *  ist entfallen - das Feld bleibt fuer Trail und Gleichwertigkeitsprobe und steht auf 0. */
         val foundationLiftU: Double = 0.0,
         /** PHASE-A-SOFORTANTEIL (iLet, Bauauftrag Toni 24.08.): der offene
          *  Boden VOR diesem Zyklus [U] (upfrontFloorU-Bilanz), die in DIESEM
@@ -1237,10 +1216,10 @@ class FuseCycleRunner(
         val livenessBinding: String? = null,
         val livenessDenial: String? = null,
         val livenessExit: String? = null,
-        /** Rebound-Evidenz-Ausnahme: zugelassen (null = nicht ausgewertet). */
+        /** Rebound-Evidenz-Ausnahme. Konsolidierung 2.0: entfallen - die drei Felder bleiben fuer den Trail und
+         *  stehen neutral (null/null/false). */
         val livenessReboundExceptionAllowed: Boolean? = null,
         val livenessReboundExceptionDenial: String? = null,
-        /** Hat sie das rohe Rebound-Veto in DIESEM Zyklus tatsaechlich aufgehoben? */
         val livenessReboundVetoLifted: Boolean = false,
         /** Frischer Evidenzzufluss dieses Zyklus [mg/dl] - Groesse b) des Vertrags. */
         val livenessEvidenceInflowMgdl: Double? = null,
@@ -1252,9 +1231,10 @@ class FuseCycleRunner(
         val livenessShadowNeedU: Double? = null,
         val livenessShadowCandidateU: Double? = null,
         val livenessShadowHeadroomU: Double? = null,
-        /** Halte-Anhebung im Liveness-Bedarf - s. [LivenessHoldDiagnosis]. */
+        /** Halte-Anhebung im Liveness-Bedarf - s. [LivenessHoldDiagnosis]. Konsolidierung 2.0: entfallen, neutral. */
         val livenessHold: LivenessHoldDiagnosis = LivenessHoldDiagnosis(),
-        /** Frueher adaptiver MEAL-Bedarf (H8) - s. [EarlyAdaptiveMealDiagnosis]. */
+        /** Frueher adaptiver MEAL-Bedarf (H8) - s. [EarlyAdaptiveMealDiagnosis]. Konsolidierung 2.0: H8 ist
+         *  entfallen; Horizonte, Antriebe und Kanalbahnen bleiben, die H8-Aussagen stehen neutral. */
         val earlyAdaptiveMeal: EarlyAdaptiveMealDiagnosis = EarlyAdaptiveMealDiagnosis(),
         /**
          * Verlustdiagnose und Buchungsausgang als EIN Parameter - s.
@@ -1345,18 +1325,9 @@ class FuseCycleRunner(
          */
         val smbActuatedU: Double? = null,
         /**
-         * DIE HUELLE DIESER AUTORISIERUNG UND IHR VERBRAUCH [U], NACH der
-         * Buchung dieses Zyklus und - im Export - NACH dem Publikations-Gate.
-         *
-         * Beide Zahlen stammen aus [MealFoundation.envelopeUse], also aus
-         * der Rechnung, mit der das Budget selbst arbeitet. Frueher stand
-         * hier `primeSpentU` gegen das Phase-A-Budget: der Zaehler waechst
-         * nur im Prime-Fenster und stand nach der Uebergabe an Phase B
-         * still, waehrend die Abgabe weiterlief.
-         *
-         * Sie gehoeren zur AUTORISIERUNG - anders als `mealStats.totalU`,
-         * das die ganze Episode summiert und bei einer Neuautorisierung
-         * innerhalb derselben Episode ausdruecklich NICHT geleert wird.
+         * DIE HUELLE DIESER AUTORISIERUNG UND IHR VERBRAUCH [U], NACH der Buchung dieses Zyklus und - im Export -
+         * NACH dem Publikations-Gate. Beide Zahlen stammen aus [envelopeUseOf] (Konsolidierung 2.0: das
+         * Mahlzeitenfundament ist entfallen; es gilt die Rechnung ohne Fundament).
          *
          * "VERBUCHT", nicht "abgegeben": an AAPS uebergeben, nicht von der
          * Pumpe bestaetigt.
@@ -1364,9 +1335,8 @@ class FuseCycleRunner(
         val envelopeU: Double? = null,
         val envelopeSpentU: Double? = null,
         /**
-         * Die eingestellte Prime-Huelle dieses Zyklus - nur, damit das
-         * Plugin nach dem Publikations-Gate DIESELBE Rechnung noch einmal
-         * ausfuehren kann. Ohne bewaffnetes Fundament ist sie die Huelle.
+         * Die eingestellte Huelle dieses Zyklus - nur, damit das Plugin nach dem Publikations-Gate DIESELBE Rechnung
+         * noch einmal ausfuehren kann. Ohne gepinnte Kredit-Huelle ist sie die Huelle.
          */
         val envelopeCfgU: Double? = null,
         /**
@@ -1409,19 +1379,18 @@ class FuseCycleRunner(
          *  ausgeschaltetem Konto; dann steht im Trail kein Block. */
         val erwartungskonto: ErwartungskontoExport? = null,
     ) {
-        /** BOOKING_DEDUCTION / DECAY_OR_DECLINE, wenn die Ausnahme am Bestand scheitert. */
+        /** Verlustursache der entfallenen Rebound-Evidenz-Ausnahme - Konsolidierung 2.0: neutral (null). */
         val livenessEvidenceLossCause: String? get() = livenessBookingDiagnosis.lossCause
 
         /** Gleichzeitige Gefahren, unabhaengig von der Torreihenfolge (null = Kanal aus). */
         val livenessConcurrentHazards: List<String>? get() = livenessBookingDiagnosis.concurrentHazards
 
-        /** Buchungsbedingter Bestandsverlust UND keine der ERFASSTEN Gefahren. Diagnose, kein Freigabenachweis. */
+        /** Konsolidierung 2.0: der buchungsbedingte Ausgang ohne neue Sperre ist entfallen - die drei Felder
+         *  stehen neutral (false/false/null). */
         val livenessBookingWithoutCapturedHazard: Boolean get() = livenessBookingDiagnosis.bookingWithoutCapturedHazard
 
-        /** Der Lauf endete ohne neue Wiederanlaufsperre ([BookingExhaustionExit]). */
         val livenessBookingExitSkipReArm: Boolean get() = livenessBookingDiagnosis.exitSkipReArm
 
-        /** Warum die Sonderbehandlung nicht galt; null = nicht ausgewertet. */
         val livenessBookingExitDenial: String? get() = livenessBookingDiagnosis.exitDenial
     }
 
@@ -1441,15 +1410,15 @@ class FuseCycleRunner(
     )
 
     /**
-     * HALTE-ANHEBUNG EINES ZYKLUS ([app.aaps.fuse.core.controller.LivenessDriveHold]),
-     * gebuendelt wegen der 255-Parameter-Grenze von [Outcome].
+     * HALTE-ANHEBUNG EINES ZYKLUS, gebuendelt wegen der 255-Parameter-Grenze von [Outcome]. Konsolidierung 2.0: die
+     * Halte-Anhebung samt Messbestaetigung ist entfallen; der Block steht bis Schritt 5 mit seinen Vorgaben im Trail.
      * `upliftMgdl` null = nicht ausgewertet (kein Kandidat gerechnet); der
      * exportierte `releaseMeanMgdl` bleibt die unangehobene Bahn, `needU`
      * enthaelt die Anhebung.
      */
     data class LivenessHoldDiagnosis(
         val upliftMgdl: Double? = null,
-        /** Bestaetigende Messbloecke in Folge ([app.aaps.fuse.core.controller.MeasuredRiseEvidence]). */
+        /** Bestaetigende Messbloecke in Folge (Messbestaetigung der Halte-Anhebung). */
         val streak: Int = 0,
         val denial: String? = null,
         /** Warum die Messbestaetigung (noch) nicht traegt; null = bestaetigt oder Schalter aus. */
@@ -1459,9 +1428,9 @@ class FuseCycleRunner(
     )
 
     /**
-     * FRUEHER ADAPTIVER MEAL-BEDARF EINES ZYKLUS
-     * ([app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed], Toni 18.09., H8),
-     * gebuendelt wegen der Parametergrenze von [Outcome]. Rein beschreibend.
+     * FRUEHER ADAPTIVER MEAL-BEDARF EINES ZYKLUS (Toni, H8), gebuendelt wegen der Parametergrenze von
+     * [Outcome]. Rein beschreibend. Konsolidierung 2.0: H8 ist entfallen - [eligible], [selected], [denial],
+     * [markerAgeMin], [earlyReleaseMeanMgdl] und [source] stehen neutral; die Beschreibung unten ist der Stand davor.
      *
      * DREI GETRENNTE AUSSAGEN (Review 18.09.: "aktiv" las sich wie "H8 hat
      * dosiert"):
@@ -1637,20 +1606,14 @@ class FuseCycleRunner(
         // ist Stufe 3; bis dahin traegt der zustandslose Teil der Regel den
         // Absturzfall (Preference auf 0 = zurueckgenommen, auch nach Neustart).
         episodes.evidenceRevoked = episodeGate.creditRevoked
-        // ---- DIE RUECKNAHME BEENDET AUCH DAS FUNDAMENT (Toni 19.08., P0) --
-        //
-        // Ohne das bliebe die gepinnte Autorisierung nach einer manuellen
-        // Ruecknahme gueltig, und `MealFoundation.snapshot` lieferte weiter
-        // PHASE_B mit `dueU > 0`. Dass `manualMarkerAuthorized` danach false
-        // ist, hilft nicht: der Lift liest die GEPINNTE Autorisierung, genau
-        // wie es der Pinning-Vertrag verlangt.
+        // ---- DIE RUECKNAHME BEENDET AUCH DAS SONDERRECHT (Toni, P0) ---------
         //
         // NUR BEIM AUSDRUECKLICHEN WIDERRUF, nicht beim blossen Ablauf des
-        // 90-Minuten-Fensters. Der Unterschied ist der ganze Punkt: ein
-        // ausgelaufener Marker hat seine Mahlzeit erklaert und das Fundament
-        // darf sie zu Ende versorgen; ein zurueckgenommener hat die Erklaerung
-        // widerrufen. `episodeGate.creditRevoked` ist der typisierte Pfad
-        // dafuer - der Ablauf laeuft ueber andere Gruende.
+        // 90-Minuten-Fensters. `episodeGate.creditRevoked` ist der typisierte
+        // Pfad dafuer - der Ablauf laeuft ueber andere Gruende.
+        // Konsolidierung 2.0: die Ruecksetzungen des Mahlzeitenfundaments (Autorisierung, Bezahlstaende, Uebertraege,
+        // Sofortanteil) sind mit ihm entfallen; die am Druck gepinnte Kredit-Huelle endet hier wie bisher dessen
+        // Autorisierung (danach gilt die eingestellte - ohne laufenden Marker liest sie niemand).
         if (episodeGate.creditRevoked) {
             // DER WIDERRUF LOESCHT AUCH DAS REBOUND-SONDERRECHT (Toni 19.08.).
             // Er ist ein ausdruecklicher menschlicher Widerruf der Mahlzeit -
@@ -1658,21 +1621,7 @@ class FuseCycleRunner(
             // entwaffnen.
             episodes.markerReboundOverrideDeadlineTs = 0L
             episodes.markerReboundOverridePinnedFor = 0L
-            episodes.foundation = MealFoundation.Authorization.none()
-            episodes.deliveredSinceHandoverU = 0.0
-            episodes.deliveredPhaseAU = 0.0
-            // Aufschub-Merker und Uebertrag gehoeren zur Autorisierung -
-            // neuer Marker, Widerruf und Ablauf loeschen beides (Punkt 4).
-            episodes.upfrontBatchDeferredSince = 0L
-            episodes.upfrontTransferredU = 0.0
-            episodes.upfrontLapsedU = 0.0
-            // UND DER UEBERTRAG MIT (Toni 19.08.). Er gehoert zu der
-            // Autorisierung, die hier gerade endet. Bliebe er stehen, gaebe der
-            // ausdrueckliche Widerruf der NAECHSTEN Mahlzeit zusaetzliches
-            // Insulin fuer eine Luecke aus der widerrufenen - der Widerruf
-            // haette dann mehr Insulin zur Folge als das Zulassen.
-            episodes.confirmedNotSentPhaseAU = 0.0
-            episodes.descentDeferredPhaseAU = 0.0
+            episodes.creditEnvelopeU = null
         }
         val evidenceEpisodeMin = evidenceEpisodeId.takeIf { it > 0L }
             ?.let { ((computeTs - it) / 60_000L).toInt() }
@@ -2096,13 +2045,11 @@ class FuseCycleRunner(
         //
         // `primeArmedTs` ist persistent, die Regel ueberlebt also einen
         // Neustart.
-        // VORGEZOGEN (Toni 19.08.): die Armierung des Fundaments gehoert in
-        // den Episodenblock unten, und dafuer muessen beide Groessen schon
-        // stehen. Sie haengen nur an markerTs, computeTs und cfg - alle drei
-        // sind hier verfuegbar.
+        // VORGEZOGEN (Toni): der Episodenblock unten braucht die Groesse
+        // schon. Konsolidierung 2.0: `manualMarkerAuthorized` (Einstellung an UND
+        // Marker laeuft) ist mit Prime und Fundament ohne Leser entfallen.
         val mealMarkerActive = markerTs > 0 &&
             computeTs - markerTs in 0..(OnsetChannel.MARKER_WINDOW_MIN * 60_000L)
-        val manualMarkerAuthorized = cfg.markerAuthorized && mealMarkerActive && markerTs > 0
 
         val neueEpisode = MarkerEpisode.startsNewEpisode(
             armedTs = markerTs,
@@ -2133,63 +2080,21 @@ class FuseCycleRunner(
             episodes.primeSpentU = 0.0
             episodes.primeWindowStartTs = 0L
 
-            // ---- DAS MAHLZEITENFUNDAMENT ARMIEREN (Toni 19.08., P0) -------
+            // ---- DIE KREDIT-HUELLE AM DRUCK FESTHALTEN (Konsolidierung 2.0) ----
             //
-            // HIER UND NICHT AN `episodeGate.opened`. Das Gate gehoert zur
-            // EVIDENZ-Episode, die bis zu 360 Minuten laufen kann; das
-            // Fundament gehoert zum PRIME-/Markerbudget, das mit
-            // `startsNewEpisode` neu bewaffnet wird. Ein zweiter bewusster
-            // Druck nach Ablauf des Primefensters setzt Prime zurueck,
-            // waehrend dieselbe Evidenzepisode weiterlaeuft - dann waere das
-            // Fundament NICHT neu armiert, und Prime laese ueber
-            // `primeBudgetU` weiter das ALTE gepinnte Phase-A-Budget.
-            //
-            // UND ES SCHLIESST DIE ABBRUCHLUECKE: bricht der erste Zyklus
-            // nach dem Druck vorher ab, bleibt `primeArmedTs` unveraendert,
-            // `neueEpisode` ist im naechsten gesunden Zyklus wieder wahr und
-            // die Armierung wird nachgeholt. An `episodeGate.opened` waere
-            // sie dauerhaft verloren gewesen.
-            //
-            // Das GEMEINSAME Budget ist die Prime-Huelle - Phase A und B
-            // teilen sie, sie addieren sich nicht.
-            episodes.foundation = MealFoundation.arm(
-                markerTs = markerTs,
-                foundationEnabled = cfg.mealFoundationEnabled,
-                totalBudgetU = cfg.primeEnvelopeU,
-                phaseAShare = cfg.mealFoundationPhaseAShare,
-                phaseAUpfrontShare = cfg.mealFoundationPhaseAUpfrontShare,
-                primeWindowMin = cfg.primeWindowMin,
-                wallCeilingMin = PrimeRelease.WALL_CEILING_MIN,
-                phaseBUntilMin = cfg.mealFoundationEndMin,
-                markerAuthorized = manualMarkerAuthorized,
-                // IDENTITAET, NICHT NUR VORHANDENSEIN (Toni 19.08.). Hier
-                // stand `> 0L` - damit haette IRGENDEIN frueher beobachteter
-                // Druck gereicht, auch einer aus einer laengst beendeten
-                // Mahlzeit. Der Vertrag verlangt, dass GENAU DIESER Marker
-                // beobachtet wurde; `MarkerEpisodeGate` erzwingt dieselbe
-                // Identitaet bereits fuer die Evidenzepisode.
-                pressObservedInThisProcess = markerPressObserved() == markerTs,
-                primeDeclinedByUser = markerNoPrime,
-            )
+            // Der Erklaerungskredit unterstellt kommende Absorption in Huellenhoehe. Er liest die Huelle, die beim
+            // Druck galt - eine spaeter geaenderte Einstellung unterstellte eine andere Menge, als autorisiert wurde.
+            // Bisher hielt das Mahlzeitenfundament diesen Wert (gepinntes Phase-A-Budget); es ist entfallen, die
+            // Huelle steht jetzt selbst im Ledger. DERSELBE Armierungspunkt und DIESELBEN Bedingungen wie dort:
+            // nur GENAU DIESER, in diesem Prozess beobachtete Druck pinnt (ein beim Warmstart vorgefundener Marker
+            // nicht), nicht unter "Nur Marker" und nur eine Huelle > 0. Ohne Pin gilt die eingestellte Huelle -
+            // wie bisher ohne armiertes Fundament.
+            episodes.creditEnvelopeU = cfg.primeEnvelopeU.takeIf {
+                markerPressObserved() == markerTs && markerTs > 0L && !markerNoPrime && it.isFinite() && it > 0.0
+            }
             // Die Kennung MIT festhalten - sie ist die Wiederholungssperre:
             // derselbe Druck bewaffnet nur einmal.
             episodes.foundationArmedByAuthId = episodes.markerAuth?.id
-            // Eine neue Autorisierung beginnt mit unbezahlter Phase B.
-            episodes.deliveredSinceHandoverU = 0.0
-            episodes.deliveredPhaseAU = 0.0
-            // Aufschub-Merker und Uebertrag gehoeren zur Autorisierung -
-            // neuer Marker, Widerruf und Ablauf loeschen beides (Punkt 4).
-            episodes.upfrontBatchDeferredSince = 0L
-            episodes.upfrontTransferredU = 0.0
-            episodes.upfrontLapsedU = 0.0
-            // UND OHNE UEBERTRAG (Toni 19.08.). Ein neuer Markerdruck ist eine
-            // neue Mahlzeit mit eigenem Budget; eine Luecke aus der vorigen
-            // darf sie nicht erben. Das steht hier UND beim Widerruf, weil es
-            // zwei verschiedene Wege sind, eine Episode zu beenden - ein
-            // gemeinsamer Reset weiter unten wuerde nur einen von beiden
-            // treffen.
-            episodes.confirmedNotSentPhaseAU = 0.0
-            episodes.descentDeferredPhaseAU = 0.0
             // Fix 7: neue Marker-Episode -> Wende-Latch der Sonderrechte neu.
             episodes.markerTurnTs = 0L
             episodes.markerRiseSeen = false
@@ -2244,58 +2149,21 @@ class FuseCycleRunner(
         if (mealMarkerActive && episodes.markerRiseSeen && episodes.markerTurnTs == 0L &&
             signal.ukfRatePerMin.isFinite() && signal.ukfRatePerMin <= -cfg.riseRampLowR
         ) episodes.markerTurnTs = signal.sourceTs
-        val markerBoost = mealMarkerActive &&
-            MarkerScope.boostActive(markerTs, computeTs, episodes.markerTurnTs, cfg.markerBoostMaxMin)
-        // `reboundWindow` und `reboundSuppressedByMarker` stehen weiter unten,
-        // nach der Frage, ob das Erwartungskonto gilt (E-034).
 
-        // ---- DIE DIREKTDOSIS UND DAS HISTORISCHE REBOUND-FENSTER ---------
-        //
-        // `reboundSuppressedByMarker` (unten) entwaffnet nur die HEURISTIK-
-        // Bremse und haengt am BOOST-Fenster (gilt das Erwartungskonto: am
-        // ganzen gepinnten Fenster). Die Direktdosis-Kette las
-        // dagegen weiter das rohe `reboundRaw` - Livebefund: markerBoost und
-        // reboundSuppressedByMarker true, reboundWindow false, und trotzdem
-        // `recoveryDenial=CURRENT_HAZARD / currentHazard=rebound` bei
-        // `phaseAUpfrontRequestedU=0`, waehrend dieselbe Mahlzeit nebenher
-        // einzelne SMBs anforderte.
-        //
-        // Das ist eine EIGENE Frage und deshalb eine eigene Entscheidung:
-        // nicht "ist der Boost aktiv?", sondern "traegt die ausdrueckliche
-        // Autorisierung diese Direktdosis?". Sie steht in
-        // [MealUpfrontAuthority] und fuehrt nur BESTEHENDE Regeln zusammen -
-        // Gueltigkeit, gepinnte Zusage, Markeridentitaet, beobachteter
-        // Druck, Autorisierungskennung und die gewaehlte Sofortmenge.
-        val direktdosisAutorisiert = MealUpfrontAuthority.holds(
-            auth = episodes.foundation,
-            activeMarkerTs = markerTs,
-            markerActive = mealMarkerActive,
-            // KEIN Live-Druckmerker: `markerPressObserved()` ist fluechtig
-            // und wuerde die Autorisierung nach jedem Prozessneustart
-            // aussperren. Der Druck ist beim Armieren geprueft, s.
-            // [MealUpfrontAuthority].
-            foundationArmedByAuthId = episodes.foundationArmedByAuthId,
-            currentAuthId = episodes.markerAuth?.id,
-        )
-        // DER RIEGEL DER KETTE - eine Stelle. Konsolidierung 2.0: Aufschub-Tor
-        // und Wiederfreigabe des Sofortanteils sowie die aufgeschobene
-        // Prime-Freigabe sind entfallen; es lesen noch der Phase-A-Uebertrag
-        // (DescentDeferredCarry) und der Trail. Ueberall sonst bleibt
-        // `reboundRaw` unveraendert in Kraft.
-        val upfrontReboundSperrt =
-            MealUpfrontAuthority.reboundBlocks(reboundRaw, direktdosisAutorisiert)
+        // Konsolidierung 2.0: die Direktdosis-Autorisierung (MealUpfrontAuthority) und ihr Rebound-Riegel sind mit
+        // dem Mahlzeitenfundament entfallen - zuletzt lasen sie nur der Phase-A-Uebertrag und der Trail.
 
         // ---- ERWARTUNGSKONTO (Testkandidat E-034): GILT ES IN DIESEM ZYKLUS? --
         //
-        // VOR dem Onset-Kanal: der ist im Mahlzeitkontext des Kontos aus, und
-        // seine Wirkung geht schon in die Bahn. Der Dosierkontext steht erst
-        // weiter unten fest (Pin-Pflege); hier dieselbe Regel als Vorschau
-        // OHNE Schreibzugriff. Unten wird sie gegen den echten Kontext
-        // geprueft. Schalter aus: null - nichts gelesen, nichts geschrieben.
-        val ekVorschau = if (!cfg.expectationAccountEnabled) null else ekKontextVorschau(
+        // VOR allem, was der Marker in der Dosierung bewirkt (Sonderrechte, Onset-Kanal, Fenster, Kredit, Bahn):
+        // gilt das Konto nicht, obwohl die Mahlzeit autorisiert ist, dosiert der Zyklus wie ohne Marker (Rueckfall,
+        // unten). Der Dosierkontext steht erst weiter unten fest (Pin-Pflege); hier dieselbe Regel als Vorschau
+        // OHNE Schreibzugriff. Unten wird sie gegen den echten Kontext geprueft. Konsolidierung 2.0: die Vorschau
+        // steht auch ohne Konto (keine gueltige Kurve) - sonst waere dort der Rueckfall nicht erkennbar.
+        val ekVorschau = ekKontextVorschau(
             computeTs, markerTs, episodeGate.creditRevoked, cfg.livenessMealPowerMin, episodes,
         )
-        val ekGilt = ekVorschau != null && ekVorschau.mealAuthorized && run {
+        val ekGilt = cfg.expectationAccountEnabled && ekVorschau.mealAuthorized && run {
             val konto = episodes.expectation
             // Ein laufendes Konto DIESER Autorisierung - oder ein bewusster,
             // in diesem Prozess beobachteter Druck, der jetzt eines bucht.
@@ -2309,8 +2177,32 @@ class FuseCycleRunner(
             (konto != null && konto.authId == ekVorschau.authorizationId && computeTs < konto.windowEndTs) ||
                 (mealMarkerActive && markerTs > 0 && ekVorschau.authorizationId == markerTs &&
                     markerPressObserved() == markerTs && konto?.authId != markerTs &&
-                    ekArmiertFuerAuth != markerTs)
+                    ekArmiertFuerAuth != markerTs &&
+                    // KEINE NEUBUCHUNG UNBEKANNTEN BUDGETS (Toni): hat diese Mahlzeit im Rueckfall schon Insulin
+                    // bekommen, kennt ein jetzt gebuchtes Konto den Verbrauch nicht - dann bleibt es beim Rueckfall.
+                    ekRueckfallGeliefertFuerAuth != markerTs &&
+                    // Ein Budget braucht das Insulinmodell. Fehlt es, bucht dieser Zyklus nicht (Rueckfall, ohne
+                    // Kern ohnehin ohne SMB); der naechste mit Modell holt die Buchung nach.
+                    (!ekBuchungBrauchtModell(cfg, markerNurErwartung) || kernel() != null))
         }
+
+        // ---- RUECKFALL OHNE KONTO (Toni) --------------------------------------
+        //
+        // "Wie ohne Marker" nur als begrenzter Rueckfall bei tatsaechlich fehlendem oder ungueltigem Konto: die
+        // Mahlzeit ist angekuendigt und autorisiert (MEAL-Vollmacht), aber es gilt kein Konto - keines gebucht (Druck
+        // in einem anderen Prozess, Insulinmodell fehlt), verloren, beim Laden verworfen, keine gueltige Kurve. Dann
+        // dosiert der Zyklus WIE OHNE MARKER: dieselben Pfade und Grenzen wie eine Korrektur ohne Ankuendigung - kein
+        // Erklaerungskredit, keine Marker-Sonderrechte (Rebound, Prior, Fenster), kein Marker im Onset-Kanal, keine
+        // Evidenzepisode, keine Marker-Pins, die Korrekturgrenzen, kein praediktorfreier Markerpfad. Die Ankuendigung
+        // bleibt sichtbar: Marker, Vollmacht, Pins, Evidenzepisode und Buchfuehrung laufen unveraendert weiter und
+        // stehen im Trail, der Rueckfall mit Grund daneben (expectationAccount.fallback) und im FUSE-Bildschirm.
+        // Nicht still in den Korrekturbetrieb: die Vollmacht wird NICHT umgeschrieben - nur die Dosierung liest
+        // `dosier*` statt des Markers.
+        val kontoRueckfall = ekVorschau.mealAuthorized && !ekGilt
+        val dosierMarkerTs = if (kontoRueckfall) 0L else markerTs
+        val dosierMealMarkerActive = mealMarkerActive && !kontoRueckfall
+        val markerBoost = dosierMealMarkerActive &&
+            MarkerScope.boostActive(markerTs, computeTs, episodes.markerTurnTs, cfg.markerBoostMaxMin)
 
         // REBOUND UND MAHLZEIT (E-034, Tonis Regel: "Das Rebound-Fenster darf
         // eine Mahlzeit nie blockieren"). Heute entwaffnet der Marker die
@@ -2321,9 +2213,8 @@ class FuseCycleRunner(
         // Erwartungskonto, bleibt das Fenster fuer das ganze gepinnte Fenster
         // entwaffnet; den Schutz nach einem Tief tragen dort die gemessenen
         // Sperren, die Pausen und die Stabilitaetsstrecke des Kontos und der
-        // Guard fuer d_mess. Schalter aus (und Zuordnungsarm EK-RBheute): wie
-        // heute.
-        val reboundEntwaffnet = markerBoost || (ekGilt && !cfg.expectationBenchReboundToday)
+        // Guard fuer d_mess. Ohne Konto: wie heute (im Rueckfall wie ohne Marker).
+        val reboundEntwaffnet = markerBoost || ekGilt
         val reboundWindow = reboundRaw && !reboundEntwaffnet
         val reboundSuppressedByMarker = reboundRaw && reboundEntwaffnet
 
@@ -2335,7 +2226,8 @@ class FuseCycleRunner(
                 rSignedMgdlPerMin = band.mean,
                 thresholdMgdlPerMin = cfg.riseRampLowR,
                 q1Outlier = signal.q1Outlier,
-                mealMarkerActive = mealMarkerActive,
+                // Im Rueckfall ohne Konto wie ohne Marker.
+                mealMarkerActive = dosierMealMarkerActive,
                 envelopeU = cfg.onsetEnvelopeU,
                 spentU = episodes.onsetSpentU,
             )
@@ -2398,14 +2290,11 @@ class FuseCycleRunner(
             // "Ohne Vorschuss" heisst auch: kein Erklaerungs-Kredit. Der Kredit
             // unterstellt kommende Absorption in Huellenhoehe - genau die
             // Unterstellung, die der Druck abgewaehlt hat.
-            // DAS GEPINNTE Phase-A-Budget, nicht der Live-Wert (Toni 19.08.).
-            // Der Kredit unterstellt kommende Absorption in HUELLENHOEHE -
-            // liest er dabei eine spaeter geaenderte Einstellung, unterstellt er
-            // eine andere Menge, als beim Markerdruck autorisiert wurde. Ohne
-            // aktives Fundament gibt primeBudgetU unveraendert den Live-Wert
-            // zurueck, das Verhalten bleibt also gleich.
+            // DIE AM DRUCK GEPINNTE Kredit-Huelle, nicht der Live-Wert (Toni): liest der Kredit eine spaeter
+            // geaenderte Einstellung, unterstellt er eine andere Menge, als beim Markerdruck autorisiert wurde. Ohne
+            // Pin gilt unveraendert der Live-Wert.
             envelopeU = if (markerNoPrime) 0.0
-            else MealFoundation.primeBudgetU(episodes.foundation, cfg.primeEnvelopeU),
+            else episodes.creditEnvelopeU ?: cfg.primeEnvelopeU,
             deliveredU = mealDeliveredU,
             isfMgdlPerU = profile.getIsfMgdlTimeFromMidnight(MidnightUtils.secondsFromMidnight(signal.sourceTs)),
             windowMin = cfg.absorptionCreditWindowMin.toDouble(),
@@ -2672,82 +2561,36 @@ class FuseCycleRunner(
             pinnedFor = episodes.markerPowerPinnedFor,
             deadlineTs = episodes.markerPowerDeadlineTs,
         )
-        val markerPowerActive = dosingCtx.mealAuthorized
-        // ---- FRUEHER ADAPTIVER MEAL-BEDARF (Toni 18.09., H8, Default AUS) ---
-        // EINE Entscheidung je Zyklus, VOR der State-Konstruktion. Ist H8
-        // geeignet (`eligible`), lesen genau drei Stellen den robusten
-        // W10-Antrieb statt der W18-Bahn - der im Replay gepruefte
-        // Vertrag: die Ratio-Rampe, der Druck des Liveness-Kanals und dessen
-        // Freigabe-Mittelbahn (`max(produktiv, target + W10 * H)`, nie Summe).
-        // Ob die H8-Bahn diese Mittelbahn tatsaechlich stellt, ist eine
-        // zweite, spaetere Aussage (`selected`). Tore, Deckel, Grenzen,
-        // Raster, Reversal-/Safety-Bahn und Horizonte bleiben. Bei 0 wird
-        // nichts gebildet; alle drei Stellen sind bitgleich.
-        val fruehMeal = app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.decide(
-            app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.Input(
-                // E-034: im Mahlzeitkontext des Kontos ist H8 aus.
-                horizonMin = if (ekGilt) 0 else cfg.earlyAdaptiveMealHorizonMin,
-                mealAuthorized = dosingCtx.mealAuthorized,
-                authorizationId = dosingCtx.authorizationId,
-                markerTs = markerTs,
-                authorizationExpiresAtMs = dosingCtx.authorizationExpiresAt,
-                nowMs = computeTs,
-                signalReady = step.health == Health.READY,
-                // Strenge Reife: keine gelockerte Wiedereinstiegsreife, und
-                // dieses Segment hat die volle Reife bereits erreicht.
-                signalMature = !signal.rejoin.active && signal.fullMaturityTs > 0L,
-                w10DriveMgdlPerMin = band.mean,
-                ukfRatePerMin = signal.ukfRatePerMin,
-                // Eintritt = bestehende Druckschwelle des Liveness-Kanals (1,0),
-                // wie im bewerteten Replay. riseRampLowR bleibt Rampen-Unterkante.
-                eligibilityThresholdMgdlPerMin = LivenessChannel.R_MIN_MGDL_PER_MIN,
-                targetMgdl = target,
-            ),
-        )
-        // Ratio-Antrieb: produktiv die W18-Bahn, im H8-Fenster der W10-Antrieb;
-        // der Onset-Kanal hebt in beiden Faellen wie bisher.
-        val ratioDrive = if (fruehMeal.eligible) {
-            onset.driveMgdlPerMin?.takeIf { onset.active }
-                ?.let { dd -> maxOf(band.mean, dd) } ?: band.mean
-        } else {
-            onset.driveMgdlPerMin?.takeIf { onset.active }
-                ?.let { dd -> maxOf(signal.rSigned ?: dd, dd) } ?: signal.rSigned
-        }
-        // ---- HALTE-ANHEBUNG: MESSBESTAETIGUNG (Toni 15.09. abends) ----------
-        // JEDEN Zyklus mit Signal und Bahn fortgeschrieben, auch vor der
-        // Bewaffnung - verbraucht werden nur neue Rohwerte, ein weiterer Lauf
-        // ueber dieselben Daten bringt nichts. Schalter AUS: kein Zustand,
-        // keine Rechnung.
-        val holdBeleg = if (!cfg.livenessDriveHoldEnabled) null else
-            app.aaps.fuse.core.controller.MeasuredRiseEvidence.step(
-                livenessHoldEvidence,
-                app.aaps.fuse.core.controller.MeasuredRiseEvidence.Input(
-                    enabled = true,
-                    mealAuthorized = dosingCtx.mealAuthorized,
-                    authorizationId = dosingCtx.authorizationId,
-                    measured = signal.measured,
-                    needMet = app.aaps.fuse.core.controller.LivenessDriveHold.needMet(
-                        built.input.drive.meanMgdlPerMin, fastDrive(signal),
-                    ),
-                ),
-            )
-        livenessHoldEvidence = holdBeleg?.state ?: app.aaps.fuse.core.controller.MeasuredRiseEvidence.State.EMPTY
+        // RUECKFALL OHNE KONTO: die Dosierung liest den Kontext wie ohne Marker (CORRECTION). Die Vollmacht selbst
+        // (`dosingCtx`: Pins, Frist, Konto, Buchung, Export) bleibt unveraendert und sichtbar.
+        val dosierKontext = if (!kontoRueckfall) dosingCtx
+        else app.aaps.fuse.core.controller.DosingContext.decide(computeTs, 0L, 0L, 0L)
+        val markerPowerActive = dosierKontext.mealAuthorized
+        // Konsolidierung 2.0: der fruehe adaptive MEAL-Bedarf (H8) ist entfallen - er wirkte nur noch im
+        // Mahlzeitkontext ohne Konto (im Kontofenster war sein Horizont 0), und dort dosiert der Rueckfall wie ohne
+        // Marker. Der Ratio-Antrieb ist die W18-Bahn; der Onset-Kanal hebt wie bisher.
+        val ratioDrive = onset.driveMgdlPerMin?.takeIf { onset.active }
+            ?.let { dd -> maxOf(signal.rSigned ?: dd, dd) } ?: signal.rSigned
+        // Konsolidierung 2.0: die Halte-Anhebung samt Messbestaetigung ist aus demselben Grund entfallen (sie wirkte
+        // nur im MEAL-Profil des Liveness-Kanals).
         // ---- B1: DIE KONTEXTGRENZE DIESES ZYKLUS -------------------------
         // MealExposureLimit unter gueltiger Vollmacht, sonst
         // CorrectionExposureLimit (CENTRAL-only: es gibt keinen anderen
-        // Modus mehr; validate garantiert alle vier Werte).
+        // Modus mehr; validate garantiert alle vier Werte). Im Rueckfall ohne
+        // Konto die Korrekturgrenze (wie ohne Marker).
         val kontextExposureLimitU: Double =
-            if (dosingCtx.mealAuthorized) cfg.mealExposureLimitU
+            if (dosierKontext.mealAuthorized) cfg.mealExposureLimitU
             else cfg.correctionExposureLimitU
 
         // ---- B2: DER DEMAND-RATIO-CAP DIESES ZYKLUS ----------------------
         // MealDemandRatioCap unter gueltiger Vollmacht, sonst
         // CorrectionDemandRatioCap. Er begrenzt die BEDARFSRATE des
-        // Normalpfads und des Liveness-Kanals; autorisierte Direktdosen
-        // (Upfront, Prime, Foundation, Aufschub, CALM) werden von ihm NIE
-        // umgedeutet (Invariante 5).
+        // Normalpfads und des Liveness-Kanals; autorisierte Mengen werden von
+        // ihm NIE umgedeutet (Invariante 5). Konsolidierung 2.0: er bleibt - im
+        // Kontofenster begrenzt er den Normalweg, der dort mitlaeuft (Regel A,
+        // Normalbedarf im Kontofenster). Im Rueckfall der Korrektur-Cap.
         val kontextDemandRatioCap: Double =
-            if (dosingCtx.mealAuthorized) cfg.mealDemandRatioCap
+            if (dosierKontext.mealAuthorized) cfg.mealDemandRatioCap
             else cfg.correctionDemandRatioCap
         val state = when (
             val s = CoreInputGuard.build {
@@ -2811,30 +2654,9 @@ class FuseCycleRunner(
             is CoreInputGuard.Outcome.Failed -> return abort("state: ${s.failure.detail}", signal, cfg, step, predictionOrNull, restraint)
         }
 
-        // DER BEWUSSTE MARKERDRUCK IST DIE AUTORISIERUNG (Toni 11.08.,
-        // nach einem Livefall). Zwei Groessen, und sie waren bis hierher
-        // FALSCH VERSCHRAENKT:
-        //
-        //   manualMarkerAuthorized  Einstellung an UND Marker laeuft
-        //   measuredLow             es liegt ein GEMESSENES Tief vor
-        //
-        // Ich hatte das gemessene Tief zur VORAUSSETZUNG der Autorisierung
-        // gemacht. Es war aber nur der Anlass, an dem sie zuerst auffiel.
-        // Gemessen: normaler BG, fallend, Marker seit 3 min, alle
-        // technischen Tore frei, iobTH/maxIOB nicht bindend - und trotzdem keine Abgabe,
-        // weil `safetyReasons` leer war. Das ist der HAUPTFALL einer
-        // Mahlzeit (normaler BG, Bahn faellt), nicht der Randfall.
-        //
-        // WAS DIE MENGE BEGRENZT, ist deshalb nicht mehr das Tief, sondern
-        // die Huelle: der Lift kommt nie ueber `PrimeRelease.Plan.floorU`
-        // hinaus, und der Boden weiter unten hebt nur auf genau diesen
-        // Betrag. Der alte P0 (`all { it == LOW }` auf der leeren Menge)
-        // ist damit gegenstandslos - er war gefaehrlich, WEIL der damalige
-        // Sonderzweig den Guard fuer die GANZE Menge aufhob. Ein
-        // mengenbegrenzter Boden kennt dieses Problem nicht.
-        // (Die Definition steht jetzt weiter oben - sie wird schon fuer die
-        // Armierung des Fundaments gebraucht.)
-
+        // DER BEWUSSTE MARKERDRUCK IST DIE AUTORISIERUNG (Toni): das
+        // gemessene Tief ist KEINE Voraussetzung der Autorisierung. (Konsolidierung
+        // 2.0: die Direktdosis-Familie, fuer die das galt, ist entfallen.)
 
         // Nur noch fuer die parallele Schutz-Null und den Warntext - NICHT
         // mehr als Bedingung der Autorisierung.
@@ -2857,27 +2679,8 @@ class FuseCycleRunner(
         episodes.descentRecoveryLatch = descentLatch.state
         episodes.descentRecoveryRuntime = descentLatch.runtime
 
-        // EIN Urteil fuer Haupt- und Fallbackpfad. Der gespeicherte
-        // Sicherheitsaufschub darf erst in Phase B nach bestaetigter Erholung
-        // wirken; ein echtes Tief, ungesundes Signal oder rohes
-        // Rebound-Fenster sperrt ihn weiterhin.
-        val foundationPhase = MealFoundation.phaseOf(
-            episodes.foundation, computeTs, episodes.primeWindowStartTs,
-        )
-        val manualBolusAfterMarkerU = manualBolusAfterMarkerU(episodes.foundation, treatmentView)
-        val descentCarryEligibility = DescentDeferredCarry.eligibility(
-            deferredU = episodes.descentDeferredPhaseAU,
-            phase = foundationPhase,
-            latchBlocksPositive = descentLatch.blocksPositive,
-            signalHealthy = step.health == Health.READY,
-            measuredLow = step.safetyReasons.isNotEmpty(),
-            // NACHGELAGERTE STELLE DERSELBEN KETTE: der Uebertrag gibt den
-            // aufgeschobenen Phase-A-RUECKSTAND in Phase B frei. Ihn weiter
-            // am rohen Kennzeichen zu haengen haette den Aufschub nur eine
-            // Stufe spaeter wiederholt.
-            reboundRaw = upfrontReboundSperrt,
-            manualBolusAfterMarkerU = manualBolusAfterMarkerU,
-        )
+        // Konsolidierung 2.0: Phase, Abwaerts-Uebertrag und manuelle Deckung des Mahlzeitenfundaments sind mit ihm
+        // entfallen.
 
         // ---- STUFE 3: DER EVIDENZBESTAND RECHNET, ABER ZAHLT NOCH NICHT ----
         //
@@ -2924,36 +2727,39 @@ class FuseCycleRunner(
             ankerTs = episodes.evidenceState.lastAcceptedTs,
         )
 
-        val evidenz = signal.adjusted.points.lastOrNull()?.let { letzter ->
-            EvidenceStock.step(
-                prev = evidenzVorher,
-                input = EvidenceStock.Input(
-                    nowMs = computeTs,
-                    sourceTs = signal.sourceTs,
-                    // DERSELBE Deckel wie im Episodentor oben - nicht neu
-                    // gerechnet, sondern derselbe Wert weitergereicht.
-                    capMsOverride = evidenceCapMs,
-                    interval = intervall,
-                    driveLowerMgdlPerMin = band?.lower,
-                    healthReady = step.health == Health.READY,
-                    measuredLow = measuredLow,
-                    creditRevoked = episodeGate.creditRevoked,
-                    episodeId = evidenceEpisodeId,
-                    episodeCommittedU = episodes.evidenceCommittedU,
-                    // Die Widerrufs-Revision faehrt MIT der Summe - nur so
-                    // kann der Kern einen legalen Widerruf von verlorenem
-                    // Zustand unterscheiden (Toni 29.08.).
-                    commitmentRevision = episodes.evidenceCommitmentRevision,
-                    isfMgdlPerU = isf,
-                    // Der geladene Zustand gilt, solange der Ledger nicht
-                    // haelt. Haelt er, ist die Buchfuehrung fraglich - und ein
-                    // Bestand aus fraglicher Buchfuehrung darf nichts erlauben.
-                    persistedStateKnown = !ledgerView.hold,
-                ),
-                cfg = evidenceConfig,
+        val evidenzEingabe = signal.adjusted.points.lastOrNull()?.let {
+            EvidenceStock.Input(
+                nowMs = computeTs,
+                sourceTs = signal.sourceTs,
+                // DERSELBE Deckel wie im Episodentor oben - nicht neu
+                // gerechnet, sondern derselbe Wert weitergereicht.
+                capMsOverride = evidenceCapMs,
+                interval = intervall,
+                driveLowerMgdlPerMin = band?.lower,
+                healthReady = step.health == Health.READY,
+                measuredLow = measuredLow,
+                creditRevoked = episodeGate.creditRevoked,
+                episodeId = evidenceEpisodeId,
+                episodeCommittedU = episodes.evidenceCommittedU,
+                // Die Widerrufs-Revision faehrt MIT der Summe - nur so
+                // kann der Kern einen legalen Widerruf von verlorenem
+                // Zustand unterscheiden (Toni).
+                commitmentRevision = episodes.evidenceCommitmentRevision,
+                isfMgdlPerU = isf,
+                // Der geladene Zustand gilt, solange der Ledger nicht
+                // haelt. Haelt er, ist die Buchfuehrung fraglich - und ein
+                // Bestand aus fraglicher Buchfuehrung darf nichts erlauben.
+                persistedStateKnown = !ledgerView.hold,
             )
         }
+        val evidenz = evidenzEingabe?.let { EvidenceStock.step(prev = evidenzVorher, input = it, cfg = evidenceConfig) }
         evidenz?.let { episodes.evidenceState = it.state }
+
+        // RUECKFALL OHNE KONTO: die Dosierung sieht KEINE Evidenzepisode - wie ohne Marker (dieselbe reine Rechnung
+        // ohne Episode: kein Bestand, kein Kredit, Phase NONE). Bestand, Versiegelung und Bezahlung laufen oben
+        // unveraendert weiter und stehen im Trail.
+        val dosierEvidenz = if (!kontoRueckfall) evidenz
+        else evidenzEingabe?.let { EvidenceStock.step(prev = evidenzVorher, input = it.copy(episodeId = 0L), cfg = evidenceConfig) }
 
         // ---- DER PREDICTORFREIE MARKERPFAD (Toni 11.08.) -------------------
         //
@@ -2979,7 +2785,8 @@ class FuseCycleRunner(
                 // sind im Export verschiedene Lagen, und ein zusammengefasstes
                 // Bit haette sie ununterscheidbar gemacht.
                 markerAuthorized = cfg.markerAuthorized,
-                mealMarkerActive = mealMarkerActive && markerTs > 0,
+                // Im Rueckfall ohne Konto wie ohne Marker: kein praediktorfreier Markerpfad.
+                mealMarkerActive = dosierMealMarkerActive && dosierMarkerTs > 0,
                 health = step.health,
                 // DIE ZAHL, nicht ein Praedikat darueber. `isFinite()` stand hier
                 // und war KEIN Beweis: 0,0 ist auch endlich, und ueber den Abzug
@@ -3011,7 +2818,7 @@ class FuseCycleRunner(
             return markerFallbackCycle(
                 rejected, warum, signal, step, cfg, state, profile, pumpe, tempBasalFallback,
                 computeTs, markerTs, mealMarkerActive, measuredLow, descentRisk, descentLatch,
-                descentCarryEligibility, manualBolusAfterMarkerU, treatmentView, evidenceEpisodeId,
+                treatmentView, evidenceEpisodeId,
                 episodeGate.denial?.name, episodeGate.creditRevoked, evidenz,
                 isf, target, targetSource, iobTotal,
                 maxIobU, transportModelledU, ledgerView, episodes, onset, band,
@@ -3089,7 +2896,7 @@ class FuseCycleRunner(
         // Sicherheitskante; maxSMB, iobTH, maxIOB, Transportabzug,
         // Ledger-Hold, Modell-Health und Pumpengate greifen unveraendert
         // danach.
-        val evidenzKredit = evidenz?.creditMgdlPerMin?.takeIf { it.isFinite() && it > 0.0 } ?: 0.0
+        val evidenzKredit = dosierEvidenz?.creditMgdlPerMin?.takeIf { it.isFinite() && it > 0.0 } ?: 0.0
         val bedingterKredit = maxOf(declaredDrive, evidenzKredit)
 
         // 2.0 (Stufe 1, K3): die bedingte Kante ist fest an, der fruehere
@@ -3240,9 +3047,10 @@ class FuseCycleRunner(
         // nach einem Warmstart oder einer externen Aenderung die noch
         // laufende Frist von Marker A erben, obwohl B in diesem Prozess
         // nie beobachtet wurde. Dieselbe Falle wie bei der Ledger-Bindung.
+        // Im Rueckfall ohne Konto wie ohne Marker: keine Frist (der Pin selbst bleibt).
         val reboundOverrideDeadlineTs =
-            if (markerTs > 0L && markerTs <= computeTs &&
-                markerTs == episodes.markerReboundOverridePinnedFor
+            if (dosierMarkerTs > 0L && dosierMarkerTs <= computeTs &&
+                dosierMarkerTs == episodes.markerReboundOverridePinnedFor
             ) episodes.markerReboundOverrideDeadlineTs else 0L
 
         // ---- PUNKT 6: AUFSCHUB PINNEN / AUFRAEUMEN (Toni 22.08.) ---------
@@ -3264,7 +3072,6 @@ class FuseCycleRunner(
                     horizonMin = cfg.markerPrimeDescentHorizonMin.toInt(),
                     endMin = cfg.deferredPrimeEndMin,
                 )
-                episodes.postFoundationDeliveredU = 0.0
             }
         } else if (episodes.deferredPrime.pinnedForMarkerTs > 0L && markerTs <= 0L) {
             // RUECKNAHME (Vertrag 8): der Marker selbst ist weg. Bewusst NICHT
@@ -3284,7 +3091,7 @@ class FuseCycleRunner(
             evidenceCreditActive = evidenzKredit > 0.0,
             deadlineTs = reboundOverrideDeadlineTs,
             computeTs = computeTs,
-            markerTs = markerTs,
+            markerTs = dosierMarkerTs,
             pinnedForTs = episodes.markerReboundOverridePinnedFor,
             revoked = episodeGate.creditRevoked,
         )
@@ -3512,80 +3319,9 @@ class FuseCycleRunner(
             }
         }
 
-        // Konsolidierung 2.0: die Anhebung der Sofort-Freigabe (PrimeRelease.lift) ist entfallen. Der Plan bleibt
-        // nur fuer die CLEARANCE-Verschiebung unten: sie bewegt `primeWindowStartTs` und damit den Uebergabeanker
-        // des Mahlzeitenfundaments (Phase A/B), das in diesem Schritt unveraendert bleibt.
-        val primePlan = PrimeRelease.plan(
-            PrimeRelease.Input(
-                enabled = cfg.primeReleaseEnabled,
-                windowMin = cfg.primeWindowMin,
-                declinedByUser = markerNoPrime,
-                mealMarkerActive = mealMarkerActive,
-                armedTsMs = markerTs,
-                windowStartTsMs = episodes.primeWindowStartTs,
-                nowMs = computeTs,
-                // Bei aktivem Fundament sieht Prime NUR sein Phase-A-Budget -
-                // sonst gaebe es die ganze Huelle aus und Phase B faende nichts
-                // mehr vor. Ohne Fundament ist es unveraendert der Live-Wert.
-                envelopeU = MealFoundation.primeBudgetU(episodes.foundation, cfg.primeEnvelopeU),
-                spentU = episodes.primeSpentU,
-                // C1 + C2 (Codex H1/H2, K2 Punkte 6/8) ERSETZEN die frueher hier
-                // stehende analytische Entzirkularisierung: statt den Prior-Hub
-                // am RELEASE-Horizont (30 min) abzuziehen, rechnet die Clearance
-                // jetzt gegen die punktweise prior-freie Bahn - und zusaetzlich
-                // gegen die Bremsbahn. Der alte Abzug war unvollstaendig, weil
-                // das Minimum typisch am HAFTUNGS-Horizont liegt: 16,53 mg/dl
-                // (30 min) gegen 36,32 mg/dl (120 min) bei prior 0,7 / tau 60,
-                // also bis ~19,8 mg/dl selbstlizenzierter Kredit.
-                safetyMinLowerMgdl = minSafetyLowerOf(prediction, restraint),
-                guardFloorMgdl = cfg.guardFloorMgdl,
-                isfMgdlPerU = isf,
-                pumpIncrementU = bolusStep,
-                markerAuthorized = manualMarkerAuthorized,
-            )
-        )
-
-        // ---- LIEFERBARE MINUTEN: der Fensterstart schiebt nach ------------
-        //
-        // Solange nur die Clearance sperrt, schiebt der Fensterstart nach -
-        // eine Freigabe, die nie erteilbar war, darf nicht verfallen. Absolut
-        // gekappt in PrimeRelease selbst. Nur bei CLEARANCE:
-        // DISABLED/NO_MARKER/ENVELOPE_SPENT/NOT_FINITE sind keine "gesperrt,
-        // aber gewollt"-Zustaende, dort waere das Schieben eine stille
-        // Verlaengerung ohne Grund.
-        //
-        // DIESE ZEILE STAND WEITER UNTEN, hinter der fertigen Entscheidung
-        // (Toni 19.08.). Sie muss VOR den Entscheidungssnapshot des
-        // Fundaments, denn der Uebergabeanker haengt an `primeWindowStartTs`:
-        // ein Snapshot davor saehe einen anderen Anker als die spaetere
-        // Buchung, und Phase B rechnete gegen ein Fenster, das gar nicht mehr
-        // gilt.
-        //
-        // VERHALTENSNEUTRAL FUER PRIME, geprueft: zwischen dem `plan`-Aufruf
-        // oben (der `primeWindowStartTs` liest) und dieser Stelle liest sie
-        // niemand sonst.
-        if (primePlan.reason == "CLEARANCE") episodes.primeWindowStartTs = computeTs
-
-        // ---- DER ENTSCHEIDUNGSSNAPSHOT DES FUNDAMENTS --------------------
-        //
-        // Er entsteht NACH der moeglichen Clearance-Verschiebung und VOR jeder
-        // Buchung dieses Zyklus - genau dazwischen ist der einzige Punkt, an
-        // dem Uebergabeanker und Bezahlstand beide gelten.
-        //
-        // Er ist NICHT derselbe wie der Export-Snapshot am Ende des Zyklus:
-        // dieser hier traegt den Stand VOR der eigenen Abgabe und beantwortet
-        // "was fordert das Fundament jetzt", jener den Stand DANACH und
-        // beantwortet "wo steht es am Ende".
-        val foundationDecision = MealFoundation.snapshot(
-            episodes.foundation, computeTs, episodes.primeWindowStartTs,
-            deliveredFromBudgetU = episodes.deliveredPhaseAU + episodes.deliveredSinceHandoverU,
-            deliveredPhaseAU = episodes.deliveredPhaseAU,
-            deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
-            confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
-            descentDeferredPhaseAU = episodes.descentDeferredPhaseAU,
-            descentCarryEligibility = descentCarryEligibility,
-            bolusStepU =bolusStep,
-        )
+        // Konsolidierung 2.0: der Plan der Sofort-Freigabe samt CLEARANCE-Verschiebung des Fensterstarts und der
+        // Entscheidungssnapshot des Mahlzeitenfundaments sind entfallen - sie speisten zuletzt nur noch dessen
+        // Uebergabeanker (Phase A/B).
 
         // ---- DER STABILITAETSNACHWEIS AUF DER GEMESSENEN REIHE ----------
         //
@@ -3623,53 +3359,14 @@ class FuseCycleRunner(
         // und deckt Phase-A-Maskierungen nicht).
         val underlyingNormalBlock = vetted.block
         // KONSOLIDIERUNG (Toni): die Direktdosis-Familie (Sofortanteil, Prime, Aufschub-Freigabe, Ruhe) ist entfallen -
-        // "sollte dennoch eine Direktdosis noetig sein, mache ich das manuell". Vor dem Fundament steht damit
-        // unveraendert die Normalentscheidung.
+        // "sollte dennoch eine Direktdosis noetig sein, mache ich das manuell". Konsolidierung 2.0: Phase B des
+        // Mahlzeitenfundaments ist ebenfalls entfallen - vor dem Konto steht unveraendert die Normalentscheidung.
         val liftedPrime = vetted
-
-        // ---- PHASE B: die nachlaufende Mindestversorgung ------------------
-        //
-        // Sie arbeitet auf der Normalentscheidung (Konsolidierung 2.0: der
-        // Prime-Lift davor ist entfallen). Die beiden Phasen schliessen
-        // sich zeitlich aus (MealFoundation.phaseOf), also greift immer
-        // hoechstens eine. Im Prime-Fenster ist `dueU` null.
-        //
-        // DERSELBE MENGENKERN wie jede autorisierte Hebung (AuthorizedLift): maxSMB, iobTH,
-        // maxIOB, Transporthaftung und Pumpenraster gelten unveraendert. Was
-        // Phase B eigen ist, sind nur Soll, Restbudget und Fenster - und dass
-        // die Onset-Huelle hier NICHT deckelt (s. MealFoundation.lift).
-        //
-        // Die Autorisierung kommt aus dem GEPINNTEN Snapshot, nicht aus der
-        // aktuellen Einstellung.
-        // E-034: im Mahlzeitkontext des Kontos ist Phase B aus.
-        val liftedVorKonto = if (ekZyklus != null) liftedPrime else MealFoundation.lift(
-            base = liftedPrime,
-            snapshot = foundationDecision,
-            state = state,
-            tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
-            transportCommitmentU = transportModelledU,
-            contextExposureLimitU = kontextExposureLimitU,
-        )
-        // WAS DAS FUNDAMENT SELBST BEIGESTEUERT HAT (Toni 19.08.).
-        //
-        // WOZU DIE ZAHL GEBRAUCHT WIRD, und sie fehlt bisher auch im Feld:
-        // aus der publizierten Menge allein ist nicht zu sehen, WER sie
-        // wollte. Genau das ist aber die Frage bei einer grossen Mahlzeit -
-        // laeuft das Fundament und wird nur der ZUSAETZLICHE Evidenzbedarf
-        // von Guard/Tail gebremst (Mahlzeit bleibt hintenraus unterversorgt),
-        // oder wird das Fundament SELBST bei gesundem, steigendem Zucker
-        // regelmaessig blockiert (dann verfehlt die Bauform ihr Ziel)?
-        //
-        // Die beiden Faelle sehen in der Summe gleich aus und bedeuten das
-        // Gegenteil voneinander. Deshalb wird der Stand VOR und die Anhebung
-        // DURCH das Fundament getrennt gefuehrt.
-        //
-        // DOSIERNEUTRAL: reine Messung, sie geht nirgends in eine Entscheidung
-        // ein.
+        val liftedVorKonto = liftedPrime
+        // Der Stand VOR dem (entfallenen) Fundament bleibt als Messgroesse im Trail. DOSIERNEUTRAL.
         val preFoundationSmbU = liftedPrime.smbU
         val preFoundationBlock = liftedPrime.block
         val preFoundationBindingLimit = liftedPrime.bindingLimit
-        val foundationLiftU = kotlin.math.max(0.0, liftedVorKonto.smbU - liftedPrime.smbU)
         // Konsolidierung 2.0: die v1-Guard-Ausnahme des Erwartungsanteils (Boden `ekBodenU`, eigener Lift, eigene
         // Endpruefung) ist entfallen. Konten ohne fruehe Versorgung bucht der Runner ohne Budget - dort war der Boden
         // immer 0; nur ein aus einem aelteren Ledger geladenes Konto mit Budget verliert sie (weniger Insulin).
@@ -3871,10 +3568,11 @@ class FuseCycleRunner(
             smbRatio = cfg.smbRatio,
             smbRatioRise = cfg.smbRatioRise,
             maxSmbU = cfg.maxSmbU,
-            mealWindow = mealMarkerActive,
+            // Im Rueckfall ohne Konto wie ohne Marker.
+            mealWindow = dosierMealMarkerActive,
             maxIobU = state.maxIobU,
             iobThU = state.iobThU,
-            markerTs = markerTs,
+            markerTs = dosierMarkerTs,
             profileName = runCatching { profileFunction.getProfileName() }.getOrDefault("?"),
         )
         if (subStepCarryContext != null && subStepCarryContext != subStepContext) subStepCarryU = 0.0
@@ -4133,7 +3831,8 @@ class FuseCycleRunner(
             currentHazard = null,
             // Nur wenn ueberhaupt ein Fenster anliegt, ist die Aussage
             // ueberhaupt eine - sonst gibt es nichts zu entwaffnen.
-            reboundExemptByAuthority = direktdosisAutorisiert.takeIf { reboundRaw },
+            // Konsolidierung 2.0: die Direktdosis-Autorisierung ist entfallen - es gibt nichts mehr, das sie traegt.
+            reboundExemptByAuthority = false.takeIf { reboundRaw },
             stabilisation = upfrontStabilitaet.stabilisation.name,
             stabilityVerdict = upfrontStabilitaet.verdict.name,
             stabilityReason = upfrontStabilitaet.reason.name,
@@ -4187,11 +3886,12 @@ class FuseCycleRunner(
         // NUR die SMB-Menge OHNE Marker-Grant wird genullt; TBR und alle
         // markerfinanzierten Anteile bleiben. Kein Carry. Der Zero-Latch
         // bleibt als zweite Schutzlinie unveraendert.
+        // Im Rueckfall ohne Konto wie ohne Marker: ohne Marker und ohne Evidenzepisode.
         val kontextLage = ExpectationLedger.classify(
             ExpectationLedger.situationOf(
-                mealMarkerActive = mealMarkerActive,
-                evidenceEpisodeId = episodes.evidenceEpisodeId,
-                evidencePhase = evidenz?.phase,
+                mealMarkerActive = dosierMealMarkerActive,
+                evidenceEpisodeId = if (kontoRueckfall) 0L else episodes.evidenceEpisodeId,
+                evidencePhase = dosierEvidenz?.phase,
                 onsetActive = onset.active,
                 mealWindow = mealWindow,
                 reboundWindow = reboundWindow,
@@ -4300,9 +4000,10 @@ class FuseCycleRunner(
         // entfallen - der gekappte Anteil geht nicht mehr spaeter hinaus. Pin, Frist, Horizont und Verfall bleiben,
         // ebenso die Kontopause DESCENT_RISK_MARKER und das Liveness-Tor unter risk60.
         episodes.deferredPrime = DeferredPrime.expireIfDue(episodes.deferredPrime, computeTs)
+        // Im Rueckfall ohne Konto wie ohne Marker: der Pin bleibt, sein Schnitt nicht.
         val deferredPinnedActive = cfg.deferredPrimeEnabled &&
             episodes.deferredPrime.pinnedForMarkerTs > 0L &&
-            episodes.deferredPrime.pinnedForMarkerTs == markerTs
+            episodes.deferredPrime.pinnedForMarkerTs == dosierMarkerTs
         val risk60 = if (!deferredPinnedActive) null else LowThreatGate.measuredDescentRisk(
             signalHealthy = step.health == Health.READY,
             bgMgdl = signal.q1,
@@ -4400,12 +4101,7 @@ class FuseCycleRunner(
         var livenessStaticCorrectionNeedU: Double? = null
         var livenessCoverageState: String? = null
         var livenessPressureActive: Boolean? = null
-        // Rebound-Evidenz-Ausnahme (Toni 14.09.): zugelassen ist nicht
-        // aufgehoben - beides steht getrennt im Trail. null = nicht
-        // ausgewertet (Kanal aus).
-        var livenessReboundExceptionAllowed: Boolean? = null
-        var livenessReboundExceptionDenial: String? = null
-        var livenessReboundVetoLifted = false
+        // Konsolidierung 2.0: die Rebound-Evidenz-Ausnahme ist entfallen; ihre Trail-Felder stehen neutral (null).
         var livenessEvidenceInflowMgdl: Double? = null
         var livenessMeasuredStability: String? = null
         var livenessNoLiftReason: String? = null
@@ -4415,28 +4111,17 @@ class FuseCycleRunner(
         var livenessShadowNeedU: Double? = null
         var livenessShadowCandidateU: Double? = null
         var livenessShadowHeadroomU: Double? = null
-        // Warum die Ausnahme am Bestand scheitert (Diagnose): eigene Buchung
-        // oder Verfall/Rueckgang. null = sie scheitert nicht am Bestand.
-        var livenessEvidenceLossCause: String? = null
         // Gleichzeitige Gefahren, UNABHAENGIG von Tor- und Ablehnungsreihenfolge
         // erfasst (Tonis Review 14.09. spaet). null = Kanal aus.
+        // Konsolidierung 2.0: Verlustursache, buchungsbedingter Ausgang und
+        // Halte-Anhebung sind entfallen; ihre Trail-Felder stehen neutral.
         var livenessConcurrentHazards: List<String>? = null
-        var livenessBookingWithoutCapturedHazard = false
-        // Buchungsbedingter Ausgang ohne neue Sperre (Toni 15.09.). Denial null =
-        // nicht ausgewertet (kein laufender Lauf, den das Tor beendet).
-        var livenessBookingExitSkipReArm = false
-        var livenessBookingExitDenial: String? = null
-        // Halte-Anhebung (Toni 15.09.). null = nicht ausgewertet.
-        var livenessHoldUpliftMgdl: Double? = null
-        var livenessHoldDenial: String? = null
-        // Frueher adaptiver MEAL-Bedarf (Toni 18.09.): Bahnen des Kanals. null =
-        // der Kanal hat in diesem Zyklus keinen Kandidaten gerechnet.
+        // Bahnen des Kanals. null = der Kanal hat in diesem Zyklus keinen
+        // Kandidaten gerechnet. Konsolidierung 2.0: ohne H8 ist die wirksame
+        // die produktive Bahn.
         var livenessProductionReleaseMeanMgdl: Double? = null
         var livenessEffectiveReleaseMeanMgdl: Double? = null
         var livenessCandidateAfterHeadroomU: Double? = null
-        // true = die H8-Bahn lag ueber der produktiven und STELLTE die
-        // Freigabe-Mittelbahn des Kanals (nicht: "H8 hat abgegeben").
-        var livenessEarlySelected = false
 
         // Marker-Leistungsfrist + zentraler Dosierkontext: seit B2 VOR der
         // State-Konstruktion bestimmt (Kontextgrenze in der Grant-Bildung,
@@ -4481,8 +4166,12 @@ class FuseCycleRunner(
             val kanalDeckelName =
                 if (markerPowerActive) "mealExposureLimit"
                 else "correctionExposureLimit"
-            livenessProfil = dosingCtx.profile.name
-            livenessProfilGrund = dosingCtx.reason.name
+            // Der Dosierkontext: im Rueckfall ohne Konto CORRECTION wie ohne Marker. Konsolidierung 2.0: ein
+            // MEAL-Profil des Kanals gibt es praktisch nicht mehr - im Kontofenster ist der Kanal aus, im Rueckfall
+            // laeuft er wie ohne Marker; die MEAL-Teile (Schwelle, Zyklenzahl, Rebound-Evidenz-Ausnahme,
+            // Halte-Anhebung, H8) sind entfallen.
+            livenessProfil = dosierKontext.profile.name
+            livenessProfilGrund = dosierKontext.reason.name
             livenessSelectedRatioCap = profilRatioCap
             // Toni + Codex 22.08.: JEDE Aenderung an den drei
             // Kanal-Stellgroessen waehrend eines Laufs beendet ihn, und der
@@ -4492,24 +4181,16 @@ class FuseCycleRunner(
             // Risiko.
             // Beide KONFIGURIERTEN Schwellen, nie die wirksame: ein
             // regulaerer Tag/Nacht-Wechsel ist KEIN CONFIG_CHANGED (v20).
-            // CENTRAL-only: die Stellgroessen des Kanals sind die vier
-            // Profilwerte (Z-Praefix aus der Migrationszeit beibehalten -
-            // die Kennung bleibt zeichenstabil zum v43-Stand, kein
-            // unnoetiger CONFIG_CHANGED beim Update).
-            val cfgRatioMeal = "Z" + cfg.mealDemandRatioCap
+            // CENTRAL-only: die Stellgroessen des Kanals sind die
+            // Profilwerte (Z-Praefix aus der Migrationszeit beibehalten).
+            // Konsolidierung 2.0: die MEAL-Teile (Schwelle, Zyklenzahl, Cap,
+            // Grenze) stehen nicht mehr in der Kennung - der Kanal liest sie
+            // nicht mehr. Die Kennung ist prozesslokal; ein Flash loest kein
+            // CONFIG_CHANGED aus.
             val cfgRatioCorr = "Z" + cfg.correctionDemandRatioCap
-            val cfgIobMeal = "Z" + cfg.mealExposureLimitU
             val cfgIobCorr = "Z" + cfg.correctionExposureLimitU
             val cfgJetzt = cfg.livenessBgMinDayMgdl.toString() + "|" +
                 cfg.livenessBgMinNightMgdl + "|" +
-                // M1: auch die KONFIGURIERTE MEAL-Schwelle - eine Aenderung
-                // waehrend eines Laufs ist eine Bedienhandlung und beendet
-                // ihn (CONFIG_CHANGED, ohne Sperre). Der PROFILwechsel
-                // selbst wechselt nur die WIRKSAME Schwelle und ist wie
-                // Tag/Nacht KEIN CONFIG_CHANGED.
-                cfg.livenessBgMinMealMgdl + "|" +
-                cfg.mealArmCycles + "|" +
-                cfgRatioMeal + "|" + cfgIobMeal + "|" +
                 cfgRatioCorr + "|" + cfgIobCorr + "|" +
                 cfg.livenessReArmMin
             // ERST gemerkt, ANGEWENDET erst nach den harten Riegeln (Audit
@@ -4526,19 +4207,12 @@ class FuseCycleRunner(
                 MidnightUtils.secondsFromMidnight(signal.sourceTs), cfg.nightStartMin, cfg.nightEndMin,
             )
             val tagNachtMin = if (nachtFenster) cfg.livenessBgMinNightMgdl else cfg.livenessBgMinDayMgdl
-            // M1 (Bauauftrag 7.5.1): unter GUELTIGER MEAL-Vollmacht gilt
-            // die eigene MEAL-Druckschwelle (absolut, echter Default 110 -
-            // Startsatz). CORRECTION behaelt Tag/Nacht unveraendert.
+            // Konsolidierung 2.0: die MEAL-Druckschwelle (M1) ist entfallen - es gilt Tag/Nacht.
             // Gemessene Riegel (Tief, Fallen, Rebound, Descent) stehen
             // unveraendert VOR der Druckpruefung.
-            val mealMin = if (dosingCtx.mealAuthorized) cfg.livenessBgMinMealMgdl else null
-            val bgMinWirksam = mealMin ?: tagNachtMin
+            val bgMinWirksam = tagNachtMin
             livenessBgMinEffective = bgMinWirksam
-            livenessBgMinSource = when {
-                mealMin != null -> "MEAL"
-                nachtFenster -> "NIGHT"
-                else -> "DAY"
-            }
+            livenessBgMinSource = if (nachtFenster) "NIGHT" else "DAY"
             // ---- SCHATTEN-BEDARF VOR DEN TOREN (Toni 14.09., dosierneutral) --
             // DIESELBEN reinen Funktionen wie die Kandidatenrechnung unten, mit
             // denselben Zyklus-Eingaben - nur ohne Tore, ohne Zustand, ohne
@@ -4628,43 +4302,14 @@ class FuseCycleRunner(
             // Die GEMESSENEN Riegel - fuer Lauf UND Bewaffnung. Waehrend
             // eines Laufs beenden sie ihn MIT Sperre; davor verhindern sie
             // die Bewaffnung und setzen den Streak zurueck.
-            // ---- REBOUND-EVIDENZ-AUSNAHME (Toni 14.09., Variante A) ------
-            // Vertrag s. [MealReboundEvidenceException]. Sie ersetzt am
-            // Liveness-Tor NUR die Bedingung "versiegelter Kredit > 0" des
-            // bestehenden Sonderrechts; Normalpfad, Totbaender und
-            // Direktdosis-Kette lesen weiter `reboundOverrideErlaubt`.
-            // Die Messlage ist DERSELBE Stabilitaetsnachweis auf der rohen
-            // Reihe wie bei der Direktdosis (eine Wahrheit je Zyklus).
-            val reboundAusnahme = app.aaps.fuse.core.controller.MealReboundEvidenceException.decide(
-                app.aaps.fuse.core.controller.MealReboundEvidenceException.Input(
-                    enabled = cfg.livenessReboundEvidenceExceptionEnabled,
-                    computeTs = computeTs,
-                    markerTs = markerTs,
-                    mealAuthorized = dosingCtx.mealAuthorized,
-                    reboundOverridePinnedForTs = episodes.markerReboundOverridePinnedFor,
-                    reboundOverrideDeadlineTs = episodes.markerReboundOverrideDeadlineTs,
-                    lastLowTs = lastLowTs,
-                    evidencePhase = evidenz?.phase,
-                    measuredVerdict = upfrontStabilitaet.verdict,
-                ),
-            )
-            livenessReboundExceptionAllowed = reboundAusnahme.allowed
-            livenessReboundExceptionDenial = reboundAusnahme.denial?.name
-            livenessReboundVetoLifted = app.aaps.fuse.core.controller.MealReboundEvidenceException
-                .vetoLifted(reboundRaw, reboundOverrideErlaubt, reboundAusnahme)
-            livenessEvidenceInflowMgdl = evidenz?.inflowMgdl
+            // Konsolidierung 2.0: die Rebound-Evidenz-Ausnahme (Variante A) ist entfallen - sie setzte eine gueltige
+            // MEAL-Vollmacht voraus und wirkte nur noch im Mahlzeitkontext ohne Konto. Am Tor gilt das bestehende
+            // Sonderrecht (`reboundOverrideErlaubt`) allein.
+            livenessEvidenceInflowMgdl = dosierEvidenz?.inflowMgdl
             livenessMeasuredStability = upfrontStabilitaet.verdict.name
-            // DORMANT allein unterscheidet nicht (Tonis Review 14.09.): ein
-            // Bestand verschwindet auch durch Verfall oder Rueckgang. Eigene
-            // Buchung ist es nur, wenn er OHNE den Abzug dieses Zyklus ueber
-            // der Schwelle gestanden haette. Und auch dann kann eine Gefahr
-            // zugleich anliegen, die Tor- und Ablehnungsreihenfolge verdecken -
-            // deshalb getrennt erfasst. Rein beschreibend.
-            val verlustUrsache = app.aaps.fuse.core.controller.EvidenceLossDiagnosis.cause(
-                reboundAusnahme.denial, evidenz?.phase, evidenz?.deductionMgdl,
-                evidenz?.stockBeforeDeductionMgdl, evidenceConfig.stockFloorMgdl,
-            )
-            livenessEvidenceLossCause = verlustUrsache?.name
+            // Gleichzeitige Gefahren, unabhaengig von Tor- und Ablehnungsreihenfolge erfasst - rein beschreibend.
+            // Konsolidierung 2.0: die Verlustursache (eigene Buchung oder Verfall) setzte die entfallene
+            // Rebound-Evidenz-Ausnahme voraus und ist mit ihr entfallen.
             val gefahren = app.aaps.fuse.core.controller.EvidenceLossDiagnosis.hazards(
                 app.aaps.fuse.core.controller.EvidenceLossDiagnosis.Observation(
                     signalHealthy = step.health == Health.READY,
@@ -4676,13 +4321,11 @@ class FuseCycleRunner(
                     ukfRatePerMin = signal.ukfRatePerMin,
                     ukfFloorPerMin = LivenessChannel.UKF_FLOOR_MGDL_PER_MIN,
                     measuredVerdict = upfrontStabilitaet.verdict,
-                    declineMgdl = evidenz?.declineMgdl,
+                    declineMgdl = dosierEvidenz?.declineMgdl,
                     turningDown = turnClassification.phase == TurnResponseShadow.Phase.TURNING_DOWN,
                 ),
             )
             livenessConcurrentHazards = gefahren.map { it.name }
-            livenessBookingWithoutCapturedHazard =
-                app.aaps.fuse.core.controller.EvidenceLossDiagnosis.bookingWithoutCapturedHazard(verlustUrsache, gefahren)
             // DAS HARTE TOR, IN DREI TEILEN (Tonis Vertrag 15.09.): vor der
             // Rebound-Zeile, die Rebound-Zeile, danach. `hart` ist exakt die
             // bisherige `when`-Kette; getrennt, damit "gaebe es OHNE Rebound
@@ -4702,10 +4345,9 @@ class FuseCycleRunner(
             // geschlossen, der Kanal las das Rohsignal und blieb
             // EXCLUDED/REBOUND_ACTIVE - serielle Blockade bei hohem q1,
             // steilem Anstieg und freiem MEAL-Headroom.
-            // Seit 14.09. zusaetzlich die Rebound-Evidenz-Ausnahme (Default
-            // AUS -> exakt die bisherige Bedingung).
-            val reboundSperrt = app.aaps.fuse.core.controller.MealReboundEvidenceException
-                .gateBlocks(reboundRaw, reboundOverrideErlaubt, reboundAusnahme)
+            // Konsolidierung 2.0: die Rebound-Evidenz-Ausnahme ist entfallen -
+            // der Torausdruck ist wieder genau `reboundRaw && !override`.
+            val reboundSperrt = reboundRaw && !reboundOverrideErlaubt
             val hartNachRebound = when {
                 measuredLow -> "MEASURED_LOW"
                 descentRisk.active -> "DESCENT_RISK"
@@ -4725,9 +4367,9 @@ class FuseCycleRunner(
                 // noch Korrektur. `ledgerSealed` kennt erst das Plugin
                 // nach der Publikation - dessen Ausfall deckt der
                 // LEDGER_HOLD-Riegel.
-                evidenz == null ||
-                    evidenz.phase == EvidenceStock.Phase.SUSPENDED ||
-                    evidenz.phase == EvidenceStock.Phase.UNKNOWN -> "EXCLUDED_LAGE"
+                dosierEvidenz == null ||
+                    dosierEvidenz.phase == EvidenceStock.Phase.SUSPENDED ||
+                    dosierEvidenz.phase == EvidenceStock.Phase.UNKNOWN -> "EXCLUDED_LAGE"
                 !signal.ukfRatePerMin.isFinite() ||
                     signal.ukfRatePerMin < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN -> "FALLING"
                 else -> null
@@ -4740,62 +4382,12 @@ class FuseCycleRunner(
             val manualTs = treatmentView?.boluses
                 ?.filter { it.isValid && it.type == BS.Type.NORMAL }
                 ?.maxOfOrNull { it.timestamp }
-            // ---- BUCHUNGSBEDINGTER AUSGANG OHNE NEUE SPERRE (Toni 15.09.) ----
-            // Vertrag s. [BookingExhaustionExit]. Nur fuer einen LAUFENDEN Lauf,
-            // den das Rebound-Tor gerade beendet. Der Lauf endet trotzdem; es
-            // entsteht nur keine NEUE Sperre (bestehende bleiben, sie werden hier
-            // nicht angefasst). Der Zustand wird wie jeder andere persistiert.
-            if (hart != null && livenessActive) {
-                val buchungsAusgang = app.aaps.fuse.core.controller.BookingExhaustionExit.decide(
-                    app.aaps.fuse.core.controller.BookingExhaustionExit.Input(
-                        enabled = cfg.livenessBookingExitWithoutReArmEnabled,
-                        runActive = livenessActive,
-                        gateReason = hart,
-                        exceptionDenial = reboundAusnahme.denial,
-                        evidencePhase = evidenz?.phase,
-                        deductionMgdl = evidenz?.deductionMgdl,
-                        stockBeforeDeductionMgdl = evidenz?.stockBeforeDeductionMgdl,
-                        declineMgdl = evidenz?.declineMgdl,
-                        measuredVerdict = upfrontStabilitaet.verdict,
-                        ukfRatePerMin = signal.ukfRatePerMin,
-                        cause = verlustUrsache,
-                        hazards = gefahren,
-                        // IM HEUTIGEN CODE AEQUIVALENT ZU null, wenn diese Pruefung
-                        // erreicht wird (Mutation N16 ausgefuehrt und gruen; statisch
-                        // eingeordnet, Tonis Review 15.09.). Vollstaendige Fallunterscheidung:
-                        //  - hartVorRebound != null  -> hart ist nicht REBOUND_ACTIVE
-                        //    -> NOT_REBOUND_EXIT greift vorher.
-                        //  - MEASURED_LOW, DESCENT_RISK, DESCENT_RISK_MARKER,
-                        //    LATCH_ACTIVE, FALLING -> dieselben Bedingungen stehen als
-                        //    erfasste Gefahren in `gefahren` -> CAPTURED_HAZARD vorher.
-                        //  - Reversal-/Rearm-Riegel verlangen !markerPowerActive;
-                        //    markerPowerActive IST dosingCtx.mealAuthorized, und
-                        //    NO_EVIDENCE_STOCK setzt eine bestandene MEAL-Vollmacht
-                        //    voraus -> dort nie aktiv.
-                        //  - EXCLUDED_LAGE (evidenz null, SUSPENDED, UNKNOWN) -> der
-                        //    Vertrag verlangt DORMANT -> DIAGNOSIS_INCOMPLETE vorher.
-                        // Bleibt als Schutz fuer kuenftig hinzukommende Torgruende.
-                        otherBlockCause = hartVorRebound ?: hartNachRebound,
-                        manualIntervention = manualTs != null && (
-                            manualTs >= livenessStreakStartTs ||
-                                manualTs + cfg.livenessReArmMin * 60_000L > computeTs
-                            ),
-                        configChanged = cfgGeaendert,
-                    ),
-                )
-                livenessBookingExitSkipReArm = buchungsAusgang.skipReArm
-                livenessBookingExitDenial = buchungsAusgang.denial?.name
-            }
+            // Konsolidierung 2.0: der buchungsbedingte Ausgang ohne neue Sperre (BookingExhaustionExit) ist entfallen -
+            // er setzte die Rebound-Evidenz-Ausnahme mit erschoepftem Bestand voraus, also eine MEAL-Vollmacht ohne
+            // Konto, und konnte nach dem Rueckfall wie ohne Marker nie mehr greifen.
             if (hart != null) {
                 livenessProfil = "EXCLUDED"
                 livenessProfilGrund = hart
-                if (livenessActive && livenessBookingExitSkipReArm) {
-                    // Ende OHNE neue Sperre - Vertragspunkte 1-3.
-                    livenessExit = hart
-                    livenessActive = false
-                    livenessStreak = 0
-                    return@run nachAufschub
-                }
                 if (livenessActive) return@run sperren(hart)
                 livenessStreak = 0
                 livenessDenial = hart
@@ -4854,10 +4446,8 @@ class FuseCycleRunner(
             // bewaffnen. Faellt der Druck waehrend eines Laufs weg, endet er
             // OHNE Sperre: die Wiederbewaffnung braucht ohnehin drei neue
             // Druckzyklen, das ist die Hysterese.
-            // H8: im frueh autorisierten Fenster traegt der robuste W10-Antrieb
-            // den Druck; Schwelle (BG ueber der wirksamen Schwelle, r >= 1,0)
-            // und Bewaffnungsregel bleiben unveraendert.
-            val rSig = if (fruehMeal.eligible) band.mean else signal.rSigned
+            // Konsolidierung 2.0: H8 (W10-Antrieb im frueh autorisierten Fenster) ist entfallen.
+            val rSig = signal.rSigned
             val druck = signal.q1 > bgMinWirksam &&
                 rSig != null && rSig.isFinite() && rSig >= LivenessChannel.R_MIN_MGDL_PER_MIN
             if (livenessActive && !druck) {
@@ -4883,13 +4473,9 @@ class FuseCycleRunner(
                         livenessDenial = "REARM_BLOCKED"
                         return@run nachAufschub
                     }
-                    // M3 (Bauauftrag 7.5.5): unter GUELTIGER MEAL-
-                    // Vollmacht gilt die konfigurierbare Zyklenzahl
-                    // (Startsatz-Default 1 = Reaktion im ersten vollstaendig
-                    // passenden Zyklus); CORRECTION bleibt IMMER bei den
-                    // drei Druckzyklen. Der Druck selbst (Schwelle + r) und
-                    // alle Riegel davor sind unveraendert.
-                    livenessStreak < (if (dosingCtx.mealAuthorized) cfg.mealArmCycles else LivenessChannel.ARM_STREAK) -> {
+                    // Drei Druckzyklen bewaffnen. Konsolidierung 2.0: die
+                    // MEAL-Zyklenzahl (M3) ist entfallen.
+                    livenessStreak < LivenessChannel.ARM_STREAK -> {
                         livenessDenial = "NOT_CONFIRMED"
                         return@run nachAufschub
                     }
@@ -4929,14 +4515,10 @@ class FuseCycleRunner(
             val produktivesReleaseMean = prediction.points
                 .firstOrNull { it.offsetMin == cfg.releaseHorizonMin }?.meanBg
                 ?: return@run sperren("NO_RELEASE_MEAN")
-            // H8: `max(produktiv, target + W10 * H)` - nie Summe, keine zweite
-            // Buchung. Ohne aktiven Bedarf exakt die produktive Bahn.
-            val releaseMean = app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed
-                .effectiveReleaseMean(produktivesReleaseMean, fruehMeal)
+            // Konsolidierung 2.0: die H8-Bahn ist entfallen - die Freigabe-Mittelbahn ist die produktive.
+            val releaseMean = produktivesReleaseMean
             livenessProductionReleaseMeanMgdl = produktivesReleaseMean
             livenessEffectiveReleaseMeanMgdl = releaseMean
-            livenessEarlySelected = app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed
-                .selected(produktivesReleaseMean, fruehMeal)
             // ---- BASIS-RATIO AUS DER RAMPE (Toni 24.08., v27-Korrektur) --
             // Nicht state.effectiveSmbRatio: die faellt ausserhalb des
             // Normalpfad-Mahlzeitfensters auf die Korrektur-Ratio zurueck,
@@ -4963,26 +4545,9 @@ class FuseCycleRunner(
             // Basisberechnung angewendet - 1,0 heisst weiterhin nur "kein
             // zusaetzlicher Deckel", nie Ratio 1,0.
             val liveRatio = kotlin.math.min(baseRatio, profilRatioCap)
-            // ---- HALTE-ANHEBUNG (Experiment 15.09., Default AUS) ---------
-            // NUR der Bedarf dieses Kanals: `releaseMean` bleibt die Bahn des
-            // Reglers, der Schattenrechnung und des Exports.
-            val halt = app.aaps.fuse.core.controller.LivenessDriveHold.decide(
-                app.aaps.fuse.core.controller.LivenessDriveHold.Input(
-                    enabled = cfg.livenessDriveHoldEnabled,
-                    livenessActive = livenessActive,
-                    mealAuthorized = dosingCtx.mealAuthorized,
-                    driveMeanMgdlPerMin = built.input.drive.meanMgdlPerMin,
-                    fastDriveMgdlPerMin = fastDrive(signal),
-                    decay = built.input.decay,
-                    decayNegativeDrive = built.input.decayNegativeDrive,
-                    baselineTauMin = cfg.driveTauMin,
-                    releaseHorizonMin = cfg.releaseHorizonMin,
-                    measuredConfirmed = holdBeleg?.confirmed == true,
-                ),
-            )
-            livenessHoldUpliftMgdl = halt.upliftMgdl
-            livenessHoldDenial = halt.denial?.name
-            val bedarfsMean = releaseMean + halt.upliftMgdl
+            // Konsolidierung 2.0: die Halte-Anhebung (nur im MEAL-Profil) ist entfallen - der Bedarf rechnet mit der
+            // Freigabe-Mittelbahn.
+            val bedarfsMean = releaseMean
             val bedarfU = kotlin.math.max(0.0, (bedarfsMean - target) / isf)
             // ---- COVERAGE-VORBEREITUNG (Toni 23.08. nachts) --------------
             // HIER ist der Anschlusspunkt des spaeteren, AUSSCHLIESSLICH im
@@ -5142,7 +4707,8 @@ class FuseCycleRunner(
             run {
                 val g = app.aaps.fuse.core.controller.ExposureGate.pruefe(
                     requestedU = decisionVorEndpruefung.smbU,
-                    mealAuthorized = dosingCtx.mealAuthorized,
+                    // Im Rueckfall ohne Konto die Korrekturgrenze (wie ohne Marker).
+                    mealAuthorized = dosierKontext.mealAuthorized,
                     correctionLimitU = cfg.correctionExposureLimitU,
                     mealLimitU = cfg.mealExposureLimitU,
                     iobThU = state.iobThU,
@@ -5428,14 +4994,7 @@ class FuseCycleRunner(
         // 2.0 (Stufe 1, K1): ohne Prognose-Sammler traegt der Bericht nur noch
         // die Wende-Klassifikation.
         val turnResponseShadow = TurnResponseShadow.Report(turnClassification)
-        observeDescentDeferred(
-            episodes = episodes,
-            nowTs = computeTs,
-            maxPositivePerCycleU = state.maxSmbU,
-            finalDecision = decision,
-        )
-        // Die Clearance-Verschiebung stand hier und ist nach oben gewandert -
-        // vor den Entscheidungssnapshot des Fundaments (s. dort).
+        // Konsolidierung 2.0: die Fortschreibung des Abwaerts-Uebertrags (Phase A) ist mit dem Fundament entfallen.
 
         val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
             computeTs - maxOf(markerTs, episodes.primeWindowStartTs) < cfg.primeWindowMin * 60_000L &&
@@ -5616,8 +5175,11 @@ class FuseCycleRunner(
         val buchung = buche(
             episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive,
             mealPowerActive = dosingCtx.mealAuthorized, sourceTs = signal.sourceTs,
-            evidenceEpisodeId = evidenceEpisodeId, computeTs = computeTs,
+            evidenceEpisodeId = evidenceEpisodeId,
         )
+        // KEINE NEUBUCHUNG UNBEKANNTEN BUDGETS (Toni): ist im Rueckfall ohne Konto Insulin hinausgegangen, bucht diese
+        // Autorisierung kein Konto mehr - es kennte den Verbrauch nicht (s. `ekGilt`).
+        if (kontoRueckfall && actuatedU > 0.0) ekRueckfallGeliefertFuerAuth = ekVorschau.authorizationId
 
         // RESERVIERT, NICHT ENDGUELTIG (11.08.). Oben ist gegen das PUMPEN-Gate
         // gebucht - das PUBLIKATIONS-Gate laeuft erst im Plugin und kann die
@@ -5636,27 +5198,12 @@ class FuseCycleRunner(
                 onset = onset.active,
                 mealTs = if (buchung.mealGebucht) signal.sourceTs else 0L,
                 correctionTs = if (buchung.korrekturGebucht) signal.sourceTs else 0L,
-                foundationPhase = buchung.phase,
                 // MIT DER AUTORISIERUNG: ein spaeter bewiesenes Nicht-Senden
                 // aus einer widerrufenen Autorisierung darf die neue Huelle
                 // nicht entlasten.
                 authId = episodes.markerAuth?.id,
             ) else null
         val mealStats = mealStatsOf(episodes, markerTs, computeTs)
-        // NACH `buche`, nicht davor: dort wird der Uebergang gelatcht und
-        // Phase B belastet. Ein Snapshot davor zeigte den Stand VOR dem
-        // eigenen Zyklus - im Export waere das eine stille Verschiebung um
-        // eine Minute, und im Replay ein systematischer Versatz.
-        val foundationSnapshot = MealFoundation.snapshot(
-            episodes.foundation, computeTs, episodes.primeWindowStartTs,
-            deliveredFromBudgetU = episodes.deliveredPhaseAU + episodes.deliveredSinceHandoverU,
-            deliveredPhaseAU = episodes.deliveredPhaseAU,
-            deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
-            confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
-            descentDeferredPhaseAU = episodes.descentDeferredPhaseAU,
-            descentCarryEligibility = descentCarryEligibility,
-            bolusStepU =pumpe.bolusStepU,
-        )
 
         val computeDurationMs = dateUtil.now() - computeTs
         // Punkt-2-/Status-Fix (Review 29.08. spaet): die ANGEFORDERTE
@@ -5670,7 +5217,6 @@ class FuseCycleRunner(
             livenessLiftU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.LIVENESS
             decisionVorEndpruefung.grant != null && decisionVorEndpruefung.smbU > 0.0 ->
                 when (decisionVorEndpruefung.grant!!.source) {
-                    app.aaps.fuse.core.controller.AuthorizedLift.Source.FOUNDATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.FOUNDATION
                     app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.EXPECTATION
                 }
             subStep.releaseU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL_SUBSTEP
@@ -5712,7 +5258,9 @@ class FuseCycleRunner(
         val huellenStand = envelopeUseOf(episodes, cfg.primeEnvelopeU)
         return Outcome(
             configGeneration = app.aaps.fuse.plugin.export.FuseStateJson.hashOf(cfg).orEmpty(),
-            erwartungskonto = if (!cfg.expectationAccountEnabled) null else ErwartungskontoExport(
+            // E-034: bei eingeschaltetem Konto - und im Rueckfall ohne Konto (keine gueltige Kurve) auch ohne, damit
+            // der Ausfall im Trail steht (Toni: "den Ausfall deutlich melden").
+            erwartungskonto = if (!cfg.expectationAccountEnabled && !kontoRueckfall) null else ErwartungskontoExport(
                 gilt = ekGilt,
                 kontextAbweichung = ekKontextAbweichungThisCycle,
                 verworfenBeimLaden = episodes.expectationDropped,
@@ -5725,7 +5273,9 @@ class FuseCycleRunner(
                 grundNormalpfad = vetted.candidateReason,
                 grundEnde = decision.candidateReason,
                 stabilSeitTs = ekStabilSeit,
-                rueckfall = ekRueckfall(ekZyklus, dosingCtx.mealAuthorized, dosingCtx.authorizationId, episodes),
+                rueckfall = ekRueckfall(
+                    ekZyklus, dosingCtx.mealAuthorized, dosingCtx.authorizationId, episodes, cfg.expectationAccountEnabled,
+                ),
                 fruehBodenU = fruehBodenU,
                 fruehGemessenFreiU = if (fruehGilt) fruehGemessenFreiU else 0.0,
                 fruehHebung = fruehHebung.takeIf { fruehGilt },
@@ -5762,8 +5312,6 @@ class FuseCycleRunner(
             tbrChanged = tbrAktuation(combined.request, computeTs, profile, currentTbr, pumpe.basalStepUPerH),
             computeDurationMs = computeDurationMs,
             mealStats = mealStats,
-            mealFoundation = foundationSnapshot,
-            manualBolusAfterMarkerU = manualBolusAfterMarkerU,
             evidenceMayOverrideRebound = reboundOverrideErlaubt,
             reboundOverrideDeadlineTs = reboundOverrideDeadlineTs,
             reboundOverrideDenial = reboundOverrideDenial?.name,
@@ -5862,57 +5410,39 @@ class FuseCycleRunner(
             livenessBinding = livenessBinding,
             livenessDenial = livenessDenial,
             livenessExit = livenessExit,
-            livenessReboundExceptionAllowed = livenessReboundExceptionAllowed,
-            livenessReboundExceptionDenial = livenessReboundExceptionDenial,
-            livenessReboundVetoLifted = livenessReboundVetoLifted,
+            // Konsolidierung 2.0: die Rebound-Evidenz-Ausnahme ist entfallen - ihre drei Felder stehen neutral.
             livenessEvidenceInflowMgdl = livenessEvidenceInflowMgdl,
             livenessMeasuredStability = livenessMeasuredStability,
             livenessNoLiftReason = livenessNoLiftReason,
             livenessShadowNeedU = livenessShadowNeedU,
             livenessShadowCandidateU = livenessShadowCandidateU,
             livenessShadowHeadroomU = livenessShadowHeadroomU,
-            livenessHold = LivenessHoldDiagnosis(
-                upliftMgdl = livenessHoldUpliftMgdl,
-                streak = livenessHoldEvidence.confirmations,
-                denial = livenessHoldDenial,
-                evidenceDenial = holdBeleg?.denial?.name,
-                evidenceBlockMedianMgdl = livenessHoldEvidence.blocks.lastOrNull()?.medianMgdl,
-            ),
+            // Konsolidierung 2.0: die Halte-Anhebung ist entfallen - ihr Block steht neutral (Vorgaben).
+            // H8 ist entfallen: Eignung, Auswahl, Grund und H8-Bahn stehen neutral; Horizonte, Antriebe und die
+            // Bahnen des Kanals bleiben.
             earlyAdaptiveMeal = EarlyAdaptiveMealDiagnosis(
                 configuredHorizonMin = cfg.earlyAdaptiveMealHorizonConfiguredMin,
                 horizonMin = cfg.earlyAdaptiveMealHorizonMin,
-                eligible = fruehMeal.eligible,
-                selected = livenessEarlySelected,
-                denial = fruehMeal.denial?.name,
-                markerAgeMin = fruehMeal.markerAgeMin,
                 w10DriveMgdlPerMin = band.mean,
                 ukfRatePerMin = signal.ukfRatePerMin,
-                earlyReleaseMeanMgdl = fruehMeal.earlyReleaseMeanMgdl,
                 productionReleaseMeanMgdl = livenessProductionReleaseMeanMgdl,
                 effectiveReleaseMeanMgdl = livenessEffectiveReleaseMeanMgdl,
                 candidateAfterHeadroomU = livenessCandidateAfterHeadroomU,
-                // Quelle nur, wenn die H8-Bahn die Mittelbahn gestellt hat.
-                source = if (livenessEarlySelected)
-                    app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.sourceId(cfg.earlyAdaptiveMealHorizonMin)
-                else null,
                 ratioDriveMgdlPerMin = ratioDrive,
                 riseRampLowR = cfg.riseRampLowR,
                 riseRampHighR = cfg.riseRampHighR,
             ),
+            // Konsolidierung 2.0: Verlustursache und buchungsbedingter Ausgang sind entfallen (neutral).
             livenessBookingDiagnosis = LivenessBookingDiagnosis(
-                lossCause = livenessEvidenceLossCause,
                 concurrentHazards = livenessConcurrentHazards,
-                bookingWithoutCapturedHazard = livenessBookingWithoutCapturedHazard,
-                exitSkipReArm = livenessBookingExitSkipReArm,
-                exitDenial = livenessBookingExitDenial,
             ),
             livenessModelReject = livenessModelReject,
             livenessReArmUntilTs = episodes.livenessReArmUntilTs,
             preFoundationSmbU = preFoundationSmbU,
             preFoundationBlock = preFoundationBlock,
             preFoundationBindingLimit = preFoundationBindingLimit,
-            foundationLiftU = foundationLiftU,
-            // Konsolidierung 2.0: phaseAUpfront* bleiben auf ihren neutralen Vorgaben (Sofortanteil entfallen).
+            // Konsolidierung 2.0: phaseAUpfront* und foundationLiftU bleiben auf ihren neutralen Vorgaben
+            // (Sofortanteil und Fundament entfallen).
             lowThreat = lowThreatResult,
             evidenceEpisodeId = evidenceEpisodeId,
             evidenceEpisodeDenial = episodeGate.denial?.name,
@@ -6112,15 +5642,11 @@ class FuseCycleRunner(
                 expectationReleaseThresholdU = FuseDoubleKey.ExpectationReleaseThresholdU.defaultValue,
                 expectationHorizonMin = FuseIntKey.ExpectationHorizonMin.defaultValue,
                 expectationCurveText = FuseStringKey.ExpectationCurve.defaultValue,
-                expectationBenchNoDirectDose = false,
-                expectationBenchReboundToday = false,
                 earlySupplyEnabled = false,
                 earlySupplySettings = null,
                 earlySupplySwitches = app.aaps.fuse.core.controller.EarlySupply.Switches.NONE,
             ) else c.copy(
                 expectationAccountEnabled = true,
-                expectationBenchNoDirectDose = false,
-                expectationBenchReboundToday = false,
             )
 
         companion object {
@@ -6182,9 +5708,11 @@ class FuseCycleRunner(
         val stabilSeitTs: Long?,
         /**
          * Codex 11.10. (Punkt 8): WARUM im Mahlzeitkontext kein Konto gilt -
-         * DROPPED_ON_LOAD, ACCOUNT_LOST, CONTEXT_MISMATCH, NO_ACCOUNT - oder
-         * null. Solche Zyklen laufen auf dem heutigen Pfad und gehoeren nicht
-         * still in eine EK-Bewertung.
+         * NO_CURVE (keine gueltige Kurve, Konto aus), DROPPED_ON_LOAD,
+         * ACCOUNT_LOST, CONTEXT_MISMATCH, NO_ACCOUNT - oder null. Konsolidierung
+         * 2.0 (Toni): solche Zyklen dosieren wie ohne Marker (Rueckfall); der
+         * Grund ist die Meldung des Ausfalls und gehoert nicht still in eine
+         * EK-Bewertung.
          */
         val rueckfall: String? = null,
         /** E-034 v2: Boden der fruehen Versorgung [U]; 0 = keine Portion in diesem Zyklus. */
@@ -6329,27 +5857,28 @@ class FuseCycleRunner(
         var armiert = false
         if (konto == null || konto.authId != dosingCtx.authorizationId) {
             // KONSOLIDIERUNG: jeder Druck bucht ein v2-Konto. "Nur Erwartung" bucht das Gesamtbudget nach Kurve;
-            // "Nur Marker" (Toni: fuer Snacks oder unsichere Mahlzeiten) und eine ausgeschaltete fruehe Versorgung
-            // buchen Budget 0 - dann fliesst nur der gemessene Anteil. Ungueltige Einstellungen schalten die fruehe
-            // Versorgung ab - dann gilt das Konto ohne Budget (nur Ersetzung): weniger Insulin, nie mehr.
-            // Konsolidierung 2.0: ist die fruehe Versorgung per Hauptschalter aus, gibt es keine Einstellungen - dann
-            // entsteht hier wie bei ungueltigen Werten das Konto ohne fruehe Versorgung (unten), ebenfalls ohne Budget.
-            val frueh = cfg.earlySupplySettings?.let { s ->
-                if (nurErwartung && cfg.earlySupplyEnabled) s else s.copy(budgetMaxU = 0.0)
-            }
+            // "Nur Marker" (Toni: fuer Snacks oder unsichere Mahlzeiten) bucht Budget 0 - dann fliesst nur der
+            // gemessene Anteil. Konsolidierung 2.0: das Konto v1 ist entfallen - ist die fruehe Versorgung aus oder
+            // ungueltig eingestellt, bucht der Druck ein v2-Konto mit Budget 0 und neutralen Pins (keine Portion,
+            // kein Schalter); bei ungueltigen Kontoparametern ein Konto ohne Erwartung. Weniger Insulin, nie mehr.
+            val frueh = ekFruehEinstellungen(cfg, nurErwartung)
+            val schalter =
+                if (cfg.earlySupplySettings != null) cfg.earlySupplySwitches
+                else app.aaps.fuse.core.controller.EarlySupply.Switches.NONE
             val params = cfg.expectationParams
-            konto = if (frueh != null && params != null) {
-                // Das Budget braucht das Insulinmodell. Fehlt es, wird jetzt
+            konto = if (params != null) {
+                // Ein Budget braucht das Insulinmodell. Fehlt es, wird jetzt
                 // nicht gebucht (kein stiller Wechsel der Regel fuer die ganze
-                // Mahlzeit) - dieser Zyklus laeuft ohne Konto und ohne
-                // Direktdosis, gebucht wird im naechsten Zyklus mit Modell.
-                val wirkung = fruehEingaben?.unitAction ?: return null
+                // Mahlzeit) - gebucht wird im naechsten Zyklus mit Modell (s.
+                // `ekGilt`). Ein Konto ohne Budget braucht kein Modell.
+                val wirkung = fruehEingaben?.unitAction
+                    ?: if (ekBuchungBrauchtModell(cfg, nurErwartung)) return null else KEINE_WIRKUNG
                 ExpectationAccount.armEarly(
                     authId = dosingCtx.authorizationId,
                     windowEndTs = dosingCtx.authorizationExpiresAt,
                     params = params,
                     settings = frueh,
-                    switches = cfg.earlySupplySwitches,
+                    switches = schalter,
                     startStable = stabil && !tiefImReboundFenster,
                     nowTs = computeTs,
                     bgMgdl = bgMgdl,
@@ -6359,20 +5888,14 @@ class FuseCycleRunner(
                     // Rebound-Fenster. Das Delta ueber der Grenze aendert das Budget nicht (nur den Zeitpunkt).
                     afterLow = !(bgMgdl > grenzeBg) || tiefImReboundFenster,
                 )
-            } else {
-                // Konsolidierung 2.0: der v1-Vorgriff aus der Huelle (`MealFoundation.primeBudgetU`) ist entfallen -
-                // die Huelle war seit der Konsolidierung immer 0; das Konto ohne fruehe Versorgung bucht kein Budget.
-                ExpectationAccount.arm(
-                    authId = dosingCtx.authorizationId,
-                    windowEndTs = dosingCtx.authorizationExpiresAt,
-                    envelopeU = 0.0,
-                    params = params,
-                    startStable = stabil,
-                    nowTs = computeTs,
-                    bgMgdl = bgMgdl,
-                    isfMgdlPerU = isfMgdlPerU,
-                )
-            }
+            } else ExpectationAccount.armWithoutExpectation(
+                authId = dosingCtx.authorizationId,
+                windowEndTs = dosingCtx.authorizationExpiresAt,
+                startStable = stabil,
+                nowTs = computeTs,
+                bgMgdl = bgMgdl,
+                isfMgdlPerU = isfMgdlPerU,
+            )
             armiert = true
             ekArmiertFuerAuth = dosingCtx.authorizationId
         }
@@ -6451,6 +5974,22 @@ class FuseCycleRunner(
             fruehSchalter = gefuehrt.early?.switches,
         )
     }
+
+    /**
+     * E-034 v2: die Einstellungen, mit denen ein Druck jetzt sein Konto bucht - "Nur Erwartung" mit eingeschalteter
+     * fruehen Versorgung die eingestellten, "Nur Marker" ohne Budget, ohne (oder mit ungueltiger) frueher Versorgung
+     * die neutralen (Konsolidierung 2.0: statt des Kontos v1).
+     */
+    private fun ekFruehEinstellungen(cfg: Config, nurErwartung: Boolean): app.aaps.fuse.core.controller.EarlySupply.Settings =
+        cfg.earlySupplySettings?.let { s -> if (nurErwartung && cfg.earlySupplyEnabled) s else s.copy(budgetMaxU = 0.0) }
+            ?: app.aaps.fuse.core.controller.EarlySupply.Settings.NEUTRAL
+
+    /** E-034 v2: braucht die Buchung jetzt das Insulinmodell? Nur ein moegliches Budget > 0 braucht es. */
+    private fun ekBuchungBrauchtModell(cfg: Config, nurErwartung: Boolean): Boolean =
+        cfg.expectationParams != null && ekFruehEinstellungen(cfg, nurErwartung).budgetMaxU > 0.0
+
+    /** Die Einheitswirkung eines Kontos ohne Budget: es braucht keine (Budget 0 bleibt 0). */
+    private val KEINE_WIRKUNG: (Double) -> Double = { 0.0 }
 
     /**
      * E-034: das spaete Abwaertsrisiko des Marker-Aufschubs schon VOR dem
@@ -6537,8 +6076,10 @@ class FuseCycleRunner(
         mealAuthorized: Boolean,
         authorizationId: Long,
         episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
+        kontoAn: Boolean,
     ): String? = when {
         ekZyklus != null || !mealAuthorized || authorizationId <= 0L -> null
+        !kontoAn -> "NO_CURVE"
         episodes.expectationDroppedAuthId == authorizationId -> "DROPPED_ON_LOAD"
         ekKontextAbweichungThisCycle -> "CONTEXT_MISMATCH"
         ekArmiertFuerAuth == authorizationId -> "ACCOUNT_LOST"
@@ -6591,43 +6132,12 @@ class FuseCycleRunner(
         sourceTs: Long,
         /** Identitaet der laufenden Mahlzeitenepisode; 0 = keine. */
         evidenceEpisodeId: Long,
-        /** Der Zyklus - entscheidet ueber die Fundament-Phase. */
-        computeTs: Long,
     ): Buchung {
-        // Bleibt: der Plan liest `primeSpentU` (ENVELOPE_SPENT vor CLEARANCE), ebenso die Huellenanzeige.
+        // Bleibt fuer die Reservierung und den Rueckweg auf 1.x (Konsolidierung 2.0: der Prime-Plan ist entfallen).
         if (primeWindowOpen) episodes.primeSpentU += actuatedU
 
-        // ---- Mahlzeitenfundament (Punkt 7) -------------------------------
-        //
-        // ZUERST LATCHEN, DANN EINORDNEN. Ist der Uebergabezeitpunkt erreicht,
-        // wird er JETZT festgeschrieben - eine spaetere CLEARANCE darf ihn
-        // nicht mehr verschieben, sonst wanderte er hinter bereits als Phase B
-        // gebuchte Mengen zurueck.
-        episodes.foundation = episodes.foundation.latchIfDue(computeTs, episodes.primeWindowStartTs)
-        val phase = MealFoundation.phaseOf(
-            episodes.foundation, computeTs, episodes.primeWindowStartTs,
-        )
-        // MINDESTVERSORGUNG: hier zaehlt ALLES, was seit der Uebergabe floss -
-        // auch eine gewoehnliche Korrektur. Phase B legt nichts obendrauf, sie
-        // fuellt nur auf. Wuerde hier nur das Fundament selbst gezaehlt,
-        // entstuende genau der additive Bolus, den dieser Baustein vermeidet.
-        if (phase == MealFoundation.Phase.PHASE_B)
-            episodes.deliveredSinceHandoverU += actuatedU
-        // UND DIE PHASE-A-SEITE, symmetrisch (Codex 19.08.). Auch hier zaehlt
-        // ALLES, was in dieser Phase floss - dieselbe Mindestversorgungs-
-        // Semantik. Zusammen ergeben die beiden, was aus DIESEM Budget
-        // geflossen ist; `evidenceCommittedU` kann das nicht sagen, weil er
-        // eine andere Lebensdauer hat (s. [EpisodeBudgets.deliveredPhaseAU]).
-        if (phase == MealFoundation.Phase.PHASE_A)
-            episodes.deliveredPhaseAU += actuatedU
-
-        // ---- Punkt 6: Nachfenster-Mengen unter einem gepinnten Aufschub ---
-        // Konsolidierung 2.0: Abbuchung der Freigabe und Klemmung an die Huelle sind entfallen. Der Zaehler wird
-        // weiter gebucht, damit der Zustand fuer den Rueckweg auf 1.x vollstaendig bleibt.
-        if (episodes.deferredPrime.pinnedForMarkerTs > 0L && actuatedU > 0.0) {
-            if (phase != MealFoundation.Phase.PHASE_A && phase != MealFoundation.Phase.PHASE_B)
-                episodes.postFoundationDeliveredU += actuatedU
-        }
+        // Konsolidierung 2.0: die Phasen-Zaehler des Mahlzeitenfundaments (Phase A/B, Nachfenster unter dem Aufschub)
+        // sind mit ihm entfallen; der Ledger schreibt sie fuer den Rueckweg auf 1.x neutral.
 
         // DER EVIDENZ-ZAEHLER: kumulativ ueber die GANZE Episode, alle
         // Kanaele, und bei Episodenwechsel zurueck auf 0. Er ist die
@@ -6704,55 +6214,20 @@ class FuseCycleRunner(
                 ?.let { sourceTs - it.ts > CORRECTION_SERIES_KEEP_MS } == true
         ) episodes.correctionDeliveries.removeFirst()
         while (episodes.correctionDeliveries.size > 400) episodes.correctionDeliveries.removeFirst()
-        return Buchung(mealGebucht, korrekturGebucht, phase)
+        return Buchung(mealGebucht, korrekturGebucht)
     }
 
     /**
      * Was die Buchung dieses Zyklus festgehalten hat.
      *
-     * Die Phase geht MIT in die Reservierung, statt beim Aufloesen neu
-     * abgeleitet zu werden: der Uebergabeanker kann sich dazwischen bewegt
-     * haben (eine CLEARANCE verschiebt ihn, bis er gelatcht ist), und eine
-     * Neuableitung drehte dann womoeglich einen anderen Zaehler zurueck als
-     * den belasteten.
-     *
-     * Konsolidierung 2.0: das Klemmereignis des Aufschubs (Klemmung, clamp*) ist entfallen.
+     * Konsolidierung 2.0: das Klemmereignis des Aufschubs (Klemmung, clamp*) und die Fundament-Phase der Buchung
+     * sind entfallen.
      */
     private data class Buchung(
         val mealGebucht: Boolean,
         /** Variante 2: in [EpisodeBudgets.correctionDeliveries] gebucht. */
         val korrekturGebucht: Boolean = false,
-        val phase: MealFoundation.Phase,
     )
-
-    /**
-     * Fortschreibung des Sicherheitsaufschubs an genau EINER Stelle fuer
-     * Haupt- und Fallbackpfad. Entscheidend ist der finale Block nach allen
-     * Lifts und Floors; ein frueher Zwischenstand koennte spaeter wieder
-     * angehoben werden und wuerde dann eine nicht existente Luecke buchen.
-     */
-    private fun observeDescentDeferred(
-        episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
-        nowTs: Long,
-        maxPositivePerCycleU: Double,
-        finalDecision: FuseController.Decision,
-    ) {
-        val auth = episodes.foundation
-        if (!auth.valid) return
-        val phase = MealFoundation.phaseOf(auth, nowTs, episodes.primeWindowStartTs)
-        episodes.descentDeferredPhaseAU = DescentDeferredCarry.observe(
-            currentU = episodes.descentDeferredPhaseAU,
-            phase = phase,
-            blockedByMeasuredSafety = DescentDeferredCarry.isDeferrableBlock(finalDecision.block),
-            phaseABudgetU = auth.phaseABudgetU,
-            deliveredPhaseAU = episodes.deliveredPhaseAU,
-            nowTs = nowTs,
-            handoverTs = auth.effectiveHandoverTs(episodes.primeWindowStartTs),
-            // Optimistische Restkapazitaet: damit wird nur gespeichert, was
-            // selbst unter maximaler Kadenz nicht mehr vor Phase B passt.
-            maxPositivePerCycleU = maxPositivePerCycleU,
-        )
-    }
 
     /**
      * DER PREDICTORFREIE MARKERPFAD.
@@ -6761,8 +6236,8 @@ class FuseCycleRunner(
      * Reichweiten-Gruenden, mit lebender Autorisierung, gemessenem Tief und
      * READY-Signal. Was er tut, ist bewusst wenig:
      *
-     *   Menge (Phase B: maxSmb, iobTH, maxIOB,
-     *          Transportmenge, Rasterung)      ->  MealFoundation.lift
+     *   Menge                                  ->  keine (Konsolidierung 2.0: Phase B des
+     *                                              Mahlzeitenfundaments ist entfallen)
      *   Ledger-Hold                            ->  LedgerHoldGate
      *   TBR und SMB-Sperren                    ->  FuseTbrTranslator
      *   Pumpen-Gate                            ->  gate.allowed
@@ -6815,8 +6290,6 @@ class FuseCycleRunner(
         /** Dasselbe Hysterese-Ergebnis wie im Hauptpfad; nie hier neu
          *  berechnen, sonst koennen Haupt- und Fallbackpfad anders oeffnen. */
         descentLatch: DescentRecoveryLatch.Result,
-        descentCarryEligibility: DescentDeferredCarry.Eligibility,
-        manualBolusAfterMarkerU: Double?,
         treatmentView: TreatmentView?,
         /** Identitaet der Mahlzeitenepisode fuer den Evidenz-Zaehler; 0 = keine. */
         evidenceEpisodeId: Long,
@@ -6933,51 +6406,15 @@ class FuseCycleRunner(
                 horizonMin = cfg.markerPrimeDescentHorizonMin.toInt(),
                 endMin = cfg.deferredPrimeEndMin,
             )
-            episodes.postFoundationDeliveredU = 0.0
         }
-        // Konsolidierung: auch im predictorfreien Pfad keine Direktdosis (kein linearer Prime-Anteil) - vor dem
-        // Fundament steht die Basis.
+        // Konsolidierung: auch im predictorfreien Pfad keine Direktdosis (kein linearer Prime-Anteil). Konsolidierung
+        // 2.0: auch Phase B des Mahlzeitenfundaments ist entfallen - es bleibt die Basis.
         val liftedPrime = basis
-
-        // ---- PHASE B, auch hier - DIESELBE Logik (Toni 19.08.) ------------
-        //
-        // Der Fallback fuehrt keine eigene Rechnung: derselbe Aufruf, derselbe
-        // Mengenkern. Genau so laufen zwei Pfade sonst auseinander, und bei
-        // der Buchfuehrung ist das hier schon einmal passiert.
-        //
-        // Die CLEARANCE-Verschiebung gibt es auf diesem Pfad nicht. Der
-        // Uebergabeanker sieht damit den unveraenderten Fensterstart, und das
-        // ist richtig: was nicht verschoben wurde, darf auch nicht als
-        // verschoben gelten.
-        //
-        // Kein Schwanz-Headroom: ohne Bahn gibt es keinen.
-        // E-034: im Mahlzeitkontext des Kontos ist Phase B aus.
-        val lifted = if (ekZyklus != null) liftedPrime else MealFoundation.lift(
-            base = liftedPrime,
-            snapshot = MealFoundation.snapshot(
-                episodes.foundation, computeTs, episodes.primeWindowStartTs,
-                deliveredFromBudgetU = episodes.deliveredPhaseAU + episodes.deliveredSinceHandoverU,
-                deliveredPhaseAU = episodes.deliveredPhaseAU,
-                deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
-                confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
-                descentDeferredPhaseAU = episodes.descentDeferredPhaseAU,
-                descentCarryEligibility = descentCarryEligibility,
-                bolusStepU = pumpe.bolusStepU,
-            ),
-            state = state,
-            tailHeadroomU = null,
-            transportCommitmentU = transportModelledU,
-            contextExposureLimitU = fallbackKontextLimitU,
-        )
-        // UND DIE MESSUNG AUCH HIER (Codex 19.08.). Der Fallback ruft
-        // denselben Lift, hat die beiden Groessen aber nicht gesetzt - der
-        // Trail meldete auf diesem Pfad also 0/0, obwohl das Fundament sehr
-        // wohl angehoben haben kann. Genau die Sorte stiller Luecke, die eine
-        // spaetere Auswertung falsch macht, ohne dass etwas rot wird.
+        val lifted = liftedPrime
+        // Die Messung "vor dem Fundament" auch hier - DIESELBEN Felder wie im Hauptpfad.
         val preFoundationSmbU = liftedPrime.smbU
         val preFoundationBlock = liftedPrime.block
         val preFoundationBindingLimit = liftedPrime.bindingLimit
-        val foundationLiftU = kotlin.math.max(0.0, lifted.smbU - liftedPrime.smbU)
         val held = LedgerHoldGate.apply(lifted, ledgerView.hold)
         // DERSELBE ENDRIEGEL AUCH HIER. Der Fallback ist ein zweiter Weg
         // zur Menge und war beim Mahlzeitenfundament schon einmal die
@@ -7018,12 +6455,6 @@ class FuseCycleRunner(
                     else -> heldVorEndpruefung.copy(smbU = g.cappedU, bindingLimit = g.binding)
                 }
             }
-        observeDescentDeferred(
-            episodes = episodes,
-            nowTs = computeTs,
-            maxPositivePerCycleU = state.maxSmbU,
-            finalDecision = heldMitRiegel,
-        )
 
         val runningTbr = processedTbrEbData.getTempBasalIncludingConvertedExtended(computeTs)
         val combined = FuseTbrTranslator.combine(
@@ -7058,7 +6489,7 @@ class FuseCycleRunner(
         val buchung = buche(
             episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive,
             mealPowerActive = fallbackCtx.mealAuthorized, sourceTs = signal.sourceTs,
-            evidenceEpisodeId = evidenceEpisodeId, computeTs = computeTs,
+            evidenceEpisodeId = evidenceEpisodeId,
         )
         episodes.pendingReservation =
             if (actuatedU > 0.0) app.aaps.fuse.plugin.ledger.EpisodeBudgets.Reservation(
@@ -7068,7 +6499,6 @@ class FuseCycleRunner(
                 onset = onset.active,
                 mealTs = if (buchung.mealGebucht) signal.sourceTs else 0L,
                 correctionTs = if (buchung.korrekturGebucht) signal.sourceTs else 0L,
-                foundationPhase = buchung.phase,
                 // MIT DER AUTORISIERUNG: ein spaeter bewiesenes Nicht-Senden
                 // aus einer widerrufenen Autorisierung darf die neue Huelle
                 // nicht entlasten.
@@ -7078,7 +6508,6 @@ class FuseCycleRunner(
         val fallbackRequestedSourceWert = when {
             heldVorEndpruefung.grant != null && heldVorEndpruefung.smbU > 0.0 ->
                 when (heldVorEndpruefung.grant!!.source) {
-                    app.aaps.fuse.core.controller.AuthorizedLift.Source.FOUNDATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.FOUNDATION
                     app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.EXPECTATION
                 }
             heldVorEndpruefung.smbU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL
@@ -7116,7 +6545,9 @@ class FuseCycleRunner(
                 grundNormalpfad = null,
                 grundEnde = combined.decision.candidateReason,
                 stabilSeitTs = ekStabilSeit,
-                rueckfall = ekRueckfall(ekZyklus, fallbackCtx.mealAuthorized, fallbackCtx.authorizationId, episodes),
+                rueckfall = ekRueckfall(
+                    ekZyklus, fallbackCtx.mealAuthorized, fallbackCtx.authorizationId, episodes, cfg.expectationAccountEnabled,
+                ),
             ),
             // Fixvertrag 30.08.: derselbe typisierte IOB-Stand wie im
             // Hauptpfad - der Fallback bekommt ihn als Parameter.
@@ -7241,25 +6672,11 @@ class FuseCycleRunner(
             maxIobU = maxIobU,
             computeDurationMs = dateUtil.now() - computeTs,
             mealStats = mealStatsOf(episodes, markerTs, computeTs),
-            // DIESELBE Sicht wie im Hauptpfad - der Fallback fuehrt keine
-            // eigene Rechnung, sonst laufen die beiden Pfade genau so
-            // auseinander wie schon einmal bei der Buchfuehrung.
-            mealFoundation = MealFoundation.snapshot(
-                episodes.foundation, computeTs, episodes.primeWindowStartTs,
-                deliveredFromBudgetU = episodes.deliveredPhaseAU + episodes.deliveredSinceHandoverU,
-                deliveredPhaseAU = episodes.deliveredPhaseAU,
-                deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
-                confirmedNotSentPhaseAU = episodes.confirmedNotSentPhaseAU,
-                descentDeferredPhaseAU = episodes.descentDeferredPhaseAU,
-                descentCarryEligibility = descentCarryEligibility,
-                bolusStepU = pumpe.bolusStepU,
-            ),
-            manualBolusAfterMarkerU = manualBolusAfterMarkerU,
             preFoundationSmbU = preFoundationSmbU,
             preFoundationBlock = preFoundationBlock,
             preFoundationBindingLimit = preFoundationBindingLimit,
-            foundationLiftU = foundationLiftU,
-            // Konsolidierung 2.0: phaseAUpfront* bleiben auf ihren neutralen Vorgaben (Sofortanteil entfallen).
+            // Konsolidierung 2.0: phaseAUpfront* und foundationLiftU bleiben auf ihren neutralen Vorgaben
+            // (Sofortanteil und Fundament entfallen).
             insulinModel = insulinModel,
             abortReason = null,
             rSegmentBreakMs = gapPolicy.rSegmentBreakMs,
@@ -7273,24 +6690,8 @@ class FuseCycleRunner(
         )
     }
 
-    /**
-     * Die bestaetigte Nutzerentscheidung vom 21.08.: ein manueller
-     * NORMAL-Bolus NACH dem Marker sperrt ausschliesslich den neu eingefuehrten
-     * Sicherheitsuebertrag. Er wird nicht als Fundament-Lieferung umgedeutet
-     * und veraendert das regulaere Phase-B-Teilbudget nicht.
-     */
-    internal fun manualBolusAfterMarkerU(
-        auth: MealFoundation.Authorization,
-        treatmentView: TreatmentView?,
-    ): Double? {
-        if (!auth.valid) return 0.0
-        val view = treatmentView ?: return null
-        val manual = view.boluses.filter {
-            it.isValid && it.type == BS.Type.NORMAL && it.timestamp > auth.armedTs
-        }
-        if (manual.any { !it.amount.isFinite() || it.amount < 0.0 }) return null
-        return manual.sumOf { it.amount }.takeIf { it.isFinite() && it >= 0.0 }
-    }
+    // Konsolidierung 2.0: die manuelle Deckung nach dem Marker (Sperre des Abwaerts-Uebertrags) ist mit dem
+    // Mahlzeitenfundament entfallen.
     /** Fensteranfang der Behandlungssicht: DIA + Marge zurueck, zusaetzlich
      *  verlaengert bis vor den aeltesten Fakt einer noch offenen Ledger-Zeile.
      *  EINE Definition fuer Vollsicht UND Snapshot-Zeuge - zwei verschiedene
@@ -7523,10 +6924,7 @@ class FuseCycleRunner(
      *  manueller Bolus WAEHREND der Bewaffnung fiel (Codex 22.08.). */
     private var livenessStreakStartTs = 0L
 
-    /** Messbestaetigung der Halte-Anhebung ([app.aaps.fuse.core.controller.MeasuredRiseEvidence]).
-     *  Nur im Speicher: ein Neustart beginnt die Bestaetigung neu (konservativ).
-     *  Epoche, Autorisierung und frische Werte prueft die Rechnung selbst. */
-    private var livenessHoldEvidence = app.aaps.fuse.core.controller.MeasuredRiseEvidence.State.EMPTY
+    // Konsolidierung 2.0: die Messbestaetigung der Halte-Anhebung ist mit ihr entfallen.
 
     /** Fingerprint ALLER drei Kanal-Stellgroessen (Schwelle, Kanaldeckel,
      *  Re-Arm-Zeit), unter denen Streak und Lauf gezaehlt wurden. null =
@@ -7563,6 +6961,13 @@ class FuseCycleRunner(
     /** E-034: die zuletzt IN DIESEM PROZESS gebuchte Autorisierung - sie wird
      *  nie ein zweites Mal gebucht (Codex 11.10., Punkt 8). */
     private var ekArmiertFuerAuth = 0L
+
+    /**
+     * Konsolidierung 2.0 (Toni: "keine Neubuchung unbekannten Budgets"): die Autorisierung, fuer die im Rueckfall
+     * ohne Konto Insulin hinausging - fuer sie wird kein Konto mehr gebucht. Nur im Speicher: ein Konto entsteht
+     * ohnehin nur am in DIESEM Prozess beobachteten Druck.
+     */
+    private var ekRueckfallGeliefertFuerAuth = 0L
 
     /** E-034: Konto-Zustand und Buchung DIESES Zyklus - nur fuer den Export. */
     internal var ekZyklusThisCycle: ErwartungskontoZyklus? = null
@@ -7862,14 +7267,11 @@ class FuseCycleRunner(
         val onsetEnvelopeU: Double,
         val primeReleaseEnabled: Boolean,
         val primeEnvelopeU: Double,
-        /** Ist das Mahlzeitenfundament eingeschaltet? Default aus. */
+        // Konsolidierung 2.0: das Mahlzeitenfundament ist entfallen. Die vier Werte werden nur noch fuer Politik und
+        // Politik-Hash gelesen (bis Schritt 5), nie mehr zum Dosieren.
         val mealFoundationEnabled: Boolean,
-        /** Anteil von Phase A am gepinnten Budget. 1,0 = heutiges Verhalten. */
         val mealFoundationPhaseAShare: Double,
-        /** SOFORTANTEIL von Phase A (iLet-Prinzip). 0,0 = heutiges
-         *  Verhalten, bitgleich. Gepinnt beim Armen - s. [MealFoundation]. */
         val mealFoundationPhaseAUpfrontShare: Double,
-        /** Ende des Phase-B-Fensters [min ab Marker]. */
         val mealFoundationEndMin: Int,
         /** Punkt 6: Schalter (default aus), gepinnter Marker-Horizont und
          *  gepinnte Ablauffrist - s. [FuseBooleanKey.DeferredPrimeEnabled]. */
@@ -7893,17 +7295,12 @@ class FuseCycleRunner(
         /** Liveness-Kanal (Bauvertrag 22.08. nachts) - s.
          *  [FuseBooleanKey.LivenessChannelEnabled]. */
         val livenessChannelEnabled: Boolean,
-        /** Rebound-Evidenz-Ausnahme am Liveness-Tor (Toni 14.09.), Default
-         *  AUS - s. [FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled]. */
+        // Konsolidierung 2.0: Rebound-Evidenz-Ausnahme, buchungsbedingter Ausgang, Halte-Anhebung und H8 sind
+        // entfallen. Die vier Werte (H8: wirksam und konfiguriert) werden nur noch fuer Politik, Politik-Hash und
+        // Trail gelesen (bis Schritt 5), nie mehr zum Dosieren.
         val livenessReboundEvidenceExceptionEnabled: Boolean = false,
-        /** Buchungsbedingter Ausgang ohne neue Wiederanlaufsperre (Toni 15.09.),
-         *  Default AUS - s. [FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled]. */
         val livenessBookingExitWithoutReArmEnabled: Boolean = false,
-        /** Halte-Anhebung des Stoerungsterms im Liveness-Bedarf (Toni 15.09.),
-         *  Default AUS - s. [FuseBooleanKey.LivenessDriveHoldEnabled]. */
         val livenessDriveHoldEnabled: Boolean = false,
-        /** Frueher adaptiver MEAL-Horizont (Toni 18.09., H8), WIRKSAMER Wert:
-         *  nur 0, 6, 8, 10 - 0 = AUS. s. [FuseIntKey.EarlyAdaptiveMealHorizonMin]. */
         val earlyAdaptiveMealHorizonMin: Int = 0,
         /** Derselbe Schluessel, wie konfiguriert (Trail: konfiguriert vs. wirksam). */
         val earlyAdaptiveMealHorizonConfiguredMin: Int = 0,
@@ -7919,11 +7316,9 @@ class FuseCycleRunner(
         val mealDemandRatioCap: Double,
         val livenessBgMinDayMgdl: Double,
         val livenessBgMinNightMgdl: Double,
-        /** M1: MEAL-Druckschwelle unter Vollmacht - echter Default 110
-         *  (Startsatz), kein Tag-/Nacht-Fallback mehr. */
+        /** M1/M3: MEAL-Druckschwelle und Bewaffnungszyklen unter Vollmacht. Konsolidierung 2.0: der Kanal hat kein
+         *  MEAL-Profil mehr - beide werden nur noch fuer Politik, Hash und validate gelesen (bis Schritt 5). */
         val livenessBgMinMealMgdl: Double,
-        /** M3: Bewaffnungszyklen unter MEAL-Vollmacht - Startsatz-Default
-         *  1; CORRECTION bleibt immer bei LivenessChannel.ARM_STREAK. */
         val mealArmCycles: Int,
         val livenessReArmMin: Int,
         val primeWindowMin: Int,
@@ -7947,13 +7342,8 @@ class FuseCycleRunner(
         val expectationHorizonMin: Int = FuseIntKey.ExpectationHorizonMin.defaultValue,
         /** Die Kurve als Einstellungstext, unveraendert (Export: konfiguriert). */
         val expectationCurveText: String = FuseStringKey.ExpectationCurve.defaultValue,
-        /** NUR Pruefstand (Arm EK-S): im Mahlzeitkontext des Kontos ist die
-         *  ganze Direktdosis-Familie aus. Nie aus einer Einstellung. */
-        val expectationBenchNoDirectDose: Boolean = false,
-        /** NUR Pruefstand (Zuordnungsarm EK-RBheute): im Mahlzeitkontext des
-         *  Kontos entwaffnet der Marker das Rebound-Fenster wie heute nur fuer
-         *  die Sonderrechte. Nie aus einer Einstellung. */
-        val expectationBenchReboundToday: Boolean = false,
+        // Konsolidierung 2.0: die Pruefstand-Schalter der v1-Arme (EK-S ohne Direktdosis, EK-RBheute Rebound wie
+        // heute) sind entfallen; im Politik-Hash stehen sie als Konstante ihres Standes "aus".
         // ---- FRUEHE VERSORGUNG (E-034 v2), Default AUS ---------------------
         /** Hauptschalter - s. [FuseBooleanKey.EarlySupplyEnabled]; nur mit eingeschaltetem Konto. */
         val earlySupplyEnabled: Boolean = false,

@@ -194,7 +194,7 @@ object FuseDashboardModel {
             marker = markerText(outcome, nowMs, marker),
             evidence = evidenceText(outcome),
             windows = windowsText(outcome, nowMs, marker),
-            upfrontBatch = upfrontBatchText(outcome),
+            upfrontBatch = null,
             iobLine = iobLine(outcome),
             transport = ledger?.transportCommitmentU?.takeIf { it > 0.0 }
                 ?.let { "Transport offen ${u(it)} - wird vom Spielraum abgezogen" },
@@ -286,57 +286,20 @@ object FuseDashboardModel {
         return teile.takeIf { it.isNotEmpty() }?.joinToString("  |  ")
     }
 
-    /**
-     * DER SOFORT-BATCH IN VIER GETRENNTEN GROESSEN (Nachtrag Toni 25.08.,
-     * Punkt 9): geplant, aktuell aufgeschoben, bereits geliefert und der
-     * verbleibende Batch. Vorher stand keine dieser Groessen in der
-     * Oberflaeche - der Feldbefund (Sofortmenge geplant, in Haeppchen geliefert,
-     * falsche Liefermenge gemeldet) war nur im Trail sichtbar.
-     *
-     * Kein zweiter Rechenweg: `geliefert` ist dieselbe Formel wie im
-     * Export, `verbleibend` ist die Bilanzgroesse des Reglers.
-     */
-    private fun upfrontBatchText(outcome: FuseCycleRunner.Outcome): String? {
-        val f = outcome.mealFoundation
-        val geplant = f.phaseAUpfrontPlannedU
-        if (!f.armed || geplant <= 0.0) return null
-        val geliefert = minOf(geplant, f.deliveredPhaseAU).coerceAtLeast(0.0)
-        val rest = outcome.phaseAUpfrontPendingU.coerceAtLeast(0.0)
-        val teile = mutableListOf("Sofort geplant ${u(geplant)}")
-        if (geliefert > 0.0) teile += "geliefert ${u(geliefert)}"
-        if (rest > 0.0) teile += "offen ${u(rest)}"
-        // Der ZUSTAND benennt, warum der Rest noch offen ist - typisiert
-        // uebersetzt, nie roh (Konvention der uebrigen Label-Funktionen).
-        upfrontStateLabel(outcome.phaseAUpfrontState)?.let { teile += it }
-        return teile.joinToString("  |  ")
-    }
-
-    /** Typisierter Batch-Zustand in Klartext; null = nichts zu sagen. */
-    private fun upfrontStateLabel(state: String?): String? = when (state) {
-        "DEFERRED_UPFRONT_BATCH"   -> "aufgeschoben (Sicherheitsriegel)"
-        // Nur noch aus Trails VOR RuleSet 34: seit dem 28.08. sperrt der
-        // Zero-Latch die Mahlzeiten-Direktdosis nicht mehr und der Runner
-        // schreibt diesen Zustand nicht mehr. Die Abbildung bleibt, damit
-        // aufgezeichnete Laeufe lesbar bleiben.
-        "BLOCKED_ZERO_LATCH"       -> "aufgeschoben (Null-Basal verriegelt)"
-        "BLOCKED_FALLBACK"         -> "aufgeschoben (Modellausfall)"
-        "BLOCKED_NO_DEFERRED"      -> "gesperrt (Sicherheitsnetz aus)"
-        // Nach Phase A gibt es keinen Vollbatch mehr - die Menge laeuft
-        // schrittweise weiter (Review 25.08. abends, Punkt 2/5).
-        "TRANSFERRED_TO_DEFERRED"  -> "in den schrittweisen Pfad uebergeben"
-        "EXPIRED"                  -> "abgelaufen"
-        // Unbestimmbar ist NICHT gedeckt (Punkt 6).
-        "BLOCKED_VIEW"             -> "unbestimmbar (Behandlungssicht unlesbar)"
-        "REQUESTED"                -> "wird angefordert"
-        else                       -> null
-    }
+    // Konsolidierung 2.0: die Sofort-Batch-Zeile (geplant/geliefert/offen/Zustand) ist mit dem
+    // Mahlzeitenfundament entfallen; die Zeile bleibt bis Schritt 5 im Bildschirm und ist leer (unsichtbar).
 
     private fun markerText(outcome: FuseCycleRunner.Outcome?, nowMs: Long, marker: FuseScreenModel.MarkerInfo?): String {
         if (marker == null) return "Markerzustand unbekannt"
         if (marker.armedTs <= 0L) return "Nicht aktiv  |  Huelle ${u(marker.envelopeU)} konfiguriert"
 
         val elapsed = ((nowMs - marker.armedTs).coerceAtLeast(0L) / 60_000L).toInt()
-        if (elapsed >= marker.windowMin) return "Abgelaufen seit ${elapsed - marker.windowMin} min  |  Huelle ${u(marker.envelopeU)} konfiguriert"
+        // DER RUECKFALL OHNE KONTO (Toni): die Mahlzeit ist angekuendigt, aber es gilt kein Konto - FUSE dosiert wie
+        // ohne Marker. Deutlich gemeldet, nicht still: eine eigene Zeile, solange der Zyklus ihn ausweist.
+        val rueckfall = outcome?.erwartungskonto?.rueckfall
+            ?.let { "\nMahlzeit angekündigt - Konto fehlt: Rückfall wie ohne Marker (${rueckfallLabel(it)})" } ?: ""
+        if (elapsed >= marker.windowMin)
+            return "Abgelaufen seit ${elapsed - marker.windowMin} min  |  Huelle ${u(marker.envelopeU)} konfiguriert$rueckfall"
         // ---- EIN BUCHUNGSSTAND FUER DIE GANZE ZEILE ---------------------
         //
         // Hier stand `envelopeU - prime.remainingU`: der Prime-Rest VOR der
@@ -351,16 +314,11 @@ object FuseDashboardModel {
         // "alte Autorisierung 1 U, dann neue volle Huelle" haette die Zeile
         // vor der ersten Anforderung schon 1 U verbraucht gemeldet.
         //
-        // Hier stand `primeSpentU` gegen die eingestellte Huelle. Beides war
-        // zu klein gedacht: der Zaehler waechst NUR im Prime-Fenster und
-        // stand nach der Uebergabe an Phase B still, waehrend die Abgabe
-        // weiterlief - die Zeile meldete dauerhaft zu viel "frei". Jetzt
-        // kommen Huelle UND Verbrauch aus [MealFoundation.envelopeUse],
-        // also aus der Rechnung, mit der das Budget selbst arbeitet, und
-        // zwar in der Fassung NACH dem Publikations-Gate.
-        //
-        // Die Huelle ist damit auch die GEPINNTE: eine nach dem Markerdruck
-        // geaenderte Einstellung verschiebt die laufende Autorisierung nicht.
+        // Huelle UND Verbrauch kommen aus [FuseCycleRunner.envelopeUseOf],
+        // in der Fassung NACH dem Publikations-Gate. Konsolidierung 2.0: mit
+        // dem Mahlzeitenfundament ist die Rechnung ohne Fundament geblieben -
+        // `primeSpentU` (Verbrauch im Freigabefenster) gegen die am Druck
+        // gepinnte Huelle.
         val huelle = outcome?.envelopeU ?: marker.envelopeU
         val verbucht = outcome?.envelopeSpentU?.coerceAtLeast(0.0)
         val verfuegbar = verbucht?.let { (huelle - it).coerceAtLeast(0.0) }
@@ -384,7 +342,17 @@ object FuseDashboardModel {
         // DIE HUELLE GEHOERT ZUR AUTORISIERUNG, die Episode laeuft eigen
         // weiter - beide Zahlen nebeneinander ohne Etikett lasen sich,
         // als waere die eine der Rest der anderen.
-        return "AKTIV seit $elapsed/${marker.windowMin} min  |  Autorisierung: $amount$episodeSumme\n$release"
+        return "AKTIV seit $elapsed/${marker.windowMin} min  |  Autorisierung: $amount$episodeSumme\n$release$rueckfall"
+    }
+
+    /** Der Grund des Rueckfalls ohne Konto in Klartext (typisiert uebersetzt, nie roh). */
+    private fun rueckfallLabel(grund: String): String = when (grund) {
+        "NO_CURVE"         -> "keine gültige Erwartungskurve"
+        "NO_ACCOUNT"       -> "kein Konto gebucht"
+        "ACCOUNT_LOST"     -> "Konto verloren"
+        "DROPPED_ON_LOAD"  -> "Konto beim Laden verworfen"
+        "CONTEXT_MISMATCH" -> "Kontext abweichend"
+        else               -> grund
     }
 
     private fun iobLine(outcome: FuseCycleRunner.Outcome): String {

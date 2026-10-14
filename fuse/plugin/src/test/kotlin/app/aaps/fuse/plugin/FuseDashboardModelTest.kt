@@ -368,4 +368,30 @@ class FuseDashboardModelTest {
         assertTrue(v.decisionReason.contains("tailHeadroom=-0.44")) { v.decisionReason }
         assertTrue(!v.decisionReason.contains("0.4432277446939927")) { v.decisionReason }
     }
+
+    /**
+     * RUECKFALL OHNE KONTO (Toni): die Mahlzeit ist angekuendigt, aber es gilt kein Konto - die Markerzeile meldet es
+     * deutlich und mit Grund, auch nach dem Markerfenster, solange der Zyklus ihn ausweist. Ohne Rueckfall steht dort
+     * nichts davon.
+     */
+    @Test
+    fun `ohne Konto meldet die Markerzeile den Rueckfall wie ohne Marker`() {
+        fun zeile(rueckfall: String?, seitMin: Int = 3) = FuseDashboardModel.build(
+            outcome().copy(
+                erwartungskonto = FuseCycleRunner.ErwartungskontoExport(
+                    gilt = false, kontextAbweichung = false, verworfenBeimLaden = false, zyklus = null, buchung = null,
+                    bodenU = 0.0, angehobenU = 0.0, blockNormalpfad = null, grundNormalpfad = null, grundEnde = null,
+                    stabilSeitTs = null, rueckfall = rueckfall,
+                ),
+            ),
+            null, now, FuseScreenModel.MarkerInfo(now - seitMin * 60_000L, 90, 3.0, primeWindowMin = 25), ledger(), null,
+        ).marker
+        val ohneKurve = zeile("NO_CURVE")
+        assertTrue(ohneKurve.contains("Mahlzeit angekündigt - Konto fehlt: Rückfall wie ohne Marker")) { ohneKurve }
+        assertTrue(ohneKurve.contains("(keine gültige Erwartungskurve)")) { ohneKurve }
+        assertTrue(ohneKurve.contains("AKTIV seit")) { "die Ankuendigung bleibt sichtbar: $ohneKurve" }
+        assertTrue(zeile("DROPPED_ON_LOAD").contains("(Konto beim Laden verworfen)"))
+        assertTrue(zeile("ACCOUNT_LOST", seitMin = 95).contains("Konto fehlt")) { "nach dem Markerfenster" }
+        assertFalse(zeile(null).contains("Konto fehlt")) { zeile(null) }
+    }
 }

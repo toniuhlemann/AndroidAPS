@@ -31,11 +31,12 @@ import kotlin.math.min
  * ausgewiesen - keine stille Ueberschreitung.
  *
  * Konsolidierung 2.0: die Direktdosis-Familie und die Guard-Ausnahme von v1
- * sind entfallen (Buchung, Felder, Boden). Heben darf nur noch die fruehe
- * Versorgung (v2, [State.early]) nach ihren eigenen Regeln. Ein Konto ohne
- * [State.early] bucht der Runner weiterhin - bei ausgeschalteter oder
- * ungueltiger frueher Versorgung und bei ungueltigen Parametern -, aber ohne
- * Huelle und damit ohne Budget; [step] rechnet es wie bisher.
+ * sind entfallen (Buchung, Felder, Boden), danach auch das Konto v1 selbst
+ * (Vorgriff phi_0 x Kurvenrest, Budget aus der Huelle). Jedes Konto rechnet
+ * mit den Regeln der fruehen Versorgung (v2, [State.early], [stepEarly]); ohne
+ * fruehe Versorgung - Hauptschalter aus, ungueltige Werte, ungueltige
+ * Kontoparameter - mit Budget 0 und neutralen Pins ([EarlySupply.Pins.NEUTRAL]):
+ * dann fliesst nur der gemessene Anteil. Die Formeln oben sind der Stand v1.
  *
  * WANN KEIN d_erw: vor erfuellter Stabilitaet (Start nach Tief oder im
  * Fallen, und nach einem gemessenen Tief in der Episode erneut), in jeder Pause (gemessene Sperre, Signal-, Pumpen- oder
@@ -259,8 +260,10 @@ object ExpectationAccount {
         /** Storniert: gebucht, aber nachweislich nie gesendet [U], nur steigend. */
         val cancelledU: Double = 0.0,
         /**
-         * E-034 v2: die fruehe Versorgung dieser Episode, am Marker festgehalten; `null` = Konto v1 (ohne Budget,
-         * s. Kopf). Dann ist [a0U] das Gesamtbudget B und [phi0] der Skalierer (0..[EarlySupply.MAX_SCALE]).
+         * E-034 v2: die fruehe Versorgung dieser Episode, am Marker festgehalten. [a0U] ist das Gesamtbudget B und
+         * [phi0] der Skalierer (0..[EarlySupply.MAX_SCALE]). Konsolidierung 2.0: jedes neue Konto traegt Pins (ohne
+         * fruehe Versorgung [EarlySupply.Pins.NEUTRAL]); `null` kann nur noch ein ausserhalb des Codecs gebauter
+         * Zustand tragen - [step] rechnet ihn mit neutralen Pins.
          */
         val early: EarlySupply.Pins? = null,
         /**
@@ -289,67 +292,63 @@ object ExpectationAccount {
     }
 
     /**
-     * Bucht das Budget am Marker. [envelopeU] ist die tatsaechliche Huelle der
-     * Episode; bei 0 ("ohne Vorschuss") bleibt das Budget 0, die Ersetzung
-     * des Bedarfs gilt trotzdem. Ohne gueltige [params] (leer oder ungueltig)
-     * ist die Erwartung fuer diese Episode aus: Vorgriff 0, Budget 0 - auch
-     * dann gilt nur die Ersetzung.
+     * Die Grundbuchung am Marker - Stoerung, Freigabe, gepinnte Strecke und Kurve, OHNE Budget. Ohne gueltige
+     * [params] (leer oder ungueltig) ist die Erwartung fuer diese Episode aus: nur Ersetzung. Konsolidierung 2.0: die
+     * Huelle des Kontos v1 (`envelopeU`, Vorgriff phi_0) ist entfallen; das Budget bucht [armEarly].
      */
-    fun arm(
+    private fun grundbuchung(
         authId: Long,
         windowEndTs: Long,
-        envelopeU: Double,
         params: Params?,
         startStable: Boolean,
         nowTs: Long,
         bgMgdl: Double,
         isfMgdlPerU: Double,
-    ): State {
-        if (params == null) return State(
-            authId = authId, windowEndTs = windowEndTs, startStable = startStable,
-            phi0 = 0.0, a0U = 0.0, bookedU = 0.0,
-            released = startStable, frozen = false, releaseChecked = false,
-            disturbanceU = 0.0,
-            disturbanceValid = bgMgdl.isFinite() && isfMgdlPerU.isFinite() && isfMgdlPerU > 0.0,
-            lastObsTs = nowTs, lastBgMgdl = bgMgdl, isfAtMarkerMgdlPerU = isfMgdlPerU,
-            horizonMin = MAX_HORIZON_MIN, releaseThresholdU = 0.0,
-            curveValues = emptyList(), expectationOn = false,
-        )
-        val z0 = params.curve.remaining(0.0, params.horizonMin)
-        val phi = if (startStable) params.phi0Stable else params.phi0AfterLow
-        val env = if (envelopeU.isFinite()) max(0.0, envelopeU) else 0.0
-        val a0 = max(0.0, min(env, phi * z0))
-        return State(
-            authId = authId,
-            windowEndTs = windowEndTs,
-            startStable = startStable,
-            phi0 = phi,
-            a0U = a0,
-            bookedU = 0.0,
-            released = startStable,
-            frozen = false,
-            releaseChecked = false,
-            disturbanceU = 0.0,
-            disturbanceValid = bgMgdl.isFinite() && isfMgdlPerU.isFinite() && isfMgdlPerU > 0.0,
-            lastObsTs = nowTs,
-            lastBgMgdl = bgMgdl,
-            isfAtMarkerMgdlPerU = isfMgdlPerU,
-            horizonMin = params.horizonMin,
-            releaseThresholdU = params.releaseThresholdU,
-            curveValues = params.curve.values(),
-            expectationOn = true,
-            stabilityBgMgdl = params.stabilityBgMgdl,
-            stabilityMin = params.stabilityMin,
-            stabilityFallMgdlPerMin = params.stabilityFallMgdlPerMin,
-        )
-    }
+    ): State = State(
+        authId = authId,
+        windowEndTs = windowEndTs,
+        startStable = startStable,
+        phi0 = 0.0,
+        a0U = 0.0,
+        bookedU = 0.0,
+        released = startStable,
+        frozen = false,
+        releaseChecked = false,
+        disturbanceU = 0.0,
+        disturbanceValid = bgMgdl.isFinite() && isfMgdlPerU.isFinite() && isfMgdlPerU > 0.0,
+        lastObsTs = nowTs,
+        lastBgMgdl = bgMgdl,
+        isfAtMarkerMgdlPerU = isfMgdlPerU,
+        horizonMin = params?.horizonMin ?: MAX_HORIZON_MIN,
+        releaseThresholdU = params?.releaseThresholdU ?: 0.0,
+        curveValues = params?.curve?.values() ?: emptyList(),
+        expectationOn = params != null,
+        stabilityBgMgdl = params?.stabilityBgMgdl ?: MIN_STABILITY_BG_MGDL,
+        stabilityMin = params?.stabilityMin ?: MAX_STABILITY_MIN,
+        stabilityFallMgdlPerMin = params?.stabilityFallMgdlPerMin ?: DEFAULT_STABILITY_FALL_MGDL_PER_MIN,
+    )
+
+    /**
+     * Konsolidierung 2.0: das Konto bei UNGUELTIGEN Kontoparametern (u. a. die phi_0-Werte, die bis Schritt 5 im
+     * Parametersatz geprueft werden) - ohne Erwartung, ohne Budget, mit neutralen Pins: nur Ersetzung des Bedarfs.
+     */
+    fun armWithoutExpectation(
+        authId: Long,
+        windowEndTs: Long,
+        startStable: Boolean,
+        nowTs: Long,
+        bgMgdl: Double,
+        isfMgdlPerU: Double,
+    ): State = grundbuchung(authId, windowEndTs, null, startStable, nowTs, bgMgdl, isfMgdlPerU)
+        .copy(early = EarlySupply.Pins.NEUTRAL)
 
     /**
      * E-034 v2: bucht am Marker das GESAMTBUDGET der fruehen Versorgung statt der Huelle -
      * `B = min(B_max, scale * max_tau F(tau) / C(tau))` ([EarlySupply.budgetU]). Kurve, Vorschau, Stabilitaet und
-     * Ruecknahme kommen aus [params] wie in v1; der Skalierer aus [settings]. [unitAction] ist die
+     * Ruecknahme kommen aus [params]; der Skalierer aus [settings]. [unitAction] ist die
      * zeitliche Wirkung einer jetzt gegebenen Einheit aus dem aktiven Insulinmodell. Was gehoben werden darf, sagen
-     * G1..G4 aus [switches] (die Guard-Ausnahme von v1 ist mit der Konsolidierung 2.0 entfallen).
+     * G1..G4 aus [switches] (die Guard-Ausnahme von v1 ist mit der Konsolidierung 2.0 entfallen). Ohne fruehe
+     * Versorgung bucht der Runner hier mit [EarlySupply.Settings.NEUTRAL] und [EarlySupply.Switches.NONE] - Budget 0.
      *
      * ZWEI GETRENNTE FRAGEN (Toni): [startStable] ist die Freigabe am Marker (Strecke erfuellt - sonst wartet die
      * Anfangsportion); [afterLow] waehlt den Skalierer. "Nach Tief" ist nur ein Start unter der Stabilitaetsgrenze
@@ -371,7 +370,7 @@ object ExpectationAccount {
     ): State {
         val scale = if (afterLow) settings.scaleAfterLow else settings.scaleStable
         val b = EarlySupply.budgetU(params.curve, params.horizonMin, scale, settings.budgetMaxU, unitAction)
-        return arm(authId, windowEndTs, 0.0, params, startStable, nowTs, bgMgdl, isfMgdlPerU).copy(
+        return grundbuchung(authId, windowEndTs, params, startStable, nowTs, bgMgdl, isfMgdlPerU).copy(
             phi0 = scale,
             a0U = if (b.isFinite()) max(0.0, b) else 0.0,
             early = EarlySupply.Pins(
@@ -459,7 +458,7 @@ object ExpectationAccount {
         val releaseRevoked: Boolean = false,
         /** Zeitpunkt des Zyklus (fuer das Zeitraumbuch der fruehen Versorgung). */
         val atTs: Long = 0L,
-        /** v2: die Rechnung der fruehen Versorgung; `null` = Konto v1. */
+        /** v2: die Rechnung der fruehen Versorgung (Konsolidierung 2.0: bei jedem Konto gesetzt). */
         val early: EarlyEvaluation? = null,
     )
 
@@ -522,37 +521,15 @@ object ExpectationAccount {
             s = s.copy(frozen = false)
         }
 
-        s.early?.let { return stepEarly(s, inputs, it, expired, zurueckgenommen) }
-
-        // 4 Bedarf.
-        val curve = Curve.of(s.curveValues)
-        val z = if (expired || curve == null) 0.0 else curve.remaining(inputs.ageMin, s.horizonMin)
-        val phiZ = s.phi0 * z
-        val rMess = (inputs.bgMgdl - inputs.targetMgdl) / inputs.isfMgdlPerU - inputs.iobTotalU
-        val rRoh = rMess + phiZ
-        val request = if (rRoh.isFinite()) max(0.0, rRoh) else 0.0
-
-        val restEff = if (expired || inputs.paused || !s.released || s.frozen) 0.0 else s.restU
-        val status = when {
-            expired -> "EXPIRED"
-            !s.expectationOn -> "EXPECTATION_OFF"
-            !s.released -> "WAITING_FOR_STABILITY"
-            inputs.paused -> "PAUSED"
-            s.frozen -> "FROZEN"
-            s.restU <= EPS_U -> "BUDGET_USED"
-            else -> "ACTIVE"
-        }
-        return s to Evaluation(
-            rMessU = rMess, phiZU = phiZ, rRohU = rRoh, requestU = request, restEffU = restEff,
-            expired = expired, paused = inputs.paused, released = s.released, frozen = s.frozen, status = status,
-            releaseRevoked = zurueckgenommen,
-        )
+        // Konsolidierung 2.0: der Zweig des Kontos v1 (Bedarf R_mess + phi_0 x Kurvenrest, Rest als Huellenbudget) ist
+        // entfallen - jedes Konto rechnet nach den Regeln der fruehen Versorgung, ohne Pins mit neutralen.
+        return stepEarly(s, inputs, s.early ?: EarlySupply.Pins.NEUTRAL, expired, zurueckgenommen)
     }
 
     /**
      * E-034 v2, Schritt 4 und 5: Bedarf und lieferbarer Erwartungsanteil der fruehen Versorgung.
      *
-     *  - Gemessener Teil wie v1: `R_mess = (BG - Ziel)/ISF - IOB`, IOB voll angerechnet.
+     *  - Gemessener Teil: `R_mess = (BG - Ziel)/ISF - IOB`, IOB voll angerechnet.
      *  - Erwartungsteil X(a) ([EarlySupply.demandU]): nur die erwartete Mahlzeit, angerechnet nur das freie IOB.
      *    Damit zaehlt kein IOB zweimal: solange R_mess > 0 ist, ist das ganze IOB fuer den Zielabstand gebunden.
      *  - Anfrage = max(0, R_mess) + X; [Evaluation.rRohU] traegt in v2 genau diese Summe.
@@ -594,6 +571,8 @@ object ExpectationAccount {
         }
         val status = when {
             expired -> "EXPIRED"
+            // Das Konto ohne Erwartung (ungueltige Kontoparameter) meldet sich wie bisher.
+            !s.expectationOn -> "EXPECTATION_OFF"
             s.earlyLowLocked -> "LOCKED_BY_LOW"
             pins.withdrawn -> "WITHDRAWN"
             !s.released -> "WAITING_FOR_STABILITY"

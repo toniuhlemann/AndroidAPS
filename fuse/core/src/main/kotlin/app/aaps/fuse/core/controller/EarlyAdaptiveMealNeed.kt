@@ -36,20 +36,15 @@ package app.aaps.fuse.core.controller
  * Release-Horizont (60), der Safety-/Liability-Horizont, die W18-Bahn des
  * Reversal-Schutzes und jedes Tor dahinter. Diese Komponente entscheidet nur,
  * OB der Bruttobedarf in diesem Zyklus gebildet wird, und bildet ihn.
+ *
+ * Konsolidierung 2.0: H8 dosiert nicht mehr - es wirkte nur im Mahlzeitkontext ohne Konto (im Kontofenster war der
+ * Horizont 0), und dort dosiert der Rueckfall wie ohne Marker. Es bleibt die Horizont-Auswahl, die Einstellung,
+ * Politik und Politik-Hash bis Schritt 5 lesen. Die Beschreibung oben ist der Stand davor.
  */
 object EarlyAdaptiveMealNeed {
 
     /** Zulaessige Horizonte [min]; 0 = AUS (Produktionsdefault). */
     val ALLOWED_HORIZONS_MIN: Set<Int> = setOf(0, 6, 8, 10)
-
-    /** Untere Markeraltersgrenze, inklusiv. */
-    const val MIN_MARKER_AGE_MS = 10 * 60_000L
-
-    /** Obere Markeraltersgrenze, inklusiv. */
-    const val MAX_MARKER_AGE_MS = 45 * 60_000L
-
-    /** Quellenkennung im Trail, z. B. `EARLY_ADAPTIVE_MEAL_H8`. */
-    fun sourceId(horizonMin: Int): String = "EARLY_ADAPTIVE_MEAL_H$horizonMin"
 
     /**
      * Wirksamer Horizont: nur die zulaessigen Werte, alles andere ist AUS.
@@ -59,104 +54,6 @@ object EarlyAdaptiveMealNeed {
     fun effectiveHorizonMin(configuredMin: Int): Int =
         if (configuredMin in ALLOWED_HORIZONS_MIN) configuredMin else 0
 
-    enum class Denial {
-        DISABLED,
-        NOT_MEAL_AUTHORIZED,
-        AUTHORIZATION_MISMATCH,
-        AUTHORIZATION_EXPIRED,
-        MARKER_TOO_YOUNG,
-        MARKER_TOO_OLD,
-        SIGNAL_NOT_READY,
-        SIGNAL_NOT_MATURE,
-        DRIVE_UNAVAILABLE,
-        DRIVE_BELOW_THRESHOLD,
-        UKF_UNAVAILABLE,
-        UKF_NEGATIVE,
-        TARGET_INVALID,
-    }
-
-    data class Input(
-        /** Wirksamer Horizont ([effectiveHorizonMin]); 0 = AUS. */
-        val horizonMin: Int,
-        /** [DosingContext.Decision.mealAuthorized] dieses Zyklus. */
-        val mealAuthorized: Boolean,
-        /** [DosingContext.Decision.authorizationId]: gepinnte Markeridentitaet. */
-        val authorizationId: Long,
-        /** Der aktuell wirksame Marker. */
-        val markerTs: Long,
-        /** [DosingContext.Decision.authorizationExpiresAt]. */
-        val authorizationExpiresAtMs: Long,
-        val nowMs: Long,
-        /** Signalgesundheit READY. */
-        val signalReady: Boolean,
-        /** Strenge Reife: keine gelockerte Wiedereinstiegsreife, Vollreife erreicht. */
-        val signalMature: Boolean,
-        /** Robuster adaptiver W10-Antrieb (BGI-bereinigt) [mg/dl/min]. */
-        val w10DriveMgdlPerMin: Double?,
-        val ukfRatePerMin: Double,
-        /**
-         * Eintrittsschwelle fuer den W10-Antrieb [mg/dl/min]. Der Runner uebergibt
-         * die bestehende Liveness-Druckschwelle [LivenessChannel.R_MIN_MGDL_PER_MIN]
-         * - NIE riseRampLowR (Unterkante der Ratio-Rampe, eine andere Rolle).
-         */
-        val eligibilityThresholdMgdlPerMin: Double,
-        val targetMgdl: Double,
-    )
-
-    /**
-     * [eligible] true = die Eintrittsbedingungen sind erfuellt und die
-     * Bruttobahn ist gebildet ([earlyReleaseMeanMgdl] gesetzt). Das heisst
-     * NICHT, dass die H8-Bahn die Freigabebahn stellt ([selected]), und erst
-     * recht nicht, dass etwas abgegeben wurde.
-     * [markerAgeMin] ist gesetzt, sobald ein Markeralter bestimmbar war.
-     */
-    data class Decision(
-        val eligible: Boolean,
-        val denial: Denial?,
-        val markerAgeMin: Double?,
-        val earlyReleaseMeanMgdl: Double?,
-    )
-
-    fun decide(i: Input): Decision {
-        fun no(d: Denial, age: Double? = null) = Decision(false, d, age, null)
-        if (i.horizonMin !in ALLOWED_HORIZONS_MIN || i.horizonMin == 0) return no(Denial.DISABLED)
-        if (!i.mealAuthorized) return no(Denial.NOT_MEAL_AUTHORIZED)
-        if (i.authorizationId <= 0L || i.authorizationId != i.markerTs) return no(Denial.AUTHORIZATION_MISMATCH)
-        if (i.nowMs >= i.authorizationExpiresAtMs) return no(Denial.AUTHORIZATION_EXPIRED)
-        val ageMs = i.nowMs - i.authorizationId
-        val ageMin = ageMs / 60_000.0
-        if (ageMs < MIN_MARKER_AGE_MS) return no(Denial.MARKER_TOO_YOUNG, ageMin)
-        if (ageMs > MAX_MARKER_AGE_MS) return no(Denial.MARKER_TOO_OLD, ageMin)
-        if (!i.signalReady) return no(Denial.SIGNAL_NOT_READY, ageMin)
-        if (!i.signalMature) return no(Denial.SIGNAL_NOT_MATURE, ageMin)
-        val drive = i.w10DriveMgdlPerMin
-        if (drive == null || !drive.isFinite()) return no(Denial.DRIVE_UNAVAILABLE, ageMin)
-        if (!i.eligibilityThresholdMgdlPerMin.isFinite() || drive < i.eligibilityThresholdMgdlPerMin)
-            return no(Denial.DRIVE_BELOW_THRESHOLD, ageMin)
-        if (!i.ukfRatePerMin.isFinite()) return no(Denial.UKF_UNAVAILABLE, ageMin)
-        if (i.ukfRatePerMin < 0.0) return no(Denial.UKF_NEGATIVE, ageMin)
-        if (!i.targetMgdl.isFinite() || i.targetMgdl <= 0.0) return no(Denial.TARGET_INVALID, ageMin)
-        return Decision(
-            eligible = true,
-            denial = null,
-            markerAgeMin = ageMin,
-            earlyReleaseMeanMgdl = i.targetMgdl + drive * i.horizonMin,
-        )
-    }
-
-    /** `max`, nie Addition: ohne gebildeten Bedarf bleibt die produktive Bahn bitgleich. */
-    fun effectiveReleaseMean(productionReleaseMeanMgdl: Double, d: Decision): Double =
-        d.earlyReleaseMeanMgdl?.takeIf { d.eligible }?.let { maxOf(productionReleaseMeanMgdl, it) }
-            ?: productionReleaseMeanMgdl
-
-    /**
-     * Die H8-Bahn STELLT die Freigabe-Mittelbahn: geeignet und echt ueber der
-     * produktiven Bahn. Bei Gleichstand bleibt es die produktive Bahn.
-     * Gewaehlt heisst nicht abgegeben - danach folgen Ratio, Deckelrest,
-     * maxSMB, der Vergleich mit dem Normalpfad und die Endpruefung.
-     */
-    fun selected(productionReleaseMeanMgdl: Double, d: Decision): Boolean {
-        val early = d.earlyReleaseMeanMgdl ?: return false
-        return d.eligible && early > productionReleaseMeanMgdl
-    }
+    // Konsolidierung 2.0: Eingabe, Entscheidung, Ablehnungsgruende und die Bahnwahl des Liveness-Kanals sind
+    // entfallen.
 }

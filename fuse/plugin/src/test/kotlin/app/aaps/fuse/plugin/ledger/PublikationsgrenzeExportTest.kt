@@ -4,7 +4,6 @@ import app.aaps.core.data.model.BS
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.RT
 import app.aaps.fuse.core.controller.InterventionStamp
-import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.plugin.FuseCycleRunner
 import app.aaps.fuse.plugin.FuseFinalDelivery
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -129,26 +128,20 @@ class PublikationsgrenzeExportTest {
     @Test
     fun `nach dem Gate-Verwurf sinkt der Huellenverbrauch wieder`(@TempDir dir: File) {
         val a = adapter(dir)
-        // Eine bewaffnete Autorisierung ueber 4 U, davon 0,50 U schon
-        // geflossen; dieser Zyklus bucht 0,30 U in Phase B dazu.
-        a.episodes.foundation = MealFoundation.arm(
-            markerTs = t0, foundationEnabled = true, totalBudgetU = 4.0, phaseAShare = 0.75,
-            phaseAUpfrontShare = 0.0, primeWindowMin = 15, wallCeilingMin = 45,
-            phaseBUntilMin = 60, pressObservedInThisProcess = true,
-            primeDeclinedByUser = false, markerAuthorized = true,
-        )
-        a.episodes.deliveredPhaseAU = 0.50
-        a.episodes.deliveredSinceHandoverU = 0.30
+        // Eine am Druck gepinnte Huelle, davon ein Teil schon verbucht; dieser
+        // Zyklus bucht im Freigabefenster dazu (synthetische Mengen unten;
+        // Konsolidierung 2.0: ohne Fundament zaehlt `primeSpentU`).
+        a.episodes.creditEnvelopeU = 4.0
+        a.episodes.primeSpentU = 0.80
         a.episodes.pendingReservation = EpisodeBudgets.Reservation(
-            computeTs = t0, amountU = 0.30, prime = false, onset = false,
+            computeTs = t0, amountU = 0.30, prime = true, onset = false,
             // Ohne Mahlzeitenzeile: dieser Test misst die Huelle, nicht die
             // Serienbuchhaltung - und `resolveReservation` steigt sonst aus,
             // wenn es die genannte Zeile nicht findet.
             mealTs = 0L, correctionTs = 0L,
-            foundationPhase = MealFoundation.Phase.PHASE_B,
         )
 
-        val vorher = FuseCycleRunner.envelopeUseOf(a.episodes, livePrimeEnvelopeU = 4.0)
+        val vorher = FuseCycleRunner.envelopeUseOf(a.episodes, livePrimeEnvelopeU = 2.0)
         assertEquals(0.80, vorher.spentU, 1e-9) { "Ausgangslage: der Runner-Stand" }
 
         // ---- DAS ECHTE GATE STREICHT ------------------------------------
@@ -163,12 +156,11 @@ class PublikationsgrenzeExportTest {
         // ---- WAS DAS PLUGIN DANACH TUT ----------------------------------
         a.resolveReservation(t0, out.rt.units ?: 0.0, proposalId = "p1")
 
-        val nachher = FuseCycleRunner.envelopeUseOf(a.episodes, livePrimeEnvelopeU = 4.0)
+        val nachher = FuseCycleRunner.envelopeUseOf(a.episodes, livePrimeEnvelopeU = 2.0)
         assertEquals(0.50, nachher.spentU, 1e-9) {
             "die gestrichenen 0,30 U duerfen nicht als verbraucht stehenbleiben"
         }
-        assertEquals(3.50, nachher.freeU, 1e-9)
-        assertEquals(4.0, nachher.envelopeU, 1e-9)
+        assertEquals(4.0, nachher.envelopeU, 1e-9) { "die am Druck gepinnte Huelle, nicht die Einstellung" }
         assertTrue(nachher.spentU < vorher.spentU) {
             "ohne Neurechnung nach dem Gate zeigte die Zeile den Vorstand"
         }

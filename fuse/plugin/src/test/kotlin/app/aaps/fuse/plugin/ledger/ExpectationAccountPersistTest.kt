@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin.ledger
 
+import app.aaps.fuse.core.controller.EarlySupply
 import app.aaps.fuse.core.controller.ExpectationAccount
 import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.ledger.LedgerState
@@ -23,9 +24,15 @@ class ExpectationAccountPersistTest {
 
     private val kurve: List<Double> = (0 until ExpectationAccount.CURVE_POINTS).map { k -> k * 0.1 }
 
+    /**
+     * Konsolidierung 2.0: das Konto, wie der Runner es ohne fruehe Versorgung bucht - Budget 0, neutrale Pins (das
+     * Konto v1 ist entfallen).
+     */
     private fun konto(): ExpectationAccount.State {
         val p = ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 90.0, 15, 0.3)!!
-        val s = ExpectationAccount.arm(t0, t0 + 120 * min, 2.0, p, true, t0, 110.0, 50.0)
+        val s = ExpectationAccount.armEarly(
+            t0, t0 + 120 * min, p, EarlySupply.Settings.NEUTRAL, EarlySupply.Switches.NONE, true, t0, 110.0, 50.0, { 0.0 },
+        )
         val (s1, e1) = ExpectationAccount.step(
             s,
             ExpectationAccount.Inputs(t0 + min, 1.0, 112.0, 100.0, 50.0, 0.3, 0.01, paused = false, stableNow = true),
@@ -36,14 +43,36 @@ class ExpectationAccountPersistTest {
         return ExpectationAccount.cancel(gebucht, erwU = 0.1)
     }
 
+    /** Ein Konto v1 eines aelteren Standes (ohne Pins) - so steht es unter "expectation" in der Datei. */
+    private fun altKonto(): ExpectationAccount.State =
+        konto().copy(phi0 = 0.5, a0U = 1.0, early = null, initialDone = false, portions = emptyList())
+
     private fun episoden(k: ExpectationAccount.State?) = EpisodeBudgets().also { it.expectation = k }
 
     @Test
     fun `das Konto ueberlebt den Rundlauf`() {
         val k = konto()
-        val zurueck = LedgerCodec.decodeEpisodes(LedgerCodec.encodeEpisodes(episoden(k)))
+        val json = LedgerCodec.encodeEpisodes(episoden(k))
+        assertTrue(json.has("earlySupply"))
+        assertFalse(json.has("expectation"))
+        val zurueck = LedgerCodec.decodeEpisodes(json)
         assertEquals(k, zurueck.expectation)
         assertFalse(zurueck.expectationDropped)
+    }
+
+    /**
+     * Konsolidierung 2.0: ein Konto v1 aus einem aelteren Stand laedt als Konto ohne fruehe Versorgung - Verbrauch,
+     * Freigabe und Strecke bleiben, sein Vorgriff fliesst nicht mehr. Geschrieben wird es danach unter dem v2-Schluessel.
+     */
+    @Test
+    fun `ein Konto v1 eines aelteren Standes laedt mit neutralen Pins`() {
+        val alt = altKonto()
+        val json = LedgerCodec.encodeEpisodes(episoden(alt))
+        assertTrue(json.has("expectation"))
+        val zurueck = LedgerCodec.decodeEpisodes(json)
+        assertEquals(alt.copy(early = EarlySupply.Pins.NEUTRAL), zurueck.expectation)
+        assertFalse(zurueck.expectationDropped)
+        assertTrue(LedgerCodec.encodeEpisodes(zurueck).has("earlySupply"))
     }
 
     @Test
@@ -57,7 +86,7 @@ class ExpectationAccountPersistTest {
 
     @Test
     fun `ein Konto ohne Erwartung ueberlebt den Rundlauf`() {
-        val ohne = ExpectationAccount.arm(t0, t0 + 120 * min, 2.0, null, false, t0, 110.0, 50.0)
+        val ohne = ExpectationAccount.armWithoutExpectation(t0, t0 + 120 * min, false, t0, 110.0, 50.0)
         val zurueck = LedgerCodec.decodeEpisodes(LedgerCodec.encodeEpisodes(episoden(ohne)))
         assertEquals(ohne, zurueck.expectation)
     }
@@ -66,14 +95,14 @@ class ExpectationAccountPersistTest {
     fun `nicht endliche Messwerte vom Marker stehen als null und kommen als NaN zurueck`() {
         val k = konto().copy(lastBgMgdl = Double.NaN, isfAtMarkerMgdlPerU = Double.NaN, disturbanceValid = false)
         val json = LedgerCodec.encodeEpisodes(episoden(k))
-        assertTrue(json.getJSONObject("expectation").isNull("lastBgMgdl"))
+        assertTrue(json.getJSONObject("earlySupply").isNull("lastBgMgdl"))
         val zurueck = LedgerCodec.decodeEpisodes(json).expectation
         assertNotNull(zurueck)
         assertTrue(zurueck!!.lastBgMgdl.isNaN())
         assertTrue(zurueck.isfAtMarkerMgdlPerU.isNaN())
     }
 
-    /** Die bewusste Abweichung: verworfen wird das Konto, nicht die Generation. */
+    /** Die bewusste Abweichung: verworfen wird das Konto, nicht die Generation (hier ein Konto v1 eines aelteren Standes). */
     @Test
     fun `ein ungueltiges Konto wird verworfen und die Generation bleibt gueltig`() {
         val faelle = listOf<(JSONObject) -> Unit>(
@@ -86,14 +115,14 @@ class ExpectationAccountPersistTest {
             { it.put("windowEndTs", t0 - 1) },
         )
         for ((i, kaputt) in faelle.withIndex()) {
-            val json = LedgerCodec.encodeEpisodes(episoden(konto()))
+            val json = LedgerCodec.encodeEpisodes(episoden(altKonto()))
             kaputt(json.getJSONObject("expectation"))
             val zurueck = LedgerCodec.decodeEpisodes(json)
             assertNull(zurueck.expectation, "Fall $i")
             assertTrue(zurueck.expectationDropped, "Fall $i")
         }
         // Kein Objekt an der Stelle: ebenso verworfen, Autorisierung unbekannt.
-        val json = LedgerCodec.encodeEpisodes(episoden(konto())).put("expectation", 42)
+        val json = LedgerCodec.encodeEpisodes(episoden(altKonto())).put("expectation", 42)
         assertTrue(LedgerCodec.decodeEpisodes(json).expectationDropped)
         assertEquals(0L, LedgerCodec.decodeEpisodes(json).expectationDroppedAuthId)
     }
@@ -102,7 +131,7 @@ class ExpectationAccountPersistTest {
     @Test
     fun `das verworfene Konto nennt seine Autorisierung`() {
         val json = LedgerCodec.encodeEpisodes(episoden(konto()))
-        json.getJSONObject("expectation").put("bookedU", -1.0)
+        json.getJSONObject("earlySupply").put("bookedU", -1.0)
         val zurueck = LedgerCodec.decodeEpisodes(json)
         assertNull(zurueck.expectation)
         assertEquals(t0, zurueck.expectationDroppedAuthId)
@@ -114,7 +143,7 @@ class ExpectationAccountPersistTest {
      */
     @Test
     fun `ein aelteres Konto mit Direktdosis und Ausnahme laedt weiter`() {
-        val k = konto()
+        val k = altKonto()
         val json = LedgerCodec.encodeEpisodes(episoden(k))
         val o = json.getJSONObject("expectation")
         assertEquals(0.0, o.getDouble("directDoseU"), 0.0)
@@ -122,7 +151,7 @@ class ExpectationAccountPersistTest {
         assertFalse(o.getBoolean("guardException"))
         o.put("directDoseU", 0.3).put("coveredByMarkerAuthU", 0.1).put("guardException", true)
         val zurueck = LedgerCodec.decodeEpisodes(json)
-        assertEquals(k, zurueck.expectation)
+        assertEquals(k.copy(early = EarlySupply.Pins.NEUTRAL), zurueck.expectation)
         assertFalse(zurueck.expectationDropped)
         // Ungueltig bleibt ungueltig - dieselbe Pruefung wie bisher.
         o.put("directDoseU", -1.0)
@@ -201,12 +230,12 @@ class ExpectationAccountPersistTest {
     @Test
     fun `die Fallgrenze steht nur abweichend in der Datei und fehlt sie, gilt der Standard`() {
         val standard = konto()
-        assertFalse(LedgerCodec.encodeEpisodes(episoden(standard)).getJSONObject("expectation").has("stabilityFallMgdlPerMin"))
+        assertFalse(LedgerCodec.encodeEpisodes(episoden(standard)).getJSONObject("earlySupply").has("stabilityFallMgdlPerMin"))
         val abweichend = standard.copy(stabilityFallMgdlPerMin = 1.0)
         val json = LedgerCodec.encodeEpisodes(episoden(abweichend))
-        assertTrue(json.getJSONObject("expectation").has("stabilityFallMgdlPerMin"))
+        assertTrue(json.getJSONObject("earlySupply").has("stabilityFallMgdlPerMin"))
         assertEquals(abweichend, LedgerCodec.decodeEpisodes(json).expectation)
-        json.getJSONObject("expectation").put("stabilityFallMgdlPerMin", 9.0)
+        json.getJSONObject("earlySupply").put("stabilityFallMgdlPerMin", 9.0)
         assertNull(LedgerCodec.decodeEpisodes(json).expectation)
     }
 

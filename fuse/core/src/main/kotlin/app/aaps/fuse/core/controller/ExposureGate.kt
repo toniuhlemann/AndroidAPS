@@ -55,11 +55,11 @@ object ExposureGate {
      * NORMAL/LIVENESS/FOUNDATION behalten ihre Untertypen (PRIME,
      * SubStep-Uebertrag, Aufschub-Freigabe). Konsolidierung 2.0:
      * MEAL_UPFRONT, die Ruhe-Pfade (CALM_BATCH, CALM_DEMAND), die
-     * Sofort-Freigabe (PRIME) und die Aufschub-Freigabe (DEFERRED_RELEASE)
-     * sind entfallen.
+     * Sofort-Freigabe (PRIME), die Aufschub-Freigabe (DEFERRED_RELEASE)
+     * und das Mahlzeitenfundament (FOUNDATION) sind entfallen.
      */
     enum class FinalSource {
-        NONE, NORMAL, NORMAL_SUBSTEP, FOUNDATION,
+        NONE, NORMAL, NORMAL_SUBSTEP,
         LIVENESS,
 
         /** Die Guard-Ausnahme des Erwartungsanteils (E-034). Nur im

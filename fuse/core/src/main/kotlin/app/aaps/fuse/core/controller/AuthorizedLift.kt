@@ -23,9 +23,9 @@ import kotlin.math.min
  * bereits ueber die max-Semantik und die tatsaechlich gelieferte
  * Gesamtmenge auf das Fundament-Soll angerechnet."
  *
- * Konsolidierung 2.0: die Prime-Quelle ist entfallen; es heben noch das
- * Fundament (Phase B) und der Erwartungsanteil (E-034). Die Prime-Hinweise
- * unten sind der Stand davor.
+ * Konsolidierung 2.0: die Prime-Quelle und das Fundament (Phase B) sind
+ * entfallen; es hebt nur noch der Erwartungsanteil (E-034, fruehe Versorgung).
+ * Die Prime- und Fundament-Hinweise unten sind der Stand davor.
  *
  * WO DIESE STUFE IM ZYKLUS SITZT:
  *
@@ -53,12 +53,9 @@ object AuthorizedLift {
      * unterscheidbar, welche Phase geliefert hat.
      */
     enum class Source {
-        // Konsolidierung 2.0: die Quelle der Sofort-Freigabe im Prime-Fenster (PRIME) ist entfallen.
-
-        /** Die nachlaufende Mindestversorgung des Mahlzeitenfundaments. */
-        FOUNDATION,
-
-        // Konsolidierung 2.0: die Quelle des Phase-A-Sofortanteils (MEAL_UPFRONT) ist entfallen.
+        // Konsolidierung 2.0: die Quellen der Sofort-Freigabe im Prime-Fenster (PRIME), der nachlaufenden
+        // Mindestversorgung des Mahlzeitenfundaments (FOUNDATION) und des Phase-A-Sofortanteils (MEAL_UPFRONT) sind
+        // entfallen.
 
         /**
          * DER ERWARTUNGSANTEIL (Vorregistrierung E-034): der Boden ist die
@@ -127,12 +124,10 @@ object AuthorizedLift {
 
     /** Was im `bindingLimit` steht, wenn dieser Lift gebunden hat. */
     fun bindingLimitOf(source: Source): String = when (source) {
-        Source.FOUNDATION   -> "mealFoundation"
         Source.EXPECTATION  -> "expectationAccount"
     }
 
     fun stageOf(source: Source): String = when (source) {
-        Source.FOUNDATION   -> FuseController.STAGE_FOUNDATION
         Source.EXPECTATION  -> FuseController.STAGE_EXPECTATION
     }
 
@@ -178,8 +173,8 @@ object AuthorizedLift {
     ): FuseController.Decision {
         // ---- Eingaben pruefen, BEVOR gerechnet wird (Toni 18.08.) --------
         //
-        // NICHT BERECHENBAR IST NICHT NULL - derselbe Vertrag wie in
-        // [MealFoundation.contribute]. Ein NaN im Restbudget oder in einer
+        // NICHT BERECHENBAR IST NICHT NULL - derselbe Vertrag wie im
+        // entfallenen Mahlzeitenfundament. Ein NaN im Restbudget oder in einer
         // Kappe wuerde durch `min` durchschlagen und am Ende eine Menge
         // ergeben, die auf einer Zahl beruht, die es nicht gibt. Ein
         // negatives Restbudget kann kein Schreiber dieses Codes erzeugen -
@@ -206,18 +201,13 @@ object AuthorizedLift {
         // die Feststellung, dass es nichts zu heben gibt.
         if (floorU <= 0.0) return base
 
-        // DIE POLITIK - eine Stelle fuer beide Phasen. Der Erwartungsanteil
-        // hat seine eigene, engere Tabelle (E-034).
+        // DIE POLITIK: die Tabelle der fruehen Versorgung (E-034). Konsolidierung 2.0: die v1-Guard-Ausnahme und
+        // die allgemeine Hebungstabelle der entfallenen Quellen (Prime, Fundament) sind entfallen - ohne
+        // Portionsregeln hebt der Erwartungsanteil nichts (geschlossen).
         val frueh = early?.takeIf { source == Source.EXPECTATION }
-        val hebbar = when {
-            frueh != null -> MarkerAuthorization.liftsEarlySupply(
-                base.block, base.candidateReason, authorized, frueh.guardLift, frueh.tailLift,
-            )
-            // Konsolidierung 2.0: die v1-Guard-Ausnahme ist entfallen - ohne Portionsregeln hebt der Erwartungsanteil
-            // nichts (geschlossen, statt in die weitere Tabelle zu fallen).
-            source == Source.EXPECTATION -> false
-            else -> MarkerAuthorization.lifts(base.block, authorized)
-        }
+        val hebbar = frueh != null && MarkerAuthorization.liftsEarlySupply(
+            base.block, base.candidateReason, authorized, frueh.guardLift, frueh.tailLift,
+        )
         if (!hebbar) return base
 
         // ---- Die gemeinsamen harten Mengenkappen -------------------------
@@ -231,12 +221,11 @@ object AuthorizedLift {
         // EINE AUSNAHME, quellengebunden: die Portion der fruehen Versorgung
         // ([EarlyLift]) wird nicht von maxSMB zerteilt - ihre Obergrenze ist
         // die Portion selbst (remainingU) und die Bestandsgrenzen. KEINE
-        // Erhoehung von maxSMB: Normal-, Liveness-, Prime- und Fundamentpfad
-        // behalten die Einzeldosisgrenze unveraendert. (Konsolidierung 2.0:
-        // die zweite Ausnahme, der Phase-A-Sofortanteil, ist entfallen.)
-        val singleDoseCapU =
-            if (frueh != null) remainingU
-            else min(state.maxSmbU, remainingU)
+        // Erhoehung von maxSMB: Normal- und Livenesspfad behalten die
+        // Einzeldosisgrenze unveraendert. (Konsolidierung 2.0: ausser der
+        // Portion hebt hier nichts mehr - Sofortanteil, Prime und Fundament
+        // sind entfallen.)
+        val singleDoseCapU = remainingU
         // A2: dieselbe gemeinsame Expositionssicht wie in der
         // Kandidatensuche und im SubStep - identische Ausdrucksreihenfolge,
         // bitgleiche Werte (s. ExposureView-KDoc).
@@ -254,9 +243,10 @@ object AuthorizedLift {
         contextExposureLimitU?.let {
             caps = min(caps, it - state.capIobU - transportCommitmentU)
         }
-        // Die Schwanzkappe bindet nur OHNE Autorisierung - fuer den
-        // Erwartungsanteil immer (TAIL hart fuer d_erw, E-034).
-        if (!authorized || source == Source.EXPECTATION) tailHeadroomU?.let { caps = min(caps, it) }
+        // Die Schwanzkappe bindet den Erwartungsanteil immer (TAIL hart fuer
+        // d_erw, E-034); die Kappe der Portion reicht der Aufrufer nach G2/G4
+        // herein.
+        tailHeadroomU?.let { caps = min(caps, it) }
         // Die phasenspezifische Zusatzkappe (Prime: Onset-Huelle).
         extraCapU?.let { caps = min(caps, it) }
 

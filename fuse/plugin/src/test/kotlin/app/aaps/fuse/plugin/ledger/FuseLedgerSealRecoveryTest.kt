@@ -228,10 +228,10 @@ class FuseLedgerSealRecoveryTest {
         assertEquals(FuseLedgerStore.sha256(s), gewaehlt.content?.let { FuseLedgerStore.sha256(it) })
         val nachher = LedgerCodec.decode(org.json.JSONObject(gewaehlt.content!!))
         assertEquals(vorher.state, nachher.state, "Buchungen und Vollsicht bleiben exakt erhalten")
-        assertEquals(vorher.episodes.foundation.armedTs, nachher.episodes.foundation.armedTs, "Mahlzeiten-Huelle bleibt exakt erhalten")
-        assertEquals(vorher.episodes.foundation.totalBudgetU, nachher.episodes.foundation.totalBudgetU, 1e-12)
+        // Konsolidierung 2.0: statt der Fundament-Autorisierung die am Druck gepinnte Kredit-Huelle.
+        assertEquals(vorher.episodes.creditEnvelopeU, nachher.episodes.creditEnvelopeU, "Mahlzeiten-Huelle bleibt exakt erhalten")
         assertEquals(vorher.episodes.foundationArmedByAuthId, nachher.episodes.foundationArmedByAuthId, "Autorisierung bleibt exakt erhalten")
-        assertEquals(vorher.episodes.deliveredPhaseAU, nachher.episodes.deliveredPhaseAU, 1e-12, "Zustellmenge bleibt exakt erhalten")
+        assertEquals(vorher.episodes.primeSpentU, nachher.episodes.primeSpentU, 1e-12, "Zustellmenge bleibt exakt erhalten")
         assertEquals(vorher.episodes.evidenceCommittedU, nachher.episodes.evidenceCommittedU, 1e-12, "Evidenzbestand bleibt exakt erhalten")
         assertEquals(vorher.retiredBoundIds, nachher.retiredBoundIds, "Genau-einmal-Riegel bleibt exakt erhalten")
     }

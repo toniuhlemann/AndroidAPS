@@ -15,7 +15,6 @@ import app.aaps.fuse.core.controller.MarkerPrompt
 import app.aaps.fuse.core.controller.MarkerReauthorization
 import app.aaps.fuse.core.controller.MarkerRuecknahme
 import app.aaps.fuse.core.controller.MarkerTimeline
-import app.aaps.fuse.core.controller.MealFoundation
 import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.core.data.plugin.PluginType
 import app.aaps.core.interfaces.aps.APS
@@ -1079,6 +1078,10 @@ class FusePlugin @Inject constructor(
 
 override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
 
+    // Aus dem LETZTEN Zyklus, nicht neu gerechnet - dieselbe Aussage wie im Trail (expectationAccount.fallback).
+    override fun fuseMarkerOhneKonto(now: Long): Boolean =
+        mealMarkerActive(now) && lastOutcome?.erwartungskonto?.rueckfall != null
+
     /**
      * Die Zahlen fuer die Rueckfrage - aus dem LETZTEN Zyklus, nicht neu gerechnet. Ein zweiter Rechenweg fuer
      * dieselbe Groesse waere eine zweite Wahrheit, und der Dialog wuerde Zahlen zeigen, die der Regler so nie gesehen
@@ -1678,8 +1681,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                     // UND DIE EPISODENZAEHLER MIT (Toni 19.08., P0).
                     //
                     // Die Ledger-Zeile allein reicht nicht: primeSpentU,
-                    // mealDeliveries, evidenceCommittedU, onsetSpentU und
-                    // deliveredSinceHandoverU stehen daneben und zaehlten
+                    // mealDeliveries, evidenceCommittedU und onsetSpentU
+                    // stehen daneben und zaehlten
                     // bisher die PUBLIZIERTE Menge - also die vor dem
                     // AAPS-Intervalltor. In einem echten Fall hiess das: die ganze Huelle in der
                     // Buchfuehrung, zwei Schritte weniger in der Pumpendatenbank. FUSE hielt
@@ -1691,27 +1694,21 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                     // korrigiert werden, sonst driften sie genau hier
                     // auseinander.
                     //
-                    // UND DER UEBERTRAG FUER PHASE B ENTSTEHT DORT MIT, nicht
-                    // hier (Toni 19.08.). Hier stuende sonst eine zweite
-                    // Entscheidung neben der ersten: dieser Block weiss weder,
-                    // ob die Buchung ueberhaupt gefunden wurde, noch in
-                    // welcher Phase sie gebucht war - beides steht nur im
-                    // Ledger, und beides muss zur zurueckgedrehten Menge
-                    // passen. Deshalb liefert `revokeSettled` einen TYPISIERTEN
-                    // Ausgang, und der Grund des Beweises spielt fuer die Menge
-                    // keine Rolle.
+                    // `revokeSettled` liefert einen TYPISIERTEN Ausgang; der
+                    // Grund des Beweises spielt fuer die Menge keine Rolle.
+                    // (Konsolidierung 2.0: Phase und Phase-B-Uebertrag des
+                    // Fundaments sind entfallen.)
                     val zurueck = ledgerAdapter.revokeSettled(id)
                     if (zurueck.amountU > 0.0) aapsLogger.debug(
                         LTag.APS,
                         "FUSE: Episodenzaehler um ${zurueck.amountU} U zurueckgedreht " +
-                            "($grund, $id, Phase ${zurueck.foundationPhase}, " +
+                            "($grund, $id, " +
                             // OB DIE HUELLE MITGING: bei einer Buchung aus einer
                             // anderen oder unbewiesenen Autorisierung wird global
                             // vollstaendig zurueckgedreht, die laufende Huelle
                             // aber nicht entlastet.
-                            (if (zurueck.fundamentEntlastet) "Huelle entlastet, "
-                            else "Huelle NICHT entlastet - fremde Autorisierung, ") +
-                            "Uebertrag jetzt ${ledgerAdapter.episodes.confirmedNotSentPhaseAU} U)",
+                            (if (zurueck.fundamentEntlastet) "Huelle entlastet)"
+                            else "Huelle NICHT entlastet - fremde Autorisierung)"),
                     )
                 }
                 notSentClaim = null
@@ -1880,10 +1877,9 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             // ---- AUCH DIE HUELLENZAHLEN GEHOEREN HIERHER ------------------
             //
             // Der Runner bildet sie VOR dem Publikations-Gate. Dreht das Gate
-            // die Reservierung zurueck, sinken `deliveredPhaseAU` und
-            // `deliveredSinceHandoverU` wieder - die eingefrorene Fassung
-            // meldete dann eine Menge als verbraucht, die nie hinausging,
-            // und daneben stand die richtige, gesunkene Episodensumme.
+            // die Reservierung zurueck, sinken die Mahlzeitlieferungen wieder -
+            // die eingefrorene Fassung meldete dann eine Menge als verbraucht,
+            // die nie hinausging.
             //
             // DIESELBE Funktion wie im Runner, nur ein zweites Mal auf den
             // jetzt gueltigen Ledger angewandt. `envelopeCfgU` ist die

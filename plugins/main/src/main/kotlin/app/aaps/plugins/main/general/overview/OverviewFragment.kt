@@ -724,9 +724,14 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
             // refreshAll() ruft processButtonsVisibility() mit, also faellt der
             // Zustand auch beim Ablauf des Markers von selbst zurueck.
             val markerAn = fuseOverviewSource.fuseMarkerArmed(dateUtil.now())
+            // Rueckfall ohne Konto (Toni): angekuendigt, aber FUSE dosiert wie ohne Marker - am Knopf sichtbar.
+            val ohneKonto = markerAn && fuseOverviewSource.fuseMarkerOhneKonto(dateUtil.now())
             binding.buttonsLayout.fuseMealButton.text = rh.gs(
-                if (markerAn) app.aaps.core.ui.R.string.overview_fuse_meal_active_label
-                else app.aaps.core.ui.R.string.overview_fuse_meal_label
+                when {
+                    ohneKonto -> app.aaps.core.ui.R.string.overview_fuse_meal_no_account_label
+                    markerAn  -> app.aaps.core.ui.R.string.overview_fuse_meal_active_label
+                    else      -> app.aaps.core.ui.R.string.overview_fuse_meal_label
+                }
             )
             context?.let { ctx ->
                 // EINE Farbe fuer Text UND Symbol. Getrennt gesetzt liefen sie

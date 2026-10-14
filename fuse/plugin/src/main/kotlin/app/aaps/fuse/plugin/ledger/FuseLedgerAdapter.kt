@@ -363,47 +363,8 @@ class EpisodeBudgets {
      *  erst nach dem Ende moeglich ist. */
     var lastZeroTally: ZeroPhaseTally? = null
 
-    /**
-     * DER SOFORT-BATCH IST AUFGESCHOBEN (Nachtrag Toni 25.08. mittags):
-     * Zeitpunkt des ERSTEN Sicherheitsaufschubs dieser Autorisierung,
-     * 0 = nie aufgeschoben.
-     *
-     * WOZU: ohne ihn wuerde der Batch in dem Moment wieder anfordern, in
-     * dem der Riegel faellt - der Vertrag verlangt aber die BESTAETIGTE
-     * Erholung. Der Merker ist persistent, damit ein Neustart im Aufschub
-     * nicht in eine sofortige Freigabe faellt (die Fehlrichtung waere
-     * "mehr Insulin"). Genullt wird er mit der Autorisierung selbst und
-     * sobald der Batch vollstaendig angefordert wurde.
-     */
-    var upfrontBatchDeferredSince: Long = 0L
-
-    /**
-     * DIE IN DEN SCHRITTWEISEN PFAD UEBERFUEHRTE Sofortmenge [U]
-     * (Review 25.08. abends, Punkt 2).
-     *
-     * Nach dem Ende von Phase A gibt es KEINEN spaeten
-     * Mehr-Einheiten-Batch mehr. Was dann noch offen ist, wandert EINMAL
-     * in den bestehenden `DeferredPrime` - unter dessen gepinnter Frist -
-     * und wird hier vermerkt, damit die Sofort-Bilanz dieselbe Menge
-     * nicht ein zweites Mal als offen ausweist. Ein BUCHWECHSEL, keine
-     * Lieferung: genau EINMAL je Autorisierung.
-     */
-    var upfrontTransferredU: Double = 0.0
-
-    /**
-     * AM UEBERGANG VERFALLENE Sofortmenge [U] (Review 25.08. spaet, P1.2).
-     *
-     * Klemmt die Huelle den Uebertrag - offen ist mehr, als noch gebucht werden darf -,
-     * dann ist der Rest weder uebertragen noch offen: er
-     * ist ERLEDIGT. Frueher stand der ganze offene Betrag in
-     * [upfrontTransferredU], und der Trail meldete den ganzen Betrag als uebertragen,
-     * obwohl nur der gebuchte Teil im schrittweisen Pfad ankam. Dosierseitig war das
-     * konservativ, aber die Aussage war falsch.
-     *
-     * Beide Posten zusammen schliessen die Bilanz: was nicht geliefert
-     * und nicht uebertragen wurde, ist hier verfallen.
-     */
-    var upfrontLapsedU: Double = 0.0
+    // Konsolidierung 2.0: die Merker des Phase-A-Sofortanteils (Aufschub, Uebertrag, Verfall) sind mit dem
+    // Mahlzeitenfundament entfallen; der Codec liest sie aus alten Staenden und schreibt sie nicht mehr.
 
     /**
      * Der RUHE-BEOBACHTUNGSZUSTAND des Phase-A-Sofortbatches (Toni 25.08.
@@ -465,20 +426,19 @@ class EpisodeBudgets {
     val mealDeliveries: ArrayDeque<MealDelivery> = ArrayDeque()
 
     /**
-     * DIE LAUFENDE MAHLZEITEN-AUTORISIERUNG (Punkt 7, Toni 18.08.).
+     * DIE AM DRUCK GEPINNTE KREDIT-HUELLE [U] (Konsolidierung 2.0) - oder `null`: nicht gepinnt, dann liest der
+     * Erklaerungskredit die eingestellte Huelle.
      *
-     * WARUM DAS GANZE OBJEKT UND NICHT SIEBEN FELDER. Die sieben gepinnten
-     * Werte sind nur GEMEINSAM eine Autorisierung; einzeln sind sie Zahlen.
-     * Liegt hier das Objekt, ist [MealFoundation.Authorization.restore] die
-     * eine Stelle, die ueber Gueltigkeit entscheidet - und `valid` prueft die
-     * Beziehungen ZWISCHEN den Feldern (Ende nach Marker, Latch nicht vor
-     * Marker, Anteil in 0..1), die eine feldweise Pruefung nicht sieht.
+     * Gepinnt am Armierungspunkt der Episode (neue Episode oder Neuautorisierung), nur bei in diesem Prozess
+     * beobachtetem Druck und nicht unter "Nur Marker"; der ausdrueckliche Widerruf loescht sie. Bis zur
+     * Konsolidierung hielt das Mahlzeitenfundament diesen Wert (gepinntes Phase-A-Budget) - ein alter Stand ohne das
+     * Feld liest ihn aus dessen Autorisierung ([LedgerCodec.decodeEpisodes]).
      *
-     * RESTARTFEST, weil die Alternative eine zweite Autorisierung waere: ohne
-     * Persistenz saehe ein Neustart mitten in der Mahlzeit keine laufende
-     * Autorisierung, das Fundament faende sich unarmiert und Prime gaebe das
-     * VOLLE Budget erneut frei - dieselbe Mahlzeit ein zweites Mal.
+     * RESTARTFEST: sonst unterstellte nach einem Neustart eine nach dem Druck geaenderte Einstellung eine andere
+     * Absorption, als beim Druck autorisiert wurde.
      */
+    var creditEnvelopeU: Double? = null
+
     /**
      * DAS ERWARTUNGSKONTO DER LAUFENDEN MAHLZEIT (Testkandidat E-034) - oder
      * `null`. Eines je Autorisierung: ein neuer bewusster Marker bucht ein
@@ -495,124 +455,19 @@ class EpisodeBudgets {
      *  unbekannt); nur im Speicher, fuer den Rueckfall-Ausweis. */
     var expectationDroppedAuthId: Long = 0L
 
-    var foundation: app.aaps.fuse.core.controller.MealFoundation.Authorization =
-        app.aaps.fuse.core.controller.MealFoundation.Authorization.none()
-
-    /**
-     * Was seit dem Uebergabezeitpunkt geflossen ist [U] - die Bezahlung, gegen
-     * die Phase B ihr Soll rechnet.
-     *
-     * WARUM EIN EIGENER ZAEHLER UND NICHT `evidenceCommittedU - phaseABudget`.
-     * Die Ableitung stimmt NUR, wenn Phase A restlos ausgeschoepft wurde. Ein
-     * gemessener Fall: in Phase A floss deutlich weniger als erlaubt;
-     * die Ableitung meldete danach einen Rueckstand von fast dem Dreifachen
-     * des richtigen Werts, weil sie den nicht abgerufenen Rest von Phase A
-     * dem Fundament als Schuld anlastete. Ein Test hat das gefunden.
-     *
-     * MINDESTVERSORGUNG, NICHT ADDITIV: hier zaehlt ALLES, was seit der
-     * Uebergabe floss - auch Korrektur-SMB. Phase B legt nichts obendrauf,
-     * sie fuellt nur auf.
-     *
-     * Wird wie [primeSpentU] bei einem Gate-Reject zurueckgedreht
-     * ([resolveReservation]) und mit einer neuen Autorisierung auf 0 gesetzt.
-     */
-    var deliveredSinceHandoverU: Double = 0.0
-
-    /**
-     * WAS IN PHASE A DIESER AUTORISIERUNG GEFLOSSEN IST [U] (Codex 19.08.).
-     *
-     * WARUM EIN EIGENER ZAEHLER UND NICHT `evidenceCommittedU -
-     * deliveredSinceHandoverU`. Die Ableitung sah richtig aus und ist es
-     * nicht: die beiden Zaehler haben VERSCHIEDENE LEBENSDAUERN. In
-     * [FuseCycleRunner.buche] wachsen sie unter unabhaengigen Bedingungen -
-     * `deliveredSinceHandoverU` an der Fundament-PHASE, `evidenceCommittedU`
-     * an einer offenen EVIDENZEPISODE. Beim zweiten Markerdruck innerhalb des
-     * 360-Minuten-Deckels liefert `MarkerEpisodeGate` `episodeId = 0`
-     * (`MARKER_ALREADY_CONSUMED`), waehrend das Fundament sehr wohl armiert
-     * wird - die Differenz wird dann NEGATIV, ohne dass irgendetwas kaputt
-     * ist. Ein Riegel darauf haette eine gesunde zweite Mahlzeit in den
-     * RECOVERY_HOLD geschickt (Test:
-     * `ohne Evidenzepisode waechst nur der Bezahlstand`).
-     *
-     * Und die Gegenrichtung ist genauso schief: eine Evidenzepisode kann ZWEI
-     * Autorisierungen ueberspannen, dann traegt `evidenceCommittedU` Mengen
-     * einer fremden Mahlzeit.
-     *
-     * Dieser Zaehler hat dagegen exakt die Lebensdauer der Autorisierung: er
-     * wird mit ihr genullt, mit ihr persistiert, und bei einem bewiesenen
-     * Nicht-Senden zusammen mit den uebrigen Buechern zurueckgedreht. Erst
-     * dadurch oeffnet sich der Phase-A-Rueckstand, aus dem der Uebertrag
-     * seine Wirkung bezieht.
-     *
-     * ZUSAMMEN MIT [deliveredSinceHandoverU] ist er das, was aus DIESEM
-     * Budget geflossen ist - die Groesse, die der Runner an `plan()` gibt.
-     */
-    var deliveredPhaseAU: Double = 0.0
-
-    /**
-     * DIE BEWIESENE PHASE-A-LUECKE dieser Autorisierung [U] (Toni 19.08.).
-     *
-     * WAS SIE IST: die Summe der Mengen, die in PHASE A gebucht waren, fuer
-     * die ein Nicht-Sende-BEWEIS vorliegt und die deshalb aus allen Buechern
-     * zurueckgedreht wurden. Phase B darf genau diesen Betrag zusaetzlich
-     * liefern - s. [app.aaps.fuse.core.controller.MealFoundation.plan].
-     *
-     * WAS SIE NICHT IST, und das ist die ganze Grenze:
-     *
-     *   kein UNGENUTZTES Budget. Hat Prime seine Huelle nicht abgerufen
-     *   (`NO_DEMAND`, Guard, kein Bedarf), war das eine ENTSCHEIDUNG - sie
-     *   nachzuholen hiesse, jede Zurueckhaltung spaeter zu kassieren.
-     *
-     *   kein UNKLARER Ausgang. Ohne Beweis bleibt die Menge als geliefert
-     *   gebucht, und dann entsteht hier nichts. Die Fehlerrichtung bleibt
-     *   damit dieselbe wie ueberall im Ledger: lieber zu wenig nachliefern
-     *   als zu viel.
-     *
-     * SIE WAECHST NUR IN [revokeSettled], und zwar in DERSELBEN
-     * Zustandsaenderung, die die fuenf Buecher zurueckdreht. Der Grund ist
-     * eine Konsistenzbedingung, keine Bequemlichkeit: eine Erhoehung ohne
-     * zurueckgedrehte Buecher waere zusaetzliches Insulin ohne Gegenbuchung.
-     * Deshalb entscheidet auch NICHT der Aufrufer anhand einer Grundliste,
-     * ob sie waechst - er weiss gar nicht, ob die Buchung gefunden wurde.
-     *
-     * Zurueckgesetzt wird sie mit jeder NEUEN Autorisierung und bei der
-     * ausdruecklichen RUECKNAHME - beides im Runner, an genau den Stellen,
-     * die auch [deliveredSinceHandoverU] nullen. Ein Uebertrag ohne die
-     * Episode, aus der er stammt, waere ein Freibrief fuer die naechste.
-     */
-    var confirmedNotSentPhaseAU: Double = 0.0
-
-    /**
-     * Durch den harten gemessenen Abwaertsriegel in Phase A nicht mehr vor
-     * der Uebergabe erreichbare Versorgung [U].
-     *
-     * Anders als [confirmedNotSentPhaseAU] ist das kein Transportbeweis,
-     * sondern ein Sicherheitsaufschub. Der Wert allein gibt nichts frei; erst
-     * die aktuelle, typisierte Erholungspruefung in Phase B macht einen noch
-     * offenen Anteil wirksam. Neue Autorisierung und Widerruf setzen ihn auf
-     * null, damit keine Mahlzeit den Aufschub ihrer Vorgaengerin erbt.
-     */
-    var descentDeferredPhaseAU: Double = 0.0
+    // Konsolidierung 2.0: die Mahlzeiten-Autorisierung des Fundaments und ihre Buecher (Bezahlstaende Phase A/B,
+    // bewiesene Phase-A-Luecke, Abwaerts-Aufschub) sind mit ihm entfallen. Der Codec liest den Block alter Staende
+    // weiter (Pruefung und Kredit-Huelle) und schreibt ihn nicht mehr.
 
     /**
      * DER MARKER-PRIME-AUFSCHUB (Punkt 6, Toni 22.08.) - restartfest, mit
      * BEIM MARKER gepinntem Horizont und gepinnter Ablauffrist. Offen heisst
      * AUTORISIERT, nicht versprochen; der Verfall ist typisiert und bleibt
-     * fuer den Trail stehen. Getrennt von [descentDeferredPhaseAU]: jener
-     * ist ein Phase-A-BESTAND fuer Phase B, dieser ein zurueckgehaltener
-     * FLUSS mit eigener Frist, der auch NACH dem Fundamentfenster noch
-     * schrittweise fliessen darf.
+     * fuer den Trail stehen. Konsolidierung 2.0: Rueckhalt und Freigabe sind
+     * entfallen; Pin, Frist und Horizont tragen die Kontopause und risk60.
      */
     var deferredPrime: app.aaps.fuse.core.controller.DeferredPrime.State =
         app.aaps.fuse.core.controller.DeferredPrime.State()
-
-    /**
-     * Alles, was NACH dem Fundamentfenster unter einem gepinnten Aufschub
-     * floss - Teil der Vertraege 6+7: auch spaete normale SMBs und
-     * Freigabeschritte zehren von derselben gepinnten Huelle. Ohne diesen
-     * Zaehler saehe die Huellenrechnung nach dem Fenster nichts mehr.
-     */
-    var postFoundationDeliveredU: Double = 0.0
 
     /**
      * RESTARTFESTE Wiederbewaffnungs-Sperre des Liveness-Kanals: bis zu
@@ -743,7 +598,6 @@ class EpisodeBudgets {
         /** 0 = nicht in [correctionDeliveries] gebucht (symmetrisch zu
          *  [mealTs]). */
         val correctionTs: Long = 0L,
-        val foundationPhase: app.aaps.fuse.core.controller.MealFoundation.Phase,
         /** s. [Reservation.authId] - die Zuordnung ueberlebt bis zum Beweis. */
         val authId: String? = null,
         /** E-034: die publizierten Konto-Anteile fuer den Storno beim Beweis
@@ -776,15 +630,7 @@ class EpisodeBudgets {
          * Autorisierung darf die NEUE nicht entlasten.
          */
         val authId: String? = null,
-        /**
-         * EINMAL BESTIMMT, NICHT BEIM AUFLOESEN GERATEN. Die Phase haengt am
-         * Uebergabeanker, und der kann sich zwischen Buchung und Aufloesung
-         * bewegen (eine CLEARANCE verschiebt ihn, bis er gelatcht ist). Wuerde
-         * `resolveReservation` sie neu ableiten, drehte es womoeglich einen
-         * anderen Zaehler zurueck als den belasteten.
-         */
-        val foundationPhase: app.aaps.fuse.core.controller.MealFoundation.Phase =
-            app.aaps.fuse.core.controller.MealFoundation.Phase.NONE,
+        // Konsolidierung 2.0: die Fundament-Phase der Buchung (Rueckbuchung der Bezahlstaende) ist entfallen.
     ) {
         /**
          * E-034: die Anteile dieser Buchung im Erwartungskonto der
@@ -815,42 +661,26 @@ class EpisodeBudgets {
 data class RetiredBoundId(val temporaryId: Long?, val pumpId: Long?)
 
 /**
- * WAS EIN BEWIESENES NICHT-SENDEN ZURUECKGEDREHT HAT - Menge UND Phase in
- * EINEM Typ (Toni 19.08.).
+ * WAS EIN BEWIESENES NICHT-SENDEN ZURUECKGEDREHT HAT (Toni).
  *
- * WARUM NICHT WEITER EIN NACKTES `Double`. Der Aufrufer muesste die Phase
- * sonst selbst aus `episodes.settled` lesen - und genau das kann er zum
- * richtigen Zeitpunkt nicht mehr: [FuseLedgerAdapter.revokeSettled] loescht
- * die Ablage als ERSTES, damit kein zweiter Aufruf dieselbe Menge ein zweites
- * Mal freigibt. Ein Lesen davor wiederum bekaeme die Phase auch dann, wenn
- * das Zurueckdrehen anschliessend an der Mengenprobe scheitert - also einen
- * Uebertrag ohne Gegenbuchung.
- *
- * Zwei Zahlen aus verschiedenen Momenten zu paaren war in diesem Projekt
- * schon mehrfach die Fehlerquelle; ein Typ, der beide zusammen fuehrt, macht
- * den Fehler unmoeglich statt ihn zu verbieten.
+ * Konsolidierung 2.0: die Phase der Buchung (Phase A/B des Mahlzeitenfundaments) ist mit dem Fundament entfallen.
  *
  * @param amountU die exakt zurueckgedrehte Menge, 0 wenn nichts geschah.
- * @param foundationPhase die beim BUCHEN festgehaltene Phase - nicht eine
- *   jetzt neu abgeleitete. Zwischen Buchung und Beweis kann eine CLEARANCE
- *   den Uebergabeanker verschoben haben.
  * @param fundamentEntlastet ob AUCH die autorisierungsgebundenen Buecher
  *   mitgingen. Bei einer Buchung aus einer anderen (oder unbewiesenen)
  *   Autorisierung wird global vollstaendig zurueckgedreht, die laufende
  *   Huelle aber nicht entlastet - dann ist [amountU] positiv und dieses
- *   Feld false. Ohne die Unterscheidung liesse sich aus dem Ergebnis nicht
- *   ablesen, ob der Phase-A-Uebertrag entstanden ist.
+ *   Feld false.
  */
 data class RevokeResult(
     val amountU: Double,
-    val foundationPhase: app.aaps.fuse.core.controller.MealFoundation.Phase,
     val fundamentEntlastet: Boolean = false,
 ) {
 
     companion object {
 
         /** Nichts zuzuordnen - der haeufigste und sicherste Ausgang. */
-        val NONE = RevokeResult(0.0, app.aaps.fuse.core.controller.MealFoundation.Phase.NONE)
+        val NONE = RevokeResult(0.0)
     }
 }
 
@@ -2133,7 +1963,6 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             if (proposalId != null && bleibt > 0.0 && nachgetragen && korrekturNachgetragen) EpisodeBudgets.Settled(
                 proposalId = proposalId, amountU = bleibt, prime = r.prime,
                 onset = r.onset, mealTs = r.mealTs, correctionTs = r.correctionTs,
-                foundationPhase = r.foundationPhase,
                 // Die Zuordnung wandert MIT - der Beweis kommt spaeter, und
                 // dann ist womoeglich schon eine andere Autorisierung aktiv.
                 authId = r.authId,
@@ -2178,20 +2007,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             if (episodes.evidenceCommittedU < vorherCommitted - 1e-12)
                 episodes.evidenceCommitmentRevision += 1
         }
-        // Phase B nur, wenn die Menge dort gebucht WURDE - nach der beim
-        // Buchen festgehaltenen Phase, nicht nach einer neu abgeleiteten.
-        // Zwischen Buchung und Aufloesung kann eine CLEARANCE den
-        // Uebergabeanker verschoben haben; eine Neuableitung drehte dann
-        // womoeglich einen anderen Zaehler zurueck als den belasteten.
-        if (r.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B)
-            episodes.deliveredSinceHandoverU =
-                (episodes.deliveredSinceHandoverU - frei).coerceAtLeast(0.0)
-        // UND DIE PHASE-A-SEITE GENAUSO. Beide Bezahlstaende sind Buecher
-        // derselben Autorisierung; nur einen zurueckzudrehen liesse den
-        // Phase-A-Rueckstand falsch aussehen - und genau daraus bezieht der
-        // Uebertrag seine Wirkung.
-        if (r.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_A)
-            episodes.deliveredPhaseAU = (episodes.deliveredPhaseAU - frei).coerceAtLeast(0.0)
+        // Konsolidierung 2.0: die Bezahlstaende der Fundament-Phasen sind mit dem Fundament entfallen.
         if (r.mealTs > 0L) {
             // Den EIGENEN Eintrag zurueckdrehen, nicht den letzten: zwei
             // Zyklen koennen denselben sourceTs tragen, wenn ein Punkt
@@ -2289,8 +2105,8 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // Vorgang ist derselbe, nur eine Stufe spaeter bewiesen.
         // ---- GEHOERT DIESE BUCHUNG NOCH ZUR LAUFENDEN AUTORISIERUNG? ----
         //
-        // `primeSpentU`, `deliveredSinceHandoverU` und der Phase-B-Uebertrag
-        // gehoeren zur AUTORISIERUNG: sie werden beim Bewaffnen genullt.
+        // `primeSpentU` gehoert zur AUTORISIERUNG: er wird beim Bewaffnen genullt (Konsolidierung 2.0: die
+        // Bezahlstaende des Fundaments und sein Uebertrag sind entfallen).
         // Seit die Folge "Abbruch -> neuer Marker" eine neue volle Huelle
         // eroeffnet, kann der Nicht-Sende-Beweis eines ALTEN Auftrags
         // eintreffen, waehrend die NEUE Huelle schon belastet ist - und
@@ -2338,10 +2154,6 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             if (episodes.evidenceCommittedU < vorherCommitted - 1e-12)
                 episodes.evidenceCommitmentRevision += 1
         }
-        if (s.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B &&
-            gehoertZurLaufenden
-        ) episodes.deliveredSinceHandoverU =
-            (episodes.deliveredSinceHandoverU - menge).coerceAtLeast(0.0)
         // DIE SERIENZEILE FAELLT MIT (Variante 2): ein bewiesenes
         // Nicht-Senden darf den Deckel nicht weiter belasten. Gesucht wird
         // ueber die KENNUNG, nicht ueber den Zeitstempel - eine Stufe
@@ -2351,58 +2163,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
             if (ci >= 0) episodes.correctionDeliveries.removeAt(ci)
         }
 
-        // ---- UND DER UEBERTRAG FUER PHASE B (Toni 19.08.) -----------------
-        //
-        // ER ENTSTEHT HIER UND NIRGENDWO SONST, im selben Zug wie die fuenf
-        // Buecher und noch VOR dem verifizierten Persist. Der Aufrufer
-        // entscheidet nichts: der Vertrag ist "Beweis liegt vor UND die
-        // Buchung wurde exakt gefunden UND ihre GESPEICHERTE Phase ist
-        // PHASE_A" - und die letzten beiden Teile weiss nur diese Methode.
-        //
-        // KEINE GRUNDLISTE. Der erste Bauauftrag nannte `CONSTRAINT_ZERO` und
-        // `GATE_BLOCKED`; das haette ausgerechnet den GEMESSENEN Anlass
-        // verfehlt - jener Livefall ist `BOLUS_IN_QUEUE` (Menge nach
-        // Constraints positiv, Apply-Block nie betreten). Welcher Beweis es
-        // war, ist fuer die MENGE ohne Bedeutung; entscheidend ist, DASS
-        // [app.aaps.fuse.core.ledger.NotSentProof] einen sicheren geliefert
-        // hat - und ohne einen solchen wird diese Methode gar nicht gerufen.
-        //
-        // NUR PHASE A. Eine zurueckgedrehte Phase-B-Menge braucht keinen
-        // Uebertrag: `deliveredSinceHandoverU` ist eine Zeile hoeher schon
-        // gesunken, das Soll steht damit von selbst wieder offen. Ein
-        // Uebertrag obendrauf waere die Menge ZWEIMAL.
-        //
-        // GEDECKELT AM GESAMTBUDGET der laufenden Autorisierung. Ohne
-        // Autorisierung gibt es kein Phase B und damit auch nichts zu
-        // uebertragen - dann bleibt der Zaehler 0 statt einen Betrag fuer eine
-        // kuenftige Mahlzeit aufzubewahren.
-        if (s.foundationPhase == app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_A) {
-            // ZUERST DAS BUCH, DANN DER UEBERTRAG - beide in diesem Zug.
-            // Ohne das Zurueckdrehen bliebe der Phase-A-Rueckstand 0, und der
-            // gerade entstandene Uebertrag waere auf der Stelle wirkungslos:
-            // der effektive Rest ist das MINIMUM aus Zaehler und Rueckstand.
-            // AUCH DER UEBERTRAG GEHOERT ZUR AUTORISIERUNG: aus einem alten,
-            // nicht gesendeten Auftrag darf in der NEUEN Huelle kein
-            // Phase-B-Uebertrag entstehen.
-            //
-            // ABER NICHT MIT `return`. Hier stand ein vorzeitiges Ende - und
-            // das brach den Vorgang MITTEN DRIN ab: `settled` war entfernt,
-            // die globalen Zaehler und die Serienzeile waren schon gesenkt,
-            // die MAHLZEITENZEILE aber blieb stehen. Genau das
-            // Auseinanderlaufen der Buecher, gegen das dieser ganze Block
-            // gebaut ist - und obendrein meldete die Funktion
-            // [RevokeResult.NONE], also "nichts geschehen", nachdem sie
-            // Werte veraendert hatte.
-            //
-            // Uebersprungen wird deshalb NUR das, was zur Autorisierung
-            // gehoert. Die globale Rueckbuchung laeuft in jedem Fall zu Ende.
-            if (gehoertZurLaufenden) {
-                episodes.deliveredPhaseAU = (episodes.deliveredPhaseAU - menge).coerceAtLeast(0.0)
-                val deckel = episodes.foundation.let { if (it.valid) it.totalBudgetU else 0.0 }
-                episodes.confirmedNotSentPhaseAU =
-                    (episodes.confirmedNotSentPhaseAU + menge).coerceIn(0.0, deckel)
-            }
-        }
+        // Konsolidierung 2.0: der Phase-B-Uebertrag (bewiesene Phase-A-Luecke) ist mit dem Fundament entfallen.
         // Der Index steht schon fest - gesucht wurde UEBER DIE KENNUNG, nicht
         // ueber den Zeitstempel: zum Zeitpunkt dieses Aufrufs hat der Runner
         // laengst eine neue Zeile gebucht, und `indexOfLast { it.ts == ... }`
@@ -2417,9 +2178,8 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         if (idx >= 0) episodes.mealDeliveries.removeAt(idx)
         // DER RUECKGABEWERT SAGT BEIDES: die global zurueckgedrehte Menge -
         // die ist immer die volle - UND ob die autorisierungsgebundenen
-        // Buecher mitgingen. Ohne das zweite Feld liesse sich aus dem
-        // Ergebnis nicht ablesen, ob der Phase-A-Uebertrag entstanden ist.
-        return RevokeResult(menge, s.foundationPhase, fundamentEntlastet = gehoertZurLaufenden)
+        // Buecher mitgingen.
+        return RevokeResult(menge, fundamentEntlastet = gehoertZurLaufenden)
     }
 
     fun onPublished(

@@ -68,9 +68,6 @@ class FuseStateExportTest {
         reason: String? = null,
         capMin: Int = 360,
         denial: String? = null,
-        foundation: app.aaps.fuse.core.controller.MealFoundation.Snapshot =
-            app.aaps.fuse.core.controller.MealFoundation.Snapshot.none(),
-        manualBolusAfterMarkerU: Double? = null,
         shadow: TurnResponseShadow.Report? = null,
         upfrontChain: FuseCycleRunner.UpfrontChain? = null,
     ) = FuseCycleRunner.Outcome(
@@ -93,8 +90,6 @@ class FuseStateExportTest {
         evidenceEpisodeCapMin = capMin,
         evidencePhase = phase, evidenceStockMgdl = stockMgdl, evidenceReason = reason,
         evidenceEpisodeDenial = denial,
-        mealFoundation = foundation,
-        manualBolusAfterMarkerU = manualBolusAfterMarkerU,
         turnResponseShadow = shadow,
         upfrontChain = upfrontChain,
     )
@@ -1387,40 +1382,12 @@ class FuseStateExportTest {
 
     // ---- Mahlzeitenfundament (Punkt 12, Toni 18.08.) ----------------------
 
-    private val fT0 = 1_786_000_000_000L
+    // Konsolidierung 2.0: das Fundament ist entfallen. Der Block steht bis Schritt 5 mit seinen Feldnamen und den
+    // Werten "kein Fundament"; die Wertproben der Phasen, Uebertraege und Sollgroessen sind mit ihm entfallen.
 
-    private fun fAuth(anteil: Double = 0.75) = app.aaps.fuse.core.controller.MealFoundation.arm(
-        markerTs = fT0, foundationEnabled = true, totalBudgetU = 3.0, phaseAShare = anteil, phaseAUpfrontShare = 0.0,
-        primeWindowMin = 15, wallCeilingMin = 45, pressObservedInThisProcess = true, primeDeclinedByUser = false, markerAuthorized = true, phaseBUntilMin = 60,
-    )
-
-    private fun fSnapshot(
-        minuten: Double = 30.0,
-        ausBudgetU: Double = 2.25,
-        seitUebergabeU: Double = 0.10,
-        uebertragU: Double = 0.0,
-        abwaertsU: Double = 0.0,
-        abwaertsEligibility: app.aaps.fuse.core.controller.DescentDeferredCarry.Eligibility =
-            app.aaps.fuse.core.controller.DescentDeferredCarry.Eligibility.NO_DEFERRED,
-    ) = app.aaps.fuse.core.controller.MealFoundation.snapshot(
-        fAuth(), fT0 + (minuten * 60_000).toLong(), 0L,
-        deliveredFromBudgetU = ausBudgetU, deliveredSinceHandoverU = seitUebergabeU,
-        deliveredPhaseAU = ausBudgetU - seitUebergabeU,
-        confirmedNotSentPhaseAU = uebertragU,
-        descentDeferredPhaseAU = abwaertsU,
-        descentCarryEligibility = abwaertsEligibility,
-        bolusStepU = 0.05,
-    )
-
-    /**
-     * Der Abschnitt aus dem ECHTEN Export - nicht aus einer nachgebauten
-     * Serialisierung. Der erste Wurf dieses Tests baute die JSON-Form selbst
-     * nach und haette damit nichts geprueft: waere im Zyklusexport ein Feld
-     * weggefallen, waere er gruen geblieben. Ein Test, der eine Kopie der zu
-     * pruefenden Logik enthaelt, sichert nur sich selbst ab.
-     */
-    private fun fundament(f: app.aaps.fuse.core.controller.MealFoundation.Snapshot) =
-        record(outcome(foundation = f)).getJSONObject("mealFoundation")
+    /** Der Abschnitt aus dem ECHTEN Export - nicht aus einer nachgebauten Serialisierung. */
+    private fun fundament(o: FuseCycleRunner.Outcome = outcome()) =
+        record(o).getJSONObject("mealFoundation")
 
     /**
      * UEBERTRAGEN UND VERFALLEN SIND ZWEI GROESSEN (Review 25.08. spaet,
@@ -1429,225 +1396,71 @@ class FuseStateExportTest {
      */
     @Test
     fun `Uebertrag und Verfall stehen getrennt im Export`() {
-        val o = record(
+        val o = fundament(
             outcome().copy(
                 phaseAUpfrontTransferredU = 2.40,
                 phaseAUpfrontLapsedU = 0.20,
             )
-        ).getJSONObject("mealFoundation")
+        )
         assertEquals(2.40, o.getDouble("phaseAUpfrontTransferredU"), 1e-9)
         assertEquals(0.20, o.getDouble("phaseAUpfrontLapsedU"), 1e-9)
         // Und andersherum, damit keine Vertauschung durchrutscht.
-        val v = record(
+        val v = fundament(
             outcome().copy(
                 phaseAUpfrontTransferredU = 0.20,
                 phaseAUpfrontLapsedU = 2.40,
             )
-        ).getJSONObject("mealFoundation")
+        )
         assertEquals(0.20, v.getDouble("phaseAUpfrontTransferredU"), 1e-9)
         assertEquals(2.40, v.getDouble("phaseAUpfrontLapsedU"), 1e-9)
     }
 
-    /**
-     * TONIS FELDLISTE, Feld fuer Feld (Punkt 12).
-     *
-     * Nicht weil ein fehlendes Feld den Regler kaputt macht, sondern weil das
-     * Offline-Replay und jede spaetere Feldauswertung nur so gut sind wie
-     * das, was exportiert wird. Ein stilles Wegfallen beim naechsten
-     * Refactoring wuerde erst auffallen, wenn jemand Wochen spaeter eine
-     * Frage nicht mehr beantworten kann.
-     */
+    /** TONIS FELDLISTE, Feld fuer Feld (Punkt 12) - bis Schritt 5 bleibt jedes Feld im Trail, neutral belegt. */
     @Test
-    fun `der Fundament-Export traegt jedes geforderte Feld`() {
-        val o = fundament(fSnapshot())
+    fun `der Fundament-Block traegt jedes Feld`() {
+        val o = fundament()
         for (feld in listOf(
             "totalBudgetU", "phaseABudgetU", "phaseBBudgetU",
             "armedTs", "effectiveHandoverTs", "latchedHandoverTs", "endTs",
             "phase",
             "deliveredSinceHandoverU",
-            // Der Uebertrags-Block (19.08.): Rohzaehler, autoritative
-            // Phase-A-Lieferung, effektiver Rest und die daraus folgende
-            // Erlaubnis. Ohne ALLE VIER ist die Ableitung aus dem Trail
-            // nicht nachrechenbar - dann sieht man Ergebnis und Rohwert,
-            // aber nicht die Groesse dazwischen.
             "confirmedNotSentPhaseAU", "deliveredPhaseAU",
             "effectiveCarryU", "descentDeferredPhaseAU", "descentCarryEligibility",
             "manualBolusAfterMarkerU", "effectiveDescentCarryU", "phaseBAllowanceU",
             "plannedTotalU", "backlogU", "dueU", "remainingInWindowU", "binding",
             "effectiveWindowMin", "effectiveRateUPerMin",
-            // v28: der Sofortanteil - angefordert, publiziert und
-            // pumpenbestaetigt bleiben getrennte Begriffe.
             "phaseAUpfrontShare", "phaseAUpfrontPlannedU", "phaseARemainderU",
             "phaseAUpfrontRequestedU", "phaseAUpfrontPublishedU",
             "phaseAUpfrontConfirmedU", "phaseAUpfrontPendingU",
             "phaseAUpfrontState", "phaseAUpfrontProposalId",
-            // Review 25.08. spaet: uebertragen und verfallen sind ZWEI
-            // Groessen - "uebertragen" darf nur heissen, was der
-            // schrittweise Pfad wirklich aufgenommen hat.
             "phaseAUpfrontTransferredU", "phaseAUpfrontLapsedU",
+            "preFoundationSmbU", "preFoundationBlock", "foundationLiftU",
         )) {
             assertTrue(o.has(feld), "$feld fehlt im Export")
         }
         // confirmed wird NICHT behauptet: FUSE fuehrt keine
         // Pumpenbestaetigungs-Buchfuehrung je Menge.
-        assertTrue(fundament(fSnapshot()).isNull("phaseAUpfrontConfirmedU"))
-    }
-
-    /** Die Werte muessen stimmen, nicht nur dastehen - ein Export voller
-     *  Nullen bestuende den Feldtest oben. */
-    @Test
-    fun `der Fundament-Export traegt die richtigen Werte`() {
-        val o = fundament(fSnapshot())
-        assertTrue(o.getBoolean("armed"))
-        assertEquals(fT0, o.getLong("armedTs"))
-        assertEquals(3.0, o.getDouble("totalBudgetU"), 1e-9)
-        assertEquals(2.25, o.getDouble("phaseABudgetU"), 1e-9)
-        assertEquals(0.75, o.getDouble("phaseBBudgetU"), 1e-9)
-        assertEquals(fT0 + 15 * 60_000L, o.getLong("effectiveHandoverTs"))
-        assertEquals(0L, o.getLong("latchedHandoverTs"), "noch nicht gelatcht")
-        assertEquals(fT0 + 60 * 60_000L, o.getLong("endTs"))
-        assertEquals("PHASE_B", o.getString("phase"))
-        assertEquals(0.10, o.getDouble("deliveredSinceHandoverU"), 1e-9)
-        assertEquals(45, o.getInt("effectiveWindowMin"), "T+15 bis T+60")
-        assertEquals(0.75 / 45.0, o.getDouble("effectiveRateUPerMin"), 1e-9)
-    }
-
-    @Test
-    fun `manuelle Deckung nach Marker steht mit dem Sperrgrund im Trail`() {
-        val foundation = fSnapshot(
-            ausBudgetU = 1.35,
-            seitUebergabeU = 0.0,
-            abwaertsU = 1.65,
-            abwaertsEligibility = app.aaps.fuse.core.controller.DescentDeferredCarry.Eligibility.MANUAL_BOLUS_AFTER_MARKER,
-        )
-        val o = record(outcome(foundation = foundation, manualBolusAfterMarkerU = 3.0))
-            .getJSONObject("mealFoundation")
-
-        assertEquals(3.0, o.getDouble("manualBolusAfterMarkerU"), 1e-9)
-        assertEquals("MANUAL_BOLUS_AFTER_MARKER", o.getString("descentCarryEligibility"))
-        assertEquals(0.0, o.getDouble("effectiveDescentCarryU"), 1e-9)
-        assertEquals(0.75, o.getDouble("phaseBAllowanceU"), 1e-9)
+        assertTrue(o.isNull("phaseAUpfrontConfirmedU"))
     }
 
     /**
-     * DER UEBERTRAG IST AUS DEM TRAIL NACHRECHENBAR (Codex 19.08., P1).
+     * OHNE FUNDAMENT STEHT DER ABSCHNITT TROTZDEM DA - mit den Werten "kein Fundament".
      *
-     * DER BEFUND. Exportiert waren Rohzaehler, effektiver Rest und Erlaubnis -
-     * aber nicht, WIEVIEL in Phase A tatsaechlich floss. Genau diese Groesse
-     * steht zwischen Roh und Effektiv:
-     *
-     *     effectiveCarry = min(rawCarry, max(0, phaseABudget - deliveredPhaseA))
-     *
-     * Ohne sie liesse sich im Replay nicht entscheiden, ob ein kleiner
-     * effektiver Uebertrag daher kommt, dass Prime nachgeholt hat, oder aus
-     * einem Rechenfehler.
-     *
-     * Der Aufbau: 2,25 U Phase-A-Budget, 1,80 U davon geflossen, Rohzaehler
-     * 0,30 U. Rueckstand 0,45 U, also gilt der volle Rohzaehler.
+     * `armed: false` ist eine Aussage; ein fehlender Abschnitt waere von "der Zyklus kam nicht so weit" nicht zu
+     * unterscheiden. Die manuelle Deckung steht wie bisher ohne Autorisierung auf 0, im Abbruch unbekannt.
      */
     @Test
-    fun `der Export macht die Uebertrags-Ableitung nachrechenbar`() {
-        val o = fundament(fSnapshot(ausBudgetU = 1.90, seitUebergabeU = 0.10, uebertragU = 0.30))
-
-        assertEquals(0.30, o.getDouble("confirmedNotSentPhaseAU"), 1e-9, "der rohe Beweiszaehler")
-        assertEquals(1.80, o.getDouble("deliveredPhaseAU"), 1e-9, "was in Phase A wirklich floss")
-        assertEquals(0.10, o.getDouble("deliveredSinceHandoverU"), 1e-9)
-
-        // UND DIE ABLEITUNG GEHT AUF - allein aus den exportierten Zahlen.
-        val phaseABudget = o.getDouble("phaseABudgetU")
-        val rueckstand = maxOf(0.0, phaseABudget - o.getDouble("deliveredPhaseAU"))
-        val effektiv = minOf(o.getDouble("confirmedNotSentPhaseAU"), rueckstand)
-        assertEquals(
-            effektiv, o.getDouble("effectiveCarryU"), 1e-9,
-            "der Trail MUSS die eigene Rechnung tragen",
-        )
-        assertEquals(
-            minOf(o.getDouble("phaseBBudgetU") + effektiv, o.getDouble("totalBudgetU")),
-            o.getDouble("phaseBAllowanceU"), 1e-9,
-            "und die Erlaubnis daraus",
-        )
-    }
-
-    /**
-     * DIE GEGENPROBE: hat Prime nachgeholt, faellt der effektive Rest auf 0 -
-     * der Rohzaehler bleibt stehen. Erst BEIDE Zahlen zusammen sagen, was
-     * passiert ist.
-     */
-    @Test
-    fun `ein nachgeholter Uebertrag ist im Trail als solcher erkennbar`() {
-        val o = fundament(fSnapshot(ausBudgetU = 2.35, seitUebergabeU = 0.10, uebertragU = 0.30))
-        assertEquals(2.25, o.getDouble("deliveredPhaseAU"), 1e-9, "Phase A ist voll geliefert")
-        assertEquals(0.30, o.getDouble("confirmedNotSentPhaseAU"), 1e-9, "der Beweis steht weiter da")
-        assertEquals(0.0, o.getDouble("effectiveCarryU"), 1e-9, "wirkt aber nicht mehr")
-        assertEquals(
-            o.getDouble("phaseBBudgetU"), o.getDouble("phaseBAllowanceU"), 1e-9,
-            "Phase B rechnet wieder mit ihrem Teilbudget",
-        )
-    }
-
-    @Test
-    fun `der Sicherheitsaufschub steht roh mit Urteil und wirksamem Anteil im Trail`() {
-        val o = fundament(
-            fSnapshot(
-                ausBudgetU = 1.35,
-                seitUebergabeU = 0.0,
-                abwaertsU = 1.65,
-                abwaertsEligibility = app.aaps.fuse.core.controller.DescentDeferredCarry.Eligibility.ELIGIBLE,
-            ),
-        )
-        assertEquals(1.65, o.getDouble("descentDeferredPhaseAU"), 1e-9)
-        assertEquals("ELIGIBLE", o.getString("descentCarryEligibility"))
-        assertEquals(0.90, o.getDouble("effectiveDescentCarryU"), 1e-9)
-        assertEquals(1.65, o.getDouble("phaseBAllowanceU"), 1e-9)
-    }
-
-    /**
-     * OHNE AUTORISIERUNG STEHT DER ABSCHNITT TROTZDEM DA.
-     *
-     * `armed: false` ist eine Aussage; ein fehlender Abschnitt waere von "der
-     * Zyklus kam nicht so weit" nicht zu unterscheiden. Solange arm() nicht
-     * verdrahtet ist, ist das der Dauerzustand im Feld - also genau der Fall,
-     * den man beim Draufschauen richtig lesen koennen muss.
-     */
-    @Test
-    fun `ohne Autorisierung steht armed false statt nichts`() {
-        val o = fundament(app.aaps.fuse.core.controller.MealFoundation.Snapshot.none())
+    fun `ohne Fundament steht armed false statt nichts`() {
+        val o = fundament()
         assertFalse(o.getBoolean("armed"))
         assertEquals("NONE", o.getString("phase"))
         assertEquals(0.0, o.getDouble("totalBudgetU"), 1e-9)
+        assertEquals(0.0, o.getDouble("dueU"), 1e-9)
+        assertEquals(0.0, o.getDouble("foundationLiftU"), 1e-9)
+        assertEquals("NO_DEFERRED", o.getString("descentCarryEligibility"))
+        assertEquals(0.0, o.getDouble("manualBolusAfterMarkerU"), 1e-9)
         assertTrue(o.isNull("binding"))
-    }
-
-    /**
-     * SOLL, RUECKSTAND UND dueU SIND DREI GROESSEN, nicht eine in drei Formen.
-     *
-     * `dueU` ist gerastert (ein Pumpenschritt) und gedeckelt. Aus ihm allein
-     * ist nicht ablesbar, ob das Fundament knapp daneben oder weit hinterher
-     * liegt - beides ergibt einen Schritt.
-     */
-    @Test
-    fun `Soll Rueckstand und dueU sind im Export unterscheidbar`() {
-        val o = fundament(fSnapshot(minuten = 60.0, seitUebergabeU = 0.0))
-        assertEquals(0.75, o.getDouble("plannedTotalU"), 1e-9, "Soll: das volle Teilbudget")
-        assertEquals(0.75, o.getDouble("backlogU"), 1e-9, "Rueckstand: alles davon offen")
-        assertEquals(0.05, o.getDouble("dueU"), 1e-9, "dueU: EIN Schritt, kein Aufhol-Burst")
-        assertEquals("ONE_STEP_PER_CYCLE", o.getString("binding"), "und die Bindung sagt, warum")
-    }
-
-    /**
-     * EIN VORSPRUNG IST EIN NEGATIVER RUECKSTAND, keine Null.
-     *
-     * Hat eine gewoehnliche Korrektur die Mindestversorgung uebererfuellt,
-     * muss das sichtbar sein - sonst sieht dieselbe Lage aus wie "gerade
-     * genau erfuellt", und im Replay waere nicht unterscheidbar, ob eine
-     * Aufteilung passt oder ob der normale Pfad sie ueberholt hat.
-     */
-    @Test
-    fun `ein Vorsprung erscheint im Export als negativer Rueckstand`() {
-        val o = fundament(fSnapshot(minuten = 30.0, ausBudgetU = 2.65, seitUebergabeU = 0.40))
-        assertTrue(o.getDouble("backlogU") < 0.0, "Vorsprung MUSS als negativer Rueckstand erscheinen")
-        assertEquals(0.0, o.getDouble("dueU"), 1e-9, "und nichts wird gefordert")
-        assertEquals("COVERED_BY_DELIVERY", o.getString("binding"))
+        assertTrue(fundament(outcome(abort = "signal: test")).isNull("manualBolusAfterMarkerU"))
     }
 
     /**

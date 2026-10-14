@@ -118,7 +118,7 @@ class MarkerNeuautorisierungPersistenzTest {
         e.settled = EpisodeBudgets.Settled(
             proposalId = "p-alt", amountU = 0.30, prime = true, onset = false,
             // mealTs 0: dieser Test prueft die ZUORDNUNG, nicht die Lieferliste.
-            mealTs = 0L, foundationPhase = app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B,
+            mealTs = 0L,
             authId = "auth-1",
         )
         e.evidenceCommittedU = 0.70
@@ -129,15 +129,11 @@ class MarkerNeuautorisierungPersistenzTest {
         e.markerAuth = neu.auth
         e.markerRevocation = neu.revocation
         e.primeSpentU = 0.40
-        e.deliveredSinceHandoverU = 0.40
 
         val ergebnis = a.revokeSettled("p-alt")
 
         assertEquals(0.40, e.primeSpentU, 1e-9) {
             "die NEUE Autorisierung muss bei 0,40 bleiben - die 0,30 gehoerten der alten"
-        }
-        assertEquals(0.40, e.deliveredSinceHandoverU, 1e-9) {
-            "und aus einem alten Auftrag entsteht in der neuen Huelle kein Phase-B-Uebertrag"
         }
         // Die GLOBALE Belastung wird trotzdem aufgeloest.
         assertEquals(0.40, e.evidenceCommittedU, 1e-9) {
@@ -146,7 +142,7 @@ class MarkerNeuautorisierungPersistenzTest {
     }
 
     /**
-     * DERSELBE MENGENFEHLER MIT ECHTER LIEFERZEILE, BEIDE PHASEN.
+     * DERSELBE MENGENFEHLER MIT ECHTER LIEFERZEILE.
      *
      * Der erste Anlauf setzte `mealTs = 0` und prueft damit ausdruecklich
      * KEINE Lieferzeile - genau deshalb entging ihm, dass die Rueckbuchung
@@ -154,8 +150,8 @@ class MarkerNeuautorisierungPersistenzTest {
      * entfernt, die globalen Zaehler gesenkt, die Mahlzeitenzeile aber blieb
      * stehen, und der Rueckgabewert meldete "nichts geschehen".
      *
-     * Hier laeuft der volle Vorgang. Geprueft wird in BEIDEN Phasen:
-     *   - die neue Huelle und ihr Phase-B-Uebertrag bleiben unveraendert,
+     * Hier laeuft der volle Vorgang (Konsolidierung 2.0: die Phasen des Fundaments sind entfallen):
+     *   - die neue Huelle bleibt unveraendert,
      *   - die alte Menge verschwindet vollstaendig aus den globalen Buechern
      *     UND aus der Lieferliste,
      *   - der Rueckgabewert entspricht dem, was wirklich geschah.
@@ -163,7 +159,7 @@ class MarkerNeuautorisierungPersistenzTest {
      * Alle Werte sind synthetisch.
      */
     @Test
-    fun `fremde Phase-A-Buchung - global vollstaendig, Huelle unberuehrt`(@TempDir dir: File) {
+    fun `fremde Buchung - global vollstaendig, Huelle unberuehrt`(@TempDir dir: File) {
         val a = geladen(dir)
         val e = a.episodes
         val altTs = t0 - 600_000L
@@ -171,16 +167,12 @@ class MarkerNeuautorisierungPersistenzTest {
         e.settled = EpisodeBudgets.Settled(
             proposalId = "p-alt", amountU = 0.30, prime = true, onset = true,
             mealTs = altTs,
-            foundationPhase = app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_A,
             authId = "auth-1",
         )
         e.mealDeliveries.add(EpisodeBudgets.MealDelivery(altTs, 0.30, "p-alt"))
         e.mealDeliveries.add(EpisodeBudgets.MealDelivery(t0 + 60_000L, 0.40, "p-neu"))
-        // Die NEUE Autorisierung: 0,40 verbucht, Phase-A-Seite belastet.
+        // Die NEUE Autorisierung: 0,40 verbucht.
         e.primeSpentU = 0.40
-        e.deliveredPhaseAU = 0.40
-        e.deliveredSinceHandoverU = 0.0
-        e.confirmedNotSentPhaseAU = 0.0
         e.onsetSpentU = 0.70
         e.evidenceCommittedU = 0.70
 
@@ -188,10 +180,6 @@ class MarkerNeuautorisierungPersistenzTest {
 
         // ---- DIE NEUE HUELLE BLEIBT, WIE SIE WAR ------------------------
         assertEquals(0.40, e.primeSpentU, 1e-9) { "fremde Menge darf nicht entlasten" }
-        assertEquals(0.40, e.deliveredPhaseAU, 1e-9)
-        assertEquals(0.0, e.confirmedNotSentPhaseAU, 1e-9) {
-            "aus einem fremden Auftrag entsteht KEIN Phase-B-Uebertrag"
-        }
 
         // ---- GLOBAL VOLLSTAENDIG, EINSCHLIESSLICH LIEFERZEILE -----------
         assertEquals(0.40, e.evidenceCommittedU, 1e-9)
@@ -213,33 +201,7 @@ class MarkerNeuautorisierungPersistenzTest {
         }
     }
 
-    /** Dieselbe Folge in Phase B - dort darf der Uebergabezaehler nicht sinken. */
-    @Test
-    fun `fremde Phase-B-Buchung - global vollstaendig, Huelle unberuehrt`(@TempDir dir: File) {
-        val a = geladen(dir)
-        val e = a.episodes
-        val altTs = t0 - 600_000L
-        e.markerAuth = MarkerReauthorization.Authorization("auth-2", t0)
-        e.settled = EpisodeBudgets.Settled(
-            proposalId = "p-alt", amountU = 0.30, prime = true, onset = false,
-            mealTs = altTs,
-            foundationPhase = app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B,
-            authId = "auth-1",
-        )
-        e.mealDeliveries.add(EpisodeBudgets.MealDelivery(altTs, 0.30, "p-alt"))
-        e.primeSpentU = 0.40
-        e.deliveredSinceHandoverU = 0.40
-        e.evidenceCommittedU = 0.70
-
-        val ergebnis = a.revokeSettled("p-alt")
-
-        assertEquals(0.40, e.primeSpentU, 1e-9)
-        assertEquals(0.40, e.deliveredSinceHandoverU, 1e-9)
-        assertEquals(0.40, e.evidenceCommittedU, 1e-9)
-        assertTrue(e.mealDeliveries.isEmpty()) { "die Lieferzeile muss auch hier fallen" }
-        assertEquals(0.30, ergebnis.amountU, 1e-9)
-        assertFalse(ergebnis.fundamentEntlastet)
-    }
+    // Konsolidierung 2.0: dieselbe Folge in Phase B ist mit den Fundament-Phasen entfallen.
 
     /**
      * FEHLENDE KENNUNG IST KEINE FREIGABE.
@@ -258,12 +220,10 @@ class MarkerNeuautorisierungPersistenzTest {
         e.settled = EpisodeBudgets.Settled(
             proposalId = "p-alt", amountU = 0.30, prime = true, onset = false,
             mealTs = altTs,
-            foundationPhase = app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_A,
             authId = null,
         )
         e.mealDeliveries.add(EpisodeBudgets.MealDelivery(altTs, 0.30, "p-alt"))
         e.primeSpentU = 0.40
-        e.deliveredPhaseAU = 0.40
         e.evidenceCommittedU = 0.70
 
         val ergebnis = a.revokeSettled("p-alt")
@@ -271,8 +231,6 @@ class MarkerNeuautorisierungPersistenzTest {
         assertEquals(0.40, e.primeSpentU, 1e-9) {
             "ohne Kennung ist die Zugehoerigkeit unbewiesen"
         }
-        assertEquals(0.40, e.deliveredPhaseAU, 1e-9)
-        assertEquals(0.0, e.confirmedNotSentPhaseAU, 1e-9)
         assertEquals(0.40, e.evidenceCommittedU, 1e-9) { "global trotzdem vollstaendig" }
         assertTrue(e.mealDeliveries.isEmpty())
         assertFalse(ergebnis.fundamentEntlastet)
@@ -292,54 +250,39 @@ class MarkerNeuautorisierungPersistenzTest {
         e.settled = EpisodeBudgets.Settled(
             proposalId = "p-alt", amountU = 0.30, prime = true, onset = false,
             mealTs = 0L,
-            foundationPhase = app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B,
             authId = null,
         )
         e.primeSpentU = 0.40
-        e.deliveredSinceHandoverU = 0.40
         e.evidenceCommittedU = 0.70
 
         val ergebnis = a.revokeSettled("p-alt")
 
         assertEquals(0.10, e.primeSpentU, 1e-9)
-        assertEquals(0.10, e.deliveredSinceHandoverU, 1e-9)
         assertTrue(ergebnis.fundamentEntlastet)
     }
 
     /**
-     * UND DIE PASSENDE ZUORDNUNG IN PHASE A FUNKTIONIERT WEITERHIN - mit
-     * echter Lieferzeile und dem Uebertrag, um den es dort geht.
+     * UND DIE PASSENDE ZUORDNUNG FUNKTIONIERT WEITERHIN - mit echter Lieferzeile (Konsolidierung 2.0: der
+     * Phase-A-Uebertrag des Fundaments ist entfallen).
      */
     @Test
-    fun `die eigene Phase-A-Buchung entlastet und erzeugt den Uebertrag`(@TempDir dir: File) {
+    fun `die eigene Buchung entlastet die laufende Huelle`(@TempDir dir: File) {
         val a = geladen(dir)
         val e = a.episodes
         val ts = t0 - 300_000L
         e.markerAuth = MarkerReauthorization.Authorization("auth-2", t0)
-        e.foundation = app.aaps.fuse.core.controller.MealFoundation.arm(
-            markerTs = t0, foundationEnabled = true, totalBudgetU = 4.0, phaseAShare = 0.75,
-            phaseAUpfrontShare = 0.0, primeWindowMin = 15, wallCeilingMin = 45,
-            phaseBUntilMin = 60, pressObservedInThisProcess = true,
-            primeDeclinedByUser = false, markerAuthorized = true,
-        )
         e.settled = EpisodeBudgets.Settled(
             proposalId = "p-eigen", amountU = 0.30, prime = true, onset = false,
             mealTs = ts,
-            foundationPhase = app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_A,
             authId = "auth-2",
         )
         e.mealDeliveries.add(EpisodeBudgets.MealDelivery(ts, 0.30, "p-eigen"))
         e.primeSpentU = 0.40
-        e.deliveredPhaseAU = 0.40
         e.evidenceCommittedU = 0.70
 
         val ergebnis = a.revokeSettled("p-eigen")
 
         assertEquals(0.10, e.primeSpentU, 1e-9)
-        assertEquals(0.10, e.deliveredPhaseAU, 1e-9)
-        assertEquals(0.30, e.confirmedNotSentPhaseAU, 1e-9) {
-            "der Phase-A-Uebertrag entsteht genau hier"
-        }
         assertEquals(0.40, e.evidenceCommittedU, 1e-9)
         assertTrue(e.mealDeliveries.isEmpty())
         assertEquals(0.30, ergebnis.amountU, 1e-9)
@@ -355,11 +298,10 @@ class MarkerNeuautorisierungPersistenzTest {
         e.settled = EpisodeBudgets.Settled(
             proposalId = "p-neu", amountU = 0.30, prime = true, onset = false,
             // mealTs 0: dieser Test prueft die ZUORDNUNG, nicht die Lieferliste.
-            mealTs = 0L, foundationPhase = app.aaps.fuse.core.controller.MealFoundation.Phase.PHASE_B,
+            mealTs = 0L,
             authId = "auth-2",
         )
         e.primeSpentU = 0.40
-        e.deliveredSinceHandoverU = 0.40
         e.evidenceCommittedU = 0.70
 
         a.revokeSettled("p-neu")
@@ -367,7 +309,6 @@ class MarkerNeuautorisierungPersistenzTest {
         assertEquals(0.10, e.primeSpentU, 1e-9) {
             "hier gehoert die Buchung zur laufenden Autorisierung - sie entlastet"
         }
-        assertEquals(0.10, e.deliveredSinceHandoverU, 1e-9)
     }
 
     @Test

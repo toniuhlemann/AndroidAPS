@@ -10,7 +10,9 @@ import org.junit.jupiter.api.Test
 
 /**
  * Erwartungskonto: Kurve, Budget, Buchung, Pause, Stabilitaet, Ruecknahme und
- * Fensterende. Alle Zahlen sind synthetisch.
+ * Fensterende. Alle Zahlen sind synthetisch. Konsolidierung 2.0: das Konto v1 ist
+ * entfallen - jedes Konto ist ein Konto mit frueher Versorgung (s. auch
+ * [ExpectationAccountEarlyTest]).
  */
 class ExpectationAccountTest {
 
@@ -42,11 +44,29 @@ class ExpectationAccountTest {
         stabil: Boolean = true,
     ) = ExpectationAccount.Inputs(
         nowTs = t0 + nach * min, ageMin = nach.toDouble(), bgMgdl = bg, targetMgdl = ziel, isfMgdlPerU = isf,
-        iobTotalU = iob, activityUPerMin = aktivitaet, paused = pause, stableNow = stabil,
+        iobTotalU = iob, activityUPerMin = aktivitaet, paused = pause, stableNow = stabil, early = frueh(iob),
     )
 
-    private fun arm(stabil: Boolean = true, huelle: Double = 5.0, p: ExpectationAccount.Params = params()) =
-        ExpectationAccount.arm(t0, t0 + 120 * min, huelle, p, stabil, t0, 100.0, 50.0)
+    private val wirkung: (Double) -> Double = { t -> EarlySupply.orefActionFraction(t, 45.0, 540.0) }
+
+    private fun frueh(iob: Double) = ExpectationAccount.EarlyInputs(
+        iobU = iob, freeIobU = iob, existingActionU = { t -> iob * wirkung(t) }, unitAction = wirkung,
+    )
+
+    /** Synthetisch: Anfangsanteil 1, Portion und Zeitraum groesser als jedes Budget - der Rest fliesst ungeteilt. */
+    private fun einstellung(budget: Double, skalaTief: Double) =
+        requireNotNull(EarlySupply.Settings.of(0.5, skalaTief, budget, 1.0, 10.0, 20.0, 30))
+
+    private fun arm(
+        stabil: Boolean = true,
+        budget: Double = 5.0,
+        skalaTief: Double = 0.0,
+        p: ExpectationAccount.Params = params(),
+    ) = ExpectationAccount.armEarly(
+        authId = t0, windowEndTs = t0 + 120 * min, params = p, settings = einstellung(budget, skalaTief),
+        switches = EarlySupply.Switches.NONE, startStable = stabil, nowTs = t0, bgMgdl = 100.0, isfMgdlPerU = 50.0,
+        unitAction = wirkung,
+    )
 
     // ---- Kurve ----------------------------------------------------------------
 
@@ -87,9 +107,10 @@ class ExpectationAccountTest {
 
     @Test
     fun `ohne gueltige Parameter gilt nur die Ersetzung`() {
-        val s = ExpectationAccount.arm(t0, t0 + 120 * min, 5.0, null, true, t0, 100.0, 50.0)
+        val s = ExpectationAccount.armWithoutExpectation(t0, t0 + 120 * min, true, t0, 100.0, 50.0)
         assertFalse(s.expectationOn)
         assertEquals(0.0, s.a0U, eps)
+        assertEquals(EarlySupply.Pins.NEUTRAL, s.early)
         val (_, e) = ExpectationAccount.step(s, inputs(nach = 1, bg = 150.0, iob = 0.4))
         assertEquals(0.0, e.phiZU, eps)
         assertEquals(0.0, e.restEffU, eps)
@@ -115,15 +136,16 @@ class ExpectationAccountTest {
     // ---- Buchung am Marker ------------------------------------------------------
 
     @Test
-    fun `das Budget folgt dem Ausgangszustand und ist durch die Huelle begrenzt`() {
+    fun `das Budget folgt dem Ausgangszustand und ist durch das Hoechstbudget begrenzt`() {
+        val c = ExpectationAccount.Curve.of(kurve)!!
         val stabil = arm(stabil = true)
-        assertEquals(0.5 * kurve.last(), stabil.a0U, eps)
+        assertEquals(EarlySupply.budgetU(c, 120, 0.5, 5.0, wirkung), stabil.a0U, eps)
         assertTrue(stabil.released)
-        val tief = arm(stabil = false, p = params(phiTief = 0.25))
-        assertEquals(0.25 * kurve.last(), tief.a0U, eps)
+        val tief = arm(stabil = false, skalaTief = 0.25)
+        assertEquals(EarlySupply.budgetU(c, 120, 0.25, 5.0, wirkung), tief.a0U, eps)
         assertFalse(tief.released)
-        assertEquals(0.4, arm(huelle = 0.4).a0U, eps)
-        assertEquals(0.0, arm(huelle = 0.0).a0U, eps, "ohne Vorschuss: kein Budget")
+        assertEquals(0.4, arm(budget = 0.4).a0U, eps)
+        assertEquals(0.0, arm(budget = 0.0).a0U, eps, "ohne Hoechstbudget: kein Budget")
     }
 
     // ---- Zyklus -----------------------------------------------------------------
@@ -131,18 +153,19 @@ class ExpectationAccountTest {
     @Test
     fun `R_mess und R_roh folgen der Formel`() {
         val (_, e) = ExpectationAccount.step(arm(), inputs(nach = 1, bg = 150.0, iob = 0.4))
-        val zErwartet = 0.5 * ExpectationAccount.Curve.of(kurve)!!.remaining(1.0, 120)
         assertEquals(50.0 / 50.0 - 0.4, e.rMessU, eps)
-        assertEquals(zErwartet, e.phiZU, eps)
-        assertEquals(e.rMessU + zErwartet, e.rRohU, eps)
+        // R_roh = max(0, R_mess) + X - X ist die Anforderung der fruehen Versorgung.
+        assertEquals(e.early!!.demandU, e.phiZU, eps)
+        assertEquals(e.rMessU + e.phiZU, e.rRohU, eps)
+        assertEquals(e.rRohU, e.requestU, eps)
         assertEquals(arm().a0U, e.restEffU, eps)
-        assertEquals("ACTIVE", e.status)
+        assertEquals("INITIAL", e.status)
     }
 
     @Test
     fun `in der Pause und vor der Stabilitaet fliesst keine Erwartung`() {
         assertEquals(0.0, ExpectationAccount.step(arm(), inputs(nach = 1, pause = true)).second.restEffU, eps)
-        val wartend = arm(stabil = false, p = params(phiTief = 0.25))
+        val wartend = arm(stabil = false, skalaTief = 0.25)
         val (s1, e1) = ExpectationAccount.step(wartend, inputs(nach = 1, stabil = false))
         assertEquals(0.0, e1.restEffU, eps)
         assertEquals("WAITING_FOR_STABILITY", e1.status)
@@ -176,7 +199,7 @@ class ExpectationAccountTest {
 
     @Test
     fun `ein Tief vor der Freigabe meldet keine Ruecknahme`() {
-        val wartend = arm(stabil = false, p = params(phiTief = 0.25))
+        val wartend = arm(stabil = false, skalaTief = 0.25)
         val (_, e) = ExpectationAccount.step(wartend, inputs(nach = 1, stabil = true).copy(measuredLow = true))
         assertFalse(e.released)
         assertFalse(e.releaseRevoked)
@@ -227,15 +250,16 @@ class ExpectationAccountTest {
     @Test
     fun `liefern darf der Zyklus hoechstens den gemessenen Anteil plus den Rest`() {
         val (_, e) = ExpectationAccount.step(arm(), inputs(nach = 1, bg = 125.0))
-        // R_mess = 0,5 U; Rest = 1,0 U; R_roh = 0,5 + phi*Z.
+        // Synthetisch: R_mess = 0,5; R_roh = 0,5 + X.
         assertEquals(minOf(e.requestU, 0.5 + e.restEffU), ExpectationAccount.deliverableU(e), eps)
         assertEquals(minOf(e.restEffU, e.requestU - 0.5), ExpectationAccount.expectationShareU(e), eps)
     }
 
     @Test
     fun `ohne Anforderung ist auch nichts aus der Erwartung lieferbar`() {
-        // R_mess stark negativ: R_roh <= 0.
-        val (_, e) = ExpectationAccount.step(arm(), inputs(nach = 1, bg = 80.0, iob = 3.0))
+        // R_mess stark negativ und das freie Insulin deckt die erwartete Mahlzeit: R_roh = 0 bei offenem Rest.
+        val (_, e) = ExpectationAccount.step(arm(), inputs(nach = 1, bg = 80.0, iob = 20.0))
+        assertTrue(e.restEffU > 0.0)
         assertTrue(e.rRohU <= 0.0)
         assertEquals(0.0, ExpectationAccount.deliverableU(e), eps)
         assertEquals(0.0, ExpectationAccount.expectationShareU(e), eps)
@@ -292,10 +316,14 @@ class ExpectationAccountTest {
     // Konsolidierung 2.0: die Tests der v1-Guard-Ausnahme (Boden) und der Direktdosis-Buchung sind mit ihnen entfallen.
 
     @Test
-    fun `ein nicht berechenbares R_mess ergibt keine Menge`() {
+    fun `ein nicht berechenbares R_mess zaehlt als null - nie NaN in einer Menge`() {
         val (s, e) = ExpectationAccount.step(arm(), inputs(nach = 1, bg = Double.NaN))
-        assertEquals(0.0, ExpectationAccount.deliverableU(e), eps)
-        assertEquals(0.0, ExpectationAccount.expectationShareU(e), eps)
+        assertEquals(0.0, ExpectationAccount.measuredShareU(e), eps)
+        assertTrue(ExpectationAccount.deliverableU(e).isFinite())
+        // Ohne Erwartungsanteil (kein Insulinmodell) ergibt es keine Menge.
+        val (_, ohne) = ExpectationAccount.step(arm(), inputs(nach = 1, bg = Double.NaN).copy(early = null))
+        assertEquals(0.0, ExpectationAccount.deliverableU(ohne), eps)
+        assertEquals(0.0, ExpectationAccount.expectationShareU(ohne), eps)
         assertEquals(0.2, ExpectationAccount.book(s, e, finalU = 0.2).second.dErwU, eps)
     }
 

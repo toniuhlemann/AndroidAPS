@@ -77,6 +77,12 @@ interface FuseOverviewSource {
 
     fun fuseMarkerArmed(now: Long): Boolean
 
+    /**
+     * Die Mahlzeit ist angekuendigt, aber es gilt kein Erwartungskonto - FUSE dosiert im Rueckfall wie ohne Marker
+     * (Toni: den Ausfall deutlich melden). Am Knopf sichtbar, solange der letzte Zyklus ihn ausweist.
+     */
+    fun fuseMarkerOhneKonto(now: Long): Boolean = false
+
     /** `null` = ohne Rueckfrage ausfuehren (Ruecknahme). */
     fun fuseMarkerPrompt(now: Long): MarkerPromptFacts?
 
