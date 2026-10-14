@@ -7316,7 +7316,14 @@ class FuseCycleRunner(
         } else {
             val (neu, split) = ExpectationAccount.book(konto, z.eval, actuatedU, gemessenKappeU)
             episodes.expectation = neu
-            reservierung?.apply { ekAuthId = konto.authId; ekErwU = split.dErwU }
+            reservierung?.apply {
+                ekAuthId = konto.authId
+                ekErwU = split.dErwU
+                // KI-221: fuer den Storno - unter diesem Zyklus steht die Portion, und hat GENAU diese Buchung die
+                // Anfangsportion erledigt?
+                ekAtTs = z.eval.atTs
+                ekAnfang = !konto.initialDone && neu.initialDone
+            }
             ekBuchungThisCycle = ErwartungskontoBuchung(konto.authId, 0.0, split)
         }
     }

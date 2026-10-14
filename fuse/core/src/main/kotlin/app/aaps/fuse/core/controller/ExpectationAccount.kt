@@ -256,7 +256,11 @@ object ExpectationAccount {
          * das Gesamtbudget B, [phi0] der Skalierer (0..[EarlySupply.MAX_SCALE]) und die Guard-Ausnahme von v1 aus.
          */
         val early: EarlySupply.Pins? = null,
-        /** v2: die Anfangsportion ist vorbei - geliefert oder ihr Fenster abgelaufen. Nie zurueck. */
+        /**
+         * v2: die Anfangsportion ist vorbei - geliefert oder ihr Fenster abgelaufen. Nie zurueck - mit EINER Ausnahme,
+         * die keine ist: eine Anfangsportion, die nachweislich NIE gesendet wurde, war nie geliefert ([cancel], KI-221).
+         * Ein gemessenes Tief setzt die Marke ebenfalls, und die bleibt.
+         */
         val initialDone: Boolean = false,
         /** v2: die weiteren Portionen der letzten [EarlySupply.MAX_PERIOD_MIN] Minuten (Zeitraumbuch). */
         val portions: List<EarlySupply.Portion> = emptyList(),
@@ -687,20 +691,49 @@ object ExpectationAccount {
      * zurueckgenommen wird nur, was nie geflossen ist. [erwU] ist der
      * d_erw-Anteil, [directU] der Direktdosis-Anteil; die Summe steht in
      * [State.cancelledU], damit jede Erhoehung des Rests erklaert ist.
+     *
+     * v2 (KI-221): die fruehe Versorgung genauso - sonst rechnete sie mit einer Lieferung, die es nie gab.
+     *  - Die Portion der Buchung [bookedAtTs] verlaesst das Zeitraumbuch um den nie gesendeten Teil: der Zeitraumrest
+     *    kommt aus dem tatsaechlich Gelieferten ([stepEarly]).
+     *  - Eine GANZ nie gesendete Anfangsportion ([initialNeverSent]) war nie gegeben: die Marke [State.initialDone]
+     *    faellt zurueck. Aber nur die Marke, die die Buchung gesetzt hat - nach einem gemessenen Tief bleibt sie (das
+     *    Tief hat sie gesetzt, und danach gibt es keine Anfangsportion mehr), und ein abgelaufenes Anfangsfenster setzt
+     *    [stepEarly] im naechsten Zyklus wieder. Eine teilweise gesendete Anfangsportion ist gegeben: sie ist einmalig,
+     *    wie bei einer kleineren Anforderung.
+     * Die Marke wird bewusst nicht erst bei belegter Lieferung gesetzt: bis zum Beleg vergeht mindestens ein Zyklus, und
+     * in dem boete das Konto die Anfangsportion ein zweites Mal an. Zurueck geht sie nur mit dem Beweis des Nicht-Sendens.
      */
-    fun cancel(state: State, erwU: Double, directU: Double): State {
+    fun cancel(
+        state: State,
+        erwU: Double,
+        directU: Double,
+        bookedAtTs: Long = 0L,
+        initialNeverSent: Boolean = false,
+    ): State {
         val erw = if (erwU.isFinite()) max(0.0, erwU) else 0.0
         val direkt = if (directU.isFinite()) min(max(0.0, directU), state.directDoseU) else 0.0
         val zurueck = min(erw + direkt, state.bookedU)
         if (zurueck <= EPS_U) return state
         val booked = state.bookedU - zurueck
         val directDose = state.directDoseU - direkt
-        return state.copy(
+        var s = state.copy(
             bookedU = booked,
             directDoseU = directDose,
             coveredByMarkerAuthU = min(directDose, max(0.0, booked - state.a0U)),
             cancelledU = state.cancelledU + zurueck,
         )
+        if (s.early == null || erw <= EPS_U) return s
+        val i = if (bookedAtTs > 0L) s.portions.indexOfLast { it.ts == bookedAtTs } else -1
+        if (i >= 0) {
+            val p = s.portions[i]
+            val rest = p.amountU - erw
+            s = s.copy(
+                portions = if (rest > EPS_U) s.portions.mapIndexed { j, q -> if (j == i) q.copy(amountU = rest) else q }
+                else s.portions.filterIndexed { j, _ -> j != i },
+            )
+        }
+        if (initialNeverSent && s.initialDone && !s.earlyAfterLow && !s.earlyLowLocked) s = s.copy(initialDone = false)
+        return s
     }
 
     /** Stabilitaetsstrecke: BG ueber der Grenze, kein Fallen, keine gemessene Sperre. */
