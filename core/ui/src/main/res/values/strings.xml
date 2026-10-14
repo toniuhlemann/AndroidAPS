@@ -162,33 +162,17 @@
     <string name="overview_insulin_label">Insulin</string>
     <string name="overview_fuse_meal_label">Mahlzeit</string>
     <string name="overview_fuse_meal_active_label">◉ Mahlzeit</string>
-    <!-- Die Knoepfe BENENNEN die Handlung. "OK" sagte nicht, dass Insulin
-         freigegeben wird; "Ohne Vorschuss" klang nach "keine Sofortdosis,
-         aber weiter verteilt" - tatsaechlich setzt die Wahl die GANZE
-         Huelle samt Fundament auf null. -->
+    <!-- Die Knoepfe BENENNEN die Handlung: "Nur Marker" nennt ausdruecklich 0 U. Die Direktdosis ("Mit
+         Insulinfreigabe") ist mit der Konsolidierung entfallen; braucht es sie doch, bolt Toni manuell. -->
     <string name="fuse_meal_confirm_no_prime">Nur Marker · 0 U</string>
-    <string name="fuse_meal_confirm_release">Mit Insulinfreigabe</string>
-    <string name="fuse_meal_confirm_expectation_only">Nur Erwartung · ohne Direktdosis</string>
-    <string name="overview_fuse_meal_confirm_expectation_only">Nur Erwartung: keine Direktdosis. Bis %1$.2f U nach Erwartungskurve - am Anfang nur ein Teil, sobald der Zucker stabil ist; der Rest, wenn sich die Mahlzeit zeigt.</string>
+    <string name="fuse_meal_confirm_expectation_only">Nur Erwartung</string>
+    <string name="overview_fuse_meal_confirm_expectation_only">Erwartungskonto: bis %1$.2f U nach Erwartungskurve - am Anfang nur ein Teil, sobald der Zucker stabil ist; der Rest, wenn sich die Mahlzeit zeigt.</string>
+    <!-- Ohne Kurve, Profil oder Insulinmodell gibt es kein Konto. Die Ankuendigung bleibt moeglich, aber nur ohne
+         Erwartungsinsulin - und der Dialog sagt das, statt still umzuschalten. -->
+    <string name="overview_fuse_meal_confirm_no_account">Das Erwartungskonto ist gerade nicht verfügbar (keine gültige Kurve, kein Profil oder Insulinmodell). Möglich ist nur „Nur Marker · 0 U“.</string>
     <string name="overview_fuse_meal_confirm_title">Mahlzeit ankuendigen?</string>
-    <!-- EINE Zeile JE ANTEIL der Autorisierung, Nullteile entfallen. Alles,
-         was man nur EINMAL lesen muss, steht in der
-         Einstellungsbeschreibung. "Angefordert" ist woertlich gemeint:
-         Riegel, IOB-Spielraum, Aufschub und Pumpen-Gates koennen kuerzen. -->
-    <!-- "VORGESEHEN", nicht "angefordert": ist beim Druck ein
-         Abwaertsriegel aktiv, wird der Sofortanteil zunaechst
-         AUFGESCHOBEN - angefordert werden dann 0 U. Der Dialog darf
-         die Anforderung nicht behaupten, bevor sie feststeht. -->
-    <string name="overview_fuse_meal_confirm_upfront">%1$.2f U Sofortanteil vorgesehen</string>
-    <!-- Der aktuelle Zustand, wenn beim Druck bereits ein Riegel steht. -->
-    <string name="overview_fuse_meal_confirm_deferred">Aktuell aufgeschoben: %1$s</string>
-    <string name="overview_fuse_meal_confirm_spread">+ %1$.2f U verteilt bis %2$d min</string>
-    <!-- Ohne bekanntes Fenster wird KEINE Dauer genannt statt einer falschen. -->
-    <string name="overview_fuse_meal_confirm_spread_no_window">+ %1$.2f U verteilt im Freigabe-Fenster</string>
-    <string name="overview_fuse_meal_confirm_foundation">+ bis %1$.2f U Fundament bis %2$d min</string>
-    <string name="overview_fuse_meal_confirm_total">Gesamtlimit %1$.2f U</string>
     <string name="overview_fuse_meal_confirm_low">Zucker ist TIEF.</string>
-    <string name="overview_fuse_meal_confirm_foreign">Achtung: %1$.2f U manueller Bolus in der letzten Stunde. Die Hülle wird davon NICHT gekürzt — beides zusammen wirkt.</string>
+    <string name="overview_fuse_meal_confirm_foreign">Achtung: %1$.2f U manueller Bolus in der letzten Stunde. Das Konto rechnet ihn als vorhandenes Insulin an, das Budget bleibt — beides zusammen wirkt.</string>
     <string name="overview_fuse_meal_confirm_episode">Evidenz-Fenster läuft in %1$d min ab — danach ohne Mahlzeiten-Kredit.</string>
     <!-- RUECKNAHME MIT RUECKGAENGIG-FRIST (Toni 04.10.): ein Tipp auf den
          laufenden Marker nimmt ihn erst nach der Frist zurueck; bis dahin

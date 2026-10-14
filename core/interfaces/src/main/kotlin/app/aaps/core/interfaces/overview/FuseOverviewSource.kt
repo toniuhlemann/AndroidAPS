@@ -56,61 +56,24 @@ interface FuseOverviewSource {
 
     /** Die Zahlen, die in der Rueckfrage stehen muessen. */
     data class MarkerPromptFacts(
-        /**
-         * DIE MENGENZEILEN, fertig ausgewaehlt - Nullteile sind bereits
-         * entfallen. Die Auswahl faellt in FUSE (`MarkerPrompt.lines`),
-         * damit sie geprueft ist; die Bedienoberflaeche uebersetzt nur
-         * noch in Text. ALLE Mengen sind ANFORDERUNGEN - Riegel,
-         * IOB-Spielraum, Aufschub und Pumpen-Gates koennen sie kuerzen.
-         */
-        val lines: List<Line>,
-        /** Sofort angeforderter Phase-A-Anteil [U] (0 = kein Sofortanteil). */
-        val upfrontPlannedU: Double,
-        /** Ueber das Prime-Fenster verteilter Rest von Phase A [U]. */
-        val phaseARemainderU: Double,
-        /** Fundament-Budget [U] bis [foundationEndMin]. */
-        val phaseBBudgetU: Double,
-        /** Ende des Fundament-Fensters [min ab Druck], null = kein Fundament. */
-        val foundationEndMin: Int?,
-        /** Die ganze Huelle ueber das Fenster [U]. */
-        val envelopeU: Double,
-        /** Was diese Episode schon geliefert hat [U]. */
-        val alreadyDeliveredU: Double,
-        /** Ob der Druck Modell-Einwaende ueberstimmt (Einstellung an). */
-        val authorizesAgainstModel: Boolean,
         /** Ob JETZT ein gemessenes Tief vorliegt. */
         val measuredLow: Boolean,
         /**
          * MANUELLES Insulin der letzten Stunde [U], `null` = nicht ermittelbar.
-         * Die Huelle wird davon NICHT gekuerzt (Tonis Entscheidung 16.08.) -
-         * der Dialog beziffert es, damit die Wahl beim Menschen liegt.
+         * Nichts wird still verrechnet (Tonis Entscheidung) - der Dialog beziffert es, damit die Wahl beim Menschen
+         * liegt.
          */
         val foreignBolusU: Double? = null,
         /** Rest der laufenden Evidenz-Episode [min]; `null` = keine, unbekannt
          *  oder noch reichlich Zeit. */
         val episodeRestMin: Int? = null,
-        /** Laenge des Freigabe-Fensters [min] aus der EINSTELLUNG; `null` =
-         *  unbekannt, dann nennt der Dialog keine Dauer statt einer falschen. */
-        val windowMin: Int? = null,
         /**
-         * Die Wahl "nur Erwartung" (Toni): keine Direktdosis, die
-         * Mahlzeit traegt das Erwartungskonto - bis zu dieser Menge [U] vorab
-         * nach Kurve. `null` = nicht angeboten (Konto aus, keine gueltige
-         * Kurve, kein Vorgriff).
+         * Die Wahl "Nur Erwartung" (Toni): das Erwartungskonto traegt die Mahlzeit - bis zu dieser Menge [U] nach
+         * Kurve. `null` = nicht angeboten (keine gueltige Kurve, kein Profil oder Insulinmodell); dann bleibt nur
+         * "Nur Marker - 0 U".
          */
         val expectationOnlyMaxU: Double? = null,
-    ) {
-
-        /** Eine Mengenzeile der Rueckfrage. */
-        sealed interface Line {
-            data class Upfront(val amountU: Double) : Line
-            data class Spread(val amountU: Double, val windowMin: Int?) : Line
-            data class Foundation(val amountU: Double, val untilMin: Int) : Line
-            data class Total(val amountU: Double) : Line
-            /** Aktueller Zustand: der Sofortanteil ist aufgeschoben. */
-            data class Deferred(val reason: String) : Line
-        }
-    }
+    )
 
     fun fuseMarkerArmed(now: Long): Boolean
 
@@ -119,12 +82,9 @@ interface FuseOverviewSource {
 
     /** Schaltet um. @return ob der Marker DANACH laeuft. */
     /**
-     * @param ohneVorschuss true = Mahlzeit nur ERKLAEREN: Fensterregeln,
-     * Rampen und Totband-Oeffnung wie immer, aber die Freigabe-Huelle dieser
-     * Episode ist 0 - kein markerfinanziertes Insulin. Die Wahl faellt im
-     * Dialog des Knopfdrucks (Toni 15.08.: "es gibt Situationen, wo 3
-     * Einheiten jetzt zuviel waeren" - z.B. reichlich aktiver Bolus vor der
-     * Mahlzeit), nicht in den Einstellungen.
+     * @param ohneVorschuss true = "Nur Marker - 0 U": die Mahlzeit ist angekuendigt (Fensterregeln, Rampen und
+     * Totband-Oeffnung wie immer), aber ohne Erwartungsinsulin - das Konto laeuft ohne Budget, nur der gemessene
+     * Anteil. Die Wahl faellt im Dialog des Knopfdrucks, nicht in den Einstellungen.
      */
     fun fuseMarkerToggle(
         now: Long,
@@ -137,7 +97,7 @@ interface FuseOverviewSource {
          * ungeschuetzt.
          */
         ereignisId: String? = null,
-        /** Wahl "nur Erwartung" (Toni): keine Direktdosis in dieser Mahlzeit. */
+        /** Wahl "Nur Erwartung" (Toni): das Erwartungskonto traegt die Mahlzeit. */
         nurErwartung: Boolean = false,
     ): Boolean
 

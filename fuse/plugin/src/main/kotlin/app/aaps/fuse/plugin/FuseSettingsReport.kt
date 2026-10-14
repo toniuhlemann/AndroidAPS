@@ -30,33 +30,19 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.OnsetEnvelopeU.key,
     FuseDoubleKey.PrimeEnvelopeU.key,
     FuseDoubleKey.MealFoundationPhaseAShare.key,
-    FuseDoubleKey.MealFoundationPhaseAUpfrontShare.key,
-    FuseIntKey.PrimeWindowMin.key,
-    FuseIntKey.MealFoundationEndMin.key,
     FuseBooleanKey.DeferredPrimeEnabled.key,
     FuseDoubleKey.MarkerPrimeDescentHorizonMin.key,
     FuseIntKey.DeferredPrimeEndMin.key,
-    // DER RUHE-AUSGANG AUS PHASE A (v32). Dosierwirksam im Modus
-    // CALM_BATCH - er gehoert damit in den Bericht des Reiters, sonst
-    // waere eine Einstellung verstellbar, die im Bericht fehlt.
-    FuseBooleanKey.CalmRecoveryEnabled.key,
     FuseBooleanKey.PartialRecoveryEnabled.key,
-    FuseIntKey.CalmRecoveryCycles.key,
-    FuseIntKey.CalmTreatmentMode.key,
-    FuseDoubleKey.CalmRecoveryMinUkf.key,
-    FuseDoubleKey.CalmRecoveryGuardDistanceMgdl.key,
     FuseBooleanKey.LivenessChannelEnabled.key,
-    FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled.key,
     FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled.key,
-    FuseBooleanKey.LivenessDriveHoldEnabled.key,
-    FuseIntKey.EarlyAdaptiveMealHorizonMin.key,
     FuseBooleanKey.SignalRejoinEnabled.key,
     FuseIntKey.LivenessMealPowerMin.key,
-    // Die vier zentralen Profilwerte (CENTRAL-only, echte Defaults).
+    // Die zentralen Profilwerte (CENTRAL-only, echte Defaults). MealDemandRatioCap wirkt nur noch ohne Konto und
+    // ist nicht mehr einstellbar (Konsolidierung); gesichert wird er weiter.
     FuseDoubleKey.CorrectionExposureLimitU.key,
     FuseDoubleKey.MealExposureLimitU.key,
     FuseDoubleKey.CorrectionDemandRatioCap.key,
-    FuseDoubleKey.MealDemandRatioCap.key,
     FuseBooleanKey.ZeroLatchEnabled.key,
     FuseIntKey.ZeroLatchCalmExitMin.key,
     FuseIntKey.ZeroLatchReasonGoneExitCycles.key,
@@ -74,8 +60,6 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.RearmUpUkf.key,
     FuseDoubleKey.LivenessBgMinDayMgdl.key,
     FuseDoubleKey.LivenessBgMinNightMgdl.key,
-    FuseDoubleKey.LivenessBgMinMealMgdl.key,
-    FuseIntKey.MealArmCycles.key,
     FuseIntKey.LivenessReArmMin.key,
     FuseDoubleKey.TailFloorMgdl.key,
     FuseDoubleKey.TailRecoveryU.key,
@@ -97,21 +81,18 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     // NightDeadbandEnabled und ReboundDeadbandEnabled sind nicht mehr
     // einstellbar (Funktion fest an); die Schluessel bleiben registriert.
     FuseBooleanKey.OnsetChannelEnabled.key,
-    FuseBooleanKey.PrimeReleaseEnabled.key,
     FuseBooleanKey.MealFoundationEnabled.key,
     FuseBooleanKey.ExpectationLedgerEnabled.key,
     // 2.0 (Stufe 1, K1): ForecastShadowCollectionEnabled ist nicht mehr einstellbar.
-    FuseBooleanKey.MarkerAuthorisesRelease.key,
+    // Konsolidierung: Direktdosis, Ruhe-Ausgang, Konto v1, Marker-Autorisierung und die Mahlzeitenteile des
+    // Liveness-Kanals sind nicht mehr einstellbar - der Regler liest sie bis zu ihrem Abbau unveraendert.
     FuseBooleanKey.TailGuardEnabled.key,
     FuseBooleanKey.TbrEndZeroWhenReasonGone.key,
     // Das Erwartungskonto (Testkandidat E-034) - eigener Abschnitt.
-    FuseBooleanKey.ExpectationGuardExceptionEnabled.key,
     FuseDoubleKey.ExpectationCurveAt30U.key,
     FuseDoubleKey.ExpectationCurveAt60U.key,
     FuseDoubleKey.ExpectationCurveAt90U.key,
     FuseDoubleKey.ExpectationCurveAt120U.key,
-    FuseDoubleKey.ExpectationPhi0Stable.key,
-    FuseDoubleKey.ExpectationPhi0AfterLow.key,
     FuseDoubleKey.ExpectationStabilityBgMgdl.key,
     FuseIntKey.ExpectationStabilityMin.key,
     FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.key,
@@ -174,37 +155,6 @@ object FuseSettingsReport {
             standard = uhr(k.defaultValue).takeIf { preferences.get(k) != k.defaultValue },
         )
 
-        /**
-         * DIE RUHE-BEHANDLUNG ALS NAME, nicht als Zahl.
-         *
-         * Der Modus liegt als 0/1/2 im Speicher. Im Bericht stand bis eben
-         * genau diese Zahl - der Leser haette sie nachschlagen muessen, und
-         * eine Umnummerierung waere niemandem aufgefallen. Der Name kommt
-         * aus derselben typisierten Abbildung, die der Regler benutzt.
-         */
-        fun behandlung(k: FuseIntKey, label: String): FuseScreenModel.SettingRow {
-            fun name(v: Int) = when (app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.ofSetting(v)) {
-                app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED -> "bedarfsbegrenzt"
-                app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED -> "schrittweise verschieben"
-                app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.CALM_BATCH -> "Sofortbatch nach Ruhe"
-            }
-            return FuseScreenModel.SettingRow(
-                key = k.key, label = label, value = name(preferences.get(k)),
-                standard = name(k.defaultValue)
-                    .takeIf { preferences.get(k) != k.defaultValue },
-            )
-        }
-
-        /**
-         * H8 WIE IM DIALOG, nicht als nackte Zahl (Review 18.09.): wirksam sind
-         * nur 0/6/8/10. Ein anderer gespeicherter Wert (Altbestand, Backup)
-         * steht ausdruecklich als "wirkt als AUS" da, statt still als "7 min".
-         */
-        fun horizont(k: FuseIntKey, label: String) = FuseScreenModel.SettingRow(
-            key = k.key, label = label, value = EarlyAdaptiveMealHorizonText.zustand(preferences.get(k)),
-            standard = EarlyAdaptiveMealHorizonText.eintrag(k.defaultValue).takeIf { preferences.get(k) != k.defaultValue },
-        )
-
         fun schalter(k: FuseBooleanKey, label: String) = FuseScreenModel.SettingRow(
             key = k.key, label = label, value = if (preferences.get(k)) "an" else "aus",
             standard = (if (k.defaultValue) "an" else "aus").takeIf { preferences.get(k) != k.defaultValue },
@@ -228,31 +178,6 @@ object FuseSettingsReport {
                 "Mahlzeit" to listOf(
                     ganz(FuseIntKey.LivenessMealPowerMin, "Mahlzeiten-Frist", "min"),
                     zahl(FuseDoubleKey.MealExposureLimitU, "MEAL Exposure-Limit", "U"),
-                    schalter(FuseBooleanKey.MarkerAuthorisesRelease, "Marker-Autorisierung"),
-                ),
-                "Mahlzeit: Direktdosis (Rueckfall)" to listOf(
-                    schalter(FuseBooleanKey.PrimeReleaseEnabled, "Sofort-Freigabe"),
-                    ganz(FuseIntKey.PrimeWindowMin, "Freigabe-Fenster", "min"),
-                    zahl(FuseDoubleKey.MealFoundationPhaseAUpfrontShare, "Phase A Sofortanteil", ""),
-                    // Der Ruhe-Ausgang. Der Modus steht als Zahl im Speicher, im Bericht aber ausgeschrieben.
-                    schalter(FuseBooleanKey.CalmRecoveryEnabled, "Ruhe-Ausgang Phase A"),
-                    ganz(FuseIntKey.CalmRecoveryCycles, "Ruhezyklen", ""),
-                    behandlung(FuseIntKey.CalmTreatmentMode, "Ruhe-Behandlung"),
-                    zahl(FuseDoubleKey.CalmRecoveryMinUkf, "Ruhe: Mindestrate", "mg/dl/min"),
-                    zahl(FuseDoubleKey.CalmRecoveryGuardDistanceMgdl, "Ruhe: Bodenabstand", "mg/dl"),
-                    zahl(FuseDoubleKey.ExpectationPhi0Stable, "Konto v1: Vorgriff stabil", ""),
-                    zahl(FuseDoubleKey.ExpectationPhi0AfterLow, "Konto v1: Vorgriff nach Tief", ""),
-                    schalter(FuseBooleanKey.ExpectationGuardExceptionEnabled, "Konto v1: Guard-Ausnahme"),
-                ),
-                "Mahlzeit: Alter Rueckfallweg" to listOf(
-                    ganz(FuseIntKey.MealFoundationEndMin, "Fundament-Fenster", "min"),
-                    zahl(FuseDoubleKey.MealDemandRatioCap, "MEAL Demand-Ratio-Cap", ""),
-                    zahl(FuseDoubleKey.LivenessBgMinMealMgdl, "Druck-Schwelle MEAL", "mg/dl"),
-                    ganz(FuseIntKey.MealArmCycles, "Bewaffnung MEAL", "Zyklen"),
-                    schalter(FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled, "Rebound-Evidenz-Ausnahme"),
-                    schalter(FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled, "Buchungsausgang ohne Sperre"),
-                    schalter(FuseBooleanKey.LivenessDriveHoldEnabled, "Halte-Anhebung im Kanalbedarf"),
-                    horizont(FuseIntKey.EarlyAdaptiveMealHorizonMin, "Frueher MEAL-Horizont"),
                 ),
                 "Erwartungskonto" to listOf(
                     zahl(FuseDoubleKey.ExpectationCurveAt30U, "Kurve nach 30 min", "U"),
@@ -316,6 +241,7 @@ object FuseSettingsReport {
                     zahl(FuseDoubleKey.LivenessBgMinDayMgdl, "Druck-Schwelle Tag", "mg/dl"),
                     zahl(FuseDoubleKey.LivenessBgMinNightMgdl, "Druck-Schwelle Nacht", "mg/dl"),
                     ganz(FuseIntKey.LivenessReArmMin, "Re-Arm-Sperre", "min"),
+                    schalter(FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled, "Buchungsausgang ohne Sperre"),
                     schalter(FuseBooleanKey.OnsetChannelEnabled, "Onset-Kanal"),
                     zahl(FuseDoubleKey.OnsetEnvelopeU, "Onset-Huelle", "U"),
                     schalter(FuseBooleanKey.CorrectionReversalGuardEnabled, "V-Reversal-Schutz"),

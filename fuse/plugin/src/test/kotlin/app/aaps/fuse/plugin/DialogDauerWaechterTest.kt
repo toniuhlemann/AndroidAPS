@@ -43,73 +43,40 @@ class DialogDauerWaechterTest {
     ).readText()
 
     /**
-     * Der Dialogtext muss die Dauer als PARAMETER fuehren, nicht als Ziffer.
+     * Der Dialog nennt die Groessenordnung des Kontos als PARAMETER, nicht als Ziffer - die Menge haengt an Kurve,
+     * Skalierer und Budgetgrenze, ein fester Wert im Text waere nach der naechsten Einstellung falsch.
      */
     @Test
-    fun `der Marker-Dialog nennt die Dauer als Parameter`() {
-        // Seit dem UI-P0 vom 25.08. steht eine Zeile JE ANTEIL. Beide
-        // Zeilen mit Zeitangabe muessen die Dauer als PARAMETER fuehren -
-        // die verteilte Phase A (Freigabe-Fenster) und das Fundament
-        // (Fundament-Ende).
-        listOf(
-            "overview_fuse_meal_confirm_spread\"" to "%2\$d",
-            "overview_fuse_meal_confirm_foundation\"" to "%2\$d",
-        ).forEach { (schluessel, parameter) ->
-            val zeile = uiStrings().lines().first { it.contains(schluessel) }
-            assertTrue(zeile.contains(parameter)) {
-                "die Dauer fehlt als Parameter - der Text kann die Einstellung nicht abbilden: $zeile"
-            }
-            assertFalse(Regex("""\d+\s*min""").containsMatchIn(zeile)) {
-                "eine feste Minutenzahl im Dialogtext: $zeile"
-            }
+    fun `der Marker-Dialog nennt die Kontomenge als Parameter`() {
+        val zeile = uiStrings().lines().first { it.contains("overview_fuse_meal_confirm_expectation_only\"") }
+        assertTrue(zeile.contains("%1\$.2f")) { "die Menge fehlt als Parameter: $zeile" }
+        assertFalse(Regex("""\d+([.,]\d+)?\s*U\b""").containsMatchIn(zeile.replace("%1\$.2f U", ""))) {
+            "eine feste Menge im Dialogtext: $zeile"
         }
     }
 
     /**
-     * DIE MENGEN SIND ANFORDERUNGEN, keine Zusagen (UI-P0 25.08.).
-     *
-     * Der Dialog nannte eine kleine Menge aus der alten Prime-Schrittrechnung,
-     * waehrend bei Sofortanteil 1,0 in Wahrheit der ganze Phase-A-Betrag
-     * unmittelbar angefordert wird. Seither zeigt er die Anteile der
-     * gepinnten Autorisierung - und der positive Knopf muss benennen,
-     * dass hier INSULIN freigegeben wird.
+     * Seit der Konsolidierung zwei Wege (Toni): "Nur Erwartung" und "Nur Marker - 0 U". Die Nullwahl nennt 0 U
+     * unmissverstaendlich, und ein Knopf, der Insulin direkt freigibt, kommt nicht zurueck.
      */
     @Test
-    fun `der Dialog benennt Anforderung und Insulinfreigabe`() {
+    fun `der Dialog kennt nur Konto und Nullwahl`() {
         val s = uiStrings()
-        assertTrue(s.contains("overview_fuse_meal_confirm_upfront")) { "die Sofort-Zeile fehlt" }
-        assertTrue(s.contains("overview_fuse_meal_confirm_total")) { "das Gesamtlimit fehlt" }
-        val sofort = s.lines().first { it.contains("overview_fuse_meal_confirm_upfront\"") }
-        // "VORGESEHEN" oder "angefordert" - nie eine Zusage. Steht beim
-        // Druck ein Abwaertsriegel, wird der Sofortanteil AUFGESCHOBEN und
-        // in diesem Zyklus 0 U angefordert; der Dialog darf die Anforderung
-        // deshalb nicht behaupten (Tonis Korrektur 25.08. abends).
-        assertTrue(sofort.contains("vorgesehen") || sofort.contains("angefordert")) {
-            "die Menge darf nicht als sichere Abgabe benannt sein: $sofort"
-        }
-        assertTrue(s.contains("overview_fuse_meal_confirm_deferred")) {
-            "der Zustandshinweis fuer den aufgeschobenen Batch fehlt"
-        }
-        val freigabe = s.lines().first { it.contains("fuse_meal_confirm_release\"") }
-        assertTrue(freigabe.contains("Insulin")) {
-            "der positive Knopf muss die Insulinfreigabe benennen: $freigabe"
-        }
         val null0 = s.lines().first { it.contains("fuse_meal_confirm_no_prime\"") }
-        assertTrue(null0.contains("0 U")) {
-            "die Nullwahl muss unmissverstaendlich 0 U nennen: $null0"
-        }
+        assertTrue(null0.contains("0 U")) { "die Nullwahl muss unmissverstaendlich 0 U nennen: $null0" }
+        assertTrue(s.contains("fuse_meal_confirm_expectation_only\"")) { "der Knopf fuer das Konto fehlt" }
+        assertFalse(s.contains("fuse_meal_confirm_release\"")) { "der Freigabe-Knopf der Direktdosis ist zurueck" }
+        assertFalse(s.contains("overview_fuse_meal_confirm_upfront\"")) { "eine Direktdosis-Zeile ist zurueck" }
     }
 
     /**
-     * Und es muss eine Fassung OHNE Dauer geben. Ist das Fenster unbekannt,
-     * waere eine erfundene Zahl schlimmer als keine - dieselbe Regel wie
-     * ueberall im Projekt: fehlende Daten heissen UNBEKANNT, nie ein Wert.
+     * Ohne Konto (keine Kurve, kein Profil oder Modell) sagt der Dialog es ausdruecklich - die Ankuendigung bleibt
+     * moeglich, still umgeschaltet wird nichts (Toni).
      */
     @Test
-    fun `es gibt eine Fassung ohne Dauer`() {
-        assertTrue(uiStrings().contains("overview_fuse_meal_confirm_spread_no_window")) {
-            "die Fassung ohne bekanntes Fenster fehlt"
-        }
+    fun `ohne Konto nennt der Dialog den Grund`() {
+        val zeile = uiStrings().lines().first { it.contains("overview_fuse_meal_confirm_no_account\"") }
+        assertTrue(zeile.contains("Nur Marker")) { "der Ausweg fehlt im Text: $zeile" }
     }
 
     /**

@@ -235,8 +235,8 @@ class FuseScreenInventarWaechterTest {
             "Nur ${gebaut.size} Bildschirmeintraege erkannt - das Muster greift nicht mehr, " +
                 "der Waechter waere blind. Erkannt: $gebaut"
         }
-        assertTrue(FuseIntKey.PrimeWindowMin.key in gebaut) {
-            "Der Anlassfall (Freigabe-Fenster) wird nicht erkannt"
+        assertTrue(FuseIntKey.LivenessMealPowerMin.key in gebaut) {
+            "Ein bekannter Eintrag (Mahlzeiten-Frist) wird nicht erkannt"
         }
     }
 }

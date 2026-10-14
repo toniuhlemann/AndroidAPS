@@ -20,95 +20,50 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
  * SO KURZ WIE MOEGLICH, und das ist eine Anforderung und keine Nachlaessigkeit:
  * der Knopf wird mehrmals taeglich gedrueckt. Ein Dialog, den man vier Mal am
  * Tag wegwischt, wird nicht gelesen - und dann schuetzt er nicht mehr, er
- * gewoehnt nur ans Wegwischen. Die erste Fassung war ein Aufsatz; Toni hat sie
- * am Geraet gesehen und gestrichen.
+ * gewoehnt nur ans Wegwischen.
  *
  * GEBLIEBEN ist genau das, was sich VON DRUCK ZU DRUCK aendert:
- *  - die Zahlen (erster Schritt, Rest der Huelle) - die Groessenordnung
- *    gehoert vor das Ja, nicht ins Log,
+ *  - die Groessenordnung des Kontos - sie gehoert vor das Ja, nicht ins Log,
  *  - ein gemessenes Tief, die einzige Lage, die diesen Druck von einem
- *    gewoehnlichen unterscheidet.
+ *    gewoehnlichen unterscheidet,
+ *  - manuelles Insulin der letzten Stunde und eine ablaufende Evidenzuhr.
  *
- * WEGGEFALLEN ist alles Gleichbleibende - dass der Druck die Prognose
- * ueberstimmt und dass eine Ruecknahme Abgegebenes nicht zurueckholt. Das
- * steht jetzt in der Einstellungsbeschreibung, wo man es EINMAL liest.
+ * ZWEI WEGE seit der Konsolidierung (Toni: die Direktdosis entfaellt, "sollte dennoch eine Direktdosis noetig
+ * sein, mache ich das manuell"): "Nur Erwartung" - das Erwartungskonto traegt die Mahlzeit - und "Nur Marker - 0 U"
+ * fuer Snacks oder unsichere Mahlzeiten: angekuendigt, aber ohne Erwartungsinsulin.
  */
 object FuseMarkerDialog {
 
     /**
-     * DREI AUSGAENGE seit dem 15.08. (Tonis Fall: "es gibt Situationen, wo 3
-     * Einheiten jetzt zuviel waeren" - etwa reichlich aktiver Bolus vor der
-     * Mahlzeit): JA mit Vorschuss (wie immer, der Normalfall bleibt zwei
-     * Beruehrungen), OHNE VORSCHUSS (Mahlzeit nur erklaeren, Huelle 0 fuer
-     * diese Episode), Abbrechen. Die Wahl faellt IM MOMENT des Drucks -
-     * eine Einstellung, die man je Lage umschalten muesste, wuerde nicht
-     * umgeschaltet.
-     *
      * Nicht OKDialog: der kennt nur zwei Knoepfe. Entprellung und
      * runOnUiThread sind von dort uebernommen - gleiche Handlung, gleiches
      * Sicherheitsniveau.
+     *
+     * Bietet FUSE "Nur Erwartung" nicht an (keine gueltige Kurve, kein Profil oder Insulinmodell), sagt der Dialog
+     * das ausdruecklich und laesst nur "Nur Marker" zu - die Ankuendigung bleibt moeglich, ein Konto nicht.
      */
     fun show(
         activity: FragmentActivity,
         rh: ResourceHelper,
         facts: FuseOverviewSource.MarkerPromptFacts,
-        onConfirm: Runnable,
-        onConfirmNoPrime: Runnable? = null,
-        /** Toni: der dritte Weg "nur Erwartung" - nur, wenn FUSE ihn anbietet. */
-        onConfirmExpectationOnly: Runnable? = null,
+        /** "Nur Erwartung" - wirkt nur, wenn FUSE es anbietet ([FuseOverviewSource.MarkerPromptFacts.expectationOnlyMaxU]). */
+        onConfirmExpectationOnly: Runnable,
+        /** "Nur Marker - 0 U": angekuendigt, Konto ohne Budget - nur der gemessene Anteil. */
+        onConfirmNoPrime: Runnable,
     ) {
-        // DIE MENGEN DER AUTORISIERUNG, die dieser Druck erzeugt - eine
-        // Zeile je Anteil, Nullteile ausgeblendet (Tonis UI-P0 25.08.):
-        //
-        //   3,20 U sofort angefordert
-        //   + bis 0,80 U Fundament bis 60 min
-        //   Gesamtlimit 4,00 U
-        //
-        // WAS HIER VORHER STAND, war der Zyklusanteil der alten
-        // Prime-Schrittrechnung ("0,27 U") - bei Sofortanteil 1,0 nannte
-        // der Dialog also ein Zwoelftel der Menge, die der Druck wirklich
-        // anfordert. Ein Ja auf falscher Grundlage.
-        //
-        // "ANGEFORDERT" ist bewusst gewaehlt und keine Floskel:
-        // Sicherheitsriegel, IOB-Spielraum, Aufschub und Pumpen-Gates
-        // koennen jede dieser Mengen noch kuerzen oder verschieben.
-        //
-        // DIE DAUER KOMMT AUS DER EINSTELLUNG (Geraetefund Toni 17.08.):
-        // ist das Fenster unbekannt, wird GAR KEINE Dauer genannt statt
-        // einer erfundenen.
-        // WELCHE Zeilen erscheinen, entscheidet `MarkerPrompt.lines` - dort
-        // ist es geprueft. Hier steht nur die Uebersetzung in Text.
+        val nurErwartungBisU = facts.expectationOnlyMaxU
         val text = StringBuilder(
-            facts.lines.joinToString("\n") { z ->
-                when (z) {
-                    is FuseOverviewSource.MarkerPromptFacts.Line.Upfront ->
-                        rh.gs(R.string.overview_fuse_meal_confirm_upfront, z.amountU)
-
-                    is FuseOverviewSource.MarkerPromptFacts.Line.Spread   ->
-                        z.windowMin?.let { rh.gs(R.string.overview_fuse_meal_confirm_spread, z.amountU, it) }
-                            ?: rh.gs(R.string.overview_fuse_meal_confirm_spread_no_window, z.amountU)
-
-                    is FuseOverviewSource.MarkerPromptFacts.Line.Foundation ->
-                        rh.gs(R.string.overview_fuse_meal_confirm_foundation, z.amountU, z.untilMin)
-
-                    is FuseOverviewSource.MarkerPromptFacts.Line.Total    ->
-                        rh.gs(R.string.overview_fuse_meal_confirm_total, z.amountU)
-
-                    is FuseOverviewSource.MarkerPromptFacts.Line.Deferred ->
-                        rh.gs(R.string.overview_fuse_meal_confirm_deferred, z.reason)
-                }
-            }
+            if (nurErwartungBisU != null) rh.gs(R.string.overview_fuse_meal_confirm_expectation_only, nurErwartungBisU)
+            else rh.gs(R.string.overview_fuse_meal_confirm_no_account)
         )
         // Das gemessene Tief ist die dringlichste Lage, die den Druck von einem
-        // gewoehnlichen unterscheidet - deshalb zuerst.
+        // gewoehnlichen unterscheidet.
         if (facts.measuredLow)
             text.append("\n\n").append(rh.gs(R.string.overview_fuse_meal_confirm_low))
 
-        // FREMDES INSULIN (Auditbefund P0-2). Die Huelle wird davon NICHT
-        // gekuerzt - das ist Tonis ausdrueckliche Entscheidung vom 16.08. Der
-        // Dialog beziffert es, damit die Wahl beim Menschen liegt statt still
-        // zu unterbleiben. `null` heisst unbekannt und schweigt; nur ein
-        // wirklich vorhandener Bolus erzeugt die Zeile.
+        // FREMDES INSULIN (Auditbefund P0-2): der Dialog beziffert es, damit die Wahl beim Menschen liegt statt
+        // still zu unterbleiben. `null` heisst unbekannt und schweigt; nur ein wirklich vorhandener Bolus erzeugt
+        // die Zeile.
         facts.foreignBolusU?.takeIf { it > 0.0 }?.let {
             text.append("\n\n").append(rh.gs(R.string.overview_fuse_meal_confirm_foreign, it))
         }
@@ -119,23 +74,6 @@ object FuseMarkerDialog {
             text.append("\n\n").append(rh.gs(R.string.overview_fuse_meal_confirm_episode, it))
         }
 
-        // DIE WAHL "NUR ERWARTUNG" (Toni) - nur, wenn FUSE sie anbietet
-        // (Konto an, gueltige Kurve, Vorgriff); die Groessenordnung steht vor
-        // dem Ja wie bei den anderen Wegen.
-        val nurErwartung = onConfirmExpectationOnly?.takeIf { facts.expectationOnlyMaxU != null }
-        if (nurErwartung != null) facts.expectationOnlyMaxU?.let {
-            text.append("\n\n").append(rh.gs(R.string.overview_fuse_meal_confirm_expectation_only, it))
-        }
-
-        if (onConfirmNoPrime == null) {
-            OKDialog.showConfirmation(
-                activity,
-                rh.gs(R.string.overview_fuse_meal_confirm_title),
-                text.toString(),
-                onConfirm,
-            )
-            return
-        }
         var gewaehlt = false
         fun waehle(dialog: DialogInterface, aktion: Runnable) {
             if (gewaehlt) return
@@ -144,54 +82,20 @@ object FuseMarkerDialog {
             SystemClock.sleep(100)
             activity.runOnUiThread(aktion)
         }
-        if (nurErwartung != null) {
-            // VIER AUSGAENGE: drei Wege und Abbrechen. Ein Material-Dialog hat
-            // nur drei Knopfplaetze - die drei Wege stehen deshalb als Knoepfe
-            // untereinander unter dem Text, Abbrechen bleibt unten.
-            val dp = activity.resources.displayMetrics.density
-            val inhalt = android.widget.LinearLayout(activity).apply {
-                orientation = android.widget.LinearLayout.VERTICAL
-                setPadding((24 * dp).toInt(), (12 * dp).toInt(), (24 * dp).toInt(), 0)
-            }
-            val meldung = text.toString()
-            inhalt.addView(android.widget.TextView(activity).apply {
-                setText(meldung)
-                textSize = 16f
-            })
-            val dialog = MaterialAlertDialogBuilder(activity, R.style.DialogTheme)
-                .setCustomTitle(AlertDialogHelper.buildCustomTitle(activity, rh.gs(R.string.overview_fuse_meal_confirm_title)))
-                .setView(inhalt)
-                .setNegativeButton(android.R.string.cancel) { d: DialogInterface, _: Int ->
-                    if (!gewaehlt) { gewaehlt = true; d.dismiss() }
-                }
-                .create()
-            fun knopf(label: Int, aktion: Runnable) = com.google.android.material.button.MaterialButton(activity).apply {
-                setText(label)
-                isAllCaps = false
-                setOnClickListener { waehle(dialog, aktion) }
-            }
-            inhalt.addView(knopf(R.string.fuse_meal_confirm_release, onConfirm))
-            inhalt.addView(knopf(R.string.fuse_meal_confirm_expectation_only, nurErwartung))
-            onConfirmNoPrime?.let { inhalt.addView(knopf(R.string.fuse_meal_confirm_no_prime, it)) }
-            dialog.show()
-            dialog.setCanceledOnTouchOutside(false)
-            return
-        }
-        MaterialAlertDialogBuilder(activity, R.style.DialogTheme)
+        val builder = MaterialAlertDialogBuilder(activity, R.style.DialogTheme)
             .setMessage(text.toString())
             .setCustomTitle(AlertDialogHelper.buildCustomTitle(activity, rh.gs(R.string.overview_fuse_meal_confirm_title)))
-            // DIE KNOEPFE BENENNEN DIE HANDLUNG (Tonis UI-P0 25.08.):
-            // "OK" sagte nicht, dass hier Insulin freigegeben wird, und
-            // "OHNE VORSCHUSS" war gefaehrlich mehrdeutig - es klang nach
-            // "keine Sofortdosis, aber weiter verteilt", waehrend es in
-            // Wahrheit die GANZE Huelle einschliesslich Fundament auf null
-            // setzt.
-            .setPositiveButton(R.string.fuse_meal_confirm_release) { d: DialogInterface, _: Int -> waehle(d, onConfirm) }
-            .setNeutralButton(R.string.fuse_meal_confirm_no_prime) { d: DialogInterface, _: Int -> waehle(d, onConfirmNoPrime) }
             .setNegativeButton(android.R.string.cancel) { d: DialogInterface, _: Int ->
                 if (!gewaehlt) { gewaehlt = true; d.dismiss() }
             }
-            .show()
-            .setCanceledOnTouchOutside(false)
+        // DIE KNOEPFE BENENNEN DIE HANDLUNG (Tonis UI-P0): "Nur Marker" nennt ausdruecklich 0 U.
+        if (nurErwartungBisU != null) {
+            builder
+                .setPositiveButton(R.string.fuse_meal_confirm_expectation_only) { d: DialogInterface, _: Int -> waehle(d, onConfirmExpectationOnly) }
+                .setNeutralButton(R.string.fuse_meal_confirm_no_prime) { d: DialogInterface, _: Int -> waehle(d, onConfirmNoPrime) }
+        } else {
+            builder.setPositiveButton(R.string.fuse_meal_confirm_no_prime) { d: DialogInterface, _: Int -> waehle(d, onConfirmNoPrime) }
+        }
+        builder.show().setCanceledOnTouchOutside(false)
     }
 }

@@ -71,7 +71,6 @@ class FuseFragment : DaggerFragment() {
             // Bedienereignis, egal welchen Knopf man darin drueckt.
             val ereignis = fusePlugin.markerEreignisKennung()
             val quelle = app.aaps.fuse.core.controller.MarkerRuecknahme.Quelle.FUSE_TAB
-            val umschalten = Runnable { fusePlugin.toggleMealMarker(now, ereignisId = ereignis, quelle = quelle.text); update() }
             val fakten = fusePlugin.fuseMarkerPrompt(now)
             val act = activity
             if (fakten == null) {
@@ -88,16 +87,18 @@ class FuseFragment : DaggerFragment() {
                     rueckgaengig = { fusePlugin.markerRuecknahmeRueckgaengig(dateUtil.now(), quelle) },
                     aktualisieren = { if (_binding != null) update() },
                 )
-            } else if (act == null) umschalten.run()
-            else app.aaps.core.ui.dialogs.FuseMarkerDialog.show(
-                act, rh, fakten, umschalten,
-                Runnable {
-                    fusePlugin.toggleMealMarker(now, ohneVorschuss = true, ereignisId = ereignis, quelle = quelle.text)
+            } else if (act == null) {
+                // Ohne Activity gibt es keine Rueckfrage - und ohne Rueckfrage keine Ankuendigung. Frueher schaltete
+                // dieser Weg still mit Insulinfreigabe.
+                update()
+            } else app.aaps.core.ui.dialogs.FuseMarkerDialog.show(
+                act, rh, fakten,
+                onConfirmExpectationOnly = Runnable {
+                    fusePlugin.toggleMealMarker(now, ereignisId = ereignis, quelle = quelle.text, nurErwartung = true)
                     update()
                 },
-                // Toni: der dritte Weg "nur Erwartung" - erscheint nur, wenn FUSE ihn anbietet.
-                Runnable {
-                    fusePlugin.toggleMealMarker(now, ereignisId = ereignis, quelle = quelle.text, nurErwartung = true)
+                onConfirmNoPrime = Runnable {
+                    fusePlugin.toggleMealMarker(now, ohneVorschuss = true, ereignisId = ereignis, quelle = quelle.text)
                     update()
                 },
             )

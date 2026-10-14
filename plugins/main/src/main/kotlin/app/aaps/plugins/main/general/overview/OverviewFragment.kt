@@ -456,10 +456,8 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
      * Sicherheitsniveaus fuer denselben Knopf. Hier steht nur, WIE die Frage
      * aussieht.
      *
-     * Der Text nennt drei Dinge, und jedes aus einem Grund: den moeglichen
-     * ERSTEN Schritt und die GANZE Huelle, damit die Groessenordnung vor dem
-     * Ja steht - und dass eine Ruecknahme bereits Abgegebenes NICHT
-     * zurueckholt, weil man genau das ohne Hinweis falsch annimmt.
+     * Der Text nennt die Groessenordnung des Erwartungskontos, damit sie vor dem Ja steht, und die Lagen, die
+     * diesen Druck von einem gewoehnlichen unterscheiden (Tief, manuelles Insulin, ablaufende Evidenzuhr).
      */
     private fun onFuseMealButton(activity: androidx.fragment.app.FragmentActivity) {
         val now = dateUtil.now()
@@ -472,10 +470,6 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
         // FUSE-Tab war angebunden, dieser hier nicht.
         val ereignis = fuseOverviewSource.fuseMarkerEreignis()
         val fakten = fuseOverviewSource.fuseMarkerPrompt(now)
-        val umschalten = Runnable {
-            fuseOverviewSource.fuseMarkerToggle(now, ereignisId = ereignis)
-            processButtonsVisibility()
-        }
         // null heisst: ohne Rueckfrage - das ist die RUECKNAHME, und die kann
         // nur Insulin sparen.
         //
@@ -501,14 +495,15 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
         // DER TEXT STEHT IN core:ui, nicht hier: derselbe Dialog erscheint im
         // FUSE-Tab, und zwei Fassungen waeren zwei Sicherheitsniveaus.
         app.aaps.core.ui.dialogs.FuseMarkerDialog.show(
-            activity, rh, fakten, umschalten,
-            Runnable {
-                fuseOverviewSource.fuseMarkerToggle(now, ohneVorschuss = true, ereignisId = ereignis)
+            activity, rh, fakten,
+            // "Nur Erwartung": das Erwartungskonto traegt die Mahlzeit.
+            onConfirmExpectationOnly = Runnable {
+                fuseOverviewSource.fuseMarkerToggle(now, ereignisId = ereignis, nurErwartung = true)
                 processButtonsVisibility()
             },
-            // Toni: der dritte Weg "nur Erwartung" - erscheint nur, wenn FUSE ihn anbietet.
-            Runnable {
-                fuseOverviewSource.fuseMarkerToggle(now, ereignisId = ereignis, nurErwartung = true)
+            // "Nur Marker - 0 U": angekuendigt, ohne Erwartungsinsulin.
+            onConfirmNoPrime = Runnable {
+                fuseOverviewSource.fuseMarkerToggle(now, ohneVorschuss = true, ereignisId = ereignis)
                 processButtonsVisibility()
             },
         )

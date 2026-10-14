@@ -1080,63 +1080,19 @@ class FusePlugin @Inject constructor(
 override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
 
     /**
-     * Die Zahlen fuer die Rueckfrage - aus dem LETZTEN Zyklus, nicht neu
-     * gerechnet. Ein zweiter Rechenweg fuer dieselbe Groesse waere eine zweite
-     * Wahrheit, und der Dialog wuerde Zahlen zeigen, die der Regler so nie
-     * gesehen hat.
-     *
-     * `firstStepU` ist deshalb der Plan-Boden des letzten Zyklus, wenn es ihn
-     * gibt; sonst der rechnerische Zyklusanteil der ganzen Huelle. Beides ist
-     * eine OBERGRENZE - was wirklich herauskommt, kappen maxSmb, iobTH, maxIOB
-     * und die Pumpenschrittweite.
+     * Die Zahlen fuer die Rueckfrage - aus dem LETZTEN Zyklus, nicht neu gerechnet. Ein zweiter Rechenweg fuer
+     * dieselbe Groesse waere eine zweite Wahrheit, und der Dialog wuerde Zahlen zeigen, die der Regler so nie gesehen
+     * hat. Die Groessenordnung nennt das Erwartungskonto ([nurErwartungBisU], dieselbe Regel wie beim Buchen).
      */
     override fun fuseMarkerPrompt(now: Long): FuseOverviewSource.MarkerPromptFacts? {
-        val huelle = mealMarkerEnvelopeU()
         val letzter = lastOutcome
-        val geliefert = letzter?.mealStats?.totalU ?: 0.0
-        // DIE MENGEN AUS DER AUTORISIERUNG, DIE DER DRUCK ERZEUGEN WUERDE
-        // (Tonis UI-P0 vom 25.08. abends) - berechnet mit DERSELBEN
-        // Funktion, die der Runner beim Armen aufruft, mit denselben
-        // Einstellungen. Kein zweiter Rechenweg, kein `firstStepU`, kein
-        // fest verdrahtetes 15-Minuten-Fenster mehr.
-        //
-        // WARUM DAS NOETIG WAR: der Dialog nannte den Zyklusanteil der
-        // alten Prime-Schrittrechnung (einen kleinen Bruchteil), waehrend bei
-        // vollem Sofortanteil (1,0) in Wahrheit der ganze Phase-A-Betrag sofort
-        // angefordert wird (Huelle mal Phase-A-Anteil, also mehrere Einheiten).
-        val fensterMin = preferences.get(FuseIntKey.PrimeWindowMin)
-        val fundamentEndeMin = preferences.get(FuseIntKey.MealFoundationEndMin)
-        val vorschau = MealFoundation.arm(
-            markerTs = now,
-            foundationEnabled = preferences.get(FuseBooleanKey.MealFoundationEnabled),
-            totalBudgetU = huelle,
-            phaseAShare = preferences.get(FuseDoubleKey.MealFoundationPhaseAShare),
-            phaseAUpfrontShare = preferences.get(FuseDoubleKey.MealFoundationPhaseAUpfrontShare),
-            primeWindowMin = fensterMin,
-            wallCeilingMin = PrimeRelease.WALL_CEILING_MIN,
-            phaseBUntilMin = fundamentEndeMin,
-            markerAuthorized = preferences.get(FuseBooleanKey.MarkerAuthorisesRelease),
-            // VORSCHAU: der Druck geschieht in diesem Moment, und "ohne
-            // Vorschuss" waehlt der Nutzer erst IM Dialog. Beides hier
-            // bejaht, sonst rechnete die Vorschau eine leere Autorisierung.
-            pressObservedInThisProcess = true,
-            primeDeclinedByUser = false,
-        )
-        // OHNE FUNDAMENT bleibt es beim reinen Prime-Verhalten: die ganze
-        // (Rest-)Huelle laeuft verteilt ueber das Fenster, kein
-        // Sofortanteil, kein Fundament-Budget.
-        val restHuelle = (huelle - geliefert).coerceAtLeast(0.0)
-        val sofortU = if (vorschau.valid) vorschau.phaseAUpfrontU else 0.0
-        val verteiltU = if (vorschau.valid) vorschau.phaseARemainderU else restHuelle
-        val fundamentU = if (vorschau.valid) vorschau.phaseBBudgetU else 0.0
         // FREMDES INSULIN - eigene Abfrage, und das ist hier KEIN Bruch der
         // Regel oben. Jene verbietet einen zweiten Rechenweg fuer eine
         // Groesse, die der Regler bereits fuehrt. Manuelles Insulin fuehrt er
         // gerade NICHT (Auditbefund P0-2) - es gibt keine erste Wahrheit, an
         // der sich eine zweite reiben koennte.
         //
-        // Nur `Type.NORMAL`: SMB ist FUSEs eigener Kanal und steckt schon in
-        // `geliefert`, PRIMING ist Schlauchfuellung und trifft keinen Koerper.
+        // Nur `Type.NORMAL`: SMB ist FUSEs eigener Kanal, PRIMING ist Schlauchfuellung und trifft keinen Koerper.
         // Fehlschlaegt die Abfrage, bleibt der Wert null = UNBEKANNT und der
         // Dialog behauptet nichts, statt 0,00 U zu zeigen.
         val fremd = runCatching {
@@ -1146,33 +1102,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         }.getOrNull()
 
         val fakten = MarkerPrompt.Facts(
-            upfrontPlannedU = sofortU,
-            phaseARemainderU = verteiltU,
-            phaseBBudgetU = fundamentU,
-            foundationEndMin = fundamentEndeMin.takeIf { vorschau.valid && fundamentU > 0.0 },
-            envelopeU = huelle,
-            alreadyDeliveredU = geliefert,
-            authorizesAgainstModel = preferences.get(FuseBooleanKey.MarkerAuthorisesRelease),
             measuredLow = letzter?.state?.safetyHold == true,
             foreignBolusU = fremd,
-            // DIESELBE Einstellung, die der Regler liest (FuseCycleRunner
-            // holt sie ueber denselben Schluessel) - keine zweite Quelle fuer
-            // dieselbe Zahl, sonst laufen Text und Verhalten wieder
-            // auseinander.
-            windowMin = fensterMin.takeIf { it > 0 },
-            // Steht JETZT schon ein Riegel, wird der Sofortanteil
-            // aufgeschoben - dann fordert der Zyklus 0 U an. Der Zustand
-            // kommt aus dem letzten Zyklus (eine eigene Rechnung waere
-            // eine zweite Wahrheit).
-            deferredReason = when (letzter?.phaseAUpfrontState) {
-                "DEFERRED_UPFRONT_BATCH" -> "Sicherheitsriegel"
-                "BLOCKED_ZERO_LATCH"     -> "Null-Basal verriegelt"
-                "BLOCKED_FALLBACK"       -> "Modellausfall"
-                "BLOCKED_NO_DEFERRED"    -> "Sicherheitsnetz aus"
-                "TRANSFERRED_TO_DEFERRED" -> "laeuft schrittweise weiter"
-                "BLOCKED_VIEW"           -> "Behandlungssicht unlesbar"
-                else                     -> null
-            },
             // Aus DEMSELBEN Zyklus wie die uebrigen Zahlen - kein zweiter
             // Rechenweg. Nur wenn die Uhr wirklich knapp wird (Fall 1 des
             // Audit-Nachtrags: die zweite Mahlzeit erbte den Topf der ersten
@@ -1185,29 +1116,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         )
         return MarkerPrompt.required(armed = mealMarkerActive(now), facts = fakten)?.let {
             FuseOverviewSource.MarkerPromptFacts(
-                // Die Zeilenauswahl kommt aus FUSE - die Bedienoberflaeche
-                // uebersetzt sie nur noch.
-                lines = MarkerPrompt.lines(it).map { z ->
-                    when (z) {
-                        is MarkerPrompt.Line.Upfront    -> FuseOverviewSource.MarkerPromptFacts.Line.Upfront(z.amountU)
-                        is MarkerPrompt.Line.Spread     -> FuseOverviewSource.MarkerPromptFacts.Line.Spread(z.amountU, z.windowMin)
-                        is MarkerPrompt.Line.Foundation -> FuseOverviewSource.MarkerPromptFacts.Line.Foundation(z.amountU, z.untilMin)
-                        is MarkerPrompt.Line.Total      -> FuseOverviewSource.MarkerPromptFacts.Line.Total(z.amountU)
-                        is MarkerPrompt.Line.Deferred   -> FuseOverviewSource.MarkerPromptFacts.Line.Deferred(z.reason)
-                    }
-                },
-                upfrontPlannedU = it.upfrontPlannedU,
-                phaseARemainderU = it.phaseARemainderU,
-                phaseBBudgetU = it.phaseBBudgetU,
-                foundationEndMin = it.foundationEndMin,
-                envelopeU = it.envelopeU,
-                alreadyDeliveredU = it.alreadyDeliveredU,
-                authorizesAgainstModel = it.authorizesAgainstModel,
                 measuredLow = it.measuredLow,
                 foreignBolusU = it.foreignBolusU,
                 episodeRestMin = it.episodeRestMin,
-                windowMin = it.windowMin,
-                expectationOnlyMaxU = nurErwartungBisU(huelle),
+                expectationOnlyMaxU = nurErwartungBisU(mealMarkerEnvelopeU()),
             )
         }
     }
@@ -2789,9 +2701,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseIntKey.TheilSenWindowMin, preferences)
             .put(FuseIntKey.ReboundWindowMin, preferences)
             .put(FuseBooleanKey.TailGuardEnabled, preferences)
-            .put(FuseBooleanKey.ConditionalTailEnabled, preferences)
             .put(FuseBooleanKey.MarkerAuthorisesRelease, preferences)
-            .put(FuseBooleanKey.FastRestraintEnabled, preferences)
             .put(FuseDoubleKey.TailFloorMgdl, preferences)
             .put(FuseDoubleKey.TailRecoveryU, preferences)
             .put(FuseDoubleKey.BolusShareLambda, preferences)
@@ -2817,7 +2727,6 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseBooleanKey.LivenessDriveHoldEnabled, preferences)
             .put(FuseIntKey.EarlyAdaptiveMealHorizonMin, preferences)
             .put(FuseBooleanKey.SignalRejoinEnabled, preferences)
-            .put(FuseBooleanKey.ForecastShadowCollectionEnabled, preferences)
             .put(FuseIntKey.LivenessMealPowerMin, preferences)
             .put(FuseIntKey.MealArmCycles, preferences)
             // Review-P1 30.08.: der Helper sichert die EFFEKTIVEN Werte
@@ -2828,8 +2737,6 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .put(FuseBooleanKey.ZeroLatchEnabled, preferences)
             .put(FuseIntKey.ZeroLatchCalmExitMin, preferences)
             .put(FuseIntKey.ZeroLatchReasonGoneExitCycles, preferences)
-            .put(FuseDoubleKey.CorrectionSeriesCapU, preferences)
-            .put(FuseIntKey.CorrectionSeriesWindowMin, preferences)
             .put(FuseBooleanKey.PartialRecoveryEnabled, preferences)
             .put(FuseDoubleKey.ZeroLatchCalmDistanceMgdl, preferences)
             .put(FuseBooleanKey.CorrectionReversalGuardEnabled, preferences)
@@ -2864,9 +2771,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseIntKey.TheilSenWindowMin, preferences)
             .store(FuseIntKey.ReboundWindowMin, preferences)
             .store(FuseBooleanKey.TailGuardEnabled, preferences)
-            .store(FuseBooleanKey.ConditionalTailEnabled, preferences)
             .store(FuseBooleanKey.MarkerAuthorisesRelease, preferences)
-            .store(FuseBooleanKey.FastRestraintEnabled, preferences)
             .store(FuseDoubleKey.TailFloorMgdl, preferences)
             .store(FuseDoubleKey.TailRecoveryU, preferences)
             .store(FuseDoubleKey.BolusShareLambda, preferences)
@@ -2892,7 +2797,6 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseBooleanKey.LivenessDriveHoldEnabled, preferences)
             .store(FuseIntKey.EarlyAdaptiveMealHorizonMin, preferences)
             .store(FuseBooleanKey.SignalRejoinEnabled, preferences)
-            .store(FuseBooleanKey.ForecastShadowCollectionEnabled, preferences)
             .store(FuseIntKey.LivenessMealPowerMin, preferences)
             // MealArmCycles laeuft im Helper mit (Alt-Backup ohne den
             // Schluessel migriert auf den Startsatz-Default 1). Fehlende
@@ -2903,8 +2807,6 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             .store(FuseBooleanKey.ZeroLatchEnabled, preferences)
             .store(FuseIntKey.ZeroLatchCalmExitMin, preferences)
             .store(FuseIntKey.ZeroLatchReasonGoneExitCycles, preferences)
-            .store(FuseDoubleKey.CorrectionSeriesCapU, preferences)
-            .store(FuseIntKey.CorrectionSeriesWindowMin, preferences)
             .store(FuseBooleanKey.PartialRecoveryEnabled, preferences)
             .store(FuseDoubleKey.ZeroLatchCalmDistanceMgdl, preferences)
             .store(FuseBooleanKey.CorrectionReversalGuardEnabled, preferences)
@@ -3215,86 +3117,11 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         cat("fuse_meal", "Mahlzeit") {
             info(
                 "Mahlzeiten-Frist",
-                "So lange nach dem Marker gilt die Mahlzeit: das Erwartungskonto arbeitet in dieser Zeit, der " +
-                    "Liveness-Kanal faehrt die Mahlzeiten-Deckel. Danach gilt der Korrekturweg.",
+                "So lange nach dem Marker gilt die Mahlzeit: das Erwartungskonto arbeitet in dieser Zeit. " +
+                    "Danach gilt der Korrekturweg.",
             )
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LivenessMealPowerMin, dialogMessage = R.string.fuse_liveness_meal_power_summary, title = R.string.fuse_liveness_meal_power_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MealExposureLimitU, dialogMessage = R.string.fuse_meal_exposure_limit_summary, title = R.string.fuse_meal_exposure_limit_title))
-            unterseite("fuse_meal_direct", "Direktdosis (Rueckfall)") {
-                addPreference(
-                    blockBeschreibung(
-                        context,
-                        "Nur bei \"Mit Insulinfreigabe\" am Marker: Sofortanteil, Prime-Freigabe, Ruhe-Ausgang und das " +
-                            "Konto v1 (Vorgriff). Bei \"Nur Erwartung\" wirkt nichts davon.",
-                    ),
-                )
-                addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.PrimeReleaseEnabled, summary = R.string.fuse_prime_release_summary, title = R.string.fuse_prime_release_title))
-                // Direkt unter der Freigabe, weil beide nur ZUSAMMEN einen Sinn ergeben.
-                addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.PrimeWindowMin, dialogMessage = R.string.fuse_prime_window_summary, title = R.string.fuse_prime_window_title))
-                // Der Sofortanteil (iLet) verteilt dieselbe Phase-A-Menge, nur frueher. Default 0,00 = bitgleich.
-                addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MealFoundationPhaseAUpfrontShare, dialogMessage = R.string.fuse_meal_foundation_upfront_summary, title = R.string.fuse_meal_foundation_upfront_title))
-                // DER RUHE-AUSGANG AUS PHASE A: dosierwirksam nur im Modus 2 (CALM_BATCH).
-                addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.CalmRecoveryEnabled, summary = R.string.fuse_calm_recovery_summary, title = R.string.fuse_calm_recovery_title))
-                addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.CalmRecoveryCycles, dialogMessage = R.string.fuse_calm_cycles_summary, title = R.string.fuse_calm_cycles_title))
-                // BESCHRIFTETE AUSWAHL statt freiem Zahlenfeld: eine "2" ohne Beschriftung ist die dosierwirksame
-                // Stellung, und das darf niemand aus einer Zahl erraten muessen.
-                addPreference(
-                    AdaptiveListIntPreference(
-                        ctx = context, intKey = FuseIntKey.CalmTreatmentMode,
-                        title = R.string.fuse_calm_mode_title,
-                        entries = arrayOf<CharSequence>(
-                            rh.gs(R.string.fuse_calm_mode_demand),
-                            rh.gs(R.string.fuse_calm_mode_shift),
-                            rh.gs(R.string.fuse_calm_mode_batch),
-                        ),
-                        entryValues = arrayOf<CharSequence>("0", "1", "2"),
-                    ),
-                )
-                addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.CalmRecoveryMinUkf, dialogMessage = R.string.fuse_calm_min_ukf_summary, title = R.string.fuse_calm_min_ukf_title))
-                addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.CalmRecoveryGuardDistanceMgdl, dialogMessage = R.string.fuse_calm_guard_summary, title = R.string.fuse_calm_guard_title))
-                info("Konto v1 (Vorgriff)", "Bei \"Mit Insulinfreigabe\" rechnet das Konto mit dem Vorgriff statt mit der fruehen Versorgung.")
-                addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationPhi0Stable, dialogMessage = R.string.fuse_expectation_phi0_stable_summary, title = R.string.fuse_expectation_phi0_stable_title))
-                addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationPhi0AfterLow, dialogMessage = R.string.fuse_expectation_phi0_after_low_summary, title = R.string.fuse_expectation_phi0_after_low_title))
-                addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.ExpectationGuardExceptionEnabled, summary = R.string.fuse_expectation_guard_exception_summary, title = R.string.fuse_expectation_guard_exception_title))
-            }
-            unterseite("fuse_meal_fallback", "Alter Rueckfallweg") {
-                addPreference(
-                    blockBeschreibung(
-                        context,
-                        "Nur in seltenen Mahlzeitzyklen, in denen das Erwartungskonto nicht gilt - etwa nach einem " +
-                            "App-Neustart mitten in der Mahlzeit. Dann laeuft der 1.x-Weg mit Phase B und den " +
-                            "Liveness-Mahlzeitteilen. Wird zusammen mit der Direktdosis abgebaut, wenn das Konto sich " +
-                            "bewaehrt hat.",
-                    ),
-                )
-                addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.MealFoundationEndMin, dialogMessage = R.string.fuse_meal_foundation_window_summary, title = R.string.fuse_meal_foundation_window_title))
-                addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MealDemandRatioCap, dialogMessage = R.string.fuse_meal_demand_ratio_summary, title = R.string.fuse_meal_demand_ratio_title))
-                addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessBgMinMealMgdl, dialogMessage = R.string.fuse_liveness_bg_min_meal_summary, title = R.string.fuse_liveness_bg_min_meal_title))
-                addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.MealArmCycles, dialogMessage = R.string.fuse_meal_arm_cycles_summary, title = R.string.fuse_meal_arm_cycles_title))
-                addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled, summary = R.string.fuse_liveness_rebound_evidence_summary, title = R.string.fuse_liveness_rebound_evidence_title))
-                addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled, summary = R.string.fuse_liveness_booking_exit_summary, title = R.string.fuse_liveness_booking_exit_title))
-                addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessDriveHoldEnabled, summary = R.string.fuse_liveness_drive_hold_summary, title = R.string.fuse_liveness_drive_hold_title))
-                // H8: FESTE AUSWAHL AUS/6/8/10 statt freiem Zahlenfeld (eine 7 waere still AUS gewesen). KEINE
-                // dialogMessage: bei einer Liste verdraengt die Nachricht im Dialog die Auswahl. Zustand und Erklaerung
-                // kommen ueber [updatePreferenceSummary] - den Hausweg.
-                addPreference(
-                    AdaptiveListIntPreference(
-                        ctx = context, intKey = FuseIntKey.EarlyAdaptiveMealHorizonMin,
-                        title = R.string.fuse_early_adaptive_meal_horizon_title,
-                        entries = EarlyAdaptiveMealHorizonText.auswahl.map<Int, CharSequence> { EarlyAdaptiveMealHorizonText.eintrag(it) }.toTypedArray(),
-                        entryValues = EarlyAdaptiveMealHorizonText.auswahl.map<Int, CharSequence> { it.toString() }.toTypedArray(),
-                    ),
-                )
-            }
-            // Die manuelle Autorisierung bleibt VOM REST ABGESETZT (Toni: der einzige Schalter, der eine
-            // SCHUTZgrenze aufhebt, darf nicht wie einer von vielen aussehen).
-            info(
-                "Manuelle Insulin-Autorisierung",
-                "Der folgende Schalter verschiebt Verantwortung von FUSE zu dir. Jede andere " +
-                    "Einstellung sagt FUSE, WIE es entscheiden soll - dieser sagt, dass DU " +
-                    "entschieden hast und FUSE sich darauf verlaesst. Im Zweifel aus lassen."
-            )
-            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.MarkerAuthorisesRelease, summary = R.string.fuse_marker_low_summary, title = R.string.fuse_marker_low_title))
         }
 
         // DAS ERWARTUNGSKONTO (E-034) - der Mahlzeitenweg in FUSE 2. Der Sicherheitsvertrag (Schwanz hart, gemessene
@@ -3343,7 +3170,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                         "Aus dem alten Mahlzeitenweg, wirkt aber auch bei \"Nur Erwartung\": Huelle, Fundament und " +
                             "Kreditfenster bilden die Kante, bis zu der das Konto die Schwanzpruefung heben darf. Der " +
                             "Aufschub pausiert das Konto bei Abwaertsrisiko. Der Marker-Boost haelt Nacht-Totband und " +
-                            "Fenster offen. Bei \"Mit Insulinfreigabe\" tragen Huelle und Fundament zusaetzlich die Direktdosis.",
+                            "Fenster offen.",
                     ),
                 )
                 addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.PrimeEnvelopeU, dialogMessage = R.string.fuse_prime_envelope_summary, title = R.string.fuse_prime_envelope_title))
@@ -3408,7 +3235,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         cat("fuse_correction", "Korrektur und Liveness") {
             // DER LIVENESS-KANAL (Toni): marker- und mahlzeitenUNABHAENGIG - ein mengenbegrenzter
             // Zusatzkanal gegen den Deadlock der Modell-Vetos, mit eigener Druckbedingung. Seine Mahlzeitenteile
-            // stehen im alten Rueckfallweg, weil sie bei geltendem Konto aus sind.
+            // wirken nur, wenn kein Konto gilt, und sind deshalb nicht mehr einstellbar.
             info(
                 "Liveness-Kanal",
                 "Mengenbegrenzter Zusatzkanal bei anhaltend steigendem Zucker ueber der " +
@@ -3419,6 +3246,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessBgMinDayMgdl, dialogMessage = R.string.fuse_liveness_bg_min_summary, title = R.string.fuse_liveness_bg_min_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.LivenessBgMinNightMgdl, dialogMessage = R.string.fuse_liveness_bg_min_night_summary, title = R.string.fuse_liveness_bg_min_night_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LivenessReArmMin, dialogMessage = R.string.fuse_liveness_rearm_summary, title = R.string.fuse_liveness_rearm_title))
+            // Der Buchungsausgang wirkt auch im Korrekturkontext - er bleibt, wenn die Mahlzeitenteile gehen.
+            addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled, summary = R.string.fuse_liveness_booking_exit_summary, title = R.string.fuse_liveness_booking_exit_title))
             info("Onset", "Fruehe Reaktion auf einen kinematisch erkannten Mahlzeitbeginn ohne Marker.")
             addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = FuseBooleanKey.OnsetChannelEnabled, summary = R.string.fuse_onset_channel_summary, title = R.string.fuse_onset_channel_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.OnsetEnvelopeU, dialogMessage = R.string.fuse_onset_envelope_summary, title = R.string.fuse_onset_envelope_title))

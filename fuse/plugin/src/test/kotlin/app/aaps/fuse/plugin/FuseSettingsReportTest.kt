@@ -84,22 +84,9 @@ class FuseSettingsReportTest {
         assertTrue(gueltig.value.startsWith("gueltig - 24 Stuetzwerte")) { gueltig.value }
     }
 
-    /** H8 (Review 18.09.): der Bericht nennt den Horizont wie der Dialog, und ein
-     *  unzulaessiger gespeicherter Wert steht ausdruecklich als AUS da. */
+    /** H8: nicht mehr einstellbar (Konsolidierung) - die Texthilfe nennt den Horizont weiter wie der Regler. */
     @Test
-    fun `frueher MEAL-Horizont zeigt AUS und unzulaessige Werte als wirkt als AUS`() {
-        fun zeile(v: Int): FuseScreenModel.SettingRow {
-            val p = standardPreferences()
-            whenever(p.get(FuseIntKey.EarlyAdaptiveMealHorizonMin)).thenReturn(v)
-            return FuseSettingsReport.build(p).gruppen.flatMap { it.second }
-                .single { it.key == FuseIntKey.EarlyAdaptiveMealHorizonMin.key }
-        }
-        assertEquals("AUS", zeile(0).value)
-        assertEquals(null, zeile(0).standard)
-        assertEquals("8 min", zeile(8).value)
-        assertEquals("AUS", zeile(8).standard)
-        assertEquals("7 min - unzulaessig, wirkt als AUS", zeile(7).value)
-        assertEquals("AUS", zeile(7).standard)
+    fun `frueher MEAL-Horizont nennt AUS und unzulaessige Werte als wirkt als AUS`() {
         // Die Auswahl des Dialogs ist genau die wirksame Menge, AUS zuerst.
         assertEquals(listOf(0, 6, 8, 10), EarlyAdaptiveMealHorizonText.auswahl)
         assertEquals(app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.ALLOWED_HORIZONS_MIN, EarlyAdaptiveMealHorizonText.auswahl.toSet())
