@@ -747,10 +747,10 @@ class EpisodeBudgets {
         /** s. [Reservation.authId] - die Zuordnung ueberlebt bis zum Beweis. */
         val authId: String? = null,
         /** E-034: die publizierten Konto-Anteile fuer den Storno beim Beweis
-         *  (s. [Reservation.ekAuthId]). */
+         *  (s. [Reservation.ekAuthId]). Konsolidierung 2.0: der
+         *  Direktdosis-Anteil (ekDirektU) ist entfallen. */
         val ekAuthId: Long = 0L,
         val ekErwU: Double = 0.0,
-        val ekDirektU: Double = 0.0,
         /** KI-221: s. [Reservation.ekAtTs] und [Reservation.ekAnfang]. */
         val ekAtTs: Long = 0L,
         val ekAnfang: Boolean = false,
@@ -790,11 +790,11 @@ class EpisodeBudgets {
          * E-034: die Anteile dieser Buchung im Erwartungskonto der
          * Autorisierung [ekAuthId] (0 = nicht gebucht) - fuer den Storno, wenn
          * die Menge nie gesendet wird. Gesetzt im selben Zyklus nach der
-         * Quellenzuordnung; nur im Speicher.
+         * Quellenzuordnung; nur im Speicher. Konsolidierung 2.0: der
+         * Direktdosis-Anteil (ekDirektU) ist entfallen.
          */
         var ekAuthId: Long = 0L
         var ekErwU: Double = 0.0
-        var ekDirektU: Double = 0.0
 
         /**
          * KI-221 (v2): der Zyklus der Buchung - unter ihm steht die Portion im Zeitraumbuch - und ob DIESE Buchung die
@@ -2065,14 +2065,13 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
     private fun stornoErwartungskonto(
         ekAuthId: Long,
         erwU: Double,
-        direktU: Double,
         gebuchtUmTs: Long = 0L,
         anfangNieGesendet: Boolean = false,
     ) {
         val konto = episodes.expectation ?: return
         if (ekAuthId == 0L || konto.authId != ekAuthId) return
         episodes.expectation = app.aaps.fuse.core.controller.ExpectationAccount.cancel(
-            konto, erwU, direktU, bookedAtTs = gebuchtUmTs, initialNeverSent = anfangNieGesendet,
+            konto, erwU, bookedAtTs = gebuchtUmTs, initialNeverSent = anfangNieGesendet,
         )
     }
 
@@ -2142,7 +2141,6 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
                 // der nicht publizierte Rest nimmt ihn zuerst mit.
                 ekAuthId = r.ekAuthId,
                 ekErwU = (r.ekErwU - (r.amountU - bleibt)).coerceAtLeast(0.0),
-                ekDirektU = kotlin.math.min(r.ekDirektU, bleibt),
                 ekAtTs = r.ekAtTs,
                 ekAnfang = r.ekAnfang,
             ) else null
@@ -2156,7 +2154,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         // gesendete oberste Teil ist zuerst d_erw (d_mess liegt unten).
         val erwStorno = kotlin.math.min(r.ekErwU, frei)
         stornoErwartungskonto(
-            r.ekAuthId, erwU = erwStorno, direktU = kotlin.math.min(r.ekDirektU, frei),
+            r.ekAuthId, erwU = erwStorno,
             gebuchtUmTs = r.ekAtTs,
             // KI-221: nie gegeben ist die Anfangsportion nur, wenn NICHTS von ihr hinausging.
             anfangNieGesendet = r.ekAnfang && erwStorno + 1e-9 >= r.ekErwU,
@@ -2326,7 +2324,7 @@ class FuseLedgerAdapter(private val store: FuseLedgerStore = FuseLedgerStore()) 
         if (s.onset) episodes.onsetSpentU = (episodes.onsetSpentU - menge).coerceAtLeast(0.0)
         // E-034: das Konto nur, wenn die Buchung zu SEINER Autorisierung gehoert.
         stornoErwartungskonto(
-            s.ekAuthId, erwU = kotlin.math.min(s.ekErwU, menge), direktU = kotlin.math.min(s.ekDirektU, menge),
+            s.ekAuthId, erwU = kotlin.math.min(s.ekErwU, menge),
             gebuchtUmTs = s.ekAtTs,
             // KI-221: der Beweis gilt der ganzen publizierten Menge. Was von der Anfangsportion publiziert war, ging
             // nie hinaus - den nicht publizierten Rest hat [resolveReservation] schon zurueckgenommen.

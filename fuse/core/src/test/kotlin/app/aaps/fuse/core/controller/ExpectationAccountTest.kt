@@ -28,9 +28,8 @@ class ExpectationAccountTest {
         phiStabil: Double = 0.5,
         phiTief: Double = 0.0,
         schwelle: Double = 0.2,
-        ausnahme: Boolean = true,
         h: Int = 120,
-    ) = ExpectationAccount.Params.of(kurve, h, phiStabil, phiTief, 100.0, 10, schwelle, ausnahme)!!
+    ) = ExpectationAccount.Params.of(kurve, h, phiStabil, phiTief, 100.0, 10, schwelle)!!
 
     private fun inputs(
         nach: Long,
@@ -106,11 +105,11 @@ class ExpectationAccountTest {
 
     @Test
     fun `ungueltige Einstellungen schalten die Erwartung ab`() {
-        assertNull(ExpectationAccount.Params.of(kurve, 120, 1.5, 0.0, 100.0, 10, 0.2, true))
-        assertNull(ExpectationAccount.Params.of(kurve, 20, 0.5, 0.0, 100.0, 10, 0.2, true))
-        assertNull(ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 100.0, 3, 0.2, true))
-        assertNull(ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 100.0, 10, 3.0, true))
-        assertNull(ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 40.0, 10, 0.2, true))
+        assertNull(ExpectationAccount.Params.of(kurve, 120, 1.5, 0.0, 100.0, 10, 0.2))
+        assertNull(ExpectationAccount.Params.of(kurve, 20, 0.5, 0.0, 100.0, 10, 0.2))
+        assertNull(ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 100.0, 3, 0.2))
+        assertNull(ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 100.0, 10, 3.0))
+        assertNull(ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 40.0, 10, 0.2))
     }
 
     // ---- Buchung am Marker ------------------------------------------------------
@@ -290,60 +289,29 @@ class ExpectationAccountTest {
         assertEquals(0.2, teil.dErwU, eps)
     }
 
-    @Test
-    fun `die Guard-Ausnahme gibt es nur, wenn der Normalpfad den gemessenen Anteil traegt`() {
-        // R_mess = 0,5 U, Rest 0,5 U (Huelle), Anforderung gross genug.
-        val (_, e) = ExpectationAccount.step(arm(huelle = 0.5), inputs(nach = 1, bg = 125.0))
-        assertEquals(1.0, ExpectationAccount.deliverableU(e), eps)
-        assertEquals(1.0, ExpectationAccount.guardExceptionFloorU(e, normalPassedU = 0.5), eps)
-        assertEquals(1.0, ExpectationAccount.guardExceptionFloorU(e, normalPassedU = 0.7), eps)
-        // Der Guard kuerzte schon den gemessenen Anteil: jede Einheit mehr waere d_mess.
-        assertEquals(0.0, ExpectationAccount.guardExceptionFloorU(e, normalPassedU = 0.45), eps)
-        // R_mess negativ: der gemessene Anteil ist 0, die Ausnahme greift auch bei gesperrtem Normalpfad.
-        val (_, e2) = ExpectationAccount.step(arm(huelle = 0.5), inputs(nach = 1, bg = 100.0, iob = 0.3))
-        assertEquals(ExpectationAccount.deliverableU(e2), ExpectationAccount.guardExceptionFloorU(e2, normalPassedU = 0.0), eps)
-        // Ohne Erwartungsanteil (Pause) gibt es keinen Boden.
-        val (_, e3) = ExpectationAccount.step(arm(huelle = 0.5), inputs(nach = 1, bg = 125.0, pause = true))
-        assertEquals(0.0, ExpectationAccount.guardExceptionFloorU(e3, normalPassedU = 0.5), eps)
-    }
+    // Konsolidierung 2.0: die Tests der v1-Guard-Ausnahme (Boden) und der Direktdosis-Buchung sind mit ihnen entfallen.
 
     @Test
     fun `ein nicht berechenbares R_mess ergibt keine Menge`() {
         val (s, e) = ExpectationAccount.step(arm(), inputs(nach = 1, bg = Double.NaN))
         assertEquals(0.0, ExpectationAccount.deliverableU(e), eps)
         assertEquals(0.0, ExpectationAccount.expectationShareU(e), eps)
-        assertEquals(0.0, ExpectationAccount.guardExceptionFloorU(e, normalPassedU = 0.0), eps)
         assertEquals(0.2, ExpectationAccount.book(s, e, finalU = 0.2).second.dErwU, eps)
     }
 
     @Test
-    fun `die Direktdosis bucht voll und der Ueberschuss ist durch die Markerautorisierung gedeckt`() {
-        val s = ExpectationAccount.bookDirectDose(arm(), 1.6)
-        assertEquals(1.6, s.bookedU, eps)
-        assertEquals(1.6, s.directDoseU, eps)
-        assertEquals(0.6, s.coveredByMarkerAuthU, eps)
-        assertEquals(0.0, s.restU, eps)
-    }
-
-    @Test
     fun `der Storno nimmt nur zurueck, was nie geflossen ist`() {
-        // Budget 1,0; Direktdosis 1,6 gebucht (0,6 gedeckt), dann 0,4 davon nie gesendet.
-        val s = ExpectationAccount.bookDirectDose(arm(), 1.6)
-        val c = ExpectationAccount.cancel(s, erwU = 0.0, directU = 0.4)
-        assertEquals(1.2, c.bookedU, eps)
-        assertEquals(1.2, c.directDoseU, eps)
-        assertEquals(0.2, c.coveredByMarkerAuthU, eps)
-        assertEquals(0.4, c.cancelledU, eps)
-        assertEquals(1.0, c.a0U, eps, "A_0 bleibt")
+        // Konsolidierung 2.0: der Teil zum Direktdosis-Storno ist mit der Direktdosis entfallen.
         // d_erw-Storno: der Rest waechst genau um den stornierten Anteil.
         val (s2, e2) = ExpectationAccount.step(arm(), inputs(nach = 1, bg = 100.0))
         val gebucht = ExpectationAccount.book(s2, e2, finalU = 0.3).first
-        val storno = ExpectationAccount.cancel(gebucht, erwU = 0.3, directU = 0.0)
+        val storno = ExpectationAccount.cancel(gebucht, erwU = 0.3)
         assertEquals(gebucht.restU + 0.3, storno.restU, eps)
         assertEquals(0.3, storno.cancelledU, eps)
+        assertEquals(gebucht.a0U, storno.a0U, eps, "A_0 bleibt")
         // Mehr als gebucht kann nicht storniert werden.
-        assertEquals(0.3, ExpectationAccount.cancel(gebucht, erwU = 5.0, directU = 0.0).cancelledU, eps)
-        assertSame(gebucht, ExpectationAccount.cancel(gebucht, erwU = Double.NaN, directU = 0.0))
+        assertEquals(0.3, ExpectationAccount.cancel(gebucht, erwU = 5.0).cancelledU, eps)
+        assertSame(gebucht, ExpectationAccount.cancel(gebucht, erwU = Double.NaN))
     }
 
     // ---- Stabilitaet ----------------------------------------------------------------

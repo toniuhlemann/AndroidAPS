@@ -61,18 +61,17 @@ object AuthorizedLift {
         // Konsolidierung 2.0: die Quelle des Phase-A-Sofortanteils (MEAL_UPFRONT) ist entfallen.
 
         /**
-         * DIE GUARD-AUSNAHME DES ERWARTUNGSANTEILS (Vorregistrierung E-034):
-         * der Boden ist die lieferbare Kontomenge, die ueber dem Normalpfad
-         * liegende Menge ist d_erw. QUELLENGEBUNDEN enger als die anderen:
-         * hebbar nur das Guard-Urteil ([MarkerAuthorization.liftsExpectation]),
-         * die Schwanzkappe bindet AUCH mit Autorisierung (TAIL hart fuer
-         * d_erw), maxSMB begrenzt die Einzeldosis.
+         * DER ERWARTUNGSANTEIL (Vorregistrierung E-034): der Boden ist die
+         * lieferbare Kontomenge, die ueber dem Normalpfad liegende Menge ist
+         * d_erw. Die Schwanzkappe bindet AUCH mit Autorisierung.
          *
-         * Mit [EarlyLift] (E-034 v2, fruehe Versorgung) gilt stattdessen
-         * [MarkerAuthorization.liftsEarlySupply]; die Einzeldosis begrenzt
-         * dann die Portion selbst ([remainingU] - Anfangsanteil bzw.
-         * maximale Portion), und die Schwanzkappe reicht der Aufrufer nach
-         * G2/G4 herein.
+         * Nur mit [EarlyLift] (E-034 v2, fruehe Versorgung): es gilt
+         * [MarkerAuthorization.liftsEarlySupply]; die Einzeldosis begrenzt die
+         * Portion selbst ([remainingU] - Anfangsanteil bzw. maximale
+         * Portion), und die Schwanzkappe reicht der Aufrufer nach G2/G4
+         * herein. Konsolidierung 2.0: die v1-Guard-Ausnahme (ohne [EarlyLift],
+         * eigene Tabelle, maxSMB je Einzeldosis) ist entfallen - ohne
+         * [EarlyLift] hebt diese Quelle nichts.
          */
         EXPECTATION,
     }
@@ -214,7 +213,9 @@ object AuthorizedLift {
             frueh != null -> MarkerAuthorization.liftsEarlySupply(
                 base.block, base.candidateReason, authorized, frueh.guardLift, frueh.tailLift,
             )
-            source == Source.EXPECTATION -> MarkerAuthorization.liftsExpectation(base.block, base.candidateReason, authorized)
+            // Konsolidierung 2.0: die v1-Guard-Ausnahme ist entfallen - ohne Portionsregeln hebt der Erwartungsanteil
+            // nichts (geschlossen, statt in die weitere Tabelle zu fallen).
+            source == Source.EXPECTATION -> false
             else -> MarkerAuthorization.lifts(base.block, authorized)
         }
         if (!hebbar) return base

@@ -424,7 +424,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         val direktSumme = zyklen.sumOf { it.o.erwartungskonto?.buchung?.direktdosisU ?: 0.0 }
         assertTrue(erwSumme > 0.0) { "kein Erwartungsanteil geflossen" }
         assertEquals(0.0, direktSumme, 0.0, "Direktdosis gebucht")
-        assertTrue(zyklen.none { it.o.erwartungskonto?.zyklus?.guardAusnahme == true }) { "v1-Ausnahme im v2-Konto" }
+        // Konsolidierung 2.0: die v1-Ausnahme gibt es nicht mehr - ihre Abwesenheitsprobe ist entfallen.
         // Jeder CANDIDATE-Zyklus traegt einen typisierten Grund (Mechanismuskriterium des Plans).
         for (z in zyklen) {
             val x = z.o.erwartungskonto ?: continue
@@ -508,27 +508,26 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     @Test
     fun `das Rebound-Fenster blockiert die Mahlzeit im Kontokontext nie`(@TempDir dir: File) {
         val nachSonderrechten = 50..90
-        fun laufMit(arm: FuseCycleRunner.Pruefarm): List<Zyklus> {
+        fun laufMit(arm: FuseCycleRunner.Pruefarm?, name: String): List<Zyklus> {
             konfiguration(kontoAn = true)
             whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(REBOUND_FENSTER_MIN)
-            return lauf(fReboundNachDruck, File(dir, arm.name).also(File::mkdirs), arm)
+            return lauf(fReboundNachDruck, File(dir, name).also(File::mkdirs), arm)
                 .filter { it.o.abortReason == null && it.o.state != null }
         }
         // Heute (Schalter aus): nach dem Ende der Sonderrechte greift das Fenster wieder.
-        val heute = laufMit(FuseCycleRunner.Pruefarm.REF).filter { it.minute in nachSonderrechten }
+        val heute = laufMit(FuseCycleRunner.Pruefarm.REF, "REF").filter { it.minute in nachSonderrechten }
         assertTrue(heute.isNotEmpty())
         assertTrue(heute.none { it.o.state!!.markerBoost }) { "die Sonderrechte enden in der Probe nicht" }
         assertTrue(heute.any { it.o.state!!.reboundWindow }) { "die Probe erreicht das Rebound-Fenster nicht" }
         // Konto an: im ganzen gepinnten Fenster entwaffnet - die Bedingung lag an, gebremst wird nicht.
-        val imFenster = laufMit(FuseCycleRunner.Pruefarm.EK).filter { it.o.erwartungskonto?.gilt == true }
+        // (Konsolidierung 2.0: wie konfiguriert - der v1-Arm EK ist entfallen.)
+        val imFenster = laufMit(null, "konto").filter { it.o.erwartungskonto?.gilt == true }
         assertTrue(imFenster.any { it.minute in nachSonderrechten }) { "das Konto gilt dort nicht" }
         assertTrue(imFenster.none { it.o.state!!.reboundWindow }) { "das Rebound-Fenster bremst im Kontokontext" }
         assertTrue(
             imFenster.filter { it.minute in nachSonderrechten }.any { it.o.state!!.reboundSuppressedByMarker },
         ) { "die Rebound-Bedingung lag nicht an" }
-        // Zuordnungsarm EK-RBheute: wie heute.
-        val rbHeute = laufMit(FuseCycleRunner.Pruefarm.EK_RB_HEUTE).filter { it.minute in nachSonderrechten }
-        assertTrue(rbHeute.any { it.o.state!!.reboundWindow }) { "EK-RBheute weicht von heute ab" }
+        // Konsolidierung 2.0: der Zuordnungsarm EK-RBheute (Rebound wie heute im Kontokontext) ist entfallen.
     }
 
     /**
@@ -541,7 +540,8 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     fun `nach einem Rueckfall bremst das Rebound-Fenster wie heute`(@TempDir dir: File) {
         konfiguration(kontoAn = true)
         whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(REBOUND_FENSTER_MIN)
-        val zyklen = lauf(fReboundNachDruck, dir, FuseCycleRunner.Pruefarm.EK, vorZyklus = { m ->
+        // Konsolidierung 2.0: wie konfiguriert - der v1-Arm EK ist entfallen.
+        val zyklen = lauf(fReboundNachDruck, dir, vorZyklus = { m ->
             if (m == 20) ledger.episodes.expectation = null
         }).filter { it.o.abortReason == null && it.o.state != null }
         val danach = zyklen.filter { it.minute in 50..90 && !it.o.state!!.markerBoost }
@@ -690,8 +690,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     private fun pruefeMechanik(zyklen: List<Zyklus>, anteil: Double, portionU: Double, zeitraumU: Double) {
         val konto = zyklen.mapNotNull { it.konto }.last()
         assertNotNull(konto.early) { "kein v2-Konto" }
-        assertFalse(konto.guardException, "v1-Ausnahme in v2")
-        // Konsolidierung 2.0: die Pruefung auf Direktdosis-Quellen ist entfallen - es gibt keine mehr.
+        // Konsolidierung 2.0: die Proben auf v1-Ausnahme und Direktdosis-Quellen sind entfallen - es gibt beide nicht mehr.
         // Budget nie ueberschritten.
         val summe = zyklen.sumOf { it.dErw() }
         assertTrue(summe <= konto.a0U + 1e-9) { "Budget ueberschritten: $summe > ${konto.a0U}" }

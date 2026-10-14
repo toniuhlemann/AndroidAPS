@@ -24,14 +24,16 @@ class ExpectationAccountPersistTest {
     private val kurve: List<Double> = (0 until ExpectationAccount.CURVE_POINTS).map { k -> k * 0.1 }
 
     private fun konto(): ExpectationAccount.State {
-        val p = ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 90.0, 15, 0.3, true)!!
-        var s = ExpectationAccount.arm(t0, t0 + 120 * min, 2.0, p, true, t0, 110.0, 50.0)
-        s = ExpectationAccount.step(
+        val p = ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 90.0, 15, 0.3)!!
+        val s = ExpectationAccount.arm(t0, t0 + 120 * min, 2.0, p, true, t0, 110.0, 50.0)
+        val (s1, e1) = ExpectationAccount.step(
             s,
             ExpectationAccount.Inputs(t0 + min, 1.0, 112.0, 100.0, 50.0, 0.3, 0.01, paused = false, stableNow = true),
-        ).first
-        s = ExpectationAccount.bookDirectDose(s, 0.4)
-        return ExpectationAccount.cancel(s, erwU = 0.0, directU = 0.1)
+        )
+        // Konsolidierung 2.0: statt der entfallenen Direktdosis eine d_erw-Buchung mit Storno - gebucht und storniert
+        // stehen damit weiter von 0 verschieden in der Datei.
+        val gebucht = ExpectationAccount.book(s1, e1, finalU = 0.4).first
+        return ExpectationAccount.cancel(gebucht, erwU = 0.1)
     }
 
     private fun episoden(k: ExpectationAccount.State?) = EpisodeBudgets().also { it.expectation = k }
@@ -106,9 +108,30 @@ class ExpectationAccountPersistTest {
         assertEquals(t0, zurueck.expectationDroppedAuthId)
     }
 
+    /**
+     * Konsolidierung 2.0: ein Stand aus einer frueheren Fassung mit Direktdosis und v1-Guard-Ausnahme laedt weiter. Die
+     * drei Felder werden wie bisher geprueft, aber nicht mehr gefuehrt; geschrieben werden sie neutral (0 bzw. false).
+     */
+    @Test
+    fun `ein aelteres Konto mit Direktdosis und Ausnahme laedt weiter`() {
+        val k = konto()
+        val json = LedgerCodec.encodeEpisodes(episoden(k))
+        val o = json.getJSONObject("expectation")
+        assertEquals(0.0, o.getDouble("directDoseU"), 0.0)
+        assertEquals(0.0, o.getDouble("coveredByMarkerAuthU"), 0.0)
+        assertFalse(o.getBoolean("guardException"))
+        o.put("directDoseU", 0.3).put("coveredByMarkerAuthU", 0.1).put("guardException", true)
+        val zurueck = LedgerCodec.decodeEpisodes(json)
+        assertEquals(k, zurueck.expectation)
+        assertFalse(zurueck.expectationDropped)
+        // Ungueltig bleibt ungueltig - dieselbe Pruefung wie bisher.
+        o.put("directDoseU", -1.0)
+        assertTrue(LedgerCodec.decodeEpisodes(json).expectationDropped)
+    }
+
     /** E-034 v2: das Konto der fruehen Versorgung - synthetische Einstellung, eine weitere Portion im Buch. */
     private fun fruehesKonto(): ExpectationAccount.State {
-        val p = ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 90.0, 15, 0.3, true)!!
+        val p = ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 90.0, 15, 0.3)!!
         val e = app.aaps.fuse.core.controller.EarlySupply.Settings.of(1.5, 0.5, 8.0, 0.5, 1.0, 2.0, 10)!!
         val wirkung: (Double) -> Double = { t -> app.aaps.fuse.core.controller.EarlySupply.orefActionFraction(t, 45.0, 540.0) }
         val g = app.aaps.fuse.core.controller.EarlySupply.Switches(true, false, true, false)

@@ -3297,7 +3297,7 @@ class FuseCycleRunner(
         // Geraete-IOB samt Transport und dem ISF dieses Zyklus.
         val ekZyklus: ErwartungskontoZyklus? = if (!cfg.expectationAccountEnabled) null else erwartungskontoZyklus(
             ekGilt = ekGilt, vorschau = ekVorschau, dosingCtx = dosingCtx, cfg = cfg, episodes = episodes,
-            computeTs = computeTs, markerNoPrime = markerNoPrime,
+            computeTs = computeTs,
             nurErwartung = markerNurErwartung,
             tiefImReboundFenster = reboundRaw,
             // E-034 v2: die Geraetegroessen der fruehen Versorgung - aus DEMSELBEN
@@ -3670,22 +3670,13 @@ class FuseCycleRunner(
         val preFoundationBlock = liftedPrime.block
         val preFoundationBindingLimit = liftedPrime.bindingLimit
         val foundationLiftU = kotlin.math.max(0.0, liftedVorKonto.smbU - liftedPrime.smbU)
-        // ---- E-034: DIE GUARD-AUSNAHME DES ERWARTUNGSANTEILS ---------------
-        //
-        // An der Stelle von Phase B, nach der Direktdosis-Familie. Der Boden
-        // ist die lieferbare Kontomenge - aber nur, wenn der Normalpfad den
-        // gemessenen Anteil schon MIT Guard freigegeben hat (sonst waere jede
-        // Einheit mehr d_mess, und d_mess hat keine Ausnahme). Hat in diesem
-        // Zyklus eine Direktdosis gehoben, hebt das Konto nicht: eine Menge,
-        // eine Quelle. Die Tabelle des Lifts hebt nur das Guard-Urteil, der
-        // Schwanz bleibt Kappe.
-        val ekBodenU = ekZyklus?.takeIf { it.guardAusnahme && liftedVorKonto.grant == null }
-            ?.let { ExpectationAccount.guardExceptionFloorU(it.eval, normalPassedU = vetted.smbU) }
-            ?: 0.0
+        // Konsolidierung 2.0: die v1-Guard-Ausnahme des Erwartungsanteils (Boden `ekBodenU`, eigener Lift, eigene
+        // Endpruefung) ist entfallen. Konten ohne fruehe Versorgung bucht der Runner ohne Budget - dort war der Boden
+        // immer 0; nur ein aus einem aelteren Ledger geladenes Konto mit Budget verliert sie (weniger Insulin).
         // ---- E-034 v2: DIE FRUEHE VERSORGUNG -------------------------------
         //
-        // An derselben Stelle wie die Guard-Ausnahme, die fuer v2-Episoden nie
-        // gilt. Der Boden: was der Normalpfad MIT Guard vom gemessenen Anteil
+        // An der Stelle von Phase B (die im Kontozyklus aus ist). Der Boden:
+        // was der Normalpfad MIT Guard vom gemessenen Anteil
         // freigab, plus der lieferbare Erwartungsanteil dieses Zyklus
         // (Anfangsportion bzw. weitere Portion, s. ExpectationAccount).
         // Welche Urteile die Portion heben darf, sagen G1/G2 (Anfang) bzw.
@@ -3696,7 +3687,7 @@ class FuseCycleRunner(
         val fruehAnfang = fruehZyklus?.eval?.early?.initial == true
         val fruehGemessenFreiU = fruehZyklus?.let { kotlin.math.min(vetted.smbU, ExpectationAccount.measuredShareU(it.eval)) } ?: 0.0
         val fruehAnteilU = fruehZyklus?.let { ExpectationAccount.expectationShareU(it.eval) } ?: 0.0
-        val fruehHebung = fruehZyklus?.fruehSchalter?.takeIf { fruehAnteilU > 0.0 && ekBodenU <= 0.0 }?.let { g ->
+        val fruehHebung = fruehZyklus?.fruehSchalter?.takeIf { fruehAnteilU > 0.0 }?.let { g ->
             if (fruehAnfang) app.aaps.fuse.core.controller.AuthorizedLift.EarlyLift(guardLift = g.initialLiftsGuard, tailLift = g.initialLiftsTail)
             else app.aaps.fuse.core.controller.AuthorizedLift.EarlyLift(guardLift = g.guardWithExpectation, tailLift = g.tailWithExpectation)
         }
@@ -3736,18 +3727,6 @@ class FuseCycleRunner(
             else -> tail?.takeIf { it.usable }?.headroomU
         }
         val lifted = when {
-            ekBodenU > 0.0 -> app.aaps.fuse.core.controller.AuthorizedLift.lift(
-                base = liftedVorKonto,
-                source = app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION,
-                floorU = ekBodenU,
-                remainingU = ekBodenU,
-                state = state,
-                authorized = true,
-                tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
-                transportCommitmentU = transportModelledU,
-                contextExposureLimitU = kontextExposureLimitU,
-                tickEps = EK_TICK_EPS,
-            )
             fruehHebung != null && fruehBodenU > 0.0 && !fruehNormalTraegt -> app.aaps.fuse.core.controller.AuthorizedLift.lift(
                 base = liftedVorKonto,
                 source = app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION,
@@ -3952,19 +3931,7 @@ class FuseCycleRunner(
                 }
             }
         }
-        // E-034: der Boden des Erwartungsanteils besteht die Endpruefung OHNE
-        // das Guard-Urteil (das ist die Ausnahme), aber MIT technischer
-        // Integritaet und hartem Schwanz: wiederhergestellt wird hoechstens
-        // der groesste Pumpenschritt, der beides traegt. Andere Quellen
-        // bleiben unveraendert.
-        fun ekEndpruefung(u: Double): String? {
-            if (kernelFinal == null) return CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT.name
-            CandidateSearch.verifyTechnicalIntegrity(
-                prediction, kernelFinal, built.input.isfSlots, candidateBand, u, restraint = restraint,
-            )?.let { return it.name }
-            tailWith(u)?.takeIf { it.usable && it.headroomU < -TAIL_VETO_EPS_U }?.let { return TAIL_VETO }
-            return null
-        }
+        // Konsolidierung 2.0: die Endpruefung der v1-Guard-Ausnahme (`ekEndpruefung`) ist mit ihr entfallen.
         // E-034 v2: DIE ENDPRUEFUNG DER FRUEHEN VERSORGUNG - jede Menge, jede
         // Portion. Technische Integritaet immer. Guard: bei der Anfangsportion
         // mit G1 durch die Markerautorisierung gehoben, bei weiteren Portionen
@@ -3991,8 +3958,9 @@ class FuseCycleRunner(
             }
             return null
         }
-        val fruehGilt = fruehHebung != null && fruehBodenU > 0.0 && ekBodenU <= 0.0 && !fruehNormalTraegt
-        fun kontoEndpruefung(u: Double): String? = if (fruehGilt) fruehEndpruefung(u) else ekEndpruefung(u)
+        val fruehGilt = fruehHebung != null && fruehBodenU > 0.0 && !fruehNormalTraegt
+        // Ein Erwartungs-Grant entsteht nur noch aus der fruehen Versorgung (genau dann gilt `fruehGilt`).
+        fun kontoEndpruefung(u: Double): String? = fruehEndpruefung(u)
         val fruehEndgrund = lifted.grant?.takeIf { fruehGilt && it.source == app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION }
             ?.let { fruehEndpruefung(it.amountU) }
         val bodenGrant = lifted.grant?.let { g ->
@@ -5750,7 +5718,8 @@ class FuseCycleRunner(
                 verworfenBeimLaden = episodes.expectationDropped,
                 zyklus = ekZyklus,
                 buchung = ekBuchungThisCycle,
-                bodenU = ekBodenU,
+                // Konsolidierung 2.0: die v1-Guard-Ausnahme ist entfallen.
+                bodenU = 0.0,
                 angehobenU = (lifted.smbU - liftedVorKonto.smbU).coerceAtLeast(0.0),
                 blockNormalpfad = vetted.block,
                 grundNormalpfad = vetted.candidateReason,
@@ -6115,19 +6084,15 @@ class FuseCycleRunner(
      * E-034: EIN ARM DES PRUEFPLANS (K4, Abschnitt 5). Er uebersteuert nur,
      * was den Arm ausmacht; Kurve, Strecke, Ruecknahme und H kommen aus der
      * Konfiguration des Pruefstands. `null` heisst: wie konfiguriert.
+     *
+     * Konsolidierung 2.0: die v1-Arme (EK und seine Zuordnungs- und
+     * Sensitivitaetsarme) und ihre Uebersteuerungen (phi_0, Guard-Ausnahme,
+     * ohne Direktdosis, Stabilitaetsgrenze, Rebound wie heute) sind entfallen;
+     * es bleiben REF und V2.
      */
     data class Pruefarm(
         val name: String,
         val kontoAn: Boolean,
-        val phi0Stabil: Double? = null,
-        /** phi_0 bei "am Druck nicht stabil" (Schluessel ExpectationPhi0AfterLow). */
-        val phi0Tief: Double? = null,
-        val guardAusnahme: Boolean? = null,
-        val ohneDirektdosis: Boolean = false,
-        /** Stabilitaets-BG-Grenze [mg/dl] fuer Pinnung und Freigabe. */
-        val stabilBg: Double? = null,
-        /** Rebound im Mahlzeitkontext wie heute (nur Zuordnungsarm EK-RBheute). */
-        val reboundHeute: Boolean = false,
         /**
          * E-034 v2: der Pruefstand waehlt am Marker "Nur Erwartung" und schaltet
          * die fruehe Versorgung ein; ihre Werte kommen aus der Konfiguration des
@@ -6154,41 +6119,13 @@ class FuseCycleRunner(
                 earlySupplySwitches = app.aaps.fuse.core.controller.EarlySupply.Switches.NONE,
             ) else c.copy(
                 expectationAccountEnabled = true,
-                expectationPhi0Stable = phi0Stabil ?: c.expectationPhi0Stable,
-                expectationPhi0AfterLow = phi0Tief ?: c.expectationPhi0AfterLow,
-                expectationGuardException = guardAusnahme ?: c.expectationGuardException,
-                expectationStabilityBgMgdl = stabilBg ?: c.expectationStabilityBgMgdl,
-                expectationBenchNoDirectDose = ohneDirektdosis,
-                expectationBenchReboundToday = reboundHeute,
+                expectationBenchNoDirectDose = false,
+                expectationBenchReboundToday = false,
             )
 
         companion object {
             /** Kandidatenzweig mit Schalter aus. */
             val REF = Pruefarm("REF", kontoAn = false)
-
-            /** Hauptarm (K4): phi_0 0,5 in beiden Ausgangslagen, BG-Grenze 80. */
-            val EK = Pruefarm("EK", true, 0.5, 0.5, true, stabilBg = 80.0)
-
-            /** Ohne Guard-Ausnahme. */
-            val EK_OA = Pruefarm("EK-oA", true, 0.5, 0.5, false, stabilBg = 80.0)
-
-            /** phi_0 = 0: nur Anrechnung und Ersetzung. */
-            val EK_PHI0 = Pruefarm("EK-phi0", true, 0.0, 0.0, true, stabilBg = 80.0)
-
-            /** Ganze Direktdosis-Familie aus, phi_0 = 1,0 in beiden Ausgangslagen. */
-            val EK_S = Pruefarm("EK-S", true, 1.0, 1.0, true, ohneDirektdosis = true, stabilBg = 80.0)
-
-            /** Zuordnungsarme (K4): je eine Wertaenderung gegenueber K3 zurueck. */
-            val EK_K3 = Pruefarm("EK-K3", true, 0.5, 0.0, true, stabilBg = 90.0)
-            val EK_BG90 = Pruefarm("EK-BG90", true, 0.5, 0.5, true, stabilBg = 90.0)
-
-            /** Zuordnungsarm fuer die Rebound-Regel (Vorschlag K5): Rebound im Mahlzeitkontext wie heute. */
-            val EK_RB_HEUTE = Pruefarm("EK-RBheute", true, 0.5, 0.5, true, stabilBg = 80.0, reboundHeute = true)
-
-            /** Sensitivitaeten des Plans (offengelegt, verbessern kein Urteil; beide Ausgangslagen gleich). */
-            val EK_STABIL_025 = Pruefarm("EK-stabil0.25", true, 0.25, 0.25, true, stabilBg = 80.0)
-            val EK_STABIL_100 = Pruefarm("EK-stabil1.0", true, 1.0, 1.0, true, stabilBg = 80.0)
-            val EK_S_050 = Pruefarm("EK-S-0.5", true, 0.5, 0.5, true, ohneDirektdosis = true, stabilBg = 80.0)
 
             /**
              * E-034 v2: fruehe Versorgung mit "Nur Erwartung" am Marker. Kurve, Konto- und v2-Werte (Skalierer,
@@ -6196,9 +6133,7 @@ class FuseCycleRunner(
              */
             val V2 = Pruefarm("V2", kontoAn = true, nurErwartung = true)
 
-            val ALLE: List<Pruefarm> = listOf(
-                REF, EK, EK_OA, EK_PHI0, EK_S, EK_K3, EK_BG90, EK_RB_HEUTE, EK_STABIL_025, EK_STABIL_100, EK_S_050, V2,
-            )
+            val ALLE: List<Pruefarm> = listOf(REF, V2)
 
             fun vonName(name: String): Pruefarm? = ALLE.firstOrNull { it.name == name }
         }
@@ -6208,8 +6143,7 @@ class FuseCycleRunner(
     class ErwartungskontoZyklus(
         val state: ExpectationAccount.State,
         val eval: ExpectationAccount.Evaluation,
-        /** Gepinnt UND jetzt eingestellt - Abschalten wirkt sofort. */
-        val guardAusnahme: Boolean,
+        // Konsolidierung 2.0: `guardAusnahme` (v1-Guard-Ausnahme, gepinnt und eingestellt) ist entfallen.
         val armiertInDiesemZyklus: Boolean,
         val stabil: Boolean,
         val pausiert: Boolean,
@@ -6233,7 +6167,9 @@ class FuseCycleRunner(
         val verworfenBeimLaden: Boolean,
         val zyklus: ErwartungskontoZyklus?,
         val buchung: ErwartungskontoBuchung?,
-        /** Boden der Guard-Ausnahme [U]; 0 = keine Ausnahme in diesem Zyklus. */
+        /** Boden der Guard-Ausnahme [U]; 0 = keine Ausnahme in diesem Zyklus.
+         *  Konsolidierung 2.0: die v1-Guard-Ausnahme ist entfallen, das Feld
+         *  bleibt fuer den Trail und steht auf 0. */
         val bodenU: Double,
         /** Was die Ausnahme ueber den Normalpfad gehoben hat [U]. */
         val angehobenU: Double,
@@ -6274,6 +6210,7 @@ class FuseCycleRunner(
     /** E-034: was dieser Zyklus im Konto gebucht hat. */
     class ErwartungskontoBuchung(
         val authId: Long,
+        /** Konsolidierung 2.0: die Direktdosis-Buchung ist entfallen - bleibt fuer den Trail, immer 0. */
         val direktdosisU: Double,
         val split: ExpectationAccount.Split?,
     )
@@ -6313,7 +6250,6 @@ class FuseCycleRunner(
         cfg: Config,
         episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
         computeTs: Long,
-        markerNoPrime: Boolean,
         bgMgdl: Double,
         targetMgdl: Double,
         isfMgdlPerU: Double,
@@ -6396,7 +6332,8 @@ class FuseCycleRunner(
             // "Nur Marker" (Toni: fuer Snacks oder unsichere Mahlzeiten) und eine ausgeschaltete fruehe Versorgung
             // buchen Budget 0 - dann fliesst nur der gemessene Anteil. Ungueltige Einstellungen schalten die fruehe
             // Versorgung ab - dann gilt das Konto ohne Budget (nur Ersetzung): weniger Insulin, nie mehr.
-            val fruehGewollt = true
+            // Konsolidierung 2.0: ist die fruehe Versorgung per Hauptschalter aus, gibt es keine Einstellungen - dann
+            // entsteht hier wie bei ungueltigen Werten das Konto ohne fruehe Versorgung (unten), ebenfalls ohne Budget.
             val frueh = cfg.earlySupplySettings?.let { s ->
                 if (nurErwartung && cfg.earlySupplyEnabled) s else s.copy(budgetMaxU = 0.0)
             }
@@ -6423,13 +6360,12 @@ class FuseCycleRunner(
                     afterLow = !(bgMgdl > grenzeBg) || tiefImReboundFenster,
                 )
             } else {
-                // Die TATSAECHLICHE Huelle der Episode: 0 bei "ohne Vorschuss".
-                val huelle = if (markerNoPrime || fruehGewollt) 0.0
-                else MealFoundation.primeBudgetU(episodes.foundation, cfg.primeEnvelopeU)
+                // Konsolidierung 2.0: der v1-Vorgriff aus der Huelle (`MealFoundation.primeBudgetU`) ist entfallen -
+                // die Huelle war seit der Konsolidierung immer 0; das Konto ohne fruehe Versorgung bucht kein Budget.
                 ExpectationAccount.arm(
                     authId = dosingCtx.authorizationId,
                     windowEndTs = dosingCtx.authorizationExpiresAt,
-                    envelopeU = huelle,
+                    envelopeU = 0.0,
                     params = params,
                     startStable = stabil,
                     nowTs = computeTs,
@@ -6493,21 +6429,19 @@ class FuseCycleRunner(
         if (neu.released) ekFreigabeBestaetigtFuerAuth = neu.authId
         // ABSCHALTEN WIRKT SOFORT UND FUER DIE GANZE EPISODE (Codex 11.10.,
         // Punkt 9): einmal aus, ist das Recht dieser Autorisierung entzogen -
-        // wieder an gilt es erst ab dem naechsten Marker.
-        val gefuehrtV1 = if (!cfg.expectationGuardException && neu.guardException) neu.copy(guardException = false) else neu
-        // E-034 v2: dieselbe Regel fuer die fruehe Versorgung - der
-        // Hauptschalter entzieht sie, ein einzelner Schalter G1..G4 sein Recht,
-        // jeweils fuer den Rest der Mahlzeit.
-        val gefuehrt = gefuehrtV1.early?.let { e ->
+        // wieder an gilt es erst ab dem naechsten Marker. (Konsolidierung 2.0:
+        // die gleiche Regel fuer die v1-Guard-Ausnahme ist mit ihr entfallen.)
+        // E-034 v2: der Hauptschalter entzieht die fruehe Versorgung, ein
+        // einzelner Schalter G1..G4 sein Recht, jeweils fuer den Rest der Mahlzeit.
+        val gefuehrt = neu.early?.let { e ->
             val schalter = e.switches.and(cfg.earlySupplySwitches)
             val entzogen = e.withdrawn || !cfg.earlySupplyEnabled
-            if (schalter == e.switches && entzogen == e.withdrawn) gefuehrtV1
-            else gefuehrtV1.copy(early = e.copy(switches = schalter, withdrawn = entzogen))
-        } ?: gefuehrtV1
+            if (schalter == e.switches && entzogen == e.withdrawn) neu
+            else neu.copy(early = e.copy(switches = schalter, withdrawn = entzogen))
+        } ?: neu
         episodes.expectation = gefuehrt
         return ErwartungskontoZyklus(
             state = gefuehrt, eval = eval,
-            guardAusnahme = gefuehrt.guardException,
             armiertInDiesemZyklus = armiert, stabil = stabil, pausiert = pausiert,
             pausenGruende = pausenGruende,
             ruecknahmeGrund = ruecknahmeGrund.takeIf { eval.releaseRevoked },
@@ -6929,11 +6863,11 @@ class FuseCycleRunner(
             else cfg.correctionExposureLimitU
         // E-034: auch ohne Bahn wird das Konto am bewussten Druck gebucht und
         // fortgeschrieben - aber PAUSIERT: ohne Bahn kein Guard, also kein
-        // Erwartungsanteil. Die Direktdosis bucht unten voll, sonst liefe sie
-        // in einem predictorfreien Zyklus am Konto vorbei.
+        // Erwartungsanteil. (Konsolidierung 2.0: die volle Buchung der
+        // Direktdosis ist entfallen.)
         val ekZyklus = if (!cfg.expectationAccountEnabled) null else erwartungskontoZyklus(
             ekGilt = ekGilt, vorschau = ekVorschau, dosingCtx = fallbackCtx, cfg = cfg, episodes = episodes,
-            computeTs = computeTs, markerNoPrime = markerNoPrime,
+            computeTs = computeTs,
             // v2 ohne Bahn: gebucht wird erst mit Insulinmodell im Hauptpfad,
             // ein Erwartungsanteil fliesst hier nie (NO_TRAJECTORY pausiert).
             nurErwartung = mealMarkerActive && !markerNoPrime,
@@ -7999,7 +7933,9 @@ class FuseCycleRunner(
         /** Das Konto gilt - seit der Konsolidierung genau dann, wenn eine gueltige Kurve eingetragen ist. */
         val expectationAccountEnabled: Boolean = false,
         /** Die Guard-Ausnahme, wie JETZT eingestellt: Abschalten wirkt
-         *  sofort, Einschalten erst ab dem naechsten Marker (gepinnt). */
+         *  sofort, Einschalten erst ab dem naechsten Marker (gepinnt).
+         *  Konsolidierung 2.0: die Ausnahme ist entfallen; der Wert steht nur
+         *  noch im Politik-Export und Hash. */
         val expectationGuardException: Boolean = FuseBooleanKey.ExpectationGuardExceptionEnabled.defaultValue,
         val expectationPhi0Stable: Double = FuseDoubleKey.ExpectationPhi0Stable.defaultValue,
         val expectationPhi0AfterLow: Double = FuseDoubleKey.ExpectationPhi0AfterLow.defaultValue,
@@ -8044,7 +7980,8 @@ class FuseCycleRunner(
                     stabilityBgMgdl = expectationStabilityBgMgdl,
                     stabilityMin = expectationStabilityMin,
                     releaseThresholdU = expectationReleaseThresholdU,
-                    guardException = expectationGuardException,
+                    // Konsolidierung 2.0: die v1-Guard-Ausnahme ist entfallen; [expectationGuardException] liest nur
+                    // noch der Politik-Export.
                     stabilityFallMgdlPerMin = expectationStabilityFallMgdlPerMin,
                 )
             }

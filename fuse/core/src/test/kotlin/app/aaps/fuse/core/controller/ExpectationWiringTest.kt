@@ -239,23 +239,12 @@ class ExpectationWiringTest {
 
     // ---- Autorisierungstabelle ------------------------------------------------------
 
-    @Test
-    fun `die Guard-Ausnahme hebt nur das Guard-Urteil und nur mit Autorisierung`() {
-        val gf = CandidateSearch.Reject.GUARD_FLOOR
-        val mitGrund = FuseController.Block.entries.filter { MarkerAuthorization.liftsExpectation(it, gf, true) }.toSet()
-        assertEquals(setOf(FuseController.Block.GUARD_FLOOR, FuseController.Block.CANDIDATE, FuseController.Block.NONE), mitGrund)
-        val ohneGrund = FuseController.Block.entries.filter { MarkerAuthorization.liftsExpectation(it, null, true) }.toSet()
-        assertEquals(setOf(FuseController.Block.GUARD_FLOOR), ohneGrund)
-        for (r in CandidateSearch.Reject.entries.filter { it != gf })
-            assertFalse(MarkerAuthorization.liftsExpectation(FuseController.Block.CANDIDATE, r, true)) { "CANDIDATE mit $r" }
-        for (b in FuseController.Block.entries) for (r in listOf(null, gf))
-            assertFalse(MarkerAuthorization.liftsExpectation(b, r, false)) { "$b ohne Autorisierung" }
-        // TAIL bleibt fuer d_erw hart - fuer die Direktdosis-Familie unveraendert hebbar.
-        assertFalse(MarkerAuthorization.liftsExpectation(FuseController.Block.TAIL, gf, true))
-        assertTrue(MarkerAuthorization.lifts(FuseController.Block.TAIL, true))
-    }
+    // Konsolidierung 2.0: der Test der v1-Tabelle (`liftsExpectation`) ist mit ihr entfallen.
 
     // ---- Lift des Erwartungsanteils --------------------------------------------------
+    //
+    // Konsolidierung 2.0: die v1-Guard-Ausnahme ist entfallen - ohne Portionsregeln hebt der Erwartungsanteil nichts.
+    // Die Proben unten laufen deshalb mit den Regeln der fruehen Versorgung (Guard gehoben, Schwanz nicht, wie G1/G3).
 
     private fun liftState(maxSmb: Double = 0.75) = FuseController.State(
         health = Health.READY, safetyHold = false, phase = Phase.RISE_ACTIVE,
@@ -276,6 +265,7 @@ class ExpectationWiringTest {
     ) = AuthorizedLift.lift(
         base = base, source = source, floorU = floor, remainingU = floor, state = liftState(maxSmb),
         authorized = authorized, tailHeadroomU = tail, tickEps = 1e-9,
+        early = AuthorizedLift.EarlyLift(guardLift = true, tailLift = false),
     )
 
     private fun entscheidung(block: FuseController.Block, smb: Double = 0.0, grund: CandidateSearch.Reject? = null) =
@@ -308,8 +298,9 @@ class ExpectationWiringTest {
     @Test
     fun `ohne Guard-Urteil oder ohne Autorisierung hebt der Erwartungsanteil nichts`() {
         val gf = CandidateSearch.Reject.GUARD_FLOOR
+        // Konsolidierung 2.0: der Fall NONE ohne Guard-Grund gehoerte zur v1-Tabelle - die Portion der fruehen
+        // Versorgung hebt NONE (sie reicht ueber maxSMB hinaus).
         for (b in listOf(
-            entscheidung(FuseController.Block.NONE, smb = 0.2),
             entscheidung(FuseController.Block.NO_DEMAND),
             entscheidung(FuseController.Block.CANDIDATE, grund = CandidateSearch.Reject.NO_HEADROOM),
             entscheidung(FuseController.Block.CANDIDATE),
@@ -328,8 +319,8 @@ class ExpectationWiringTest {
         // Die uebrigen autorisierten Quellen bleiben, wie sie sind: autorisiert ohne Schwanzkappe
         // (Konsolidierung 2.0: hier stand die entfallene Quelle PRIME, jetzt das Fundament).
         assertEquals(0.6, ekLift(b, tail = 0.25, source = AuthorizedLift.Source.FOUNDATION).smbU, eps)
-        // maxSMB begrenzt die Einzeldosis.
-        assertEquals(0.75, ekLift(b, floor = 2.0).smbU, eps)
+        // Konsolidierung 2.0: "maxSMB begrenzt die Einzeldosis" galt der v1-Ausnahme; die Portion der fruehen
+        // Versorgung teilt maxSMB nicht (s. die Proben der Anfangsportion unten).
     }
 
     // ---- Kappen der Anfangsportion ---------------------------------------------------

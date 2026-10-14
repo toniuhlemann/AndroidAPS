@@ -712,8 +712,10 @@ object LedgerCodec {
             .put("phi0", zahl(s.phi0))
             .put("a0U", zahl(s.a0U))
             .put("bookedU", zahl(s.bookedU))
-            .put("directDoseU", zahl(s.directDoseU))
-            .put("coveredByMarkerAuthU", zahl(s.coveredByMarkerAuthU))
+            // Konsolidierung 2.0: Direktdosis und v1-Guard-Ausnahme sind entfallen. Die Felder bleiben im Format
+            // (Rueckweg 1.x, aeltere Staende) und stehen neutral auf 0 bzw. false.
+            .put("directDoseU", 0.0)
+            .put("coveredByMarkerAuthU", 0.0)
             .put("cancelledU", zahl(s.cancelledU))
             .put("released", s.released)
             .put("frozen", s.frozen)
@@ -725,7 +727,7 @@ object LedgerCodec {
             .put("isfAtMarkerMgdlPerU", zahl(s.isfAtMarkerMgdlPerU))
             .put("horizonMin", s.horizonMin)
             .put("releaseThresholdU", zahl(s.releaseThresholdU))
-            .put("guardException", s.guardException)
+            .put("guardException", false)
             .put("curveValues", JSONArray(s.curveValues.map { zahl(it) }))
             .put("expectationOn", s.expectationOn)
             .put("stabilityBgMgdl", zahl(s.stabilityBgMgdl))
@@ -814,6 +816,11 @@ object LedgerCodec {
         val kurve = (0 until kurveRoh.length()).map { i -> kurveRoh.getDouble(i) }
         if (an) require(ExpectationAccount.Curve.of(kurve) != null) { "Kurve ungueltig" }
         else require(kurve.isEmpty()) { "Kurve ohne Erwartung" }
+        // Konsolidierung 2.0: Direktdosis und v1-Guard-Ausnahme sind entfallen. Die drei Felder werden weiter geprueft
+        // (dieselbe Annahme wie bisher), aber nicht mehr gefuehrt.
+        menge("directDoseU")
+        menge("coveredByMarkerAuthU")
+        val ausnahme = schalter("guardException")
         ExpectationAccount.State(
             authId = authId,
             windowEndTs = windowEndTs,
@@ -821,8 +828,6 @@ object LedgerCodec {
             phi0 = phi0,
             a0U = menge("a0U"),
             bookedU = menge("bookedU"),
-            directDoseU = menge("directDoseU"),
-            coveredByMarkerAuthU = menge("coveredByMarkerAuthU"),
             released = schalter("released"),
             frozen = schalter("frozen"),
             releaseChecked = schalter("releaseChecked"),
@@ -833,7 +838,6 @@ object LedgerCodec {
             isfAtMarkerMgdlPerU = isf,
             horizonMin = horizon,
             releaseThresholdU = schwelle,
-            guardException = schalter("guardException"),
             curveValues = kurve,
             expectationOn = an,
             stabilityBgMgdl = stabBg,
@@ -857,7 +861,7 @@ object LedgerCodec {
                     amountU = p.getDouble(1).also { require(it.isFinite() && it in 0.0..MAX_AMOUNT_U) { "portion $it" } },
                 )
             }
-            require(!basis.guardException) { "v2 ohne Guard-Ausnahme" }
+            require(!ausnahme) { "v2 ohne Guard-Ausnahme" }
             basis.copy(
                 early = app.aaps.fuse.core.controller.EarlySupply.Pins(
                     initialShare = anteil("initialShare"),

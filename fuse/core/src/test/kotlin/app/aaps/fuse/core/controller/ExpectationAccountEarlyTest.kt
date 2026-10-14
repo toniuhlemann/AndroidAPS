@@ -14,7 +14,7 @@ class ExpectationAccountEarlyTest {
 
     /** Synthetisch: gleichmaessig 1 U je 30 min bis 120 min. */
     private val werte = requireNotNull(ExpectationAccount.Curve.ausEckwerten(1.0, 2.0, 3.0, 4.0)).values()
-    private val params = requireNotNull(ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3, true))
+    private val params = requireNotNull(ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3))
     private val einstellung = requireNotNull(EarlySupply.Settings.of(1.0, 0.5, 8.0, 0.5, 1.0, 2.0, 10))
     private val alle = EarlySupply.Switches(true, true, true, true)
 
@@ -44,7 +44,6 @@ class ExpectationAccountEarlyTest {
         val kurve = requireNotNull(ExpectationAccount.Curve.of(werte))
         assertEquals(EarlySupply.budgetU(kurve, 120, 1.0, 8.0, wirkung), s.a0U, 1e-12)
         assertEquals(1.0, s.phi0, 0.0)
-        assertFalse(s.guardException)
         assertNotNull(s.early)
         // Nach Tief: der eigene Skalierer.
         assertEquals(EarlySupply.budgetU(kurve, 120, 0.5, 8.0, wirkung), konto(stabil = false).a0U, 1e-12)
@@ -145,9 +144,9 @@ class ExpectationAccountEarlyTest {
 
     @Test
     fun `die Fallgrenze der Strecke wird geprueft und am Marker festgehalten`() {
-        assertEquals(null, ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3, true, stabilityFallMgdlPerMin = 3.5))
-        assertEquals(null, ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3, true, stabilityFallMgdlPerMin = -0.5))
-        val p = requireNotNull(ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3, true, stabilityFallMgdlPerMin = 1.0))
+        assertEquals(null, ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3, stabilityFallMgdlPerMin = 3.5))
+        assertEquals(null, ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3, stabilityFallMgdlPerMin = -0.5))
+        val p = requireNotNull(ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3, stabilityFallMgdlPerMin = 1.0))
         val s = ExpectationAccount.armEarly(t0, t0 + 120 * 60_000L, p, einstellung, alle, true, t0, 100.0, 50.0, wirkung)
         assertEquals(1.0, s.stabilityFallMgdlPerMin, 0.0)
         // Standard = die bisherige Kanalkonstante, als Rueckgang.
@@ -289,11 +288,7 @@ class ExpectationAccountEarlyTest {
         assertEquals(einstellung.scaleStable, arm(stabil = true, nachTief = null).phi0, 0.0)
     }
 
-    @Test
-    fun `die v1-Ausnahme gilt in v2 nie`() {
-        val (_, e) = schritt(konto(), 0)
-        assertEquals(0.0, ExpectationAccount.guardExceptionFloorU(e, normalPassedU = 10.0), 0.0)
-    }
+    // Konsolidierung 2.0: `die v1-Ausnahme gilt in v2 nie` ist mit der v1-Ausnahme entfallen.
 
     // ---- KI-221: der Storno nimmt auch Portion und Anfangsportion zurueck ----------------------------------------
 
@@ -304,7 +299,7 @@ class ExpectationAccountEarlyTest {
         val (gebucht, split) = ExpectationAccount.book(s0, e0, e0.restEffU)
         assertTrue(gebucht.initialDone)
         val storno = ExpectationAccount.cancel(
-            gebucht, erwU = split.dErwU, directU = 0.0, bookedAtTs = e0.atTs, initialNeverSent = true,
+            gebucht, erwU = split.dErwU, bookedAtTs = e0.atTs, initialNeverSent = true,
         )
         assertFalse(storno.initialDone)
         assertEquals(0.0, storno.bookedU, 1e-12)
@@ -312,7 +307,7 @@ class ExpectationAccountEarlyTest {
         assertTrue(e1.early!!.initial)
         assertEquals(e0.restEffU, e1.restEffU, 1e-12)
         // Teilweise gesendet (ohne die Angabe): gegeben - einmalig, wie bei einer kleineren Anforderung.
-        assertTrue(ExpectationAccount.cancel(gebucht, erwU = split.dErwU / 2, directU = 0.0, bookedAtTs = e0.atTs).initialDone)
+        assertTrue(ExpectationAccount.cancel(gebucht, erwU = split.dErwU / 2, bookedAtTs = e0.atTs).initialDone)
     }
 
     /** Das Tief hat die Marke gesetzt; ein spaeter Beweis darf die Anfangsportion danach nie wieder oeffnen (Hypo). */
@@ -323,7 +318,7 @@ class ExpectationAccountEarlyTest {
         val nachTief = zyklus(gebucht, 3, tief = true).first
         assertTrue(nachTief.earlyAfterLow && nachTief.initialDone)
         val storno = ExpectationAccount.cancel(
-            nachTief, erwU = e0.restEffU, directU = 0.0, bookedAtTs = e0.atTs, initialNeverSent = true,
+            nachTief, erwU = e0.restEffU, bookedAtTs = e0.atTs, initialNeverSent = true,
         )
         assertTrue(storno.initialDone)
         val (_, e) = schritt(storno, 4)
@@ -344,7 +339,7 @@ class ExpectationAccountEarlyTest {
         assertTrue(eL.early!!.initial)
         val gebucht = ExpectationAccount.book(sL, eL, eL.restEffU).first
         val storno = ExpectationAccount.cancel(
-            gebucht, erwU = eL.restEffU, directU = 0.0, bookedAtTs = eL.atTs, initialNeverSent = true,
+            gebucht, erwU = eL.restEffU, bookedAtTs = eL.atTs, initialNeverSent = true,
         )
         val (danach, e) = schritt(storno, EarlySupply.INITIAL_WINDOW_MIN.toInt())
         assertTrue(danach.initialDone)
@@ -361,15 +356,15 @@ class ExpectationAccountEarlyTest {
         val gebucht = ExpectationAccount.book(s1, e1, 1.0).first
         assertEquals(1.0, gebucht.portions.sumOf { it.amountU }, 1e-12)
         // Ganz nie gesendet: die Portion ist weg, der Zeitraum wieder voll offen; die Anfangsportion bleibt gegeben.
-        val storno = ExpectationAccount.cancel(gebucht, erwU = 1.0, directU = 0.0, bookedAtTs = e1.atTs)
+        val storno = ExpectationAccount.cancel(gebucht, erwU = 1.0, bookedAtTs = e1.atTs)
         assertTrue(storno.portions.isEmpty())
         assertTrue(storno.initialDone)
         assertEquals(2.0, schritt(storno, 2).second.early!!.periodLeftU, 1e-12)
         // Teilweise gesendet: nur der nie gesendete Teil geht.
-        val teil = ExpectationAccount.cancel(gebucht, erwU = 0.4, directU = 0.0, bookedAtTs = e1.atTs)
+        val teil = ExpectationAccount.cancel(gebucht, erwU = 0.4, bookedAtTs = e1.atTs)
         assertEquals(0.6, teil.portions.single().amountU, 1e-12)
         assertEquals(1.4, schritt(teil, 2).second.early!!.periodLeftU, 1e-12)
         // Ohne Buchungszeit bleibt das Buch wie bisher.
-        assertEquals(1.0, ExpectationAccount.cancel(gebucht, erwU = 1.0, directU = 0.0).portions.sumOf { it.amountU }, 1e-12)
+        assertEquals(1.0, ExpectationAccount.cancel(gebucht, erwU = 1.0).portions.sumOf { it.amountU }, 1e-12)
     }
 }

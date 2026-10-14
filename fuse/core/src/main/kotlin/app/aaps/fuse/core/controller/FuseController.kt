@@ -677,8 +677,9 @@ object FuseController {
          * Kuerzungsgrund [CandidateSearch.Result.cutReason]) und von der
          * Endpruefung im Runner. Er ueberlebt die spaeteren Stufen als Feld,
          * weil autorisierte Anhebungen `bindingLimit` ueberschreiben. Die
-         * Guard-Ausnahme des Erwartungsanteils haengt ausschliesslich an
-         * diesem Feld, nie an einem Grundtext ([MarkerAuthorization.liftsExpectation]).
+         * Hebung des Erwartungsanteils haengt ausschliesslich an diesem Feld,
+         * nie an einem Grundtext ([MarkerAuthorization.liftsEarlySupply];
+         * Konsolidierung 2.0: die v1-Tabelle ist entfallen).
          * Nur im Speicher, nie persistiert.
          */
         val candidateReason: CandidateSearch.Reject? = null,

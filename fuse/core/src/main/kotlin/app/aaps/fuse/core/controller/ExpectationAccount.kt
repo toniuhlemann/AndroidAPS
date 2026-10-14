@@ -30,6 +30,13 @@ import kotlin.math.min
  * liefert, ist durch die bestehende Markerautorisierung gedeckt und wird so
  * ausgewiesen - keine stille Ueberschreitung.
  *
+ * Konsolidierung 2.0: die Direktdosis-Familie und die Guard-Ausnahme von v1
+ * sind entfallen (Buchung, Felder, Boden). Heben darf nur noch die fruehe
+ * Versorgung (v2, [State.early]) nach ihren eigenen Regeln. Ein Konto ohne
+ * [State.early] bucht der Runner weiterhin - bei ausgeschalteter oder
+ * ungueltiger frueher Versorgung und bei ungueltigen Parametern -, aber ohne
+ * Huelle und damit ohne Budget; [step] rechnet es wie bisher.
+ *
  * WANN KEIN d_erw: vor erfuellter Stabilitaet (Start nach Tief oder im
  * Fallen, und nach einem gemessenen Tief in der Episode erneut), in jeder Pause (gemessene Sperre, Signal-, Pumpen- oder
  * Ledgerzustand), bei eingefrorenem Rest (Ruecknahme bei ausbleibender
@@ -161,7 +168,10 @@ object ExpectationAccount {
         }
     }
 
-    /** Die Einstellungen, geprueft. `null` aus [of] heisst: Erwartung aus. */
+    /**
+     * Die Einstellungen, geprueft. `null` aus [of] heisst: Erwartung aus. Konsolidierung 2.0: der Schalter der
+     * v1-Guard-Ausnahme ist mit ihr entfallen; phi_0 bleibt (Pinnung im Konto ohne fruehe Versorgung, Gueltigkeit).
+     */
     data class Params(
         val curve: Curve,
         val horizonMin: Int,
@@ -170,7 +180,6 @@ object ExpectationAccount {
         val stabilityBgMgdl: Double,
         val stabilityMin: Int,
         val releaseThresholdU: Double,
-        val guardException: Boolean,
         val stabilityFallMgdlPerMin: Double = DEFAULT_STABILITY_FALL_MGDL_PER_MIN,
     ) {
         companion object {
@@ -183,7 +192,6 @@ object ExpectationAccount {
                 stabilityBgMgdl: Double,
                 stabilityMin: Int,
                 releaseThresholdU: Double,
-                guardException: Boolean,
                 stabilityFallMgdlPerMin: Double = DEFAULT_STABILITY_FALL_MGDL_PER_MIN,
             ): Params? {
                 val curve = Curve.of(curveValues) ?: return null
@@ -199,7 +207,7 @@ object ExpectationAccount {
                 ) return null
                 return Params(
                     curve, horizonMin, phi0Stable, phi0AfterLow, stabilityBgMgdl, stabilityMin,
-                    releaseThresholdU, guardException, stabilityFallMgdlPerMin,
+                    releaseThresholdU, stabilityFallMgdlPerMin,
                 )
             }
         }
@@ -219,12 +227,11 @@ object ExpectationAccount {
         val phi0: Double,
         /** Gebuchtes Erwartungsbudget [U]. */
         val a0U: Double,
-        /** Verbraucht: d_erw und Direktdosis-Familie [U], nur steigend. */
+        /**
+         * Verbraucht: d_erw [U], nur steigend. Konsolidierung 2.0: die Direktdosis-Familie und ihre beiden Felder
+         * (Direktdosis, durch die Markerautorisierung gedeckt) sind entfallen.
+         */
         val bookedU: Double,
-        /** Davon Direktdosis-Familie [U]. */
-        val directDoseU: Double,
-        /** Direktdosis ueber dem Budget, gedeckt durch die Markerautorisierung [U]. */
-        val coveredByMarkerAuthU: Double,
         /** Stabilitaet erreicht; bei stabilem Start sofort. */
         val released: Boolean,
         /** Ruecknahme: Rest eingefroren. */
@@ -241,7 +248,7 @@ object ExpectationAccount {
         // ---- gepinnt am Marker ----
         val horizonMin: Int,
         val releaseThresholdU: Double,
-        val guardException: Boolean,
+        // Konsolidierung 2.0: die gepinnte v1-Guard-Ausnahme (guardException) ist entfallen.
         val curveValues: List<Double>,
         /** false: am Marker gab es keine gueltigen Parameter - nur Ersetzung, keine Erwartung. */
         val expectationOn: Boolean = true,
@@ -252,8 +259,8 @@ object ExpectationAccount {
         /** Storniert: gebucht, aber nachweislich nie gesendet [U], nur steigend. */
         val cancelledU: Double = 0.0,
         /**
-         * E-034 v2: die fruehe Versorgung dieser Episode, am Marker festgehalten; `null` = Konto v1. Dann ist [a0U]
-         * das Gesamtbudget B, [phi0] der Skalierer (0..[EarlySupply.MAX_SCALE]) und die Guard-Ausnahme von v1 aus.
+         * E-034 v2: die fruehe Versorgung dieser Episode, am Marker festgehalten; `null` = Konto v1 (ohne Budget,
+         * s. Kopf). Dann ist [a0U] das Gesamtbudget B und [phi0] der Skalierer (0..[EarlySupply.MAX_SCALE]).
          */
         val early: EarlySupply.Pins? = null,
         /**
@@ -300,12 +307,12 @@ object ExpectationAccount {
     ): State {
         if (params == null) return State(
             authId = authId, windowEndTs = windowEndTs, startStable = startStable,
-            phi0 = 0.0, a0U = 0.0, bookedU = 0.0, directDoseU = 0.0, coveredByMarkerAuthU = 0.0,
+            phi0 = 0.0, a0U = 0.0, bookedU = 0.0,
             released = startStable, frozen = false, releaseChecked = false,
             disturbanceU = 0.0,
             disturbanceValid = bgMgdl.isFinite() && isfMgdlPerU.isFinite() && isfMgdlPerU > 0.0,
             lastObsTs = nowTs, lastBgMgdl = bgMgdl, isfAtMarkerMgdlPerU = isfMgdlPerU,
-            horizonMin = MAX_HORIZON_MIN, releaseThresholdU = 0.0, guardException = false,
+            horizonMin = MAX_HORIZON_MIN, releaseThresholdU = 0.0,
             curveValues = emptyList(), expectationOn = false,
         )
         val z0 = params.curve.remaining(0.0, params.horizonMin)
@@ -319,8 +326,6 @@ object ExpectationAccount {
             phi0 = phi,
             a0U = a0,
             bookedU = 0.0,
-            directDoseU = 0.0,
-            coveredByMarkerAuthU = 0.0,
             released = startStable,
             frozen = false,
             releaseChecked = false,
@@ -331,7 +336,6 @@ object ExpectationAccount {
             isfAtMarkerMgdlPerU = isfMgdlPerU,
             horizonMin = params.horizonMin,
             releaseThresholdU = params.releaseThresholdU,
-            guardException = params.guardException,
             curveValues = params.curve.values(),
             expectationOn = true,
             stabilityBgMgdl = params.stabilityBgMgdl,
@@ -344,8 +348,8 @@ object ExpectationAccount {
      * E-034 v2: bucht am Marker das GESAMTBUDGET der fruehen Versorgung statt der Huelle -
      * `B = min(B_max, scale * max_tau F(tau) / C(tau))` ([EarlySupply.budgetU]). Kurve, Vorschau, Stabilitaet und
      * Ruecknahme kommen aus [params] wie in v1; der Skalierer aus [settings]. [unitAction] ist die
-     * zeitliche Wirkung einer jetzt gegebenen Einheit aus dem aktiven Insulinmodell. Die Guard-Ausnahme von v1 gilt
-     * fuer diese Episode nicht - an ihre Stelle treten G1..G4 aus [switches].
+     * zeitliche Wirkung einer jetzt gegebenen Einheit aus dem aktiven Insulinmodell. Was gehoben werden darf, sagen
+     * G1..G4 aus [switches] (die Guard-Ausnahme von v1 ist mit der Konsolidierung 2.0 entfallen).
      *
      * ZWEI GETRENNTE FRAGEN (Toni): [startStable] ist die Freigabe am Marker (Strecke erfuellt - sonst wartet die
      * Anfangsportion); [afterLow] waehlt den Skalierer. "Nach Tief" ist nur ein Start unter der Stabilitaetsgrenze
@@ -370,7 +374,6 @@ object ExpectationAccount {
         return arm(authId, windowEndTs, 0.0, params, startStable, nowTs, bgMgdl, isfMgdlPerU).copy(
             phi0 = scale,
             a0U = if (b.isFinite()) max(0.0, b) else 0.0,
-            guardException = false,
             early = EarlySupply.Pins(
                 initialShare = settings.initialShare,
                 maxPortionU = settings.maxPortionU,
@@ -622,7 +625,7 @@ object ExpectationAccount {
     /** Hoechstmenge dieses Zyklus aus dem Konto: d_mess-Anteil plus d_erw bis Budgetrest. */
     fun deliverableU(e: Evaluation): Double = min(e.requestU, messU(e) + e.restEffU)
 
-    /** Der Anteil, der nur als d_erw fliessen darf (und nur er nutzt die Guard-Ausnahme). */
+    /** Der Anteil, der nur als d_erw fliessen darf (und nur er wird von der fruehen Versorgung gehoben). */
     fun expectationShareU(e: Evaluation): Double = min(e.restEffU, max(0.0, e.requestU - messU(e)))
 
     data class Split(
@@ -634,21 +637,7 @@ object ExpectationAccount {
         val dNormU: Double = 0.0,
     )
 
-    /**
-     * DER BODEN DER GUARD-AUSNAHME in diesem Zyklus - oder 0.
-     *
-     * [normalPassedU] ist die Menge, die der Normalpfad MIT Guard freigegeben
-     * hat. Gebucht wird jede Lieferung zuerst als d_mess bis max(0, R_mess);
-     * eine Einheit ueber dem Normalpfad waere also d_mess, solange dieser den
-     * gemessenen Anteil nicht vollstaendig traegt - und d_mess hat keine
-     * Ausnahme. Deshalb gibt es den Boden nur, wenn der Normalpfad den
-     * gemessenen Anteil schon freigegeben hat; dann reicht er bis zur
-     * lieferbaren Menge, und alles darueber ist d_erw.
-     */
-    fun guardExceptionFloorU(e: Evaluation, normalPassedU: Double): Double {
-        if (e.early != null || !normalPassedU.isFinite() || expectationShareU(e) <= EPS_U) return 0.0
-        return if (normalPassedU + EPS_U >= messU(e)) deliverableU(e) else 0.0
-    }
+    // Konsolidierung 2.0: der Boden der v1-Guard-Ausnahme (`guardExceptionFloorU`) ist entfallen.
 
     /**
      * Bucht eine Lieferung aus dem Konto. [finalU] ist die Endmenge nach allen
@@ -681,28 +670,15 @@ object ExpectationAccount {
         return s to Split(dMess, dErw, if (violation > EPS_U) violation else 0.0, dNormU = norm)
     }
 
-    /**
-     * Bucht eine Lieferung der Direktdosis-Familie voll auf das Konto. Was
-     * ueber den Rest hinausgeht, ist durch die bestehende Markerautorisierung
-     * gedeckt und wird gesondert gefuehrt.
-     */
-    fun bookDirectDose(state: State, amountU: Double): State {
-        if (!amountU.isFinite() || amountU <= EPS_U) return state
-        val ueber = max(0.0, amountU - state.restU)
-        return state.copy(
-            bookedU = state.bookedU + amountU,
-            directDoseU = state.directDoseU + amountU,
-            coveredByMarkerAuthU = state.coveredByMarkerAuthU + ueber,
-        )
-    }
+    // Konsolidierung 2.0: die volle Buchung der Direktdosis-Familie (`bookDirectDose`) ist entfallen.
 
     /**
      * STORNO einer gebuchten, aber nachweislich nie gesendeten Menge
      * (Gate-Reject oder Nicht-Sende-Beweis) - dieselbe Regel wie bei den
      * uebrigen Buechern der Mahlzeit. Kein Auffuellen: A_0 bleibt, und
      * zurueckgenommen wird nur, was nie geflossen ist. [erwU] ist der
-     * d_erw-Anteil, [directU] der Direktdosis-Anteil; die Summe steht in
-     * [State.cancelledU], damit jede Erhoehung des Rests erklaert ist.
+     * d_erw-Anteil; er steht in [State.cancelledU], damit jede Erhoehung des
+     * Rests erklaert ist (Konsolidierung 2.0: der Direktdosis-Anteil ist entfallen).
      *
      * v2 (KI-221): die fruehe Versorgung genauso - sonst rechnete sie mit einer Lieferung, die es nie gab.
      *  - Die Portion der Buchung [bookedAtTs] verlaesst das Zeitraumbuch um den nie gesendeten Teil: der Zeitraumrest
@@ -718,20 +694,14 @@ object ExpectationAccount {
     fun cancel(
         state: State,
         erwU: Double,
-        directU: Double,
         bookedAtTs: Long = 0L,
         initialNeverSent: Boolean = false,
     ): State {
         val erw = if (erwU.isFinite()) max(0.0, erwU) else 0.0
-        val direkt = if (directU.isFinite()) min(max(0.0, directU), state.directDoseU) else 0.0
-        val zurueck = min(erw + direkt, state.bookedU)
+        val zurueck = min(erw, state.bookedU)
         if (zurueck <= EPS_U) return state
-        val booked = state.bookedU - zurueck
-        val directDose = state.directDoseU - direkt
         var s = state.copy(
-            bookedU = booked,
-            directDoseU = directDose,
-            coveredByMarkerAuthU = min(directDose, max(0.0, booked - state.a0U)),
+            bookedU = state.bookedU - zurueck,
             cancelledU = state.cancelledU + zurueck,
         )
         if (s.early == null || erw <= EPS_U) return s
