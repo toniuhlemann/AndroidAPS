@@ -464,23 +464,8 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(zyklen.none { it.o.livenessDenial == "EXPECTATION_ACCOUNT" })
     }
 
-    /** Die Direktdosis-Familie, wie sie in der Entscheidung als Quelle erscheint (die Quelle des Sofortanteils
-     *  ist mit der Konsolidierung 2.0 entfallen). */
-    private val direktQuellen = setOf(
-        app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME,
-    )
-
-    /**
-     * Konsolidierung: es gibt keine Direktdosis mehr - auch nicht, wenn das Konto ausfaellt (hier: keine Kurve) und der
-     * Marker keine Wahl traegt.
-     */
-    @Test
-    fun `ohne Konto gibt es keine Direktdosis`(@TempDir dir: File) {
-        konfiguration(kontoAn = false)
-        val zyklen = lauf(fStabil, dir).filter { it.o.abortReason == null }
-        assertTrue(zyklen.any { it.minute in 0..60 }) { "Probe zeigt nichts: keine Zyklen nach dem Druck" }
-        assertTrue(zyklen.none { it.o.decision.grant?.source in direktQuellen }) { "Direktdosis ohne Konto" }
-    }
+    // Konsolidierung 2.0: `ohne Konto gibt es keine Direktdosis` ist entfallen - die Direktdosis-Quellen (Sofortanteil,
+    // PRIME) gibt es im Code nicht mehr, die Pruefung waere leer.
 
     /** Fallen nach dem Marker mit Prime-Insulin an Bord: das spaete Abwaertsrisiko des Aufschubs greift. */
     private val fFall = Fuse20Folgen.Folge(
@@ -706,7 +691,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         val konto = zyklen.mapNotNull { it.konto }.last()
         assertNotNull(konto.early) { "kein v2-Konto" }
         assertFalse(konto.guardException, "v1-Ausnahme in v2")
-        assertTrue(zyklen.none { it.o.decision.grant?.source in direktQuellen }) { "Direktdosis-Quelle in v2" }
+        // Konsolidierung 2.0: die Pruefung auf Direktdosis-Quellen ist entfallen - es gibt keine mehr.
         // Budget nie ueberschritten.
         val summe = zyklen.sumOf { it.dErw() }
         assertTrue(summe <= konto.a0U + 1e-9) { "Budget ueberschritten: $summe > ${konto.a0U}" }

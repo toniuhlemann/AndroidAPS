@@ -191,7 +191,7 @@ class MeasuredDescentRiskTest {
     fun `der Endriegel setzt den Sicherheitsstempel selbst`() {
         val grant = AuthorizedLift.AuthorizedGrant.of(
             0.25,
-            AuthorizedLift.Source.PRIME,
+            AuthorizedLift.Source.FOUNDATION,
         )!!
         val vorher = FuseController.Decision(
             smbU = 0.25,
@@ -200,7 +200,7 @@ class MeasuredDescentRiskTest {
             insulinReqU = 0.25,
             predAtReleaseMgdl = 140.0,
             minLowerMgdl = 100.0,
-            bindingLimit = "primeRelease",
+            bindingLimit = "mealFoundation",
             grant = grant,
             unsafeSituation = false,
         )

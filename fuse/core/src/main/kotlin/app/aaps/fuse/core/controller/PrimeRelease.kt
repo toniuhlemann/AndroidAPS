@@ -8,6 +8,11 @@ import kotlin.math.min
  * Die Sofort-Freigabe am Mahlzeiten-Marker - verteilte Abgabe AB KNOPFDRUCK,
  * ohne auf CGM-Evidenz zu warten.
  *
+ * Konsolidierung 2.0: die Anhebung (`lift`) ist entfallen. [plan] bleibt, weil
+ * der Hauptpfad bei CLEARANCE den Fensterstart verschiebt und damit den
+ * Uebergabeanker des Mahlzeitenfundaments; die Fenster-Konstanten lesen
+ * Fundament und Buchung. Die Beschreibung unten ist der Stand davor.
+ *
  * WARUM ES SIE GIBT, gemessen an einem Fruehstueck: zwischen Essen (Marker)
  * und der ersten CGM-Regung vergingen viele Minuten, der Gipfel kam spaet,
  * danach folgte ein reales Tief - AUCH auf prod mit Marker und Temp-Target.
@@ -57,7 +62,7 @@ import kotlin.math.min
  *
  * WAS DAS FUER DIE PUNKTE UNTEN HEISST: sie beschreiben den Fall OHNE
  * Autorisierung. Mit Autorisierung entfaellt die Freigangsprobe, der
- * Schwanz-Deckel in [lift] entfaellt ebenfalls, und die Bahn darf sogar
+ * Schwanz-Deckel in `lift` entfaellt ebenfalls, und die Bahn darf sogar
  * ganz fehlen (s. [Input.safetyMinLowerMgdl] und [MarkerFallback]).
  *
  *  - CLEARANCE-Gate: die Guardbahn muss den Boden um die 60-min-Wirkung der
@@ -107,28 +112,7 @@ object PrimeRelease {
      *  minLower - Anteil*restU*ISF >= guardFloor. */
     const val CLEARANCE_60MIN_FRACTION = 0.2
 
-    /**
-     * MARKER-PRIOR (08.08., Antwort auf Tonis Vorrang-Frage): Der Knopf ist
-     * eine bewusste ERKLAERUNG "Kohlenhydrate kommen" - FUSE ist COB-blind,
-     * seine Waechterbahn rechnet also das Worst-Case "es kommen KEINE Carbs",
-     * das im Marker-Fenster nachweislich falsch ist (ein reales Abendessen:
-     * 58 min GUARD_FLOOR + 12 min CLEARANCE gegen die deklarierte Mahlzeit,
-     * Kopf 33 min zu spaet). Der Prior schreibt der UNTEREN Bahn einen
-     * minimalen deklarierten Carb-Antrieb gut (eine kleine Kohlenhydratmenge
-     * ueber 45 min) - Gates bleiben souveraen, rechnen aber mit korrekten Fakten.
-     * Gekappt an der Mittelbahn (lower <= mean bleibt erhalten).
-     *
-     * ENTZIRKULARISIERT SEIT C2 (Codex H2 "a marker may create demand evidence,
-     * not protection"): der Prior hebt weiterhin die ANGEZEIGTE untere Bahn,
-     * aber KEIN Sicherheitszertifikat rechnet mehr gegen die gehobene Kante -
-     * Guard, Clearance und Schwanz nehmen die punktweise prior-freie Zwillings-
-     * bahn ([app.aaps.fuse.core.predictor.PredictorResult.minSafetyLowerBg]).
-     * Die frueher hier angesetzte ANALYTISCHE Korrektur (Hub am Release-
-     * Horizont abziehen) war unvollstaendig: das Minimum liegt typisch am
-     * Haftungshorizont, und dort ist der Hub bei tau 60 fast doppelt so gross
-     * (30 min 16,53 mg/dl gegen 120 min 36,32 mg/dl).
-     */
-    const val MARKER_PRIOR_MGDL_PER_MIN = 0.7
+    // Konsolidierung 2.0: MARKER_PRIOR_MGDL_PER_MIN ist nach [MarkerScope] umgezogen (Wert unveraendert).
 
     private const val TICK_EPS = 1e-9
 
@@ -283,11 +267,11 @@ object PrimeRelease {
         // Schritt fuer Schritt gegen eine jedesmal neu gemessene Lage; sobald
         // die Bahn faellt, endet die Serie sofort. Zusaetzlich bleiben
         // Wanduhr-Kappe, Huelle, maxSmb, iobTH und maxIOB unveraendert
-        // (s. [lift]).
+        // (s. `lift`).
         //
         // NICHT MEHR WAHR seit dem 11.08., und der Satz stand hier noch:
         // "der Schwanz-Waechter kappt weiterhin unabhaengig". Er tut es nur
-        // OHNE Autorisierung. Mit ihr ist er in [lift] ausdruecklich
+        // OHNE Autorisierung. Mit ihr ist er in `lift` ausdruecklich
         // uebersprungen - er ist eine Prognose ueber H, und Prognosen duerfen
         // den markerfinanzierten Anteil nicht nullen.
         // Die Freigangsprobe gegen den Guard-Boden. Sie ENTFAELLT bei
@@ -306,66 +290,5 @@ object PrimeRelease {
         return Plan(true, floorU, remaining, "PRIME")
     }
 
-    /**
-     * DIE POLITIK LIEGT NICHT MEHR HIER (Toni 18.08.).
-     *
-     * Hier standen zwei lokale Mengen. Sie sind nach
-     * [MarkerAuthorization] gewandert, weil Phase A (Prime) und Phase B
-     * (Mahlzeitenfundament) aus DERSELBEN Autorisierung stammen und deshalb
-     * dieselbe Politik brauchen - zwei Tabellen waeren zwei Wahrheiten.
-     *
-     * Der ausfuehrliche Grund, warum `SAFETY_HOLD` nicht mehr dabei ist,
-     * steht dort.
-     */
-    private val LIFTABLE = MarkerAuthorization.LIFTABLE_WITHOUT_AUTHORIZATION
-
-    private val LIFTABLE_ON_MARKER = MarkerAuthorization.LIFTABLE_ON_AUTHORIZATION
-
-    /**
-     * Hebt die Basisentscheidung auf die Mindest-Freigabe an - oder laesst sie
-     * unveraendert, wenn sie ohnehin groesser ist oder eine echte Sperre
-     * traegt. Kappt zusaetzlich an denselben Deckeln wie der Regler.
-     *
-     * Audit R95 (NEU-04): die Zusage "dieselben Deckel wie der Regler" war
-     * unvollstaendig - tailHeadroom und onsetEnvelope fehlten, ein
-     * tail-gedeckelter Basis-SMB konnte per Lift ueber den Schwanz-Deckel
-     * gehoben werden. Beide sind jetzt Pflicht-Kappen, wenn der Aufrufer sie
-     * kennt (null = Waechter nicht aktiv).
-     */
-    fun lift(
-        base: FuseController.Decision, p: Plan, state: FuseController.State,
-        /** s. [LIFTABLE_ON_MARKER]. Der Aufrufer hat geprueft, dass die
-         *  Einstellung an ist UND ein Marker laeuft - mehr nicht. */
-        markerAuthorized: Boolean = false,
-        tailHeadroomU: Double? = null, onsetCapU: Double? = null,
-        // Fix-Pass 2 Nr. 2 (NEU-BS-01, doppelt unabhaengig gefunden): die
-        // Suche kappt an LEDGER-korrigierten Headrooms, der Lift kappte an
-        // den NOMINALEN - ueber den NO_DEMAND-Pfad (Suche laeuft nie) konnte
-        // eine In-Flight-Menge doppelt in den iobTH-/maxIOB-Spielraum.
-        transportCommitmentU: Double = 0.0,
-        /** B1: Kontextgrenze des Zyklus, s. [AuthorizedLift.lift]. */
-        contextExposureLimitU: Double? = null,
-    ): FuseController.Decision {
-        // OHNE PLAN KEIN LIFT - das ist die Prime-spezifische Vorbedingung
-        // und bleibt hier: [AuthorizedLift] kennt keinen Prime-Plan.
-        if (!p.active) return base
-        // ALLES WEITERE IST GEMEINSAM (Toni 18.08.). Der Rumpf stand hier und
-        // ist nach [AuthorizedLift] gewandert, damit Phase B nicht eine
-        // zweite Fassung derselben Kappen bekommt. Prime reicht seine beiden
-        // eigenen Groessen als Parameter herein: das Restbudget der Huelle
-        // und die Onset-Kappe.
-        return AuthorizedLift.lift(
-            base = base,
-            source = AuthorizedLift.Source.PRIME,
-            floorU = p.floorU,
-            remainingU = p.remainingU,
-            state = state,
-            authorized = markerAuthorized,
-            tailHeadroomU = tailHeadroomU,
-            extraCapU = onsetCapU,
-            transportCommitmentU = transportCommitmentU,
-            contextExposureLimitU = contextExposureLimitU,
-            tickEps = TICK_EPS,
-        )
-    }
+    // Konsolidierung 2.0: die Anhebung (`lift`, Quelle PRIME) und ihre Blocklisten sind entfallen.
 }

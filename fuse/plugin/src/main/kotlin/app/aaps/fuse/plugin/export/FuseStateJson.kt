@@ -767,8 +767,8 @@ object FuseStateJson {
             .put("evidenceEpisodeDenial", outcome.evidenceEpisodeDenial ?: JSONObject.NULL)
             // M2: der urspruengliche Normalpfad-Block VOR den autorisierten
             // Boeden - die Groesse, die das Bewaffnungstor liest. Getrennt
-            // von mealFoundation.preFoundationBlock (der misst NACH
-            // PrimeRelease.lift). null = Fallback-Pfad ohne Kandidatensuche.
+            // von mealFoundation.preFoundationBlock (der misst VOR dem
+            // Fundament-Lift). null = Fallback-Pfad ohne Kandidatensuche.
             .put("underlyingNormalBlock", outcome.underlyingNormalBlock ?: JSONObject.NULL)
             // A3 (Bauauftrag §8): die gemeinsame Expositionssicht als reine
             // Diagnose. ALLE Zahlen stammen aus ExposureView/State - hier
@@ -881,6 +881,10 @@ object FuseStateJson {
         // IMMER als Objekt, auch ungenutzt: ein verfallener Rest MUSS im
         // Trail sichtbar bleiben (Vertrag 10), und die Ableitung von
         // openU/Frist muss offline nachrechenbar sein.
+        // Konsolidierung 2.0: Rueckhalt, Huelle, Klemmung und Freigabe sind
+        // entfallen - hullRemainingU, die clamp-Felder, releasedU und denial
+        // stehen neutral (0/null); Pin, Frist, Horizont, withheldU und
+        // Verfall bleiben.
         o.put(
             "deferredPrime", JSONObject()
                 .put("openU", fin(outcome.deferredPrimeOpenU))
@@ -1644,6 +1648,7 @@ object FuseStateJson {
                         .put("evaluated", c.candidatesEvaluated)
                 } ?: JSONObject.NULL)
                 .put("candidateGap", outcome.candidateGap ?: JSONObject.NULL)
+                // Konsolidierung 2.0: die Sofort-Freigabe ist entfallen, `prime` steht auf null.
                 .put("prime", outcome.prime?.let { pr ->
                     JSONObject()
                         .put("active", pr.active)

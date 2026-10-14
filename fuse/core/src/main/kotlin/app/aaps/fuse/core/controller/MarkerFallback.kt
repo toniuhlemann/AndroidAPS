@@ -8,7 +8,7 @@ import app.aaps.fuse.core.predictor.PredictorReason
  *
  * DAS PROBLEM, eine Stufe frueher als das bekannte: wird die Trajektorie
  * verworfen, bricht der Zyklus ab, BEVOR eine Menge entstehen kann. Die
- * Autorisierungsgrenze `markerAuthorizedU` wird in [PrimeRelease.lift]
+ * Autorisierungsgrenze `markerAuthorizedU` wird in [AuthorizedLift.lift]
  * erzeugt - was davor abbricht, kann kein Boden mehr heilen. Dieselbe
  * Fehlerklasse wie der frueher bedingungslose Schwanz-Deckel, nur weiter vorn.
  *
@@ -67,14 +67,15 @@ object MarkerFallback {
      * @param transportCommitmentU die offene Transportmenge DIESES Zyklus - die
      *   ZAHL, nicht ein Praedikat darueber.
      *
-     *   Der Aufrufer reicht denselben Wert an [PrimeRelease.lift] weiter, wo er
-     *   von BEIDEN Spielraeumen (iobTH und maxIOB) abgezogen wird. Zuerst stand
+     *   Der Aufrufer reicht denselben Wert an [AuthorizedLift.lift] weiter
+     *   (Konsolidierung 2.0: ueber den Fundament-Lift, der Prime-Lift ist
+     *   entfallen), wo er von BEIDEN Spielraeumen (iobTH und maxIOB) abgezogen wird. Zuerst stand
      *   hier ein Boolean, und der war kein Beweis: "endlich" gilt auch fuer 0,0,
      *   und ueber den Abzug sagte es nichts.
      *
      *   EHRLICH, was diese Signatur leistet und was nicht: sie verhindert, dass
      *   Freigabegrund und Abzug VERSCHIEDENE Zahlen benutzen. Dass der Abzug
-     *   ueberhaupt stattfindet, haelt allein ein Test auf [PrimeRelease.lift] -
+     *   ueberhaupt stattfindet, haelt allein ein Test auf [AuthorizedLift.lift] -
      *   entfernt man ihn aus einem der beiden Spielraeume, muss er rot werden.
      *
      *   Tonis ausdrueckliche Auflage vom 11.08., und sie haengt genau an

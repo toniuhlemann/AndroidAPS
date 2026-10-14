@@ -34,8 +34,8 @@ import kotlin.math.min
  *    Grant bleibt dennoch konsistent, weil [AuthorizedLift] denselben
  *    Kontext-Headroom bereits in der GRANT-BILDUNG traegt - ein Grant
  *    entsteht nie oberhalb des Raums, die Endpruefung faengt nur noch
- *    stufenuebergreifende Hebungen (SubStep, DeferredPrime-Release,
- *    Liveness). Der nicht angeforderte autorisierte Rest bleibt in
+ *    stufenuebergreifende Hebungen (SubStep, Liveness). Der nicht
+ *    angeforderte autorisierte Rest bleibt in
  *    Huelle/Upfront-Bilanz ABRECHENBAR offen (verschieben, nie
  *    verwerfen - die Buchung laeuft ohnehin auf actuatedU).
  *  - Rasterung NACH UNTEN aufs Pumpenraster - die Endpruefung rundet nie
@@ -54,11 +54,13 @@ object ExposureGate {
      * TYPISIERT gesetzt, nie aus Texten geraten. Die Nutzerlabels
      * NORMAL/LIVENESS/FOUNDATION behalten ihre Untertypen (PRIME,
      * SubStep-Uebertrag, Aufschub-Freigabe). Konsolidierung 2.0:
-     * MEAL_UPFRONT und die Ruhe-Pfade (CALM_BATCH, CALM_DEMAND) sind entfallen.
+     * MEAL_UPFRONT, die Ruhe-Pfade (CALM_BATCH, CALM_DEMAND), die
+     * Sofort-Freigabe (PRIME) und die Aufschub-Freigabe (DEFERRED_RELEASE)
+     * sind entfallen.
      */
     enum class FinalSource {
-        NONE, NORMAL, NORMAL_SUBSTEP, PRIME, FOUNDATION,
-        DEFERRED_RELEASE, LIVENESS,
+        NONE, NORMAL, NORMAL_SUBSTEP, FOUNDATION,
+        LIVENESS,
 
         /** Die Guard-Ausnahme des Erwartungsanteils (E-034). Nur im
          *  Speicher und im Export, nie persistiert. */

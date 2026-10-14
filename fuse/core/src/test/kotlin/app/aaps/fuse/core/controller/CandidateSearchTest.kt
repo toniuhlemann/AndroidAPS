@@ -690,7 +690,7 @@ class CandidateSearchTest {
         val plain = realPrediction(bgAtAnchor = 110.0, drive = 3.0, driveLower = -0.2)
         val lifted = realPrediction(
             bgAtAnchor = 110.0, drive = 3.0,
-            driveLower = -0.2 + PrimeRelease.MARKER_PRIOR_MGDL_PER_MIN,
+            driveLower = -0.2 + MarkerScope.MARKER_PRIOR_MGDL_PER_MIN,
             driveLowerPriorFree = -0.2,
         )
         // Der Prior HEBT die untere Bahn - sonst waere der Test wertlos.

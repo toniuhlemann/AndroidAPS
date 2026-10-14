@@ -3697,25 +3697,25 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
-     * DIE BEIDEN NACHGELAGERTEN REBOUND-STELLEN DERSELBEN KETTE.
+     * DIE NACHGELAGERTE REBOUND-STELLE DERSELBEN KETTE.
      *
-     * Ausser dem Aufschub-Tor und der Wiederfreigabe lasen zwei weitere
-     * Stellen das rohe Kennzeichen - beide geben Phase-A-Rueckstand frei,
-     * beide haetten den Aufschub eine Stufe spaeter wiederholt:
+     * Ausser dem Aufschub-Tor und der Wiederfreigabe las eine weitere
+     * Stelle das rohe Kennzeichen - sie gibt Phase-A-Rueckstand frei und
+     * haette den Aufschub eine Stufe spaeter wiederholt:
      *
      *  - `DescentDeferredCarry.eligibility` - der Sicherheitsuebertrag in
      *    Phase B.
-     *  - `DeferredPrime.releaseStep` - die aufgeschobene Prime-Freigabe,
-     *    deren offener Bestand im Test vorgeladen wird (der Uebertrag des
-     *    Sofortanteils ist mit der Konsolidierung 2.0 entfallen).
      *
-     * Beide Urteile werden typisiert exportiert, der Test liest sie also
-     * und raet nicht aus einer Menge. Jeder Zweig bekommt eine HARTE
-     * Vorbedingung: ohne offenen Rueckstand waere die Rebound-Zeile gar
-     * nicht erreicht und der Test bestuende leer.
+     * Konsolidierung 2.0: die zweite Stelle, die aufgeschobene Prime-Freigabe
+     * (`DeferredPrime.releaseStep`), ist entfallen - mit ihr ihr Teil dieses Tests.
+     *
+     * Das Urteil wird typisiert exportiert, der Test liest es also und raet
+     * nicht aus einer Menge. Es bekommt eine HARTE Vorbedingung: ohne offenen
+     * Rueckstand waere die Rebound-Zeile gar nicht erreicht und der Test
+     * bestuende leer.
      */
     @Test
-    fun `auch Uebertrag und aufgeschobene Prime-Freigabe sehen den Rebound nicht mehr`(@TempDir dir: File) {
+    fun `auch der Uebertrag sieht den Rebound nicht mehr`(@TempDir dir: File) {
         maxSmbU = 0.30
         reboundMahlzeit(dir)
 
@@ -3725,11 +3725,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         steigungProMin = -3.0
         bolusIobU = 2.0
         repeat(24) { transport(dir) }
-        // Konsolidierung 2.0: der Uebertrag des Sofortanteils in die aufgeschobene Freigabe ist entfallen - der
-        // offene Bestand, den er lieferte, wird hier vorgeladen.
-        assertEquals(markerAt, ledger.episodes.deferredPrime.pinnedForMarkerTs) { "Vorbedingung: der Aufschub ist an den Marker gepinnt" }
-        ledger.episodes.deferredPrime = ledger.episodes.deferredPrime.copy(openU = 1.0)
-        // Und ein Sicherheitsuebertrag, der etwas zu uebertragen hat.
+        // Ein Sicherheitsuebertrag, der etwas zu uebertragen hat.
         ledger.episodes.descentDeferredPhaseAU = 0.40
 
         // (2) DIE GEFAHR FAELLT WEG - das Rebound-Fenster steht weiter.
@@ -3752,16 +3748,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertFalse(eignungen.any { it == "REBOUND_ACTIVE" }) {
             "der Uebertrag darf am historischen Fenster nicht mehr scheitern - " +
                 eignungen.distinct().joinToString(" ")
-        }
-
-        // ---- STELLE 2: DIE AUFGESCHOBENE PRIME-FREIGABE -----------------
-        val gruende = nachher.mapNotNull { it.deferredPrimeDenial }
-        assertTrue(nachher.any { it.deferredPrimeDenial != null || it.deferredPrimeReleasedU > 0.0 }) {
-            "Vorbedingung: die aufgeschobene Freigabe muss laufen"
-        }
-        assertFalse(gruende.any { it == "REBOUND_ACTIVE" }) {
-            "auch sie darf am historischen Fenster nicht mehr scheitern - " +
-                gruende.distinct().joinToString(" ")
         }
     }
 
@@ -5601,28 +5587,34 @@ class TransportWiringTest : TestBaseWithProfile() {
         return adapter
     }
 
-    /** Replay-Fall 4: keine Erholung bis zur Frist -> Rest verfaellt typisiert. */
+    /**
+     * Replay-Fall 4: keine Erholung bis zur Frist -> der Pin verfaellt typisiert.
+     *
+     * Konsolidierung 2.0: Rueckhalt in den offenen Betrag und Freigabe sind entfallen. Der markerfinanzierte
+     * Anteil wird unter dem gepinnten Horizont weiter gekappt, aber nicht mehr als offener Rest gefuehrt - an
+     * der Frist verfaellt deshalb der Pin, ohne Menge.
+     */
     @Test
-    fun `P6 Fall 4 - ohne Erholung verfaellt der Rest sichtbar an der gepinnten Frist`(@TempDir dir: File) {
+    fun `P6 Fall 4 - ohne Erholung verfaellt der Pin sichtbar an der gepinnten Frist`(@TempDir dir: File) {
         punkt6Lage(dir, fristMin = 45)
         // Nach dem ersten Fall nur noch ein Drift: nie drei Erholungszyklen.
         knickAbMin = 20
         steigungNachKnick = -0.05
         var lapseReason: String? = null
-        var lapseU = 0.0
-        var openDavor = 0.0
+        var lapseU = -1.0
+        var gekapptU = 0.0
         repeat(55) {
             val o = cycle()
             if (o.deferredPrimeLapseReason == "EXPIRED" && lapseReason == null) {
                 lapseReason = o.deferredPrimeLapseReason
                 lapseU = o.deferredPrimeLapseU
             }
-            if (o.deferredPrimeOpenU > 0.0) openDavor = o.deferredPrimeOpenU
-            assertEquals(0.0, o.deferredPrimeReleasedU, 1e-9, "ohne bestaetigte Erholung keine Freigabe")
+            gekapptU += o.deferredPrimeWithheldU
+            assertEquals(0.0, o.deferredPrimeOpenU, 1e-9, "es entsteht kein offener Rest mehr")
         }
+        assertTrue(gekapptU > 0.0, "Vorbedingung: unter dem gepinnten Horizont wurde gekappt: $gekapptU")
         assertEquals("EXPIRED", lapseReason, "der Verfall MUSS typisiert im Trail stehen")
-        assertTrue(lapseU > 0.0, "und die verfallene Menge beziffern: $lapseU")
-        assertEquals(openDavor, lapseU, 1e-9, "verfallen ist genau der zuletzt offene Betrag")
+        assertEquals(0.0, lapseU, 1e-9, "verfallen ist kein Rest - es wird keiner mehr gefuehrt")
     }
 
 
@@ -10447,243 +10439,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
 
-    // ---- KLEMMPROBEN DES AUFSCHUBS (Rig des frueheren Ruhe-Ausgangs) -------
-    //
-    // Konsolidierung 2.0: der Ruhe-Ausgang ist entfallen, mit ihm seine
-    // Gegenproben. Die beiden Klemmproben unten pruefen den Aufschub
-    // (DeferredPrime) und fahren dafuer weiter denselben Verlauf. Den offenen
-    // Bestand, den bisher die Verschiebung des Sofortanteils lieferte, laedt
-    // die Probe vor ([ruheLauf], `aufschubVorladenU`).
-
-    /**
-     * Treibt eine Mahlzeit in einen Abstieg und danach in eine RUHIGE Lage:
-     * die Fallgefahr endet und der Zucker steigt wieder.
-     */
-    private fun ruheLauf(
-        dir: File,
-        zyklen: Int = 40,
-        // Der Abstieg. Damit der HISTORISCHE Latch ueberhaupt scharf wird,
-        // muss der Guard-Boden im harten Horizont liegen - BG 150 bei
-        // -1,5/min sind 53 Minuten und reichen dafuer nicht.
-        abstiegBg: Double = 150.0,
-        abstiegRate: Double = -1.5,
-        abstiegIob: Double = 2.0,
-        wendeZyklus: Int = 8,
-        // Die Ruhe: positiv, aber unter den +0,20/min der schnellen
-        // Erholung des allgemeinen Latches.
-        ruheRate: Double = 0.10,
-        ruheIob: Double = 0.5,
-        // Ein MANUELLER Ersatzbolus - er zehrt an derselben gepinnten
-        // Huelle und ist damit der einzige Weg, im Rig eine echte
-        // Huellenklemmung zu erzeugen.
-        manuellBeiZyklus: Int? = null,
-        manuellU: Double = 4.0,
-        huelleU: Double = 3.75,
-        // Offener Aufschub, im Zyklus des manuellen Bolus vorgeladen; null = keiner.
-        aufschubVorladenU: Double? = null,
-    ): List<FuseCycleRunner.Outcome> {
-        aufschubAn = true
-        upfrontAnteil = 1.0
-        primeHuelleU = huelleU
-        fundamentAnteil = 0.8
-        mahlzeit(dir)
-        flach = abstiegBg
-        steigungProMin = abstiegRate
-        bolusIobU = abstiegIob
-        val alle = mutableListOf<FuseCycleRunner.Outcome>()
-        repeat(zyklen) { i ->
-            if (i == wendeZyklus) {
-                steigungProMin = ruheRate
-                bolusIobU = ruheIob
-            }
-            if (i == manuellBeiZyklus) {
-                aufschubVorladenU?.let { u ->
-                    check(ledger.episodes.deferredPrime.pinnedForMarkerTs > 0L) { "Vorbedingung: der Aufschub ist gepinnt" }
-                    ledger.episodes.deferredPrime = ledger.episodes.deferredPrime.copy(openU = u)
-                }
-                boluses = listOf(BS(timestamp = clock, amount = manuellU, type = BS.Type.NORMAL))
-            }
-            alle += transport(dir)
-        }
-        return alle
-    }
-
-
-
-    /**
-     * DAS KLEMMEREIGNIS DARF NICHT KLEBEN (Toni 25.08. spaet, P1).
-     *
-     * Die erste Fassung hielt `openBeforeClamp`, `clampReduction` und
-     * `clampReason` in Runnerfeldern und setzte sie nie zurueck. Derselbe
-     * alte Clamp haette damit in JEDEM folgenden Trailzyklus erneut
-     * gestanden - ohne Zeitstempel nicht als Wiederholung erkennbar, und
-     * bei einer Summierung mehrfach gezaehlt.
-     *
-     * Die Gegenprobe ist genau die von Toni benannte: ein Zyklus klemmt,
-     * der unmittelbar folgende ohne Lieferung muss `reduction == 0` und
-     * `reason == null` zeigen.
-     */
-    @Test
-    fun `das Klemmereignis gilt nur fuer seinen eigenen Zyklus`(@TempDir dir: File) {
-        // DER ABENDFALL VOLLSTAENDIG: nach der Wende ein manueller
-        // 4-U-Ersatzbolus. Er senkt den Huellenrest unter den offenen
-        // Aufschub, und die naechste Lieferung klemmt - genau die Kette des
-        // Abendfalls (Bolus, kurz darauf die erste, geklemmte Lieferung).
-        val alle = ruheLauf(
-            dir,
-            zyklen = 45, abstiegBg = 180.0, abstiegRate = -4.0, abstiegIob = 2.5,
-            wendeZyklus = 10, ruheRate = 0.15, ruheIob = 0.3,
-            manuellBeiZyklus = 16, manuellU = 4.0,
-        )
-        // (1) Die Felder sind untereinander konsistent.
-        alle.forEachIndexed { i, o ->
-            if (o.deferredClampReductionU > 0.0) {
-                assertNotNull(o.deferredClampReason, "Zyklus $i: Kuerzung ohne Grund")
-                assertTrue(o.deferredClampTs > 0L, "Zyklus $i: Kuerzung ohne Zeitstempel")
-                assertTrue(o.deferredOpenBeforeClampU > 0.0,
-                           "Zyklus $i: Kuerzung ohne Ausgangsbestand")
-            } else {
-                assertNull(o.deferredClampReason) {
-                    "Zyklus $i: Grund ohne Kuerzung - das Ereignis klebt"
-                }
-                assertEquals(0L, o.deferredClampTs) {
-                    "Zyklus $i: Zeitstempel ohne Kuerzung - das Ereignis klebt"
-                }
-            }
-        }
-        // (2) KEIN Zeitstempel darf zweimal auftauchen. Genau so saehe ein
-        // klebendes Ereignis aus, und genau so wuerde es doppelt gezaehlt.
-        val stempel = alle.map { it.deferredClampTs }.filter { it > 0L }
-        // WARUM HIER NICHT GEKLEMMT WIRD, und die erste Erklaerung war
-        // falsch: der eingespeiste manuelle Bolus erreicht
-        // `manualBolusAfterMarkerU` sehr wohl - das Rig ist NICHT kaputt.
-        // Der Grund ist die Huelle: in diesem Lauf ist `totalBudgetU` 3,75,
-        // und 3,75 - 4,00 ergibt Huellenrest 0. Bei `openU == 0` kehrt
-        // `clampToHull` sofort zurueck, es gibt nichts wegzunehmen.
-        // Der ECHTE Klemmfall steht als eigene Pflichtprobe darunter.
-        //
-        // Die Punkte (1) und (2) pruefen deshalb den Leerlauf: dass ein
-        // Zyklus OHNE Klemmung auch keine berichtet. Genau das war der
-        // Fehler der ersten Fassung - die prozessweiten Felder hielten das
-        // Ereignis fest -, und dagegen ist der Test wirksam.
-        //
-        // NICHT geprueft ist der Klemmfall selbst. Er ist konstruktiv
-        // abgesichert: `klemmung` ist eine lokale Variable in `buche()` mit
-        // Nullvorgabe, und die Felder reisen im zurueckgegebenen [Buchung]
-        // mit. Ein Zyklus ohne Klemmung KANN keine berichten. Das ersetzt
-        // keinen Test des Klemmfalls - solange das Rig ihn nicht herstellt,
-        // steht diese Luecke hier und wird nicht zugebaut.
-        assertEquals(0, stempel.size) {
-            "Aufbau hat sich geaendert: es klemmt jetzt ($stempel). Dann muss " +
-                "dieser Test auf den ECHTEN Klemmfall umgestellt werden, statt " +
-                "nur den Leerlauf zu pruefen."
-        }
-        assertEquals(stempel.size, stempel.distinct().size) {
-            "jeder Klemmzeitstempel darf nur EINMAL berichtet werden, war: " +
-                stempel.groupingBy { it }.eachCount().filterValues { it > 1 }
-        }
-        // (3) Der Huellenrest wird dagegen JEDEN Zyklus berichtet - er ist
-        // ein Zustand, kein Ereignis, und schliesst das Fenster zwischen
-        // manuellem Bolus und naechster Lieferung.
-        assertTrue(alle.any { it.deferredHullRemainingU > 0.0 }) {
-            "der Huellenrest muss als laufender Zustand sichtbar sein"
-        }
-    }
-
-    /**
-     * DIE PFLICHTPROBE DES KLEMMFALLS (Toni 25.08. spaet).
-     *
-     * Der Leerlauftest darueber beweist nur "kein Ereignis ohne Clamp". Was
-     * er nicht beweist, sind die WERTE beim Clamp. Hier steht die Kette des
-     * Abendfalls, nachgestellt mit diesen Groessen:
-     *
-     *   Huelle 4,50, manueller NORMAL-Bolus 4,00  -> Huellenrest 0,50
-     *   offener Aufschub 3,60, erste Abgabe 0,05  -> Rest 0,45
-     *   erwartet: vorher 3,60, Kuerzung 3,15, Grund MANUAL_BOLUS_COVERAGE,
-     *             Zeitstempel dieses Zyklus
-     *   Folgezyklus ohne Clamp: Kuerzung 0, Grund null, Zeitstempel 0
-     *
-     * WARUM DIE HUELLE 4,50 SEIN MUSS: bei 3,75 ergibt 3,75 - 4,00 einen
-     * Rest von 0, `clampToHull` kehrt bei leerem Bestand sofort zurueck,
-     * und es gaebe gar kein Ereignis. Genau daran ist die erste Fassung
-     * gescheitert - nicht an der Behandlungssicht des Rigs.
-     */
-    @Test
-    fun `der Klemmfall meldet Bestand, Kuerzung, Grund und Zeitstempel`(@TempDir dir: File) {
-        val alle = ruheLauf(
-            dir,
-            zyklen = 45, abstiegBg = 180.0, abstiegRate = -4.0, abstiegIob = 2.5,
-            // +0,25/min: UEBER der Erholungsschwelle. Der historische
-            // Latch loest, es wird wieder geliefert - und nur eine
-            // Lieferung loest die Klemmung ueberhaupt aus
-            // (`clampToHull` laeuft nur bei `actuatedU > 0`).
-            wendeZyklus = 10, ruheRate = 0.25, ruheIob = 0.0,
-            manuellBeiZyklus = 16, manuellU = 4.0, huelleU = 4.5,
-            // Konsolidierung 2.0: den offenen Aufschub lieferte die Verschiebung des Sofortanteils - vorgeladen.
-            aufschubVorladenU = 3.60,
-        )
-        // NUR die Klemmungen NACH dem manuellen Bolus. Davor gibt es
-        // ebenfalls welche - dort ist der Grund korrekterweise
-        // AUTOMATIC_DELIVERY, weil noch kein manueller Bolus wirkte. Die
-        // erste Fassung griff blind die erste Klemmung und pruefte damit
-        // den falschen Fall.
-        val klemmen = alle.withIndex().filter { (_, o) ->
-            o.deferredClampReductionU > 0.0 && (o.manualBolusAfterMarkerU ?: 0.0) >= 4.0
-        }
-        // Und die Gegenrichtung gehoert dazu: VOR dem Bolus muss der Grund
-        // automatisch lauten, sonst waere die Unterscheidung wertlos.
-        val vorherigeKlemmung = alle.firstOrNull {
-            it.deferredClampReductionU > 0.0 && (it.manualBolusAfterMarkerU ?: 0.0) <= 0.0
-        }
-        if (vorherigeKlemmung != null)
-            assertEquals("AUTOMATIC_DELIVERY", vorherigeKlemmung.deferredClampReason,
-                         "ohne manuellen Bolus ist die Ursache automatisch")
-        assertTrue(klemmen.isNotEmpty()) {
-            "es muss geklemmt werden - sonst prueft diese Probe nichts. " +
-                "Huellenreste: " +
-                alle.map { String.format("%.2f", it.deferredHullRemainingU) }.distinct().sorted() +
-                " | manuell: " + alle.map { it.manualBolusAfterMarkerU }.distinct() +
-                " | defOpen: " +
-                alle.map { String.format("%.2f", it.deferredPrimeOpenU) }.distinct().sorted() +
-                " | Abgaben nach dem Bolus: " +
-                alle.drop(17).count { it.decision.smbU > 0.0 } +
-                " | Mengen: " +
-                alle.drop(17).map { it.decision.smbU }.filter { it > 0.0 }.take(8)
-        }
-        val (i, k) = klemmen.first()
-
-        // Die Werte des Ereignisses haengen zusammen und werden gemeinsam
-        // geprueft - eine Kuerzung ohne passenden Ausgangsbestand waere
-        // eine andere Geschichte als die erzaehlte.
-        assertEquals(k.deferredOpenBeforeClampU - k.deferredClampHullAtClampU,
-                     k.deferredClampReductionU, 1e-6) {
-            "Kuerzung muss Bestand minus Huellenrest sein: " +
-                "${k.deferredOpenBeforeClampU} - ${k.deferredClampHullAtClampU} " +
-                "vs ${k.deferredClampReductionU}"
-        }
-        assertEquals("MANUAL_BOLUS_COVERAGE", k.deferredClampReason) {
-            "der manuelle Bolus allein erklaert die Klemmung"
-        }
-        assertTrue(k.deferredClampTs > 0L, "mit Zeitstempel")
-        assertEquals(k.deferredClampHullAtClampU, k.deferredHullRemainingU, 1e-6,
-                     "Huellenrest zum Klemmzeitpunkt und laufender Zustand sind derselbe Wert")
-
-        // DER FOLGEZYKLUS: kein Ereignis mehr. Genau hier haette die
-        // klebende Fassung dasselbe Ereignis erneut berichtet.
-        val danach = alle.drop(i + 1).firstOrNull { it.deferredClampReductionU <= 0.0 }
-        assertNotNull(danach, "nach der Klemmung muss ein Zyklus ohne Klemmung folgen")
-        assertNull(danach!!.deferredClampReason, "kein Grund ohne Kuerzung")
-        assertEquals(0L, danach.deferredClampTs, "kein Zeitstempel ohne Kuerzung")
-        assertEquals(0.0, danach.deferredOpenBeforeClampU, 1e-9, "kein Bestand ohne Kuerzung")
-
-        // UND DAS PHASE-B-BUDGET BLEIBT UNBERUEHRT - der manuelle Bolus
-        // ersetzte die ausgefallene Phase A, er kuerzt nicht den Nachlauf.
-        val budgets = alle.mapNotNull { it.mealFoundation.phaseBBudgetU }.distinct()
-        assertTrue(budgets.size <= 2) {
-            "das Phase-B-Budget darf sich durch den manuellen Bolus nicht " +
-                "veraendern, sah aber: $budgets"
-        }
-    }
+    // Konsolidierung 2.0: die Klemmproben des Aufschubs (`das Klemmereignis gilt nur fuer seinen eigenen Zyklus`,
+    // `der Klemmfall meldet Bestand, Kuerzung, Grund und Zeitstempel`) und ihr Rig `ruheLauf` sind mit Rueckhalt
+    // und Klemmung des Aufschubs entfallen.
 
     // =====================================================================
     // RUNNER-AUSGABETEST: DER TBR-KOMMANDOSTROM DER TEILBASAL-STUFE

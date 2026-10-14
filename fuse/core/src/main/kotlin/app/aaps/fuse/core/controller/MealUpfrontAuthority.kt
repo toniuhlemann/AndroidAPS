@@ -141,8 +141,8 @@ object MealUpfrontAuthority {
      * auseinandergelaufen ist.
      *
      * Konsolidierung 2.0: Aufschub-Tor und Wiederfreigabe des Sofortanteils
-     * sind entfallen; es fragen noch der Phase-A-Uebertrag und die
-     * aufgeschobene Prime-Freigabe.
+     * sowie die aufgeschobene Prime-Freigabe sind entfallen; es fragt noch
+     * der Phase-A-Uebertrag.
      *
      * `reboundRaw` bleibt ueberall sonst unveraendert in Kraft.
      */

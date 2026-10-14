@@ -23,6 +23,10 @@ import kotlin.math.min
  * bereits ueber die max-Semantik und die tatsaechlich gelieferte
  * Gesamtmenge auf das Fundament-Soll angerechnet."
  *
+ * Konsolidierung 2.0: die Prime-Quelle ist entfallen; es heben noch das
+ * Fundament (Phase B) und der Erwartungsanteil (E-034). Die Prime-Hinweise
+ * unten sind der Stand davor.
+ *
  * WO DIESE STUFE IM ZYKLUS SITZT:
  *
  *     Basisentscheidung
@@ -49,8 +53,7 @@ object AuthorizedLift {
      * unterscheidbar, welche Phase geliefert hat.
      */
     enum class Source {
-        /** Die Huelle des Markerdrucks im Prime-Fenster. */
-        PRIME,
+        // Konsolidierung 2.0: die Quelle der Sofort-Freigabe im Prime-Fenster (PRIME) ist entfallen.
 
         /** Die nachlaufende Mindestversorgung des Mahlzeitenfundaments. */
         FOUNDATION,
@@ -125,13 +128,11 @@ object AuthorizedLift {
 
     /** Was im `bindingLimit` steht, wenn dieser Lift gebunden hat. */
     fun bindingLimitOf(source: Source): String = when (source) {
-        Source.PRIME        -> "primeRelease"
         Source.FOUNDATION   -> "mealFoundation"
         Source.EXPECTATION  -> "expectationAccount"
     }
 
     fun stageOf(source: Source): String = when (source) {
-        Source.PRIME        -> FuseController.STAGE_PRIME
         Source.FOUNDATION   -> FuseController.STAGE_FOUNDATION
         Source.EXPECTATION  -> FuseController.STAGE_EXPECTATION
     }

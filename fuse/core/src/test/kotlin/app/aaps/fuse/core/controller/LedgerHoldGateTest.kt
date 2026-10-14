@@ -7,7 +7,8 @@ import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Test
 
 /**
- * Audit R95, Fix 3: der Ledger-Hold muss NACH PrimeRelease.lift greifen.
+ * Audit R95, Fix 3: der Ledger-Hold muss NACH den autorisierten Hebungen
+ * greifen (bis zur Konsolidierung 2.0: PrimeRelease.lift).
  * Die Suche allein genuegt nicht - Ratio-Pfad (Kernel-Ausfall) und
  * Sofort-Freigabe laufen an ihrem LEDGER_HOLD-Reject vorbei.
  */
@@ -61,11 +62,14 @@ class LedgerHoldGateTest {
 
     /** Der Kernfall des Audits: die Sofort-Freigabe hebt eine NO_DEMAND-Basis
      *  an - und der Hold muss AUCH diese gehobene Menge nullen, sonst waere
-     *  er ueber den Lift umgehbar. */
+     *  er ueber den Lift umgehbar. Konsolidierung 2.0: die Sofort-Freigabe ist
+     *  entfallen; dieselbe Hebung laeuft hier ueber die gemeinsame Stufe. */
     @Test
     fun `Hold greift nach dem Lift durch`() {
-        val plan = PrimeRelease.Plan(true, 0.20, 1.0, "PRIME")
-        val lifted = PrimeRelease.lift(base(0.0, FuseController.Block.NO_DEMAND), plan, state())
+        val lifted = AuthorizedLift.lift(
+            base(0.0, FuseController.Block.NO_DEMAND), AuthorizedLift.Source.FOUNDATION,
+            floorU = 0.20, remainingU = 1.0, state = state(), authorized = false, tickEps = 1e-9,
+        )
         assertEquals(0.20, lifted.smbU, 1e-9)
 
         val held = LedgerHoldGate.apply(lifted, hold = true)

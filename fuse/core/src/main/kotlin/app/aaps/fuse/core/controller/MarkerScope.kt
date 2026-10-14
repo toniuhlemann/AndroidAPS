@@ -27,6 +27,17 @@ object MarkerScope {
     const val BOOST_MAX_MIN = 45
 
     /**
+     * MARKER-PRIOR [mg/dl/min]: der kleine deklarierte Kohlenhydrat-Antrieb, den
+     * der Marker der unteren Bahn gutschreibt, gekappt an der Mittelbahn
+     * (lower <= mean bleibt erhalten). Seit C2 (Codex H2) hebt er nur noch die
+     * ANGEZEIGTE untere Bahn: kein Sicherheitszertifikat rechnet gegen die
+     * gehobene Kante, Guard und Schwanz nehmen die prior-freie Zwillingsbahn
+     * (s. [priorLiftAtHorizonMgdl]). Konsolidierung 2.0: aus PrimeRelease
+     * hierher umgezogen, Wert unveraendert.
+     */
+    const val MARKER_PRIOR_MGDL_PER_MIN = 0.7
+
+    /**
      * @param markerTs Zeitpunkt des Marker-Drucks (0 = kein Marker)
      * @param nowTs aktueller Anker
      * @param turnLatchedTs Zeitpunkt der ersten nachhaltigen Wende NACH dem

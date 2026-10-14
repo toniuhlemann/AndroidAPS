@@ -37,7 +37,7 @@ class MarkerFloorTest {
     fun `nach dem Veto bleibt genau der autorisierte Anteil`() {
         val d = MarkerFloor.apply(
             verified = entscheidung(0.0, FuseController.Block.CANDIDATE, "finalVerify:TAIL_VETO"),
-            grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.PRIME),
+            grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.FOUNDATION),
             kernelValid = true,
         )
         assertEquals(0.05, d.smbU, 1e-9, "weder 0 noch die verworfene Basis")
@@ -48,7 +48,7 @@ class MarkerFloorTest {
             d.bindingLimit.contains("TAIL_VETO"),
             "der ueberstimmte Einwand muss im Grund stehen bleiben: ${d.bindingLimit}",
         )
-        assertEquals(FuseController.STAGE_PRIME, d.capsStage)
+        assertEquals(FuseController.STAGE_FOUNDATION, d.capsStage)
         assertTrue(d.caps.isEmpty(), "die Basiskappen haben diese Menge nicht bestimmt")
     }
 
@@ -58,7 +58,7 @@ class MarkerFloorTest {
     fun `ohne gueltigen Einheitskern hebt der Boden nichts`() {
         val d = MarkerFloor.apply(
             verified = entscheidung(0.0, FuseController.Block.CANDIDATE, "MODEL_HORIZON_TOO_SHORT"),
-            grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.PRIME),
+            grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.FOUNDATION),
             kernelValid = false,
         )
         assertEquals(0.0, d.smbU, 1e-9)
@@ -78,7 +78,7 @@ class MarkerFloorTest {
     fun `ohne Autorisierung hebt der Boden nichts`() {
         for (betrag in listOf(0.0, -1.0, Double.NaN)) {
             assertNull(
-                AuthorizedLift.AuthorizedGrant.of(betrag, AuthorizedLift.Source.PRIME),
+                AuthorizedLift.AuthorizedGrant.of(betrag, AuthorizedLift.Source.FOUNDATION),
                 "betrag=$betrag darf keinen Grant ergeben",
             )
         }
@@ -123,7 +123,7 @@ class MarkerFloorTest {
     @Test
     fun `eine groessere ueberlebende Menge wird nicht gesenkt aber gestempelt`() {
         val v = entscheidung(0.30, FuseController.Block.NONE, "smbRatio")
-        val d = MarkerFloor.apply(v, grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.PRIME), kernelValid = true)
+        val d = MarkerFloor.apply(v, grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.FOUNDATION), kernelValid = true)
 
         assertEquals(0.30, d.smbU, 1e-9, "die Dosis bleibt unangetastet")
         assertEquals("smbRatio", d.bindingLimit, "und der Grund auch - hier hat nichts ueberstimmt")
@@ -137,19 +137,19 @@ class MarkerFloorTest {
     /** Eine BEREITS groessere Provenienz wird nicht heruntergesetzt. */
     @Test
     fun `eine groessere bestehende Grenze bleibt stehen`() {
-        val v = entscheidung(0.30, FuseController.Block.NONE, "primeRelease")
-            .copy(grant = AuthorizedLift.AuthorizedGrant.of(0.20, AuthorizedLift.Source.PRIME))
-        assertEquals(v, MarkerFloor.apply(v, grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.PRIME), kernelValid = true))
+        val v = entscheidung(0.30, FuseController.Block.NONE, "mealFoundation")
+            .copy(grant = AuthorizedLift.AuthorizedGrant.of(0.20, AuthorizedLift.Source.FOUNDATION))
+        assertEquals(v, MarkerFloor.apply(v, grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.FOUNDATION), kernelValid = true))
     }
 
     /** Gleichstand erzeugt keinen irrefuehrenden `markerAuth|`-Grund fuer eine
      *  Menge, die ohnehin stand - die Grenze fährt aber auch hier mit. */
     @Test
     fun `bei Gleichstand bleibt der Grund unveraendert`() {
-        val v = entscheidung(0.05, FuseController.Block.NONE, "primeRelease")
-        val d = MarkerFloor.apply(v, grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.PRIME), kernelValid = true)
+        val v = entscheidung(0.05, FuseController.Block.NONE, "mealFoundation")
+        val d = MarkerFloor.apply(v, grant = AuthorizedLift.AuthorizedGrant.of(0.05, AuthorizedLift.Source.FOUNDATION), kernelValid = true)
         assertEquals(0.05, d.smbU, 1e-9)
-        assertEquals("primeRelease", d.bindingLimit, "hier hat nichts ueberstimmt")
+        assertEquals("mealFoundation", d.bindingLimit, "hier hat nichts ueberstimmt")
         assertEquals(0.05, d.markerAuthorizedU, 1e-9)
     }
 }

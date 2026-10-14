@@ -325,8 +325,9 @@ class ExpectationWiringTest {
         val b = entscheidung(FuseController.Block.GUARD_FLOOR)
         assertEquals(0.25, ekLift(b, tail = 0.25).smbU, eps)
         assertEquals(0.25, ekLift(b, tail = 0.25).grant!!.amountU, eps)
-        // Die Direktdosis-Familie bleibt, wie sie ist: autorisiert ohne Schwanzkappe.
-        assertEquals(0.6, ekLift(b, tail = 0.25, source = AuthorizedLift.Source.PRIME).smbU, eps)
+        // Die uebrigen autorisierten Quellen bleiben, wie sie sind: autorisiert ohne Schwanzkappe
+        // (Konsolidierung 2.0: hier stand die entfallene Quelle PRIME, jetzt das Fundament).
+        assertEquals(0.6, ekLift(b, tail = 0.25, source = AuthorizedLift.Source.FOUNDATION).smbU, eps)
         // maxSMB begrenzt die Einzeldosis.
         assertEquals(0.75, ekLift(b, floor = 2.0).smbU, eps)
     }

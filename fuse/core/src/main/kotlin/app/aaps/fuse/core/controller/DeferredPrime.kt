@@ -1,10 +1,14 @@
 package app.aaps.fuse.core.controller
 
-import kotlin.math.max
-import kotlin.math.min
-
 /**
  * DER MARKER-PRIME-AUFSCHUB (Punkt 6, Tonis Bau-GO 22.08.).
+ *
+ * Konsolidierung 2.0: es bleibt der PIN - Horizont und Frist am Marker, der
+ * typisierte Verfall und der restartfeste Zustand. Er traegt die Kontopause
+ * DESCENT_RISK_MARKER und das Liveness-Tor im Runner. Rueckhalt in den
+ * offenen Betrag und die Freigabe danach sind entfallen; [State.openU] wird
+ * nicht mehr gebucht (0) und bleibt nur fuer den Ledger. Die Vertragsliste
+ * unten ist der Stand davor.
  *
  * DER GEMESSENE ANLASS: ein Abendessen-Marker bei fallendem, bolus-
  * ueberdecktem BG. Der Bodenkontakt lag JENSEITS des Endriegels;
@@ -39,23 +43,6 @@ import kotlin.math.min
 object DeferredPrime {
 
     enum class LapseReason { EXPIRED, NEW_MARKER, REVOKED, DISABLED }
-
-    enum class Denial {
-        DISABLED,
-        NOT_PINNED,
-        MARKER_MISMATCH,
-        NOTHING_OPEN,
-        LEDGER_HOLD,
-        LATCH_ACTIVE,
-        RECOVERY_UNCONFIRMED,
-        SIGNAL_UNHEALTHY,
-        MEASURED_LOW,
-        REBOUND_ACTIVE,
-        DESCENT_RISK,
-        MANUAL_BOLUS_UNKNOWN,
-        HULL_EXHAUSTED,
-        BELOW_STEP,
-    }
 
     /**
      * Restartfester Zustand. [openU] ist der offene AUFSCHUB - autorisiert,
@@ -114,89 +101,6 @@ object DeferredPrime {
             lapse(state, LapseReason.EXPIRED, nowTs)
         else state
 
-    /**
-     * Bucht eine in DIESEM Zyklus zurueckgehaltene markerautorisierte Menge.
-     * Anders als der Phase-A-Bestand ist das ein FLUSS: jeder blockierte
-     * Zyklus verliert real genau die Menge, die er geliefert haette - die
-     * Summe zaehlt nicht doppelt. Die Huelle deckelt trotzdem (Vertrag 7).
-     */
-    fun withhold(state: State, amountU: Double, hullRemainingU: Double): State {
-        if (!amountU.isFinite() || amountU <= 0.0) return state
-        if (state.pinnedForMarkerTs <= 0L) return state
-        val deckel = if (hullRemainingU.isFinite()) max(0.0, hullRemainingU) else 0.0
-        return state.copy(openU = min(state.openU + amountU, deckel))
-    }
-
-    /**
-     * Vertrag 6+7 nach JEDER Lieferung: normale SMBs, Fundament und manuelle
-     * Boli verkleinern denselben offenen Betrag, weil alle aus derselben
-     * gepinnten Huelle zehren. `hullRemainingU` ist Huelle minus allem, was
-     * seit dem Marker floss (inkl. manueller NORMAL-Boli).
-     */
-    fun clampToHull(state: State, hullRemainingU: Double): State {
-        if (state.openU <= 0.0) return state
-        val deckel = if (hullRemainingU.isFinite()) max(0.0, hullRemainingU) else 0.0
-        return if (state.openU <= deckel) state else state.copy(openU = deckel)
-    }
-
-    /** Ergebnis der Freigabepruefung: entweder genau ein Pumpenschritt oder
-     *  ein typisierter Grund, warum nicht. */
-    data class Release(val stepU: Double, val denial: Denial?)
-
-    /**
-     * Hoechstens EIN Pumpenschritt je Zyklus (Vertrag 5) - die Reihenfolge
-     * der Verweigerungsgruende ist typisiert und exportierbar. Der Aufrufer
-     * prueft die WIRKUNG des Schritts zusaetzlich (finalVeto) - erst danach
-     * darf gebucht werden.
-     */
-    fun releaseStep(
-        state: State,
-        nowTs: Long,
-        enabled: Boolean,
-        activeMarkerTs: Long,
-        ledgerHold: Boolean,
-        latchBlocksPositive: Boolean,
-        /** Drei zusammenhaengende gesunde Zyklen mit Erholungsrate seit dem
-         *  letzten aktiven Risiko - dieselbe Schwelle wie beim Riegel
-         *  ([DescentRecoveryLatch.RECOVERY_RATE_MGDL_PER_MIN]). Eine
-         *  Freigabe OHNE bestaetigte Erholung waere Vertragsbruch 4. */
-        recoveryConfirmed: Boolean,
-        signalHealthy: Boolean,
-        measuredLow: Boolean,
-        reboundRaw: Boolean,
-        descentRiskActive: Boolean,
-        manualBolusAfterMarkerU: Double?,
-        pumpStepU: Double,
-        hullRemainingU: Double,
-    ): Release {
-        fun nein(d: Denial) = Release(0.0, d)
-        if (!enabled) return nein(Denial.DISABLED)
-        if (state.pinnedForMarkerTs <= 0L) return nein(Denial.NOT_PINNED)
-        if (activeMarkerTs != state.pinnedForMarkerTs) return nein(Denial.MARKER_MISMATCH)
-        if (state.openU <= 0.0) return nein(Denial.NOTHING_OPEN)
-        // Ablauf prueft der Aufrufer VOR dieser Funktion (expireIfDue) - ein
-        // abgelaufener Zustand traegt hier bereits openU == 0.
-        if (ledgerHold) return nein(Denial.LEDGER_HOLD)
-        if (latchBlocksPositive) return nein(Denial.LATCH_ACTIVE)
-        if (!recoveryConfirmed) return nein(Denial.RECOVERY_UNCONFIRMED)
-        if (!signalHealthy) return nein(Denial.SIGNAL_UNHEALTHY)
-        if (measuredLow) return nein(Denial.MEASURED_LOW)
-        if (reboundRaw) return nein(Denial.REBOUND_ACTIVE)
-        if (descentRiskActive) return nein(Denial.DESCENT_RISK)
-        // Unlesbare Behandlungssicht: fail-closed, wie ueberall (Vertrag 8).
-        if (manualBolusAfterMarkerU == null || !manualBolusAfterMarkerU.isFinite() ||
-            manualBolusAfterMarkerU < 0.0
-        ) return nein(Denial.MANUAL_BOLUS_UNKNOWN)
-        if (!pumpStepU.isFinite() || pumpStepU <= 0.0) return nein(Denial.BELOW_STEP)
-        val deckel = if (hullRemainingU.isFinite()) max(0.0, hullRemainingU) else 0.0
-        val stepU = min(min(state.openU, deckel), pumpStepU)
-        if (deckel <= 0.0) return nein(Denial.HULL_EXHAUSTED)
-        if (stepU < pumpStepU) return nein(Denial.BELOW_STEP)
-        return Release(stepU, null)
-    }
-
-    /** Bucht einen tatsaechlich publizierten Freigabeschritt ab. */
-    fun consume(state: State, releasedU: Double): State =
-        if (!releasedU.isFinite() || releasedU <= 0.0) state
-        else state.copy(openU = max(0.0, state.openU - releasedU))
+    // Konsolidierung 2.0: Rueckhalt (`withhold`), Klemmung an die Huelle (`clampToHull`), Freigabe
+    // (`releaseStep`, `Release`, `Denial`) und Abbuchung (`consume`) sind entfallen.
 }

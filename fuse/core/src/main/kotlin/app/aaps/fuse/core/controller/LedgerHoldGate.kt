@@ -2,7 +2,8 @@ package app.aaps.fuse.core.controller
 
 /**
  * Der HARTE Durchgriff des Commitment-Ledgers auf die Menge - als LETZTE
- * Stufe nach [PrimeRelease.lift] (Audit R95, Fix 3).
+ * Stufe nach den autorisierten Hebungen (Audit R95, Fix 3; bis zur
+ * Konsolidierung 2.0 stand hier `PrimeRelease.lift`).
  *
  * Warum eine eigene Stufe, obwohl [CandidateSearch] bereits `ledgerHold`
  * kennt: die Suche prueft nur den KANDIDATEN-Pfad. Zwei mengenerzeugende

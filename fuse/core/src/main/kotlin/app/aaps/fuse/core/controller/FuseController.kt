@@ -441,7 +441,7 @@ object FuseController {
          * Der Commitment-Ledger meldet einen Vertragsbruch (holdActuation):
          * der Regler weiss nicht mehr sicher, was draussen unterwegs ist -
          * keine neue Dosis, bis repariert oder ausdruecklich quittiert ist.
-         * Gesetzt vom [LedgerHoldGate] NACH PrimeRelease.lift, damit weder
+         * Gesetzt vom [LedgerHoldGate] NACH den autorisierten Hebungen, damit weder
          * der Ratio-Pfad (bei Kernel-Ausfall) noch die Sofort-Freigabe am
          * Kandidaten-Reject vorbeikommen.
          */
@@ -1266,7 +1266,7 @@ object FuseController {
     /** Stufe, aus der eine Kappenliste stammt - s. [Decision.capsStage]. */
     const val STAGE_BASE = "base"
     const val STAGE_CANDIDATE = "candidate"
-    const val STAGE_PRIME = "prime"
+    // Konsolidierung 2.0: STAGE_PRIME (Stufe der Sofort-Freigabe) ist entfallen.
 
     /** Die nachlaufende Mindestversorgung des Mahlzeitenfundaments. */
     const val STAGE_FOUNDATION = "foundation"

@@ -1,7 +1,6 @@
 package app.aaps.fuse.core.controller
 
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -55,79 +54,7 @@ class DeferredPrimeTest {
         assertTrue(danach.valid)
     }
 
-    // ---- Zurueckhalten (Vertraege 3 und 7) --------------------------------
-
-    @Test
-    fun `zurueckgehaltene Fluesse summieren sich aber nie ueber die Huelle`() {
-        var s = gepinnt()
-        s = DeferredPrime.withhold(s, 0.15, hullRemainingU = 1.0)
-        s = DeferredPrime.withhold(s, 0.15, hullRemainingU = 1.0)
-        assertEquals(0.30, s.openU, 1e-9)
-        s = DeferredPrime.withhold(s, 0.90, hullRemainingU = 1.0)
-        assertEquals(1.0, s.openU, 1e-9, "die gepinnte Huelle deckelt")
-        // Ohne Pin wird nichts gebucht.
-        assertEquals(0.0, DeferredPrime.withhold(DeferredPrime.State(), 0.15, 1.0).openU, 1e-9)
-    }
-
-    @Test
-    fun `jede Lieferung verkleinert denselben offenen Betrag`() {
-        // Nach einem normalen SMB / Fundament-Lift / manuellen Bolus sinkt die
-        // Resthuelle - der offene Aufschub folgt ihr nach unten (Vertrag 6).
-        val s = DeferredPrime.clampToHull(gepinnt(openU = 0.8), hullRemainingU = 0.35)
-        assertEquals(0.35, s.openU, 1e-9)
-        assertEquals(0.35, DeferredPrime.clampToHull(s, 0.9).openU, 1e-9, "nach oben waechst nichts")
-    }
-
-    // ---- Freigabe (Vertraege 4 und 5) -------------------------------------
-
-    private fun frei(
-        s: DeferredPrime.State = gepinnt(openU = 0.4),
-        enabled: Boolean = true,
-        markerTs: Long = marker,
-        hold: Boolean = false,
-        latch: Boolean = false,
-        erholt: Boolean = true,
-        healthy: Boolean = true,
-        low: Boolean = false,
-        rebound: Boolean = false,
-        risk: Boolean = false,
-        manual: Double? = 0.0,
-        step: Double = 0.05,
-        hull: Double = 2.0,
-    ) = DeferredPrime.releaseStep(s, marker + 60 * 60_000L, enabled, markerTs, hold, latch, erholt, healthy, low, rebound, risk, manual, step, hull)
-
-    @Test
-    fun `die Freigabe ist hoechstens ein Pumpenschritt - kein Aufhol-Burst`() {
-        val r = frei()
-        assertNull(r.denial)
-        assertEquals(0.05, r.stepU, 1e-9, "0,4 U offen, aber genau EIN Schritt")
-    }
-
-    @Test
-    fun `jede Verweigerung ist typisiert und die Reihenfolge ist fest`() {
-        assertEquals(DeferredPrime.Denial.DISABLED, frei(enabled = false).denial)
-        assertEquals(DeferredPrime.Denial.NOT_PINNED, frei(s = DeferredPrime.State()).denial)
-        assertEquals(DeferredPrime.Denial.MARKER_MISMATCH, frei(markerTs = marker + 1).denial)
-        assertEquals(DeferredPrime.Denial.NOTHING_OPEN, frei(s = gepinnt(openU = 0.0)).denial)
-        assertEquals(DeferredPrime.Denial.LEDGER_HOLD, frei(hold = true).denial)
-        assertEquals(DeferredPrime.Denial.LATCH_ACTIVE, frei(latch = true).denial)
-        assertEquals(DeferredPrime.Denial.RECOVERY_UNCONFIRMED, frei(erholt = false).denial)
-        assertEquals(DeferredPrime.Denial.SIGNAL_UNHEALTHY, frei(healthy = false).denial)
-        assertEquals(DeferredPrime.Denial.MEASURED_LOW, frei(low = true).denial)
-        assertEquals(DeferredPrime.Denial.REBOUND_ACTIVE, frei(rebound = true).denial)
-        assertEquals(DeferredPrime.Denial.DESCENT_RISK, frei(risk = true).denial)
-        assertEquals(DeferredPrime.Denial.MANUAL_BOLUS_UNKNOWN, frei(manual = null).denial)
-        assertEquals(DeferredPrime.Denial.HULL_EXHAUSTED, frei(hull = 0.0).denial)
-        assertEquals(DeferredPrime.Denial.BELOW_STEP, frei(s = gepinnt(openU = 0.02)).denial)
-    }
-
-    @Test
-    fun `consume bucht nur Positives und nie unter null`() {
-        val s = DeferredPrime.consume(gepinnt(openU = 0.10), 0.05)
-        assertEquals(0.05, s.openU, 1e-9)
-        assertEquals(0.0, DeferredPrime.consume(s, 0.10).openU, 1e-9)
-        assertEquals(0.05, DeferredPrime.consume(s, -1.0).openU, 1e-9)
-    }
+    // Konsolidierung 2.0: Rueckhalt, Klemmung, Freigabe und Abbuchung sind entfallen - ihre Tests ebenso.
 
     @Test
     fun `ungueltige Kombinationen sind als solche erkennbar`() {
