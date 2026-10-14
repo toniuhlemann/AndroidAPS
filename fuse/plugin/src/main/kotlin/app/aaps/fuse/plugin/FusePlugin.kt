@@ -3075,6 +3075,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             )
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.LivenessMealPowerMin, dialogMessage = R.string.fuse_liveness_meal_power_summary, title = R.string.fuse_liveness_meal_power_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MealExposureLimitU, dialogMessage = R.string.fuse_meal_exposure_limit_summary, title = R.string.fuse_meal_exposure_limit_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MealDemandRatioCap, dialogMessage = R.string.fuse_meal_demand_ratio_cap_summary, title = R.string.fuse_meal_demand_ratio_cap_title))
         }
 
         // DAS ERWARTUNGSKONTO (E-034) - der Mahlzeitenweg in FUSE 2. Der Sicherheitsvertrag (Schwanz hart, gemessene

@@ -106,6 +106,8 @@
     <string name="fuse_low_gate_horizon_title">Tieftor: Horizont [min]</string>
     <string name="fuse_low_gate_horizon_summary">Liegt der Bodenkontakt bei linearer Fortschreibung der gemessenen Rate weiter weg als dieser Horizont, ist es keine nahe Gefahr und das Tieftor bleibt zu.</string>
     <string name="fuse_meal_exposure_limit_title">MEAL Exposure-Limit [U]</string>
+    <string name="fuse_meal_demand_ratio_cap_title">MEAL Bedarfsanteil (Ratio-Cap)</string>
+    <string name="fuse_meal_demand_ratio_cap_summary">Hoechster Anteil des Normalbedarfs, den eine SMB im Mahlzeitkontext abgeben darf (Deckel auf den SMB-Anteil). Im Kontofenster begrenzt er den Normalbedarf, der neben dem Erwartungskonto weiterlaeuft.</string>
     <string name="fuse_meal_exposure_limit_summary">Kontextbezogene Expositionsgrenze des MEAL-Profils in Einheiten (gegen capIOB + Transporthaftung). Kandidat - wirkt erst mit aktivierten zentralen Profilen. Muss groesser oder gleich dem CORRECTION-Wert sein.</string>
     <string name="fuse_corr_exposure_limit_title">CORR Exposure-Limit [U]</string>
     <string name="fuse_corr_exposure_limit_summary">Kontextbezogene Expositionsgrenze des CORRECTION-Profils in Einheiten. Kandidat - wirkt erst mit aktivierten zentralen Profilen. Nie groesser als der MEAL-Wert (sonst Konfigurationsfehler).</string>

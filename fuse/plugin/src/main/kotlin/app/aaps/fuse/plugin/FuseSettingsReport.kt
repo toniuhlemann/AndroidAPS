@@ -39,6 +39,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     // Die zentralen Profilwerte (CENTRAL-only, echte Defaults).
     FuseDoubleKey.CorrectionExposureLimitU.key,
     FuseDoubleKey.MealExposureLimitU.key,
+    FuseDoubleKey.MealDemandRatioCap.key,
     FuseDoubleKey.CorrectionDemandRatioCap.key,
     FuseBooleanKey.ZeroLatchEnabled.key,
     FuseIntKey.ZeroLatchCalmExitMin.key,
@@ -77,8 +78,8 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseBooleanKey.OnsetChannelEnabled.key,
     FuseBooleanKey.ExpectationLedgerEnabled.key,
     // Konsolidierung 2.0: die Einstellungen ohne Wirkung sind entfernt (s. FuseRetiredKey - registriert nur fuer die
-    // Sicherung). Nicht einstellbar, aber wirksam: MarkerAuthorisesRelease (praediktorfreier Markerpfad) und
-    // MealDemandRatioCap (Bedarfsdeckel im Mahlzeitkontext); gesichert werden beide weiter.
+    // Sicherung). Nicht einstellbar, aber wirksam: MarkerAuthorisesRelease (praediktorfreier Markerpfad); gesichert
+    // wird er weiter.
     FuseBooleanKey.TailGuardEnabled.key,
     FuseBooleanKey.TbrEndZeroWhenReasonGone.key,
     // Das Erwartungskonto (Testkandidat E-034) - eigener Abschnitt.
@@ -171,6 +172,7 @@ object FuseSettingsReport {
                 "Mahlzeit" to listOf(
                     ganz(FuseIntKey.LivenessMealPowerMin, "Mahlzeiten-Frist", "min"),
                     zahl(FuseDoubleKey.MealExposureLimitU, "MEAL Exposure-Limit", "U"),
+                    zahl(FuseDoubleKey.MealDemandRatioCap, "MEAL Bedarfsanteil", ""),
                 ),
                 "Erwartungskonto" to listOf(
                     zahl(FuseDoubleKey.ExpectationCurveAt30U, "Kurve nach 30 min", "U"),
