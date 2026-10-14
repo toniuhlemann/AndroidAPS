@@ -55,16 +55,7 @@ object AuthorizedLift {
         /** Die nachlaufende Mindestversorgung des Mahlzeitenfundaments. */
         FOUNDATION,
 
-        /**
-         * Der PHASE-A-SOFORTANTEIL (iLet-Prinzip, Bauauftrag Toni 24.08.):
-         * die beim Markerdruck gepinnte Sofort-Menge
-         * `phaseABudgetU x UpfrontShare`. Die EINZIGE Quelle, deren
-         * Einzeldosis nicht von maxSMB zerteilt wird - sonst waere
-         * UpfrontShare 1,0 keine Sofortdosis, sondern dieselbe Rampe in
-         * groesseren Schritten. Budget, iobTH, maxIOB, Transporthaftung
-         * und Pumpenraster bleiben unveraendert hart.
-         */
-        MEAL_UPFRONT,
+        // Konsolidierung 2.0: die Quelle des Phase-A-Sofortanteils (MEAL_UPFRONT) ist entfallen.
 
         /**
          * DIE GUARD-AUSNAHME DES ERWARTUNGSANTEILS (Vorregistrierung E-034):
@@ -136,14 +127,12 @@ object AuthorizedLift {
     fun bindingLimitOf(source: Source): String = when (source) {
         Source.PRIME        -> "primeRelease"
         Source.FOUNDATION   -> "mealFoundation"
-        Source.MEAL_UPFRONT -> "mealUpfront"
         Source.EXPECTATION  -> "expectationAccount"
     }
 
     fun stageOf(source: Source): String = when (source) {
         Source.PRIME        -> FuseController.STAGE_PRIME
         Source.FOUNDATION   -> FuseController.STAGE_FOUNDATION
-        Source.MEAL_UPFRONT -> FuseController.STAGE_UPFRONT
         Source.EXPECTATION  -> FuseController.STAGE_EXPECTATION
     }
 
@@ -237,16 +226,14 @@ object AuthorizedLift {
         // Autorisierung hebt sie - sie sagen nichts ueber eine Prognose,
         // sondern ueber eine Obergrenze.
         //
-        // EINE AUSNAHME, quellengebunden (Bauauftrag Toni 24.08., gleiches
-        // Muster wie die `!authorized`-Schwanzkappe unten): der
-        // Phase-A-SOFORTANTEIL wird nicht von maxSMB in Einzelzyklen
-        // zerteilt - seine absolute Obergrenze ist der gepinnte
-        // Sofortbetrag selbst (floorU), das Restbudget (remainingU) und
-        // die Bestandsgrenzen. Das ist eine gezielte Markerautorisierung,
-        // KEINE Erhoehung von maxSMB: Normal-, Liveness-, Prime- und
-        // Fundamentpfad behalten die Einzeldosisgrenze unveraendert.
+        // EINE AUSNAHME, quellengebunden: die Portion der fruehen Versorgung
+        // ([EarlyLift]) wird nicht von maxSMB zerteilt - ihre Obergrenze ist
+        // die Portion selbst (remainingU) und die Bestandsgrenzen. KEINE
+        // Erhoehung von maxSMB: Normal-, Liveness-, Prime- und Fundamentpfad
+        // behalten die Einzeldosisgrenze unveraendert. (Konsolidierung 2.0:
+        // die zweite Ausnahme, der Phase-A-Sofortanteil, ist entfallen.)
         val singleDoseCapU =
-            if (source == Source.MEAL_UPFRONT || frueh != null) remainingU
+            if (frueh != null) remainingU
             else min(state.maxSmbU, remainingU)
         // A2: dieselbe gemeinsame Expositionssicht wie in der
         // Kandidatensuche und im SubStep - identische Ausdrucksreihenfolge,

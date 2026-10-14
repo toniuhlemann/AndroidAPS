@@ -51,13 +51,14 @@ object ExposureGate {
     /**
      * DIE TYPISIERTE QUELLEN-PROVENIENZ der Endmenge (Bauauftrag 7.3) -
      * identisch fuer Haupt- und Fallbackpfad, an den hebenden Stufen
-     * TYPISIERT gesetzt, nie aus Texten geraten. Die vier Nutzerlabels
-     * NORMAL/LIVENESS/MEAL_UPFRONT/FOUNDATION behalten ihre Untertypen
-     * (PRIME, SubStep-Uebertrag, Aufschub-Freigabe, Ruhe-Pfade).
+     * TYPISIERT gesetzt, nie aus Texten geraten. Die Nutzerlabels
+     * NORMAL/LIVENESS/FOUNDATION behalten ihre Untertypen (PRIME,
+     * SubStep-Uebertrag, Aufschub-Freigabe). Konsolidierung 2.0:
+     * MEAL_UPFRONT und die Ruhe-Pfade (CALM_BATCH, CALM_DEMAND) sind entfallen.
      */
     enum class FinalSource {
-        NONE, NORMAL, NORMAL_SUBSTEP, PRIME, FOUNDATION, MEAL_UPFRONT,
-        DEFERRED_RELEASE, LIVENESS, CALM_BATCH, CALM_DEMAND,
+        NONE, NORMAL, NORMAL_SUBSTEP, PRIME, FOUNDATION,
+        DEFERRED_RELEASE, LIVENESS,
 
         /** Die Guard-Ausnahme des Erwartungsanteils (E-034). Nur im
          *  Speicher und im Export, nie persistiert. */

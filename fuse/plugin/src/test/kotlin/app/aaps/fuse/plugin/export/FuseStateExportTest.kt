@@ -1740,6 +1740,33 @@ class FuseStateExportTest {
     }
 
     /**
+     * Konsolidierung 2.0: ohne Ruhe-Ausgang stehen Ruhemodus, Track-Reset und
+     * Gefahrenliste auf null - die Feldnamen bleiben als JSON-null im Trail,
+     * damit Leser sie weiter finden.
+     */
+    @Test
+    fun `ohne Ruhe-Ausgang bleiben die Feldnamen der Endkette als null im Trail`() {
+        val kette = FuseCycleRunner.UpfrontChain(
+            recoveryMode = null, calmTreatment = null, recoveryStreak = 0, recoveryTrackReset = null,
+            recoveryRequired = 0, recoveryDenial = null, currentHazard = null,
+            guardDistanceMgdl = null, normalNeedBeforeMarkerFloorU = 0.0, upfrontOpenU = 0.0,
+            calmEligibleU = 0.0, calmShiftedU = 0.0, calmDemandU = 0.0, descentGateCause = "NONE",
+            calmDeniedByFinalVerify = null, grantU = 0.0, grantSource = null, beforeMarkerFloorU = 0.0,
+            afterMarkerFloorU = 0.0, markerFloorLiftU = 0.0, afterDescentGateU = 0.0, requestedRtU = 0.0,
+            stabilisation = "UNDETERMINED", stabilityVerdict = "UNDETERMINED", stabilityReason = "TOO_FEW_POINTS",
+            recentSpanMin = 0.0, recentNetMgdl = 0.0, recentWorstDropMgdl = 0.0, recentWorstDropSpanMin = 0.0,
+            allowedDropMgdl = 0.0, acceptedSustainedFallMgdlPerMin = 2.0 / 4.5, stabilityConfirmedCycles = 0,
+            reboundExemptByAuthority = null,
+        )
+        val c = record(outcome(upfrontChain = kette)).optJSONObject("upfrontChain")
+        assertNotNull(c, "die Endkette fehlt im Trail")
+        for (feld in listOf("recoveryMode", "recoveryTrackReset", "currentHazard")) {
+            assertTrue(c!!.has(feld) && c.isNull(feld)) { "$feld muss als JSON-null stehen: ${c.opt(feld)}" }
+        }
+        assertEquals(0, c!!.optInt("recoveryStreak", -1))
+    }
+
+    /**
      * DER AUFNAHMENACHWEIS DER TRANSPORTMENGE steht im Trail (03.10.2026):
      * ohne ihn waere ein entlasteter Zyklus von einem doppelt zaehlenden nicht
      * zu unterscheiden.

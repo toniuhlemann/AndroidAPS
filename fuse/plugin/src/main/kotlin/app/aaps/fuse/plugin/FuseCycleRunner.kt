@@ -192,19 +192,6 @@ class FuseCycleRunner(
     private val rejoinPolicy: app.aaps.fuse.core.signal.RejoinPolicy =
         app.aaps.fuse.core.signal.RejoinPolicy.OFF,
     /**
-     * DER RUHE-AUSGANG DES PHASE-A-SOFORTBATCHES - injiziert und ohne
-     * Produktionsdefault (Toni 25.08. spaet). Die Parameter werden am
-     * echten Abendfall durch den VOLLSTAENDIGEN Endpfad kalibriert; bis
-     * dahin nennt sie nur der Replay. `OFF` heisst: es bleibt beim
-     * bisherigen Vertrag.
-     */
-    /**
-     * NUR EIN OVERRIDE fuer den Replay. `null` heisst "nimm die
-     * Einstellungen" - so entsteht die Produktionsverdrahtung an genau
-     * einer Stelle ([Config.calmParams]) und nicht zweimal.
-     */
-    private val upfrontRecoveryParams: app.aaps.fuse.core.controller.UpfrontRecovery.Params? = null,
-    /**
      * NUR FUER DEN PHASE-2-REPLAY (Toni 23.08. Abend): schaltet EINE
      * Trendregel des Turn-Shadows als ECHTE Dosierbahn scharf.
      *   "UP"       Mittelbahn-Anhebung bei bestaetigter Aufwaertswende
@@ -250,15 +237,14 @@ class FuseCycleRunner(
 
     // BEIDE Verbraucher bekommen DIESELBE Politik - das ist die eine
     // Wahrheit, und sie ist hier sichtbar an genau einer Stelle.
-    /** Die Stationen des Sofortbatch-Endpfads dieses Zyklus. Zu Beginn jedes
-     *  Laufs geleert (KI-174), s. [run]. */
+    /** Die Stationen des Endpfads dieses Zyklus (Trailblock `upfrontChain`).
+     *  Zu Beginn jedes Laufs geleert (KI-174), s. [run]. */
     private var upfrontChainThisCycle: UpfrontChain? = null
 
     /** Aufnahmenachweis und Transportmenge DIESES Zyklus fuer den Export. Wie
      *  die Sofortbatch-Kette am Zyklusanfang geleert (KI-174). */
     private var transportSichtThisCycle: TransportSicht? = null
 
-    /** q1 des Vorzyklus - nur fuer die Ruhepruefung des Sofortbatches. */
     /**
      * Die Segmentidentitaet des VORZYKLUS fuer den Stabilitaetsnachweis.
      *
@@ -268,6 +254,9 @@ class FuseCycleRunner(
      * Zyklus offen - waehrend der Ruhezaehler aus dem Ledger geerbt wurde.
      * Ein Segmentwechsel fuehrt jetzt zu UNDETERMINED und damit zu einer
      * Sperre, nicht zu einer Freigabe.
+     *
+     * Der Name ist historisch: der Nachweis gehoerte zum Sofortanteil. Seit
+     * der Konsolidierung 2.0 lesen ihn der Liveness-Kanal und der Trail.
      */
     private var upfrontStabilitaetsEpoche: Long = 0L
 
@@ -464,13 +453,11 @@ class FuseCycleRunner(
         /** Name der Kontosperre aus dem Tieftor (Null-Tor) - Exportwert, nicht umbenennen. */
         const val SPERRE_TIEFTOR = "LOW_THREAT"
 
-        /** Die Direktdosis-Familie: sie bucht voll auf das Erwartungskonto (E-034, 3b). */
+        /** Die Direktdosis-Familie: sie bucht voll auf das Erwartungskonto (E-034, 3b). Sofortanteil und
+         *  Ruhe-Pfade sind mit der Konsolidierung 2.0 entfallen. */
         val EK_DIREKTDOSIS: Set<app.aaps.fuse.core.controller.ExposureGate.FinalSource> = setOf(
             app.aaps.fuse.core.controller.ExposureGate.FinalSource.PRIME,
-            app.aaps.fuse.core.controller.ExposureGate.FinalSource.MEAL_UPFRONT,
             app.aaps.fuse.core.controller.ExposureGate.FinalSource.DEFERRED_RELEASE,
-            app.aaps.fuse.core.controller.ExposureGate.FinalSource.CALM_BATCH,
-            app.aaps.fuse.core.controller.ExposureGate.FinalSource.CALM_DEMAND,
         )
 
         /** Rundungsluft des Schwanz-Vetos [U]. Ein Spielraum von exakt 0 ist
@@ -607,9 +594,16 @@ class FuseCycleRunner(
         )
     }
 
-    /** Stationen des Sofortbatch-Endpfads samt Ruhe-Telemetrie. */
+    /**
+     * Stationen des Sofortbatch-Endpfads samt Ruhe-Telemetrie.
+     *
+     * Konsolidierung 2.0: Sofortanteil und Ruhe-Ausgang sind entfallen. Der
+     * Block bleibt fuer den Trail (Feldnamen unveraendert); ihre Felder
+     * (Ruhemodus, Zaehler, Gefahren, offene Menge, Ruhe-Mengen) stehen
+     * neutral auf 0/null, die uebrigen Stationen rechnen wie bisher.
+     */
     data class UpfrontChain(
-        val recoveryMode: String,
+        val recoveryMode: String?,
         /** Welche Behandlung der ruhige Pfad gewaehlt hat, sonst null. */
         val calmTreatment: String?,
         val recoveryStreak: Int,
@@ -618,10 +612,10 @@ class FuseCycleRunner(
          * Ein stilles "streak 0" liesse "nie beobachtet" und "durch
          * Konfigurationswechsel entwertet" ununterscheidbar.
          */
-        val recoveryTrackReset: String,
+        val recoveryTrackReset: String?,
         val recoveryRequired: Int,
         val recoveryDenial: String?,
-        val currentHazard: String,
+        val currentHazard: String?,
         /**
          * OB DAS HISTORISCHE REBOUND-FENSTER DIESE DIREKTDOSIS NOCH SPERRT.
          *
@@ -922,7 +916,9 @@ class FuseCycleRunner(
          *  Boden VOR diesem Zyklus [U] (upfrontFloorU-Bilanz), die in DIESEM
          *  Zyklus als MEAL_UPFRONT angeforderte Menge [U] und der abgeleitete
          *  Zustand fuer Export/Viewer. Angefordert heisst NICHT publiziert
-         *  oder pumpenbestaetigt - die Publikation entscheidet das Gate. */
+         *  oder pumpenbestaetigt - die Publikation entscheidet das Gate.
+         *  Konsolidierung 2.0: der Sofortanteil ist entfallen, die fuenf
+         *  Felder bleiben fuer den Trail und stehen auf 0/null. */
         val phaseAUpfrontPendingU: Double = 0.0,
         val phaseAUpfrontRequestedU: Double = 0.0,
         val phaseAUpfrontState: String? = null,
@@ -2281,8 +2277,11 @@ class FuseCycleRunner(
             foundationArmedByAuthId = episodes.foundationArmedByAuthId,
             currentAuthId = episodes.markerAuth?.id,
         )
-        // DER RIEGEL DER KETTE - eine Stelle, vier Tore. Ueberall sonst
-        // bleibt `reboundRaw` unveraendert in Kraft.
+        // DER RIEGEL DER KETTE - eine Stelle. Konsolidierung 2.0: Aufschub-Tor
+        // und Wiederfreigabe des Sofortanteils sind entfallen; es lesen noch
+        // der Phase-A-Uebertrag (DescentDeferredCarry), die aufgeschobene
+        // Prime-Freigabe und der Trail. Ueberall sonst bleibt `reboundRaw`
+        // unveraendert in Kraft.
         val upfrontReboundSperrt =
             MealUpfrontAuthority.reboundBlocks(reboundRaw, direktdosisAutorisiert)
 
@@ -3600,165 +3599,6 @@ class FuseCycleRunner(
             bolusStepU =bolusStep,
         )
 
-        // ---- PHASE-A-SOFORTANTEIL (iLet-Prinzip, Bauauftrag Toni 24.08.) --
-        //
-        // VOR dem Prime-Lift, auf derselben Basis: die Sofortdosis ist ein
-        // BODEN auf der kumulierten Phase-A-Lieferung
-        // (MealFoundation.upfrontFloorU), kein Einmal-Zustand - Lieferung,
-        // unklarer Pumpenausgang, Nicht-Sende-Beweis und Sicherheitsaufschub
-        // verrechnen sich ueber die persistierten, gate- und
-        // beweiskorrigierten Zaehler (exactly-once als Bilanz). Der
-        // Prime-Lift arbeitet auf dem Ergebnis und hebt per max-Semantik nur,
-        // wenn sein eigener Boden hoeher laege - nie Addition.
-        //
-        // Ein AKTIVER ZERO-LATCH sperrt die Sofortdosis ausdruecklich
-        // (Bauauftrag): er ist der einzige harte Riegel, den die spaeteren
-        // Stufen nicht ohnehin tragen (der Latch laesst den SMB-Pfad ueber
-        // latchZeroOnly frei). Gelesen wird der persistierte Stand VOR dem
-        // Latch-Advance dieses Zyklus. Low (SAFETY_HOLD), Descent-Risk,
-        // Descent-Latch, Health, Ledger-Hold und Pumpengates wirken
-        // unveraendert ueber Blockpolitik, MeasuredDescentGate,
-        // LedgerHoldGate und Publikationsgate; der gemessene Abwaertsriegel
-        // des gepinnten Horizonts leitet die Menge unten in den
-        // DeferredPrime-Aufschub um (sie steht oberhalb der reinen Basis).
-        val upfrontDeferredOpenU =
-            if (episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs)
-                episodes.deferredPrime.openU else 0.0
-        // ---- TONIS FREIGABETOR DER SOFORTDOSIS (Mindeststand vor GO) ------
-        //
-        // Die aussergewoehnlich grosse Dosis braucht ein STRENGERES Tor als
-        // der normale Markerpfad - der Marker-Horizont selbst bleibt bei
-        // 60 min, das bereits berechnete 120-min-LowThreat-Verdikt ist die
-        // ZUSAETZLICHE Zulaessigkeitspruefung. Typisierte GEMESSENE
-        // Risikogruende (Verdikt roh - auch der gedaempfte Grenzzyklus zaehlt
-        // fuer die grosse Dosis -, aktiver oder gerade zuendender Zero-Latch,
-        // Rebound) VERSCHIEBEN die komplette offene Sofortmenge in den
-        // DeferredPrime-Aufschub: aufgeschoben, nie verworfen; Freigabe nach
-        // bestaetigter Erholung in Pumpenschritten (eine schnellere
-        // Upfront-Freigabe waere eine eigene Produktentscheidung). Eine bloss
-        // noch LAUFENDE alte Zero-TBR blockiert nichts - gelesen werden
-        // typisierte Gruende, nie die Pumpenrate. SICHERHEITSAUFLAGEN
-        // ausserdem: nur mit aktivem DeferredPrime-Netz (sonst fail-closed,
-        // BLOCKED_NO_DEFERRED) und nie bei Ledger-Hold (dort wird gewartet,
-        // nicht gebucht).
-        // P0 (Toni): TECHNISCHE INTEGRITAET wie im Liveness-Kanal. Ein Kern
-        // kann existieren und trotzdem typisierte Modellfehler tragen
-        // (ISF_SLOT_MISSING, DELIVERY_AFTER_RELEASE, NON_FINITE, ...) -
-        // finalVeto saehe das, aber MarkerFloor stellte die grosse
-        // autorisierte Dosis danach wieder her. Dieselbe geteilte Pruefung
-        // VOR dem Lift; nur Guard-/Tail-URTEILE bleiben markerpolitisch
-        // ueberstimmbar. Ein technischer Reject ist ein AUFSCHUB-Grund wie
-        // die gemessenen Risiken: die Menge wandert in den Aufschub, damit
-        // ein langer Modellfehler sie nicht ueber das Phasenende verliert.
-        val upfrontKern = kernel()
-        val upfrontTechReject = upfrontKern == null ||
-            CandidateSearch.verifyTechnicalIntegrity(
-                prediction, upfrontKern, built.input.isfSlots, candidateBand, bolusStep,
-                restraint = restraint,
-            ) != null
-        // JEDER gemessene Sicherheitsriegel schiebt auf (Vertrag 5 des
-        // Nachtrags: "Batch bleibt vollstaendig offen, keine Miniabgaben").
-        // Das GEMESSENE ABWAERTSRISIKO und der Erholungsriegel gehoerten
-        // frueher nicht dazu - der Lift forderte die volle Menge an, und
-        // erst MeasuredDescentGate nullte sie danach. Ergebnis war zwar
-        // keine Dosis, aber ein Zustand "REQUESTED" bei stehendem Riegel
-        // und eine Anforderung, die jeder Zyklus wiederholte.
-        //
-        // DER ZERO-LATCH SCHIEBT NICHT MEHR AUF (Toni 28.08.). Er stand hier
-        // als `cfg.zeroLatchEnabled && episodes.zeroLatch.active` und war
-        // der einzige Term, der keine aktuelle Gefahr misst, sondern einen
-        // historisch gehaltenen Basalschutz. An einem Fruehstueck war
-        // er ueber viele Minuten der EINZIGE Blocker der Kette, bei
-        // gesundem Signal und ohne Abwaertsrisiko - die autorisierte
-        // Menge lag still. Die Zero-TBR selbst bleibt unberuehrt: sie
-        // darf waehrend der Mahlzeitenfreigabe weiterlaufen, ihre Ein- und
-        // Ausstiegslogik ist nicht angefasst.
-        //
-        // UND DAS HISTORISCHE REBOUND-FENSTER SCHIEBT NICHT MEHR ALLEIN AUF,
-        // wenn die ausdrueckliche Mahlzeitenautorisierung diese Direktdosis
-        // traegt (s. [MealUpfrontAuthority]). Dieselbe Trennung wie beim
-        // Zero-Latch darueber: ein historisch gehaltener Schutz ist keine
-        // AKTUELLE Gefahr. Die aktuellen Gefahren stehen unveraendert
-        // daneben und schieben weiter auf.
-        val upfrontRisikoAufschub = lowThreatResult.verdict != LowThreatGate.Verdict.NONE ||
-            upfrontReboundSperrt ||
-            descentRisk.active ||
-            descentLatch.blocksPositive ||
-            upfrontTechReject
-        // ---- DER SOFORT-BATCH (Nachtrag Toni 25.08. mittags) -------------
-        //
-        // WAS SICH GEAENDERT HAT: der zurueckgehaltene Sofortanteil wandert
-        // NICHT mehr in den generischen `DeferredPrime`. Der gibt bauartbe-
-        // dingt hoechstens EINEN Pumpenschritt je Zyklus frei - gemessen kam
-        // ein geplanter Sofortanteil von mehreren Einheiten danach nur in
-        // kleinen Einzelschritten heraus, und weil der Aufschub nur seine eigenen
-        // Pumpenschritte abzog, meldete er mehr offen, als nach der bereits
-        // erfolgten Phase-A-Lieferung ueberhaupt offen sein konnte.
-        //
-        // STATTDESSEN: der Rueckstand ergibt sich allein aus der Bilanz
-        // (`remainingUpfrontU`), und ein persistenter MERKER haelt fest,
-        // dass aufgeschoben wurde. Solange er steht, verlangt die Freigabe
-        // die BESTAETIGTE Erholung - danach wird der GANZE zulaessige Rest
-        // in einem Zug als MEAL_UPFRONT angefordert.
-        val upfrontOhneNetz = !cfg.deferredPrimeEnabled
-        // Der offene Batch VOR jeder Entscheidung dieses Zyklus - mit ALLEN
-        // Abzuegen (Review-Punkt 3). `null` heisst UNBESTIMMBAR, nicht
-        // gedeckt: die Behandlungssicht ist unlesbar.
-        val upfrontOffenRoh = MealFoundation.remainingUpfrontU(
-            auth = episodes.foundation,
-            deliveredPhaseAU = episodes.deliveredPhaseAU,
-            manualAfterMarkerU = manualBolusAfterMarkerU,
-            deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
-            postFoundationDeliveredU = episodes.postFoundationDeliveredU,
-            transferredToDeferredU = episodes.upfrontTransferredU,
-            lapsedU = episodes.upfrontLapsedU,
-        )
-        val upfrontSichtUnlesbar = upfrontOffenRoh == null
-        val upfrontOffenU = upfrontOffenRoh ?: 0.0
-        val upfrontInPhaseA = foundationDecision.phase == MealFoundation.Phase.PHASE_A
-
-        // ---- ENDE VON PHASE A: UEBERFUEHRUNG STATT SPAETBATCH -----------
-        //
-        // KEIN spaeter Mehr-Einheiten-Batch (Review 25.08. abends, Punkt 2):
-        // `liftUpfront` liefert ohnehin nur in Phase A, und ein spaeterer
-        // Vollbatch waere eine eigene Produktentscheidung samt Frist. Was
-        // beim Phasenwechsel noch offen ist, geht deshalb EINMAL in den
-        // bestehenden schrittweisen Aufschub ueber - unter DESSEN gepinnter
-        // Frist. Verlustfrei, aber gebremst.
-        //
-        // Frueher stand hier nichts: der Rest blieb nach T+20 sichtbar
-        // offen und konnte nie mehr freigegeben werden (der Fallback-
-        // Kommentar behauptete das Gegenteil).
-        var upfrontTransferNowU = 0.0
-        if (!upfrontInPhaseA && upfrontOffenU > 0.0 && !upfrontSichtUnlesbar &&
-            episodes.foundation.valid &&
-            episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs
-        ) {
-            val vorher = episodes.deferredPrime.openU
-            episodes.deferredPrime = DeferredPrime.withhold(
-                episodes.deferredPrime, upfrontOffenU,
-                deferredHullRemainingU(episodes, manualBolusAfterMarkerU),
-            )
-            // ZWEI GETRENNTE GROESSEN (Review-P1.2): was WIRKLICH im
-            // schrittweisen Pfad ankam, und was die Huelle nicht mehr
-            // aufnahm. Frueher stand der ganze offene Betrag als
-            // "uebertragen" im Trail - dosierseitig konservativ, aber die
-            // Aussage "verlustfrei uebertragen" war falsch.
-            upfrontTransferNowU = (episodes.deferredPrime.openU - vorher).coerceAtLeast(0.0)
-            episodes.upfrontTransferredU += upfrontTransferNowU
-            episodes.upfrontLapsedU += (upfrontOffenU - upfrontTransferNowU).coerceAtLeast(0.0)
-            episodes.upfrontBatchDeferredSince = 0L
-        }
-        // Aufgeschoben wird NUR, wenn es etwas aufzuschieben gibt.
-        val upfrontAufschubJetzt = upfrontRisikoAufschub && upfrontOffenU > 0.0 && upfrontInPhaseA
-        if (upfrontAufschubJetzt && episodes.upfrontBatchDeferredSince <= 0L)
-            episodes.upfrontBatchDeferredSince = computeTs
-        // DIE ERHOLUNG DES SOFORTBATCHES - zwei getrennte Fragen (Toni
-        // 25.08. spaet). Die AKTUELLE Gefahr bleibt absolut; erst danach
-        // wird gefragt, ob die Lage stabil genug ist. Weg 1 ist die
-        // bisherige schnelle Erholung (UKF >= +0,20 ueber drei Zyklen),
-        // Weg 2 die neue bestaetigte RUHE. Ohne injizierte Parameter ist
-        // Weg 2 aus, und es bleibt exakt beim alten Vertrag.
         // ---- DER STABILITAETSNACHWEIS AUF DER GEMESSENEN REIHE ----------
         //
         // Er ersetzt die beiden Nulltoleranzen (UKF < 0 und "q1 gegenueber dem
@@ -3768,8 +3608,11 @@ class FuseCycleRunner(
         // GUELTIGE VORGESCHICHTE ZAEHLT: die Reihe reicht ueber den
         // Markerzeitpunkt zurueck. War die Lage schon vorher stabil, traegt
         // der Nachweis im ERSTEN regulaeren Zyklus danach - es entsteht keine
-        // neue Wartezeit. Autorisierung, Budget und Lieferidentitaet kommen
-        // davon unberuehrt weiterhin ausschliesslich aus dem neuen Marker.
+        // neue Wartezeit.
+        //
+        // Konsolidierung 2.0: der Phase-A-Sofortanteil und sein Ruhe-Ausgang sind entfallen (Aufschub-Merker,
+        // Ruhezaehler, Uebertrag in den Aufschub, Sofort-Lift). Der Nachweis bleibt an dieser Stelle und rechnet wie
+        // bisher; ihn lesen der Liveness-Kanal und der Trail (upfrontChain).
         val upfrontStabilitaet = app.aaps.fuse.core.signal.GlucoseStability.evaluate(
             series = signal.measured,
             nowTs = signal.sourceTs,
@@ -3778,152 +3621,6 @@ class FuseCycleRunner(
         )
         upfrontStabilitaetsEpoche = signal.measured.signalEpochTs
 
-        // ---- DER GEPINNTE MAHLZEITEN-RISIKOHORIZONT ---------------------
-        //
-        // VOR der Batchfreigabe, nicht erst im spaeteren Aufschubpfad (Toni
-        // 28.08.). Der gleichnamige `risk60` weiter unten bleibt unveraendert
-        // fuer den linearen Prime-Anteil; hier steht dieselbe reine Funktion
-        // mit demselben gepinnten Horizont, nur frueher.
-        //
-        // DER PIN WIRD GELESEN, NICHT VERDRAHTET: `horizonMin` kommt aus der
-        // beim Markerdruck festgeschriebenen Autorisierung. Eine feste 60
-        // waere eine zweite Wahrheit neben ihr.
-        val batchPinGueltig = cfg.deferredPrimeEnabled &&
-            markerTs > 0L &&
-            episodes.deferredPrime.pinnedForMarkerTs > 0L &&
-            episodes.deferredPrime.pinnedForMarkerTs == markerTs &&
-            episodes.deferredPrime.horizonMin > 0
-        val batchRisiko = if (!batchPinGueltig) null else LowThreatGate.measuredDescentRisk(
-            signalHealthy = step.health == Health.READY,
-            bgMgdl = signal.q1,
-            fallRatePerMin = signal.ukfRatePerMin,
-            bolusIobU = (iobTotal.iob - iobTotal.basaliob).takeIf { iobTotal.valid },
-            isfMgdlPerU = isf,
-            guardFloorMgdl = cfg.guardFloorMgdl,
-            horizonMin = episodes.deferredPrime.horizonMin.toDouble(),
-        )
-        // FEHLENDER ODER UNGUELTIGER PIN IST KEINE ENTWARNUNG. Ohne gueltige
-        // Frist gibt es keine Aussage ueber das Abwaertsrisiko dieser
-        // Mahlzeit - und keine Aussage ist ein Grund zu halten, nicht
-        // freizugeben.
-        val batchRisikoSperrt = batchRisiko?.active ?: true
-
-        val upfrontRecovery = app.aaps.fuse.core.controller.UpfrontRecovery.evaluate(
-            params = upfrontRecoveryParams ?: cfg.calmParams,
-            prior = episodes.upfrontRecovery,
-            deferredOpen = episodes.upfrontBatchDeferredSince > 0L,
-            inPhaseA = upfrontInPhaseA,
-            // DIE IDENTITAET, NICHT NUR EIN BOOLEAN: der Ruhezaehler gehoert
-            // zu EINER Autorisierung. Ein Markerwechsel muss ihn abbrechen,
-            // sonst erbt die naechste Mahlzeit eine Ruhe, die zur vorigen
-            // gehoerte - und ein geerbter Zaehler gibt frueher frei.
-            markerIdentity = episodes.foundation.takeIf { it.valid }?.armedTs ?: 0L,
-            hazards = app.aaps.fuse.core.controller.UpfrontRecovery.Hazards(
-                descentRisk = descentRisk.active,
-                // GEMESSENES TIEF EIGENSTAENDIG - der schnelle Erholungspfad
-                // kehrt vor der Bodenabstandspruefung zurueck, und ein
-                // MEASURED_LOW liefert dort gar keine Distanz.
-                measuredLow = measuredLow ||
-                    lowThreatResult.verdict == LowThreatGate.Verdict.MEASURED_LOW,
-                // STATT des 120-Minuten-Basalverdikts: der am Marker gepinnte
-                // Abwaertsrisiko-Vertrag dieser Mahlzeit.
-                pinnedMealRisk = batchRisikoSperrt,
-                // DIESELBE Entscheidung wie am Aufschub-Tor. Stuende hier
-                // weiter `reboundRaw`, waere der Aufschub zwar nie
-                // entstanden, aber ein spaeter eintretendes Rebound-Fenster
-                // haette die Wiederfreigabe erneut verworfen - genau der
-                // gemessene Livefall.
-                rebound = upfrontReboundSperrt,
-                signalUnhealthy = step.health != Health.READY,
-                technical = upfrontTechReject,
-                ledgerHold = ledgerView.hold,
-            ),
-            risingConfirmed =
-                deferredRecoveryStreak >= DescentRecoveryLatch.REQUIRED_CONSECUTIVE_CYCLES,
-            stability = upfrontStabilitaet,
-            guardDistanceMgdl = lowThreatResult.distanceToFloorMgdl,
-            sourceTs = signal.sourceTs,
-            nowTs = computeTs,
-        )
-        episodes.upfrontRecovery = upfrontRecovery.track
-
-        // DER AUFRUFER MUSS DIE DREI FAELLE TRENNEN (Toni 25.08. spaet).
-        //
-        // Hier stand `!upfrontRecovery.releases`. Das war eine versteckte
-        // Vollbatch-Autorisierung: eine bestaetigte RUHE haette denselben
-        // `liftUpfront`-Pfad erreicht wie die bestaetigte schnelle Erholung,
-        // dort einen `MEAL_UPFRONT`-Grant gestempelt - und [MarkerFloor]
-        // haette ihn nach dem `finalVerify` auf die volle autorisierte Menge
-        // angehoben. Am gemessenen Abendfall waeren das mehrere Einheiten bei
-        // niedrigem BG knapp ueber dem Guard-Boden gewesen, in einem Zyklus, in dem
-        // der Regler selbst `insulinReq <= 0` sah.
-        //
-        // NUR [Decision.FullBatchEligible] darf deshalb `liftUpfront`
-        // erreichen. Der ruhige Pfad stempelt gar keinen Grant - das ist die
-        // Sicherheitskante, nicht ein Deckel in MarkerFloor.
-        var upfrontRuheUeberfuehrungU = 0.0
-        // Gilt NUR fuer den dosierwirksamen Modus - s. Begruendung unten.
-        var upfrontRuheBatchFrei = false
-        val upfrontVollbatchFrei = when (upfrontRecovery) {
-            is app.aaps.fuse.core.controller.UpfrontRecovery.Decision.Blocked -> false
-            is app.aaps.fuse.core.controller.UpfrontRecovery.Decision.FullBatchEligible -> true
-            is app.aaps.fuse.core.controller.UpfrontRecovery.Decision.CalmRecovered -> {
-                val upfrontRuheBatch = upfrontRecovery.treatment ==
-                    app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.CALM_BATCH
-                when (upfrontRecovery.treatment) {
-                    // Bedarfsbegrenzt: der normale Pfad bleibt stehen, wie er
-                    // ist. Verlangt er nichts, geschieht nichts.
-                    app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED ->
-                        Unit
-                    // Kontrolliert verschoben: die Menge geht in den
-                    // schrittweisen Pfad - nicht als Vollbatch heraus.
-                    app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED ->
-                        upfrontRuheUeberfuehrungU = upfrontOffenU
-                    // DOSIERWIRKSAM (Bauauftrag Toni 25.08. spaet): der noch
-                    // offene Sofortanteil darf als Batch heraus.
-                    //
-                    // DAS IST NICHT DIE ALTE ABKUERZUNG. Der frueher hier
-                    // stehende `releases`-Boolean liess JEDE Ruhe auf den
-                    // Vollbatchpfad; diese Freigabe gilt nur fuer EINEN
-                    // ausdruecklich gewaehlten Behandlungsmodus, erst nach N
-                    // lueckenlos bestaetigten Ruhezyklen, und sie erreicht
-                    // denselben `liftUpfront`-Pfad mit allen seinen Grenzen:
-                    // `remainingUpfrontU` verrechnet den manuellen Bolus
-                    // (keine Doppelgabe), `AuthorizedLift.lift` traegt
-                    // Huelle, iobTH, maxIOB, Transporthaftung und
-                    // Pumpenraster. Die aktuellen Gefahren bleiben absolut -
-                    // CalmRecovered entsteht ohne sie gar nicht.
-                    app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.CALM_BATCH ->
-                        upfrontRuheBatchFrei = true
-                }
-                upfrontRuheBatch
-            }
-        }
-
-        // DIESELBE BUCHUNG wie am Phase-A-Ende, nicht eine zweite. Die beiden
-        // Zweige schliessen sich aus (`upfrontInPhaseA`), und der Uebertrag
-        // wird nur gutgeschrieben, soweit die Huelle ihn wirklich aufnahm.
-        if (upfrontRuheUeberfuehrungU > 0.0 && upfrontInPhaseA && !upfrontSichtUnlesbar &&
-            episodes.foundation.valid &&
-            episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs
-        ) {
-            val vorherRuhe = episodes.deferredPrime.openU
-            episodes.deferredPrime = DeferredPrime.withhold(
-                episodes.deferredPrime, upfrontRuheUeberfuehrungU,
-                deferredHullRemainingU(episodes, manualBolusAfterMarkerU),
-            )
-            val angekommen = (episodes.deferredPrime.openU - vorherRuhe).coerceAtLeast(0.0)
-            upfrontTransferNowU += angekommen
-            episodes.upfrontTransferredU += angekommen
-            episodes.upfrontLapsedU +=
-                (upfrontRuheUeberfuehrungU - angekommen).coerceAtLeast(0.0)
-            episodes.upfrontBatchDeferredSince = 0L
-        } else {
-            upfrontRuheUeberfuehrungU = 0.0
-        }
-
-        val upfrontWartetAufErholung = episodes.upfrontBatchDeferredSince > 0L &&
-            !upfrontVollbatchFrei
         // ---- M2 (Bauauftrag 7.5.2, Toni 29.08.): DER URSPRUENGLICHE ------
         // BLOCKGRUND DES NORMALPFADS, abgegriffen VOR der ersten
         // autorisierten Anhebung. Autorisierte Boeden (Upfront, Prime,
@@ -3938,54 +3635,11 @@ class FuseCycleRunner(
         // und deckt Phase-A-Maskierungen nicht).
         val underlyingNormalBlock = vetted.block
         // KONSOLIDIERUNG (Toni): die Direktdosis-Familie (Sofortanteil, Prime, Aufschub-Freigabe, Ruhe) ist entfallen -
-        // "sollte dennoch eine Direktdosis noetig sein, mache ich das manuell". Ihr Code faellt im naechsten Schritt.
+        // "sollte dennoch eine Direktdosis noetig sein, mache ich das manuell". Sofortanteil und Ruhe-Ausgang sind
+        // entfernt (ihr Lift gab hier ohnehin `vetted` weiter); Prime und Aufschub-Freigabe folgen.
         val ekOhneDirektdosis = true
-        val liftedUpfront = when {
-            ekOhneDirektdosis -> vetted
-            upfrontOhneNetz || ledgerView.hold -> vetted
-            // Sicherheitsriegel aktiv: der Batch bleibt VOLLSTAENDIG offen -
-            // keine Miniabgaben aus diesem Bestand (Vertrag 5).
-            //
-            // AUSNAHME NUR FUER DEN DOSIERWIRKSAMEN RUHEMODUS, und sie ist
-            // beweisbar eng: `upfrontRisikoAufschub` setzt sich seit dem
-            // 28.08. aus lowThreat, rebound, descentRisk.active,
-            // upfrontTechReject und `descentLatch.blocksPositive` zusammen.
-            // Die ERSTEN VIER sind saemtlich [UpfrontRecovery.Hazards] -
-            // unter `CALM_RECOVERED` sind sie zwingend falsch, sonst waere
-            // die Entscheidung gar nicht entstanden (am Konstruktor
-            // geprueft). Bleibt genau EIN Bestandteil, der hier noch wahr
-            // sein kann: der HISTORISCHE Abwaertsriegel. Genau ihn - und
-            // nur ihn - ueberstimmt dieser Modus, dieselbe Kante wie beim
-            // bedarfsbegrenzten Kandidaten.
-            //
-            // Der Zero-Latch stand frueher ebenfalls in dieser Liste. Er ist
-            // seit dem 28.08. gar nicht mehr Teil des Aufschubs, weicht also
-            // schon vorher - und nicht erst durch diese Ausnahme.
-            upfrontRisikoAufschub && !upfrontRuheBatchFrei -> vetted
-            upfrontWartetAufErholung -> vetted
-            else -> MealFoundation.liftUpfront(
-                base = vetted,
-                auth = episodes.foundation,
-                phase = foundationDecision.phase,
-                deliveredPhaseAU = episodes.deliveredPhaseAU,
-                manualAfterMarkerU = manualBolusAfterMarkerU,
-                state = state,
-                tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
-                transportCommitmentU = transportModelledU,
-                contextExposureLimitU = kontextExposureLimitU,
-            )
-        }
-        // Der Rueckstand ist die BILANZ - kein zweiter Zaehler. Was dieser
-        // Zyklus anfordert, ist noch nicht geliefert und steht deshalb
-        // weiter offen; erst die Buchung senkt ihn.
-        // Nach einer Ueberfuehrung ist die Sofortmenge nicht mehr offen -
-        // sie liegt jetzt im schrittweisen Pfad.
-        val upfrontPendingU = if (upfrontTransferNowU > 0.0) 0.0 else upfrontOffenU
-        val upfrontRequestedU =
-            if (liftedUpfront.bindingLimit == "mealUpfront") liftedUpfront.smbU else 0.0
-
-        val liftedPrime = if (ekOhneDirektdosis) liftedUpfront else PrimeRelease.lift(
-            liftedUpfront, primePlan, state,
+        val liftedPrime = if (ekOhneDirektdosis) vetted else PrimeRelease.lift(
+            vetted, primePlan, state,
             markerAuthorized = manualMarkerAuthorized,
             tailHeadroomU = tail?.takeIf { it.usable }?.headroomU,
             onsetCapU = if (onset.active) onset.remainingU else null,
@@ -4502,215 +4156,37 @@ class FuseCycleRunner(
         // ausschliesslich Ergebnis der Nutzenpruefung - "Basal zurueckhalten
         // hilft nicht mehr" und "mehr Bolus ist sicher" sind zwei
         // verschiedene Aussagen, und ihre Vermischung war der Befund.
-        // DER ENDRIEGEL - und die EINZIGE Ausnahme, die er kennt.
         //
-        // Er sitzt bewusst so spaet, damit keine Autorisierung ihn mehr
-        // heben kann; genau so entstand der gemessene Abendfall. Der
-        // dosierwirksame Ruhemodus ist die ausdrueckliche Produkt-
-        // entscheidung dagegen (Toni 25.08. spaet) - und sie ist beweisbar
-        // auf EINEN Bestandteil begrenzt:
-        //
-        // `upfrontRuheBatchFrei` wird nur unter `CALM_RECOVERED` gesetzt,
-        // und dort sind saemtliche [UpfrontRecovery.Hazards] zwingend falsch
-        // (am Konstruktor geprueft). `blocksPositive` kann in diesem Zustand
-        // also ausschliesslich vom HISTORISCHEN Latch stammen. Aktuelles
-        // Abwaertsrisiko, bestaetigtes Tief, Low-Threat, Rebound,
-        // Zero-Latch, Signal- und Modellfehler bleiben unberuehrt absolut.
-        //
-        // WARUM DER BATCH DIESEN WEG BRAUCHT und der bedarfsbegrenzte
-        // Kandidat nicht: dessen Menge entsteht NACH dem Riegel und traegt
-        // keinen Grant. Die Batchmenge entsteht davor, in `liftUpfront` -
-        // sie muss den Riegel passieren, nicht ihn umgehen.
-        // (1) DIE GESAMTE NORMALE ENTSCHEIDUNG geht unveraendert durch den
-        // Riegel. Die erste Fassung schaltete ihn fuer `vorRiegel` als
-        // Ganzes ab - darin koennen ausser MEAL_UPFRONT auch Normalbedarf,
-        // Prime, Fundament und Liveness stecken. Das war eine Aufweitung
-        // weit ueber die Produktentscheidung hinaus.
+        // Konsolidierung 2.0: die beiden Ausnahmen des Ruhe-Ausgangs (Sofortanteil-Batch am historischen Latch
+        // vorbei, bedarfsbegrenzter Ruhe-Kandidat danach) sind entfallen - die ganze Entscheidung geht ohne Ausnahme
+        // durch den Riegel.
         val normalNachRiegel = MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
 
-        // (2)+(3) NUR der Sofortanteil-Grant darf am historischen Latch
-        // vorbei, und HART auf seine autorisierte Menge begrenzt. Ein
-        // gleichzeitig groesserer Normal- oder Liveness-Kandidat bleibt
-        // blockiert; durchgelassen wird hoechstens `grant.amountU`.
-        val ruheBatchGrant = vorRiegel.grant
-            ?.takeIf { upfrontRuheBatchFrei && it.source ==
-                    app.aaps.fuse.core.controller.AuthorizedLift.Source.MEAL_UPFRONT }
-        val calmBatchU =
-            if (ruheBatchGrant == null) 0.0
-            else minOf(vorRiegel.smbU, ruheBatchGrant.amountU).coerceAtLeast(0.0)
-
-        // (4) MAX, niemals Addition - und die Provenienz faehrt mit, weil
-        // die Menge aus `vorRiegel` samt ihrem Grant stammt.
-        val nachDescentGemergt =
-            if (calmBatchU > normalNachRiegel.smbU + 1e-9) vorRiegel.copy(
-                smbU = calmBatchU,
-                block = FuseController.Block.NONE,
-                bindingLimit = "calmBatch|" + normalNachRiegel.bindingLimit,
-            ) else normalNachRiegel
-
-        // (5) DER SCHWANZBERICHT GILT FUER DIE TATSAECHLICHE ENDMENGE.
+        // DER SCHWANZBERICHT GILT FUER DIE TATSAECHLICHE ENDMENGE.
         // `vorRiegel` traegt den Bericht zur ungeriegelten Menge; bleibt er
         // stehen, beschriebe er eine Menge, die es nicht gibt.
-        val nachDescentRoh =
-            if (nachDescentGemergt.smbU != vorRiegel.smbU)
-                tailWith(nachDescentGemergt.smbU)
-                    ?.let { nachDescentGemergt.copy(tail = it) } ?: nachDescentGemergt
-            else nachDescentGemergt
-        val ruheBlockiert =
-            upfrontRecovery as? app.aaps.fuse.core.controller.UpfrontRecovery.Decision.Blocked
-        val ruheRuhig =
-            upfrontRecovery as? app.aaps.fuse.core.controller.UpfrontRecovery.Decision.CalmRecovered
-
-        // ---- DER BEDARFSBEGRENZTE RUHE-KANDIDAT (Toni 25.08. spaet) -----
-        //
-        // OHNE IHN WAERE DEMAND_LIMITED NUR EIN ETIKETT. Der Zweig fiel
-        // messbar mit `Blocked` zusammen: `vetted` durchlaeuft denselben
-        // Endriegel, und der HISTORISCHE Latch nullt auch den reinen Bedarf.
-        //
-        // WARUM DAS HIER TROTZ DES KOMMENTARS DARUEBER STEHEN DARF. Der
-        // Endriegel sitzt bewusst so spaet, damit keine Autorisierung ihn
-        // mehr heben kann - genau so entstand der Abendfall. Dieser Kandidat
-        // ist deshalb PROVENIENZ-ISOLIERT und hebt nichts Autorisiertes:
-        //
-        //   - er ist hoechstens der REINE Bedarf des Normalpfades. Traegt
-        //     `vetted` selbst schon `markerAuth`, ist er nicht rein und der
-        //     Kandidat ist 0.
-        //   - liegt am Endriegel bereits ein Grant an, greift er GAR NICHT.
-        //     Sonst vermischten sich zwei Herkuenfte in einer Menge.
-        //   - er traegt selbst keinen Grant (`grant = null`) und ist damit
-        //     fuer jeden nachfolgenden Wiederherstellungspfad unsichtbar.
-        //   - `MarkerFloor` liegt bereits hinter uns; er kann ihn also
-        //     konstruktiv nicht anheben.
-        //   - er ueberstimmt AUSSCHLIESSLICH den historischen Latch. Alle
-        //     AKTUELLEN Gefahren sind bereits absolut: `ruheRuhig` entsteht
-        //     nur, wenn [UpfrontRecovery.Hazards.any] in DIESEM Zyklus
-        //     falsch war - gemessenes Fallen, Low, Rebound, Zero-Latch,
-        //     Signalfehler, technischer Modellfehler und Ledger-Hold.
-        //   - `finalVeto` gilt unveraendert.
-        //   - MAX, keine Addition.
-        //
-        // Bei normalem Bedarf 0 bleibt die Zusatzmenge damit zwingend 0.
-        // DIE TYPISIERTE RIEGEL-URSACHE. `grant != null` war hier zuerst der
-        // Riegel und war zu breit; `smbU == 0` allein waere es ebenfalls -
-        // Null kann aus AKTUELLEM Risiko oder anderen Sperren stammen. Nur
-        // die Ursache trennt das sauber.
+        val nachDescent =
+            if (normalNachRiegel.smbU != vorRiegel.smbU)
+                tailWith(normalNachRiegel.smbU)
+                    ?.let { normalNachRiegel.copy(tail = it) } ?: normalNachRiegel
+            else normalNachRiegel
+        // DIE TYPISIERTE RIEGEL-URSACHE - fuer den Trail (`descentGateCause`).
         val riegelUrsache = MeasuredDescentGate.causeOf(
             descentLatch.blocksPositive, descentLatch.reason,
         )
-        val ruheReineBasisU =
-            if (vetted.smbU > 0.0 && !vetted.bindingLimit.contains("markerAuth")) vetted.smbU
-            else 0.0
-        // WAS VON DIESEN BEDINGUNGEN TRAEGT, UND WAS TIEFENVERTEIDIGUNG IST
-        // (Mutationsmatrix in einem eigenen Worktree auf 2bda111f95,
-        // 2072 Tests Ausgangslage, jede Bedingung einzeln entfernt).
-        //
-        // KEINE der sechs Bedingungen wird beim Entfernen rot. Das ist hier
-        // KEIN Testloch, das man zubauen muesste - es ist ueberwiegend
-        // beweisbare Redundanz, und ein Testfall, der sie kuenstlich rot
-        // macht, waere Schein-Abdeckung:
-        //
-        //   descentRisk.active  - BEWEISBAR redundant. `ruheRuhig != null`
-        //     setzt [UpfrontRecovery.Hazards.any] == false voraus, und
-        //     `descentRisk` IST eine dieser Gefahren. Die Implikation ist
-        //     seit dem `require` in [UpfrontRecovery.Decision.CalmRecovered]
-        //     am Typ verankert, nicht nur hier kommentiert.
-        //
-        //   ruheReineBasisU <= 0 - BEWEISBAR redundant: der else-Zweig gibt
-        //     genau diesen Wert zurueck, also 0. Buchstaeblich dasselbe.
-        //
-        //   nachDescentRoh.smbU > 0 - beweisbar redundant GEGEBEN der
-        //     Ursachenpruefung: HISTORICAL_LATCH heisst `blocksPositive`,
-        //     und [MeasuredDescentGate.apply] nullt dann die Menge.
-        //
-        //   riegelUrsache != HISTORICAL_LATCH - TIEFENVERTEIDIGUNG mit
-        //     einem Restfall. CURRENT_DESCENT_RISK und die Signalfaelle
-        //     unter OTHER sind bereits Gefahren; NONE faengt eine der
-        //     beiden Bedingungen darueber. MEASURED_LOW und WAITING_RISK
-        //     sind aber NICHT beweisbar durch die Gefahrenmenge
-        //     ausgeschlossen - dieser Rest ist in den gefahrenen Geometrien
-        //     nicht erreichbar und deshalb ungetestet. Die Bedingung bleibt.
-        //
-        //   markerAuth-Ausschluss - ECHTER Riegel, in den gefahrenen
-        //     Geometrien nicht erreicht: `vetted` trug dort nie selbst eine
-        //     Markerfinanzierung. Ungetestet, nicht redundant. Bleibt.
-        //
-        //   der gemeinsame Endcheck unten - kann heute nicht ausloesen,
-        //     weil der Kandidat exakt `vetted.smbU` ist und das die
-        //     Kandidatensuche schon verifiziert hat. Er ist der Riegel fuer
-        //     den Tag, an dem der Kandidat anders gerechnet wird - genau
-        //     dafuer steht er als eigene Stufe nach dem Merge.
-        val ruheKandidatRohU = when {
-            ekOhneDirektdosis -> 0.0
-            ruheRuhig == null -> 0.0
-            ruheRuhig.treatment != app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED -> 0.0
-            // AUSSCHLIESSLICH der historische Latch. Aktuelles Risiko,
-            // bestaetigtes Tief, Signalfehler und jeder sonstige Wartegrund
-            // bleiben absolut.
-            riegelUrsache != MeasuredDescentGate.Cause.HISTORICAL_LATCH -> 0.0
-            // Doppelt gesichert, unabhaengig von der Ursachenabbildung.
-            descentRisk.active -> 0.0
-            // DER ZERO-LATCH BLEIBT HIER EIN AUSSCHLUSS (Toni 28.08.).
-            //
-            // Er ist am 28.08. aus [UpfrontRecovery.Hazards] entfernt worden,
-            // damit ein historisch verriegeltes Basal die autorisierte
-            // MAHLZEITEN-Direktdosis nicht laenger blockiert. Dieser
-            // Kandidat hier ist aber KEINE Mahlzeitenmenge: `ruheReineBasisU`
-            // ist exakt `vetted.smbU`, also reiner NORMAL-Bedarf, und der
-            // Merge stempelt ausdruecklich `grant = null`. Seine einzige
-            // Absicherung gegen aktuelle Lagen war bisher `ruheRuhig != null`
-            // - und das haengt an `Hazards.any`. Ohne diese Zeile haette die
-            // Entkopplung still die KORREKTURBAHN unter verriegeltem Basal
-            // geoeffnet, also genau die Ausweitung, die der Bauauftrag
-            // ausschliesst ("keine zusaetzliche Freigabe fuer Normal- oder
-            // Liveness-Korrekturen").
-            //
-            // Das Zeitfenster waere nicht klein gewesen: der Ruhe-Streak
-            // steht auf 3 Zyklen bei 5 mg/dl Guard-Abstand, der Zero-Latch
-            // verlaesst seine Ruhe erst nach 20 Zyklen bei 30 mg/dl.
-            cfg.zeroLatchEnabled && episodes.zeroLatch.active -> 0.0
-            // NOTWENDIGE BEOBACHTUNG, nicht die Autorisierung: der Riegel
-            // muss die Menge tatsaechlich genullt haben.
-            nachDescentRoh.smbU > 1e-9 -> 0.0
-            // Und es muss echten Normalbedarf geben.
-            ruheReineBasisU <= 0.0 -> 0.0
-            else -> ruheReineBasisU
-        }
-        val ruheMerge = if (ruheKandidatRohU > 0.0) nachDescentRoh.copy(
-            smbU = ruheKandidatRohU,
-            block = FuseController.Block.NONE,
-            // KEIN GRANT: dieser Anteil ist Bedarf, keine Autorisierung.
-            grant = null,
-            bindingLimit = "calmDemand|" + nachDescentRoh.bindingLimit,
-            caps = emptyList(),
-            capsStage = "calmDemand",
-        ) else nachDescentRoh
-
-        // ---- DER GEMEINSAME ENDCHECK NACH DEM MAX-MERGE (Toni 25.08.) ---
-        //
-        // OHNE IHN hiesse "nur den historischen Latch umgehen" im Code
-        // faktisch "alles nach dem Latch umgehen". Er laeuft auf der
-        // GEMERGTEN Menge und ist deshalb eine eigene Stufe, nicht ein
-        // weiterer Zweig der `when`-Kette oben: eine Vorpruefung am
-        // Kandidaten waere durch das Merge hindurch nicht mehr
-        // nachweisbar - und eine Mutation, die sie entfernt, bliebe gruen.
-        val ruheEndcheckGrund =
-            if (ruheKandidatRohU > 0.0) finalVeto(ruheMerge.smbU) else null
-        val ruheKandidatU = if (ruheEndcheckGrund != null) 0.0 else ruheKandidatRohU
-        val nachDescent = if (ruheEndcheckGrund != null) nachDescentRoh.copy(
-            bindingLimit = "calmDemand|finalVerify:$ruheEndcheckGrund|" +
-                nachDescentRoh.bindingLimit,
-        ) else ruheMerge
         // HIER sind alle Stationen zugleich bekannt - eine spaetere Rekon-
         // struktion aus Einzelfeldern waere genau die Art Nachrechnung, die
         // schon einmal die falsche Geschichte erzaehlt hat.
+        // Konsolidierung 2.0: die Felder des entfallenen Sofortanteils und Ruhe-Ausgangs stehen neutral (0/null),
+        // `recoveryRequired` traegt weiter den eingestellten Wert; alle uebrigen Stationen rechnen wie bisher.
         upfrontChainThisCycle = UpfrontChain(
-            recoveryMode = upfrontRecovery.modeName,
-            calmTreatment = ruheRuhig?.treatment?.name,
-            recoveryStreak = upfrontRecovery.track.streak,
-            recoveryTrackReset = upfrontRecovery.trackReset.name,
-            recoveryRequired = ruheBlockiert?.requiredCycles ?: (upfrontRecoveryParams ?: cfg.calmParams).calmCycles,
-            recoveryDenial = ruheBlockiert?.denial?.name,
-            currentHazard = upfrontRecovery.hazards,
+            recoveryMode = null,
+            calmTreatment = null,
+            recoveryStreak = 0,
+            recoveryTrackReset = null,
+            recoveryRequired = cfg.calmParams.calmCycles,
+            recoveryDenial = null,
+            currentHazard = null,
             // Nur wenn ueberhaupt ein Fenster anliegt, ist die Aussage
             // ueberhaupt eine - sonst gibt es nichts zu entwaffnen.
             reboundExemptByAuthority = direktdosisAutorisiert.takeIf { reboundRaw },
@@ -4729,30 +4205,16 @@ class FuseCycleRunner(
             recentWorstDropSpanMin = upfrontStabilitaet.recentWorstDropSpanMin,
             allowedDropMgdl = upfrontStabilitaet.recentAllowedDropMgdl,
             acceptedSustainedFallMgdlPerMin =
-                (upfrontRecoveryParams ?: cfg.calmParams).let { _ ->
-                    app.aaps.fuse.core.signal.GlucoseStability.Params()
-                        .acceptedSustainedFallMgdlPerMin
-                },
+                app.aaps.fuse.core.signal.GlucoseStability.Params().acceptedSustainedFallMgdlPerMin,
             stabilityConfirmedCycles = upfrontStabilitaet.confirmedCycles,
-            guardDistanceMgdl = upfrontRecovery.guardDistanceMgdl,
+            guardDistanceMgdl = lowThreatResult.distanceToFloorMgdl,
             normalNeedBeforeMarkerFloorU = vetted.smbU,
-            upfrontOpenU = upfrontOffenU,
-            // Reine Beobachtung. Bei SHIFT_TO_DEFERRED wird sofort NICHTS
-            // frei - die Menge wandert; bei DEMAND_LIMITED begrenzt der
-            // Bedarf des normalen Pfades.
-            calmEligibleU = when (ruheRuhig?.treatment) {
-                null -> 0.0
-                app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED -> 0.0
-                // Der Batchmodus laeuft NICHT ueber den bedarfsbegrenzten
-                // Kandidaten, sondern ueber liftUpfront - hier ist er 0.
-                app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.CALM_BATCH -> 0.0
-                app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED ->
-                    minOf(upfrontOffenU, vetted.smbU.coerceAtLeast(0.0))
-            },
-            calmShiftedU = upfrontRuheUeberfuehrungU,
-            calmDemandU = ruheKandidatU,
+            upfrontOpenU = 0.0,
+            calmEligibleU = 0.0,
+            calmShiftedU = 0.0,
+            calmDemandU = 0.0,
             descentGateCause = riegelUrsache.name,
-            calmDeniedByFinalVerify = ruheEndcheckGrund,
+            calmDeniedByFinalVerify = null,
             grantU = lifted.grant?.amountU ?: 0.0,
             grantSource = lifted.grant?.source?.name,
             beforeMarkerFloorU = verifiedLift.smbU,
@@ -6322,16 +5784,15 @@ class FuseCycleRunner(
         // Absicht); die finale Quelle unten nullt auf NONE, wenn final
         // nichts herausgeht. Der typisierte SMB-Status kommt aus SmbStatus
         // (reine Ableitung, when-ohne-else ueber Block).
+        // Konsolidierung 2.0: die Quellen des Sofortanteils und der Ruhe-Pfade (MEAL_UPFRONT, CALM_BATCH,
+        // CALM_DEMAND) sind entfallen.
         val exposureRequestedSourceWert = when {
             livenessLiftU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.LIVENESS
             deferredReleaseU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.DEFERRED_RELEASE
-            ruheKandidatU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.CALM_DEMAND
-            calmBatchU > normalNachRiegel.smbU + 1e-9 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.CALM_BATCH
             decisionVorEndpruefung.grant != null && decisionVorEndpruefung.smbU > 0.0 ->
                 when (decisionVorEndpruefung.grant!!.source) {
                     app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.PRIME
                     app.aaps.fuse.core.controller.AuthorizedLift.Source.FOUNDATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.FOUNDATION
-                    app.aaps.fuse.core.controller.AuthorizedLift.Source.MEAL_UPFRONT -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.MEAL_UPFRONT
                     app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.EXPECTATION
                 }
             subStep.releaseU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL_SUBSTEP
@@ -6578,22 +6039,7 @@ class FuseCycleRunner(
             preFoundationBlock = preFoundationBlock,
             preFoundationBindingLimit = preFoundationBindingLimit,
             foundationLiftU = foundationLiftU,
-            phaseAUpfrontPendingU = upfrontPendingU,
-            phaseAUpfrontRequestedU = upfrontRequestedU,
-            phaseAUpfrontState = upfrontState(
-                auth = episodes.foundation,
-                phase = foundationDecision.phase,
-                pendingU = upfrontPendingU,
-                requestedU = upfrontRequestedU,
-                batchDeferred = upfrontAufschubJetzt,
-                awaitingRecovery = upfrontWartetAufErholung,
-                transferredNowU = upfrontTransferNowU,
-                transferredTotalU = episodes.upfrontTransferredU,
-                viewUnavailable = upfrontSichtUnlesbar,
-                deferredPrimeEnabled = cfg.deferredPrimeEnabled,
-            ),
-            phaseAUpfrontTransferredU = episodes.upfrontTransferredU,
-            phaseAUpfrontLapsedU = episodes.upfrontLapsedU,
+            // Konsolidierung 2.0: phaseAUpfront* bleiben auf ihren neutralen Vorgaben (Sofortanteil entfallen).
             lowThreat = lowThreatResult,
             evidenceEpisodeId = evidenceEpisodeId,
             evidenceEpisodeDenial = episodeGate.denial?.name,
@@ -6772,75 +6218,8 @@ class FuseCycleRunner(
         return kotlin.math.max(0.0, f.totalBudgetU - geliefert)
     }
 
-    /**
-     * Der ABGELEITETE Zustand des Phase-A-Sofortanteils - reine
-     * Berichtsgroesse fuer Export und Viewer, keine Dosierlogik (die haengt
-     * ausschliesslich an der upfrontFloorU-Bilanz). null = kein Sofortanteil
-     * konfiguriert oder keine Autorisierung.
-     */
-    private fun upfrontState(
-        auth: MealFoundation.Authorization,
-        phase: MealFoundation.Phase,
-        pendingU: Double,
-        requestedU: Double,
-        /** Steht der Batch im EIGENEN Aufschub (Merker gesetzt)? */
-        batchDeferred: Boolean,
-        /** Wartet er nach dem Aufschub noch auf die bestaetigte Erholung? */
-        awaitingRecovery: Boolean,
-        /** In DIESEM Zyklus in den schrittweisen Pfad ueberfuehrt [U]. */
-        transferredNowU: Double = 0.0,
-        /** Bereits frueher ueberfuehrt [U] - der Batch ist dann erledigt. */
-        transferredTotalU: Double = 0.0,
-        /** Behandlungssicht unlesbar - dann ist NICHTS bestimmbar. */
-        viewUnavailable: Boolean = false,
-        deferredPrimeEnabled: Boolean = true,
-        fallback: Boolean = false,
-    ): String? = when {
-        !auth.valid || auth.phaseAUpfrontU <= 0.0 -> null
-        // UNBESTIMMBAR VOR ALLEM ANDEREN (Review-Punkt 6): eine unlesbare
-        // Behandlungssicht darf NIE als "gedeckt" erscheinen - dort ist
-        // pendingU rechnerisch 0, aber das ist keine Aussage.
-        viewUnavailable -> "BLOCKED_VIEW"
-        // Der Buchwechsel am Phasenende - EINMAL, typisiert benannt.
-        transferredNowU > 0.0 -> "TRANSFERRED_TO_DEFERRED"
-        !deferredPrimeEnabled && pendingU > 0.0 -> "BLOCKED_NO_DEFERRED"
-        fallback && pendingU > 0.0 -> "BLOCKED_FALLBACK"
-        // "BLOCKED_ZERO_LATCH" IST HIER ENTFALLEN (Toni 28.08.).
-        //
-        // Der Zweig stand frueher VOR "REQUESTED" und lautete
-        // `zeroLatchBlocked && pendingU > 0.0`. Seit der Zero-Latch die
-        // autorisierte Mahlzeiten-Direktdosis nicht mehr sperrt, kann er
-        // NIE MEHR der Grund sein - weder fuer eine Anforderung noch fuer
-        // einen Aufschub. Ihn stehen zu lassen hiesse, einen Grund zu
-        // nennen, der nicht wirkt.
-        //
-        // Der A/B-Nachweis hat das sichtbar gemacht: mit und ohne Latch
-        // waren die MENGEN zyklusgenau identisch, aber derselbe Zyklus
-        // meldete einmal "BLOCKED_ZERO_LATCH" und einmal
-        // "DEFERRED_UPFRONT_BATCH". Der wahre Grund ist der zweite - der
-        // Batch wartet auf die bestaetigte Erholung.
-        //
-        // Die Anzeige-Abbildungen in FuseDashboardModel und
-        // FusePlugin.deferredReason BLEIBEN: sie lesen auch alte Trails,
-        // und dort ist der Wert echt.
-        requestedU > 0.0 -> "REQUESTED"
-        // Nach einer Ueberfuehrung ist der Sofortanteil erledigt - er ist
-        // nicht "gedeckt", sondern liegt im schrittweisen Pfad.
-        transferredTotalU > 0.0 -> "TRANSFERRED_TO_DEFERRED"
-        pendingU <= 0.0 -> "COVERED"
-        // DER EIGENE ZUSTAND DES SOFORT-BATCHES (Nachtrag Toni 25.08.):
-        // frueher stand hier das generische "DEFERRED" des linearen
-        // Prime-Aufschubs - und weil der Batch dort auch tatsaechlich
-        // gebucht wurde, rieselte er in Pumpenschritten heraus. Jetzt ist
-        // er ein eigener, typisierter Zustand: die Menge bleibt
-        // vollstaendig offen und wird nach bestaetigter Erholung in EINEM
-        // Zug angefordert.
-        batchDeferred || awaitingRecovery -> "DEFERRED_UPFRONT_BATCH"
-        // Ausserhalb Phase A und nichts mehr zu ueberfuehren: der
-        // Sofortanteil ist abgelaufen.
-        phase != MealFoundation.Phase.PHASE_A -> "EXPIRED"
-        else -> "PLANNED"
-    }
+    // Konsolidierung 2.0: `upfrontState` (Zustand des Phase-A-Sofortanteils fuer Export/Viewer) ist mit dem
+    // Sofortanteil entfallen; der Trail fuehrt `phaseAUpfrontState` als null.
 
     /**
      * E-034: EIN ARM DES PRUEFPLANS (K4, Abschnitt 5). Er uebersteuert nur,
@@ -7802,48 +7181,8 @@ class FuseCycleRunner(
             minLowerMgdl = null,
             bindingLimit = "markerFallback",
         )
-        // ---- PHASE-A-SOFORTANTEIL: im FALLBACK KEIN LIFT (Toni) -----------
-        //
-        // SICHERHEITSAUFLAGE: eine Mehr-Einheiten-Sofortdosis gehoert nicht
-        // auf den predictorfreien Technik-Pfad - ohne Bahn gibt es keine
-        // Wirkungspruefung, die eine 3-U-Dosis tragen koennte. Und WIRKLICH
-        // VERLUSTFREI (Tonis Review): der offene Betrag wird HIER in den
-        // Aufschub gebucht - dauert der Modellausfall bis nach Phase A,
-        // waere der blosse Boden sonst als WINDOW_OVER verfallen. Der
-        // kleine lineare Prime-Anteil laeuft wie bisher.
-        val upfrontPhase = MealFoundation.phaseOf(
-            episodes.foundation, computeTs, episodes.primeWindowStartTs,
-        )
-        val offenImFallbackRoh = MealFoundation.remainingUpfrontU(
-            auth = episodes.foundation,
-            deliveredPhaseAU = episodes.deliveredPhaseAU,
-            manualAfterMarkerU = manualBolusAfterMarkerU,
-            deliveredSinceHandoverU = episodes.deliveredSinceHandoverU,
-            postFoundationDeliveredU = episodes.postFoundationDeliveredU,
-            transferredToDeferredU = episodes.upfrontTransferredU,
-            lapsedU = episodes.upfrontLapsedU,
-        )
-        val fallbackSichtUnlesbar = offenImFallbackRoh == null
-        val offenImFallbackU = offenImFallbackRoh ?: 0.0
-        // AUCH IM FALLBACK endet der Sofortanteil mit Phase A: was dann
-        // offen ist, geht EINMAL in den schrittweisen Pfad ueber. Ein
-        // Modellausfall bis hinter T+20 verliert die Menge damit nicht -
-        // sie kommt nur gebremst (Review 25.08. abends, Punkt 2).
-        var fallbackTransferNowU = 0.0
-        if (upfrontPhase != MealFoundation.Phase.PHASE_A && offenImFallbackU > 0.0 &&
-            !fallbackSichtUnlesbar && episodes.foundation.valid &&
-            episodes.deferredPrime.pinnedForMarkerTs == episodes.foundation.armedTs
-        ) {
-            val vorher = episodes.deferredPrime.openU
-            episodes.deferredPrime = DeferredPrime.withhold(
-                episodes.deferredPrime, offenImFallbackU,
-                deferredHullRemainingU(episodes, manualBolusAfterMarkerU),
-            )
-            fallbackTransferNowU = (episodes.deferredPrime.openU - vorher).coerceAtLeast(0.0)
-            episodes.upfrontTransferredU += fallbackTransferNowU
-            episodes.upfrontLapsedU += (offenImFallbackU - fallbackTransferNowU).coerceAtLeast(0.0)
-            episodes.upfrontBatchDeferredSince = 0L
-        }
+        // Konsolidierung 2.0: die Buchfuehrung des Phase-A-Sofortanteils (offener Betrag, Aufschub-Merker, Uebertrag
+        // in den Aufschub am Phasenende) ist auch hier entfallen.
         // Der Punkt-6-PIN liegt im Hauptpfad NACH der Fallback-Weiche - ein
         // Druck mitten im Modellausfall waere sonst nie gepinnt und die
         // Verschiebung unten ein No-op. DIESELBE Identitaetsdisziplin wie
@@ -7859,17 +7198,6 @@ class FuseCycleRunner(
             )
             episodes.postFoundationDeliveredU = 0.0
         }
-        // VERLUSTFREI OHNE ZWEITES BUCH: der Modellausfall ist ein
-        // Aufschubgrund wie jedes gemessene Risiko - er setzt den Merker,
-        // die Menge bleibt ueber die Bilanz offen. Frueher wurde sie hier
-        // in den DeferredPrime gebucht; genau diese zweite Buchfuehrung
-        // lief mit der Bilanz auseinander.
-        if (offenImFallbackU > 0.0 &&
-            upfrontPhase == MealFoundation.Phase.PHASE_A &&
-            episodes.upfrontBatchDeferredSince <= 0L
-        ) episodes.upfrontBatchDeferredSince = computeTs
-        val upfrontPendingU = if (fallbackTransferNowU > 0.0) 0.0 else offenImFallbackU
-        val upfrontRequestedU = 0.0
         // Konsolidierung: auch im predictorfreien Pfad keine Direktdosis (kein linearer Prime-Anteil).
         val ekOhneDirektdosisFallback = true
         val liftedPrime = if (ekOhneDirektdosisFallback) basis else PrimeRelease.lift(
@@ -8033,7 +7361,6 @@ class FuseCycleRunner(
                 when (heldVorEndpruefung.grant!!.source) {
                     app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.PRIME
                     app.aaps.fuse.core.controller.AuthorizedLift.Source.FOUNDATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.FOUNDATION
-                    app.aaps.fuse.core.controller.AuthorizedLift.Source.MEAL_UPFRONT -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.MEAL_UPFRONT
                     app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.EXPECTATION
                 }
             heldVorEndpruefung.smbU > 0.0 -> app.aaps.fuse.core.controller.ExposureGate.FinalSource.NORMAL
@@ -8221,23 +7548,7 @@ class FuseCycleRunner(
             preFoundationBlock = preFoundationBlock,
             preFoundationBindingLimit = preFoundationBindingLimit,
             foundationLiftU = foundationLiftU,
-            phaseAUpfrontPendingU = upfrontPendingU,
-            phaseAUpfrontRequestedU = upfrontRequestedU,
-            phaseAUpfrontState = upfrontState(
-                auth = episodes.foundation,
-                phase = upfrontPhase,
-                pendingU = upfrontPendingU,
-                requestedU = upfrontRequestedU,
-                batchDeferred = episodes.upfrontBatchDeferredSince > 0L,
-                awaitingRecovery = false,
-                transferredNowU = fallbackTransferNowU,
-                transferredTotalU = episodes.upfrontTransferredU,
-                viewUnavailable = fallbackSichtUnlesbar,
-                deferredPrimeEnabled = cfg.deferredPrimeEnabled,
-                fallback = true,
-            ),
-            phaseAUpfrontTransferredU = episodes.upfrontTransferredU,
-            phaseAUpfrontLapsedU = episodes.upfrontLapsedU,
+            // Konsolidierung 2.0: phaseAUpfront* bleiben auf ihren neutralen Vorgaben (Sofortanteil entfallen).
             insulinModel = insulinModel,
             abortReason = null,
             rSegmentBreakMs = gapPolicy.rSegmentBreakMs,
@@ -8969,12 +8280,10 @@ class FuseCycleRunner(
         /**
          * DIE RUHEPARAMETER AUS DEN EINSTELLUNGEN - an genau EINER Stelle.
          *
-         * Ist der Schalter aus, ergibt sich `Params.OFF`, und der Zyklus
-         * folgt exakt dem bisherigen Vertrag. Der Fingerprint traegt die
-         * RuleSet-Version mit: eine Aenderung der Schwellen WAEHREND einer
-         * Episode entwertet damit den laufenden Ruhezaehler
-         * (`TrackReset.CONFIG_CHANGED`), statt zwei Beobachtungen unter
-         * alten und eine dritte unter neuen Schwellen zu vermischen.
+         * Ist der Schalter aus, ergibt sich `Params.OFF`. Der Fingerprint
+         * traegt die RuleSet-Version mit. Konsolidierung 2.0: der Ruhe-Ausgang
+         * ist entfallen; gelesen werden die Parameter nur noch vom
+         * Politik-Export (Fingerprint) und vom Trail (`recoveryRequired`).
          */
         val calmParams: app.aaps.fuse.core.controller.UpfrontRecovery.Params
             get() = if (!calmRecoveryEnabled) app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF

@@ -2216,13 +2216,15 @@ object FuseStateJson {
      */
     fun upfrontChainJson(c: app.aaps.fuse.plugin.FuseCycleRunner.UpfrontChain): JSONObject =
                 JSONObject()
-                    .put("recoveryMode", c.recoveryMode)
+                    // Konsolidierung 2.0: ohne Ruhe-Ausgang stehen diese drei auf null - als JSON-null, damit
+                    // die Feldnamen im Trail bleiben.
+                    .put("recoveryMode", c.recoveryMode ?: JSONObject.NULL)
                     .put("calmTreatment", c.calmTreatment)
                     .put("recoveryStreak", c.recoveryStreak)
                     .put("recoveryRequired", c.recoveryRequired)
                     .put("recoveryDenial", c.recoveryDenial)
-                    .put("recoveryTrackReset", c.recoveryTrackReset)
-                    .put("currentHazard", c.currentHazard)
+                    .put("recoveryTrackReset", c.recoveryTrackReset ?: JSONObject.NULL)
+                    .put("currentHazard", c.currentHazard ?: JSONObject.NULL)
                     // Getrennt von `state.reboundSuppressedByMarker`: das dort
                     // ist die HEURISTIK-Bremse, das hier die Direktdosis-Kette.
                     .put(

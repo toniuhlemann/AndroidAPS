@@ -1272,9 +1272,6 @@ object FuseController {
     const val STAGE_FOUNDATION = "foundation"
     const val STAGE_SUBSTEP = "subStep"
 
-    /** Der Phase-A-Sofortanteil (iLet-Prinzip, Bauauftrag Toni 24.08.). */
-    const val STAGE_UPFRONT = "mealUpfront"
-
     /** Die Guard-Ausnahme des Erwartungsanteils (Vorregistrierung E-034). */
     const val STAGE_EXPECTATION = "expectationAccount"
 }

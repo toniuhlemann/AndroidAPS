@@ -252,23 +252,6 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  P1-v45-Rigs stellen die Frist scharf. */
     private var reboundOverrideMaxMin = 0
 
-    /**
-     * DIE RUHEPARAMETER AUS DER AUFGEZEICHNETEN POLITIK (Befund Toni 28.08.).
-     *
-     * Hier klaffte ein Loch, das eine ganze Abnahme wertlos gemacht hat: der
-     * Trail trug `calmRecoveryEnabled=true` und `calmTreatment=CALM_BATCH`,
-     * `politikAnwenden` uebernahm beides NICHT, und `neuerRunner` setzt
-     * `Params.OFF` als Default. Der Replay lief also mit ausgeschaltetem
-     * Pruefgegenstand und meldete `ruheDenial=DISABLED` - waehrend das
-     * Geraet den Modus scharf hatte.
-     *
-     * Eine Blindprobe findet das NICHT: sie vergleicht zwei Arme
-     * gegeneinander und ist gegen einen GEMEINSAMEN Konfigurationsfehler
-     * blind. Dagegen hilft nur, die WIRKSAMEN Parameter auszugeben und
-     * gegen die Gerätepolitik zu pruefen - s. `ruheParameterPruefen`.
-     */
-    private var ruheAusPolitik: app.aaps.fuse.core.controller.UpfrontRecovery.Params? = null
-
     /** Der Marker autorisiert Insulin bei gemessenem Tief. */
     private var markerAuthorized = false
 
@@ -789,7 +772,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         neuerRunner(FuseLedgerAdapter())
     }
 
-    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config(), fensterMs: Long? = null, trendRegel: String? = null, wiedereinstieg: app.aaps.fuse.core.signal.RejoinPolicy = app.aaps.fuse.core.signal.RejoinPolicy.OFF, ruheParams: app.aaps.fuse.core.controller.UpfrontRecovery.Params? = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF, gapPolitik: app.aaps.fuse.core.signal.GapPolicy = app.aaps.fuse.core.signal.GapPolicy.PRODUCTION, reifePolitik: app.aaps.fuse.core.signal.MaturityPolicy = app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION) {
+    private fun neuerRunner(l: FuseLedgerAdapter, evidenz: EvidenceStock.Config = EvidenceStock.Config(), fensterMs: Long? = null, trendRegel: String? = null, wiedereinstieg: app.aaps.fuse.core.signal.RejoinPolicy = app.aaps.fuse.core.signal.RejoinPolicy.OFF, gapPolitik: app.aaps.fuse.core.signal.GapPolicy = app.aaps.fuse.core.signal.GapPolicy.PRODUCTION, reifePolitik: app.aaps.fuse.core.signal.MaturityPolicy = app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION) {
         ledger = l
         runner = FuseCycleRunner(
             iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
@@ -800,7 +783,6 @@ class TransportWiringTest : TestBaseWithProfile() {
             gapPolicy = gapPolitik,
             maturityPolicy = reifePolitik,
             rejoinPolicy = wiedereinstieg,
-            upfrontRecoveryParams = ruheParams,
             predict = { input ->
                 predictReject
                     ?.let { PredictorOutcome.Rejected(it, "erzwungen") }
@@ -3678,26 +3660,13 @@ class TransportWiringTest : TestBaseWithProfile() {
         throw AssertionError("kein Phase-A-Zyklus mit Menge - der Aufbau traegt den Test nicht")
     }
 
-    // ---- PHASE-A-SOFORTANTEIL (iLet-Prinzip, v28) --------------------------
+    // ---- DAS HISTORISCHE REBOUND-FENSTER UND DIE MAHLZEITENAUTORISIERUNG --
     //
-    // Pflichttest 1 (UpfrontShare=0 -> Bitgleichheit) traegt die GESAMTE
-    // uebrige Suite: jeder andere Test laeuft mit upfrontAnteil = 0.0, und
-    // upfrontFloorU(share 0) ist 0 - der Lift existiert dann nicht.
-    // Pflichttest 13/14/15 (Ruecknahme verwirft, vorgefundener Marker
-    // armiert nicht, neuer Marker erbt nichts) tragen die bestehenden
-    // Episodenvertraege: der Boden haengt an der Autorisierung (Ruecknahme
-    // -> none()), arm() verlangt den im Prozess beobachteten Druck, und
-    // der Episodenneustart nullt deliveredPhaseAU - zusammen mit dem
-    // upfrontFloorU-Bilanztest ist der frische Boden die Folge, keine
-    // eigene Mechanik.
-
-    // ---- DAS HISTORISCHE REBOUND-FENSTER UND DIE DIREKTDOSIS ------------
-    //
-    // BEFUND (aus einem Livezyklus): markerBoost und reboundSuppressedByMarker
-    // true, reboundWindow false - und trotzdem recoveryDenial=CURRENT_HAZARD
-    // mit currentHazard=rebound bei phaseAUpfrontRequestedU=0, waehrend
-    // dieselbe Mahlzeit nebenher einzelne SMBs anforderte. Die Marker-
-    // Ausnahme galt nur der Heuristik-Bremse, nicht der Direktdosis-Kette.
+    // Konsolidierung 2.0: der Sofortanteil und seine Direktdosis-Tests sind
+    // entfallen. Die Ausnahme der Mahlzeitenautorisierung vom rohen
+    // Rebound-Kennzeichen ([MealUpfrontAuthority]) lesen weiter der
+    // Phase-A-Uebertrag und die aufgeschobene Prime-Freigabe - der Test
+    // unten haelt das fest.
     //
     // Das Rebound-Fenster wird hier UEBER DEN ECHTEN MERKER gesetzt
     // (`primeLastLowTs`), nicht ueber einen Zuckerverlauf unter 75: sonst
@@ -3727,89 +3696,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         steigungProMin = 2.0
     }
 
-    private fun reboundGesehen(zyklen: List<FuseCycleRunner.Outcome>): Boolean =
-        zyklen.any { it.upfrontChain?.currentHazard?.contains("rebound") == true }
-
-    /**
-     * PFLICHTFALL 2 - OHNE GUELTIGE AUTORISIERUNG BLEIBT DER SCHUTZ.
-     *
-     * Isoliert genau die Zuordnung: identischer Aufbau, nur ohne
-     * Autorisierungskennung. Eine fehlende Kennung ist keine Zustimmung.
-     */
-    @Test
-    fun `ohne Autorisierungskennung sperrt das Rebound-Fenster die Direktdosis weiter`(@TempDir dir: File) {
-        reboundMahlzeit(dir, kennung = null)
-
-        val zyklen = (0 until 10).map { transport(dir) }
-
-        assertTrue(reboundGesehen(zyklen)) {
-            "ohne belastbare Zuordnung MUSS 'rebound' weiter sperren - " +
-                zyklen.mapNotNull { it.upfrontChain?.currentHazard }.distinct().joinToString(" ")
-        }
-        assertTrue(zyklen.all { it.phaseAUpfrontRequestedU == 0.0 }) {
-            "und nichts aus dem Sofortanteil fliessen - " +
-                zyklen.joinToString(" ") { "${it.phaseAUpfrontRequestedU}" }
-        }
-    }
-
-    /** PFLICHTFALL 3 - Marker ohne Direktdosiswahl bekommt keine. */
-    @Test
-    fun `ein Marker ohne Direktdosiswahl erhaelt durch die Ausnahme keine`(@TempDir dir: File) {
-        reboundMahlzeit(dir, anteil = 0.0)
-
-        val zyklen = (0 until 10).map { transport(dir) }
-
-        assertTrue(zyklen.all { it.phaseAUpfrontRequestedU == 0.0 }) {
-            "ohne gewaehlten Sofortanteil entsteht keiner - " +
-                zyklen.joinToString(" ") { "${it.phaseAUpfrontRequestedU}" }
-        }
-    }
-
-    /**
-     * PFLICHTFALL 4 - EINE WEITERHIN ZWINGENDE GEFAHR SPERRT AUCH MIT MARKER.
-     *
-     * Gemessenes Abwaertsrisiko unter Ueberdeckung: dieselbe Autorisierung,
-     * derselbe Rebound - aber der Sofortanteil bleibt vollstaendig liegen.
-     */
-    @Test
-    fun `ein aktuelles Abwaertsrisiko sperrt die Direktdosis auch mit Marker`(@TempDir dir: File) {
-        reboundMahlzeit(dir)
-        flach = 150.0
-        steigungProMin = -3.0
-        bolusIobU = 2.0
-
-        val zyklen = (0 until 12).map { transport(dir) }
-
-        assertTrue(zyklen.all { it.phaseAUpfrontRequestedU == 0.0 }) {
-            "die aktuelle Gefahr bleibt absolut - " +
-                zyklen.joinToString(" ") { "${it.phaseAUpfrontRequestedU}/${it.phaseAUpfrontState}" }
-        }
-        assertTrue(zyklen.any { it.upfrontChain?.currentHazard?.contains("descentRisk") == true }) {
-            "und sie muss als GEFAHR benannt sein - " +
-                zyklen.mapNotNull { it.upfrontChain?.currentHazard }.distinct().joinToString(" ")
-        }
-    }
-
-    /**
-     * PFLICHTFALL 5 - SIGNALFEHLER SPERRT AUCH MIT MARKER.
-     *
-     * Zweite weiterhin zwingende Sperre, anderer Kanal: ein abgelehntes
-     * Modell. Sie steht getrennt, damit nicht EINE Mutation beide Faelle
-     * gleichzeitig gruen faerben kann.
-     */
-    @Test
-    fun `ein Modellfehler sperrt die Direktdosis auch mit Marker`(@TempDir dir: File) {
-        reboundMahlzeit(dir)
-        predictReject = PredictorReason.PENDING_MODEL_TOO_SHORT
-
-        val zyklen = (0 until 8).map { transport(dir) }
-
-        assertTrue(zyklen.all { it.phaseAUpfrontRequestedU == 0.0 }) {
-            "ohne brauchbares Modell fliesst nichts - " +
-                zyklen.joinToString(" ") { "${it.phaseAUpfrontRequestedU}" }
-        }
-    }
-
     /**
      * DIE BEIDEN NACHGELAGERTEN REBOUND-STELLEN DERSELBEN KETTE.
      *
@@ -3820,7 +3706,8 @@ class TransportWiringTest : TestBaseWithProfile() {
      *  - `DescentDeferredCarry.eligibility` - der Sicherheitsuebertrag in
      *    Phase B.
      *  - `DeferredPrime.releaseStep` - die aufgeschobene Prime-Freigabe,
-     *    in die der Sofortanteil beim Phasenwechsel uebergeht.
+     *    deren offener Bestand im Test vorgeladen wird (der Uebertrag des
+     *    Sofortanteils ist mit der Konsolidierung 2.0 entfallen).
      *
      * Beide Urteile werden typisiert exportiert, der Test liest sie also
      * und raet nicht aus einer Menge. Jeder Zweig bekommt eine HARTE
@@ -3832,17 +3719,16 @@ class TransportWiringTest : TestBaseWithProfile() {
         maxSmbU = 0.30
         reboundMahlzeit(dir)
 
-        // (1) AUFSCHUB DURCH EINE AKTUELLE GEFAHR, laenger als das
-        // Prime-Fenster - so faellt der Phasenwechsel in die Riegelzeit und
-        // der Sofortanteil geht in die aufgeschobene Prime-Freigabe ueber.
+        // (1) EINE AKTUELLE GEFAHR, laenger als das Prime-Fenster - so faellt
+        // der Phasenwechsel in die Riegelzeit.
         flach = 150.0
         steigungProMin = -3.0
         bolusIobU = 2.0
-        val imRiegel = (0 until 24).map { transport(dir) }
-        assertTrue(imRiegel.any { it.phaseAUpfrontState == "TRANSFERRED_TO_DEFERRED" }) {
-            "Vorbedingung: der Rest muss beim Phasenwechsel uebergehen - " +
-                imRiegel.mapNotNull { it.phaseAUpfrontState }.distinct().joinToString(" ")
-        }
+        repeat(24) { transport(dir) }
+        // Konsolidierung 2.0: der Uebertrag des Sofortanteils in die aufgeschobene Freigabe ist entfallen - der
+        // offene Bestand, den er lieferte, wird hier vorgeladen.
+        assertEquals(markerAt, ledger.episodes.deferredPrime.pinnedForMarkerTs) { "Vorbedingung: der Aufschub ist an den Marker gepinnt" }
+        ledger.episodes.deferredPrime = ledger.episodes.deferredPrime.copy(openU = 1.0)
         // Und ein Sicherheitsuebertrag, der etwas zu uebertragen hat.
         ledger.episodes.descentDeferredPhaseAU = 0.40
 
@@ -3944,714 +3830,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertThat(mit.decision.smbU).isAtMost(maxIobU - 0.08 + 1e-9)
     }
 
-    /**
-     * GEGENFALL ZUM NEUSTART: ohne beobachteten Druck UND ohne belastbare
-     * Zuordnung bleibt gesperrt. Sonst waere die Neustart-Oeffnung ein
-     * Freibrief fuer Altbestand ohne Kennung.
-     */
-    @Test
-    fun `nach einem Neustart ohne Kennung bleibt die Direktdosis gesperrt`(@TempDir dir: File) {
-        maxSmbU = 0.30
-        reboundMahlzeit(dir, kennung = null)
-
-        val vorher = (0 until 6).map { transport(dir) }
-        assertTrue(vorher.isNotEmpty())
-
-        val neu = FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) }
-        assertEquals(null, neu.episodes.markerAuth?.id) { "Vorbedingung: Altbestand ohne Kennung" }
-        markerPress = 0L
-        neuerRunner(neu)
-        runner.primeLastLowTs(clock - 5 * 60_000L)
-
-        val nachher = (0 until 10).map { transport(dir) }
-        assertTrue(reboundGesehen(nachher)) {
-            "ohne Kennung MUSS das Fenster weiter sperren - " +
-                nachher.mapNotNull { it.upfrontChain?.currentHazard }.distinct().joinToString(" ")
-        }
-        assertTrue(nachher.all { it.phaseAUpfrontRequestedU == 0.0 })
-    }
-
-    /**
-     * DER FALL, DEN DER ERSTE PFLICHTTEST MASKIERT HAT (Review 25.08.
-     * abends): die Erholung kommt erst NACH dem Ende von Phase A.
-     *
-     * `liftUpfront` liefert nur in Phase A - ein spaeter
-     * Mehr-Einheiten-Batch ist ausdruecklich nicht gewollt. Die Menge
-     * darf deshalb weder fliessen noch verschwinden: sie geht GENAU
-     * EINMAL in den schrittweisen Aufschub ueber, unter dessen gepinnter
-     * Frist. Der erste Wurf des Tests setzte das Prime-Fenster auf 40 min
-     * und verschob damit den Phasenwechsel hinter die Erholung - er
-     * pruefte genau diesen Fall nicht.
-     */
-    @Test
-    fun `nach phase a kommt kein vollbatch sondern ein ueberrtrag`(@TempDir dir: File) {
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20) // LIVE
-        upfrontAnteil = 1.0
-        primeHuelleU = 4.0
-        fundamentAnteil = 0.8
-        aufschubAn = true
-        maxSmbU = 0.30
-        mahlzeit(dir)
-
-        // Riegel LAENGER als das Prime-Fenster: der Phasenwechsel faellt in
-        // die Riegelzeit, die Erholung liegt danach.
-        flach = 150.0
-        steigungProMin = -3.0
-        bolusIobU = 2.0
-        val imRiegel = (0 until 24).map { transport(dir) }
-        assertTrue(imRiegel.all { it.phaseAUpfrontRequestedU == 0.0 }, "im Riegel fliesst nichts")
-
-        // DER UEBERTRAG: genau ein Zyklus meldet ihn, danach ist der
-        // Sofortanteil erledigt - nicht "gedeckt", sondern ueberfuehrt.
-        val uebertrag = imRiegel.filter { it.phaseAUpfrontState == "TRANSFERRED_TO_DEFERRED" }
-        assertTrue(uebertrag.isNotEmpty()) {
-            "der Rest muss beim Phasenwechsel uebergehen - " +
-                imRiegel.mapNotNull { it.phaseAUpfrontState }.distinct().joinToString(" ")
-        }
-        assertEquals(0.0, uebertrag.first().phaseAUpfrontPendingU, 1e-9, "danach nichts mehr sofort offen")
-        // EXACTLY ONCE: der Uebertrag-Posten steht genau einmal.
-        assertTrue(ledger.episodes.upfrontTransferredU > 2.0) {
-            "die Menge ist verlustfrei ueberfuehrt: ${ledger.episodes.upfrontTransferredU}"
-        }
-        val nachUebertrag = ledger.episodes.upfrontTransferredU
-
-        // DIE ERHOLUNG NACH T+20: kein Vollbatch mehr - der schrittweise
-        // Pfad liefert, gebremst auf Pumpenschritte.
-        steigungProMin = 0.8
-        flach = 130.0 - 0.8 * ((clock - start) / 60_000.0)
-        knickAbMin = null
-        bolusIobU = null
-        val nachher = (0 until 12).map { transport(dir) }
-        assertTrue(nachher.all { it.phaseAUpfrontRequestedU == 0.0 }) {
-            "nach Phase A darf KEIN Vollbatch kommen - " +
-                nachher.joinToString(" ") { "%.2f".format(it.phaseAUpfrontRequestedU) }
-        }
-        assertEquals(nachUebertrag, ledger.episodes.upfrontTransferredU, 1e-9) {
-            "und der Uebertrag geschieht genau EINMAL"
-        }
-        // Verlustfrei heisst: der schrittweise Pfad hat die Menge wirklich.
-        assertTrue(nachher.any { it.deferredPrimeOpenU > 1.0 }) {
-            "die Menge liegt im schrittweisen Aufschub - " +
-                nachher.joinToString(" ") { "%.2f".format(it.deferredPrimeOpenU) }
-        }
-    }
-
-    /**
-     * P1.1, letzter Punkt - ABLAUF AN DER GEPINNTEN FRIST (Review 25.08.
-     * spaet, Punkt 1).
-     *
-     * KORREKTUR MEINER EIGENEN DIAGNOSE: ich hatte behauptet, die
-     * Aufschubfrist koenne den Markerablauf nie ueberholen, weil beide
-     * bei 45 min laegen. `OnsetChannel.MARKER_WINDOW_MIN` ist aber 90 -
-     * die Behauptung war erfunden, nicht gemessen. Was den frueheren Lauf
-     * beendete, war ein GEMESSENES TIEF: die Kurve fiel mit -3,0/min und
-     * stand nach 35 Minuten bei 45 mg/dl, was den Evidenzkredit widerrief.
-     *
-     * Diese Lage faellt deshalb nur 13 Minuten und bleibt dann FLACH bei
-     * ~111 mg/dl: kein Tief, kein Widerruf - und weil ein flacher Verlauf
-     * die Erholung nicht bestaetigt (sie verlangt >= 0,20 mg/dl/min),
-     * bleibt der uebertragene Rest im Aufschub liegen, bis die gepinnte
-     * Frist ihn beendet.
-     */
-    @Test
-    fun `der uebertragene rest verfaellt an der gepinnten frist`(@TempDir dir: File) {
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
-        aufschubFristMin = 45 // kuerzeste zulaessige Frist
-        upfrontAnteil = 1.0
-        primeHuelleU = 4.0
-        fundamentAnteil = 0.8
-        aufschubAn = true
-        mahlzeit(dir)
-        // Kurzer Fall (Riegel), danach flaches Plateau ueber dem Boden.
-        flach = 150.0
-        steigungProMin = -3.0
-        knickAbMin = 13
-        steigungNachKnick = 0.0
-        bolusIobU = 2.0
-        val laufe = (0 until 52).map { transport(dir) }
-
-        val uebertrag = laufe.indexOfFirst { it.phaseAUpfrontState == "TRANSFERRED_TO_DEFERRED" }
-        assertTrue(uebertrag > 0) {
-            "der Uebertrag muss stattfinden - " +
-                laufe.mapNotNull { it.phaseAUpfrontState }.distinct().joinToString(" ")
-        }
-        val offenNachUebertrag = laufe[uebertrag].deferredPrimeOpenU
-        assertTrue(offenNachUebertrag > 1.0, "und etwas in den Aufschub legen: $offenNachUebertrag")
-
-        // DER ABLAUF: typisiert EXPIRED, mit beziffertem Rest.
-        val verfall = laufe.indexOfFirst { it.deferredPrimeLapseReason == "EXPIRED" }
-        assertTrue(verfall > uebertrag) {
-            "die gepinnte Frist muss den Rest beenden - " +
-                laufe.mapNotNull { it.deferredPrimeLapseReason }.distinct().joinToString(" ")
-        }
-        assertEquals(offenNachUebertrag, laufe[verfall].deferredPrimeLapseU, 1e-9) {
-            "die verfallene Menge ist der offene Rest: ${laufe[verfall].deferredPrimeLapseU}"
-        }
-        // UNGEFAEHR bei Marker + 45 min - und die Autorisierung lebt noch,
-        // der Ablauf ist also wirklich die Frist und kein Widerruf.
-        val markerTs = start + 2 * 60_000L
-        val minutenNachMarker = (laufe[verfall].computeTs - markerTs) / 60_000.0
-        assertTrue(minutenNachMarker in 44.0..47.0) {
-            "Ablauf bei Marker+45, gemessen: $minutenNachMarker min"
-        }
-        assertTrue(laufe[verfall].mealFoundation.armed) {
-            "die Autorisierung ist zum Ablaufzeitpunkt NICHT widerrufen"
-        }
-        // Danach ist der Aufschub leer und nichts lebt wieder auf.
-        assertEquals(0.0, laufe.last().deferredPrimeOpenU, 1e-9)
-        assertTrue(laufe.drop(verfall).all { it.phaseAUpfrontRequestedU == 0.0 })
-    }
-
-    /**
-     * P1.2 - DIE HUELLEN-KLEMMUNG WIRKLICH ERZEUGT (Review 25.08. spaet,
-     * Punkt 2). Der Nachlieferungstest lief mit `upfrontLapsedU == 0`;
-     * damit war die Trennung von Uebertrag und Verfall implementiert,
-     * aber nicht bewiesen.
-     *
-     * LAGE: Huelle 4,0 - davon 0,60 in Phase A geliefert, also 2,60
-     * Sofortanteil offen. Im Aufschub liegt bereits 1,00 aus dem
-     * LINEAREN Prime. Der Huellenrest ist damit 3,40, und `withhold`
-     * kann von den 2,60 nur noch 2,40 aufnehmen: 0,20 verfallen.
-     */
-    @Test
-    fun `bei huellen-klemmung wird nur das gebuchte als uebertragen gezaehlt`(@TempDir dir: File) {
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
-        upfrontAnteil = 1.0
-        primeHuelleU = 4.0
-        fundamentAnteil = 0.8
-        aufschubAn = true
-        mahlzeit(dir)
-        flach = 150.0
-        steigungProMin = -3.0
-        knickAbMin = 13
-        steigungNachKnick = 0.0
-        bolusIobU = 2.0
-
-        // Vor dem Phasenwechsel die Lage herstellen: 0,60 geliefert und
-        // 1,00 linearer Prime bereits im Aufschub.
-        val vorwechsel = (0 until 12).map { transport(dir) }
-        assertTrue(vorwechsel.last().phaseAUpfrontPendingU > 3.0, "noch volle 3,20 offen")
-        ledger.episodes.deliveredPhaseAU += 0.60
-        ledger.episodes.deferredPrime = ledger.episodes.deferredPrime.copy(openU = 1.00)
-        val vorUebertrag = transport(dir)
-        assertEquals(2.60, vorUebertrag.phaseAUpfrontPendingU, 1e-9, "2,60 offen")
-
-        // Ueber den Phasenwechsel fahren.
-        val laufe = (0 until 14).map { transport(dir) }
-        val u = laufe.indexOfFirst { it.phaseAUpfrontState == "TRANSFERRED_TO_DEFERRED" }
-        assertTrue(u >= 0) {
-            "Uebertrag noetig - " + laufe.mapNotNull { it.phaseAUpfrontState }.distinct().joinToString(" ")
-        }
-        // DIE TRENNUNG: gebucht wurden nur 2,40 (Huellenrest 3,40 minus
-        // der 1,00 linearem Prime), 0,20 sind verfallen.
-        assertEquals(2.40, ledger.episodes.upfrontTransferredU, 1e-9) {
-            "uebertragen = REAL gebucht, nicht der offene Betrag"
-        }
-        assertEquals(0.20, ledger.episodes.upfrontLapsedU, 1e-9) {
-            "und der Rest ist verfallen, nicht stillschweigend uebertragen"
-        }
-        assertEquals(3.40, laufe[u].deferredPrimeOpenU, 1e-9, "der Aufschub steht am Huellendeckel")
-        // Beide Groessen stehen im Outcome und damit im Export.
-        assertEquals(2.40, laufe[u].phaseAUpfrontTransferredU, 1e-9)
-        assertEquals(0.20, laufe[u].phaseAUpfrontLapsedU, 1e-9)
-        // BILANZ danach 0 - beide Posten zaehlen.
-        assertEquals(0.0, laufe.last().phaseAUpfrontPendingU, 1e-9, "nichts bleibt sofort offen")
-        // KEIN zweiter Uebertrag.
-        assertEquals(2.40, ledger.episodes.upfrontTransferredU, 1e-9, "genau einmal")
-
-        // CODEC/NEUSTART: beide Posten ueberleben.
-        assertTrue(ledger.persistVerified(dir), "versiegeln")
-        val wieder = nachNeustart(dir)
-        assertEquals(2.40, wieder.upfrontTransferredU, 1e-9, "Uebertrag ueberlebt")
-        assertEquals(0.20, wieder.upfrontLapsedU, 1e-9, "Verfall ueberlebt")
-    }
-
-    /**
-     * PUNKT 6: eine unlesbare Behandlungssicht ist NICHT "gedeckt". Frueher
-     * fiel die Bilanz dort fail-closed auf 0 - und 0 offen las sich als
-     * COVERED, also als erledigt. Jetzt ist der Zustand typisiert.
-     */
-    @Test
-    fun `unlesbare behandlungssicht erscheint nicht als gedeckt`(@TempDir dir: File) {
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
-        upfrontAnteil = 1.0
-        primeHuelleU = 4.0
-        fundamentAnteil = 0.8
-        aufschubAn = true
-        mahlzeit(dir)
-        // Die Bolushistorie ist unlesbar - genau der fail-closed-Fall.
-        whenever(persistenceLayer.getBolusesFromTimeToTime(any(), any(), any()))
-            .thenThrow(IllegalStateException("Bolushistorie nicht lesbar"))
-        val laufe = (0 until 6).map { transport(dir) }
-        val armiert = laufe.filter { it.mealFoundation.armed }
-        assertTrue(armiert.isNotEmpty(), "die Autorisierung besteht")
-        assertTrue(armiert.none { it.phaseAUpfrontState == "COVERED" }) {
-            "unlesbar darf nie als gedeckt erscheinen - " +
-                armiert.mapNotNull { it.phaseAUpfrontState }.distinct().joinToString(" ")
-        }
-        assertTrue(armiert.any { it.phaseAUpfrontState == "BLOCKED_VIEW" }) {
-            "und der Grund ist benannt - " +
-                armiert.mapNotNull { it.phaseAUpfrontState }.distinct().joinToString(" ")
-        }
-        assertTrue(armiert.all { it.phaseAUpfrontRequestedU == 0.0 }, "und es fliesst nichts")
-    }
-
-    /** Sicherheitsauflage: OHNE aktives DeferredPrime-Netz keine
-     *  Sofortdosis - fail-closed, der Boden bleibt sichtbar offen. */
-    @Test
-    fun `ohne deferred-prime keine sofortdosis`(@TempDir dir: File) {
-        upfrontAnteil = 1.0
-        primeHuelleU = 3.75
-        fundamentAnteil = 0.8
-        aufschubAn = false
-        mahlzeit(dir)
-        ruhigStellen()
-        val laufe = (0 until 12).map { transport(dir) }
-        assertTrue(laufe.all { it.phaseAUpfrontRequestedU == 0.0 }, "fail-closed ohne Netz")
-        val armiert = laufe.filter { it.mealFoundation.armed && it.phaseAUpfrontPendingU > 0.0 }
-        assertTrue(armiert.isNotEmpty(), "die Autorisierung selbst besteht")
-        assertTrue(
-            armiert.all { it.phaseAUpfrontState == "BLOCKED_NO_DEFERRED" },
-            "und der Grund ist benannt: " + armiert.map { it.phaseAUpfrontState }.distinct(),
-        )
-    }
-
-    /** P0 (Toni): TECHNISCHE INTEGRITAET IM HAUPTPFAD - ein Zyklus kann
-     *  einen Kern haben und trotzdem einen typisierten Modellfehler
-     *  tragen; finalVeto saehe ihn, aber MarkerFloor stellte die grosse
-     *  Dosis wieder her. Das Tor prueft VOR dem Lift: kein mealUpfront,
-     *  die Menge wandert in den Aufschub - nie verloren. */
-    @Test
-    fun `technischer modellfehler traegt keine sofortdosis`(@TempDir dir: File) {
-        upfrontAnteil = 1.0
-        primeHuelleU = 3.75
-        fundamentAnteil = 0.8
-        aufschubAn = true
-        markerAuthorized = true
-        fundamentAn = true
-        flach = 100.0
-        steigungProMin = 0.0
-        markerAt = 0L
-        clock = start
-        transportReset()
-        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
-        repeat(6) { cycle() } // Observer READY
-        // Der Kern deckt das 360er-Fenster nicht - exakt die typisierte
-        // Reject-Sorte des Liveness-Modell-Tors (MODEL_HORIZON_TOO_SHORT).
-        whenever(preferences.get(FuseIntKey.LiabilityHorizonMin)).thenReturn(360)
-        markerAt = clock
-        val laufe = (0 until 8).map { cycle() }
-        assertTrue(
-            laufe.all { it.phaseAUpfrontRequestedU == 0.0 },
-            "kein mealUpfront bei technischem Modellfehler",
-        )
-        // NEUER VERTRAG (25.08. mittags): die Menge liegt NICHT mehr im
-        // generischen Aufschub-Buch, sondern bleibt ueber die Bilanz offen -
-        // im eigenen Zustand DEFERRED_UPFRONT_BATCH. Verloren geht sie so
-        // wenig wie vorher, aber sie rieselt nicht in Pumpenschritten.
-        assertTrue(
-            laufe.any { it.phaseAUpfrontState == "DEFERRED_UPFRONT_BATCH" && it.phaseAUpfrontPendingU > 0.5 },
-            "die Menge bleibt offen: " +
-                laufe.map { it.phaseAUpfrontState to it.deferredPrimeOpenU }.distinct(),
-        )
-    }
-
-    /** Sicherheitsauflage: im predictorfreien Technik-Fallback KEINE
-     *  Sofortdosis - ohne Bahn traegt keine Wirkungspruefung eine
-     *  3-U-Dosis. Der Boden bleibt sichtbar offen (BLOCKED_FALLBACK) und
-     *  feuert im naechsten gesunden Hauptpfad-Zyklus: aufgeschoben, nicht
-     *  verloren. */
-    @Test
-    fun `im predictor-fallback keine sofortdosis`(@TempDir dir: File) {
-        upfrontAnteil = 1.0
-        primeHuelleU = 3.75
-        fundamentAnteil = 0.8
-        aufschubAn = true
-        markerAuthorized = true
-        fundamentAn = true
-        flach = 100.0
-        steigungProMin = 0.0
-        markerAt = 0L
-        clock = start
-        transportReset()
-        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
-        repeat(6) { cycle() } // Observer READY werden lassen
-        predictReject = PredictorReason.PENDING_MODEL_TOO_SHORT
-        markerAt = clock // der Druck faellt mitten in den Modellausfall
-        val imFallback = (0 until 8).map { cycle() }.filter { it.markerFallbackUsed }
-        assertTrue(imFallback.isNotEmpty(), "der Fallback muss laufen")
-        assertTrue(
-            imFallback.all { it.phaseAUpfrontRequestedU == 0.0 },
-            "keine Sofortdosis ohne Bahn",
-        )
-        // WIRKLICH VERLUSTFREI (Tonis Review): der offene Betrag liegt im
-        // Aufschub - ein Modellausfall bis nach Phase A koennte einen
-        // blossen Boden sonst als WINDOW_OVER verfallen lassen.
-        val verschoben = imFallback.filter { it.mealFoundation.armed }
-        assertTrue(verschoben.isNotEmpty(), "die Autorisierung muss im Fallback bestehen")
-        // Der Fallback schiebt ebenfalls in den eigenen Batch-Zustand -
-        // BLOCKED_FALLBACK benennt den Grund, die Bilanz haelt die Menge.
-        assertTrue(
-            verschoben.any { it.phaseAUpfrontPendingU > 0.5 },
-            "die Sofortmenge bleibt offen: " +
-                verschoben.map { it.phaseAUpfrontState to it.deferredPrimeOpenU }.distinct(),
-        )
-        // Modell wieder da: der Boden ist ZU (verschoben, nicht verworfen) -
-        // keine Doppel-Anforderung; die Nachlieferung laeuft ueber die
-        // bestehende Aufschub-Freigabe nach bestaetigter Erholung
-        // (P6-Vertraege), nie als ungebremster Nachholbolus.
-        predictReject = null
-        val nachComeback = (0 until 6).map { transport(dir) }
-        nachComeback.forEach { o ->
-            assertEquals(0.0, o.phaseAUpfrontRequestedU, 1e-9, "kein Doppel nach dem Comeback")
-        }
-        // Die Menge ist durch den Modellausfall NICHT verloren gegangen -
-        // sie steht ueber die Bilanz offen, nicht in einem zweiten Buch.
-        // Genau dessen Abweichung war der Befund vom 25.08.
-        assertTrue(nachComeback.first().phaseAUpfrontPendingU > 0.5) {
-            "die Menge bleibt offen: " +
-                nachComeback.joinToString(" ") { "${it.phaseAUpfrontPendingU}/${it.phaseAUpfrontState}" }
-        }
-    }
-
-    /** Sicherheitsauflage: der Zyklus, der den Zero-Latch GERADE zuendet
-     *  (scharfes Verdikt), sperrt die Sofortdosis - nicht erst der
-     *  aktive Latch im Folgezyklus. */
-    @Test
-    fun `der zuendende zyklus sperrt die sofortdosis`(@TempDir dir: File) {
-        zeroLatchAn = true
-        aufschubAn = true
-        upfrontAnteil = 1.0
-        primeHuelleU = 3.75
-        fundamentAnteil = 0.8
-        fundamentAn = true
-        markerAuthorized = true
-        flach = 140.0
-        steigungProMin = -1.2
-        knickAbMin = 25
-        steigungNachKnick = 0.0
-        bolusIobU = 2.5
-        clock = start
-        transportReset()
-        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
-        repeat(6) { cycle() } // Warm-up
-        markerAt = clock
-        val laufe = (0 until 30).map { cycle() }
-        // Die INVARIANTE ueber die ganze Fall-Episode: in KEINEM Zyklus mit
-        // Low-Tor-Verdikt (roh - deckt Zuend- und Haltezyklen) und in
-        // keinem Zyklus mit aktivem Latch geht eine Sofortdosis hinaus.
-        val verdiktZyklen = laufe.filter {
-            it.lowThreat != null &&
-                it.lowThreat!!.verdict != app.aaps.fuse.core.controller.LowThreatGate.Verdict.NONE
-        }
-        assertTrue(verdiktZyklen.size >= 2, "die Lage muss Verdikt-Zyklen tragen: ${verdiktZyklen.size}")
-        assertTrue(
-            verdiktZyklen.all { it.phaseAUpfrontRequestedU == 0.0 },
-            "keine Sofortdosis in einem Verdikt-Zyklus",
-        )
-        // DIE ZWEITE ZUSICHERUNG IST AM 28.08. ENTFALLEN. Hier stand
-        // "und keine unter aktivem Latch". Der aktive Zero-Latch sperrt die
-        // autorisierte Mahlzeiten-Direktdosis seither nicht mehr - er ist
-        // Basalschutz, keine aktuelle Gefahr. Was diesen Test traegt, ist
-        // die Zusicherung darueber: der ZUENDENDE Zyklus hat ein scharfes
-        // Low-Tor-Verdikt, und DAS sperrt unveraendert. Der Nachweis fuer
-        // die neue Richtung steht in
-        // `aktiver zero-latch sperrt die sofortdosis nicht mehr`.
-    }
-
-    /**
-     * ENDPFAD-PROBEN: DER STABILITAETSNACHWEIS GATET DIE ERHOLUNG EINES
-     * AUFGESCHOBENEN BATCHES - nicht die erste, ungehinderte Freigabe.
-     *
-     * Diese Abzweigung (`deferredOpen == false` kehrt vor dem
-     * Stabilitaetstor zurueck) ist AELTER als die Stabilitaetsintegration und
-     * durch sie nicht entstanden. Sie wird hier dokumentiert, nicht geaendert:
-     * wer den ungehinderten Erstlauf absichern will, tut das ueber die
-     * vorhandenen Risikohorizonte (descentRisk, gepinnter Mahlzeitenhorizont).
-     *
-     * DIE REIHE WIRD EXPLIZIT VORGEGEBEN. Ein erster Wurf stellte stattdessen
-     * die Formparameter (`flach`, `steigungProMin`) mitten im Lauf um - und
-     * uebersah, dass das Rig die Reihe in JEDEM Zyklus aus diesen Parametern
-     * neu erzeugt. Damit aenderte sich auch die VERGANGENHEIT, der Aufschub
-     * hatte fuer die neue Reihe nie stattgefunden, und beide Proben liefen in
-     * `NOTHING_DEFERRED` - also am Pruefgegenstand vorbei.
-     *
-     * @param plateauAbIndex ab welchem Punkt die Reihe flach wird
-     * @param spaeterProMin Steigung danach (0.0 = Plateau)
-     */
-    private fun endpfadReihe(takt: Long, plateauAbIndex: Int, spaeterProMin: Double): Int {
-        val punkte = 46
-        val werte = ArrayList<Pair<Long, Double>>(punkte)
-        var wert = 150.0
-        for (i in 0 until punkte) {
-            werte.add((start + i * takt) to wert)
-            val proMin = if (i < plateauAbIndex) -1.2 else spaeterProMin
-            wert += proMin * takt / 60_000.0
-        }
-        rohSerie = werte
-        return punkte
-    }
-
-    private fun endpfadAufbau(dir: File, takt: Long) {
-        taktMs = takt
-        zeroLatchAn = true
-        aufschubAn = true
-        upfrontAnteil = 1.0
-        primeHuelleU = 3.75
-        fundamentAnteil = 0.8
-        fundamentAn = true
-        markerAuthorized = true
-        bolusIobU = 2.5
-        clock = start
-        // DEN MARKERZUSTAND AUSDRUECKLICH ZURUECKSETZEN (Toni 28.08.).
-        // `transportReset()` raeumt Uhr und Transport, aber NICHT markerAt,
-        // markerAtIntern oder markerPress. Wer mehrere Takte in EINER
-        // Testinstanz hintereinander faehrt, schleppt damit Markerinformation
-        // aus dem vorigen Lauf mit - eine ueberpruefbare Fehlerquelle, die
-        // jeden Taktbefund zum Artefakt machen kann. Deshalb liegt jeder Takt
-        // zusaetzlich in einer EIGENEN Testmethode: JUnit baut je Methode eine
-        // frische Instanz.
-        markerAt = 0L
-        markerAtIntern = 0L
-        markerPress = 0L
-        transportReset()
-        // PHASE A: 20 min wie produktiv. Ein laengeres Fenster waere ein
-        // Diagnoseaufbau und keine Abnahme (Toni 28.08.) - der Verlauf muss
-        // kausal so gebaut sein, dass die Ruhe INNERHALB der Frist steht.
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
-        neuerRunner(
-            FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) },
-            ruheParams = app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
-                calmCycles = 3, minUkf = 0.0, minGuardDistanceMgdl = 5.0,
-                calmTreatment = app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.CALM_BATCH,
-                ruleSetVersion = app.aaps.fuse.plugin.export.FuseStateJson.RULE_SET_VERSION,
-            ),
-        )
-    }
-
-
-    /**
-     * ENDPFAD-PROBE 2: DAUERABFALL. Der Batch bleibt offen und aufgeschoben,
-     * die Toleranz ist verletzt, und es entsteht KEINE Batch-Endanforderung.
-     */
-    @Test
-    fun `Endpfad - ein Dauerabfall erzeugt keine Batch-Endanforderung`(@TempDir dir: File) {
-        for (takt in longArrayOf(61_000L, 62_000L)) {
-            endpfadAufbau(File(dir, "d$takt"), takt)
-            val punkte = endpfadReihe(takt, plateauAbIndex = 22, spaeterProMin = -0.8)
-            var gezuendet = false
-            val laeufe = ArrayList<FuseCycleRunner.Outcome>()
-            repeat(punkte - 2) { i ->
-                val o = cycle()
-                if (!gezuendet && o.zeroLatchActive) {
-                    gezuendet = true
-                    markerAt = clock
-                }
-                if (gezuendet) laeufe.add(o)
-            }
-            assertTrue(gezuendet, "der Aufschub muss zuenden (Takt $takt)")
-
-            val ketten = laeufe.mapNotNull { it.upfrontChain }
-            assertTrue(ketten.isNotEmpty(), "die Kette muss stehen (Takt $takt)")
-            assertTrue(ketten.any { it.upfrontOpenU > 0.0 },
-                       "der Batch muss offen sein (Takt $takt): " +
-                           ketten.map { it.upfrontOpenU }.distinct())
-            assertTrue(laeufe.any { it.phaseAUpfrontState == "DEFERRED_UPFRONT_BATCH" },
-                       "und aufgeschoben in Phase A (Takt $takt): " +
-                           laeufe.mapNotNull { it.phaseAUpfrontState }.distinct())
-
-            // KEINE BATCH-Endanforderung. Normale Korrekturen darf es geben -
-            // der Normalpfad ist von dieser Aenderung unberuehrt.
-            val batchEnden = ketten.filter { it.requestedRtU > 0.0 && it.grantSource == "MEAL_UPFRONT" }
-            assertTrue(batchEnden.isEmpty(),
-                       "keine Batch-Endanforderung (Takt $takt): " + batchEnden.map { it.requestedRtU })
-            assertTrue(ketten.none { it.stabilisation == "WITHIN_TOLERANCE" },
-                       "die Toleranz bleibt verletzt (Takt $takt): " +
-                           ketten.map { it.stabilisation }.distinct())
-
-            // Unabhaengig erwartet: -0,8 mg/dl/min ueber rund fuenf Minuten
-            // sind etwa -4 mg/dl, deutlich mehr als die Zugabe von 2,0.
-            val letzte = ketten.last()
-            assertTrue(letzte.recentNetMgdl <= -3.0,
-                       "das Netto zeigt den Abfall (Takt $takt): ${letzte.recentNetMgdl}")
-            val json = app.aaps.fuse.plugin.export.FuseStateJson.upfrontChainJson(letzte)
-            assertEquals(letzte.recentNetMgdl, json.optDouble("recentNetMgdl"), 1e-9)
-            assertTrue(json.optDouble("recentNetMgdl") <= -3.0)
-        }
-    }
-
-    /**
-     * PFLICHTNACHWEIS 1 UND 2 (Bauauftrag Toni 28.08.).
-     *
-     * DIESER TEST STAND FRUEHER ANDERSHERUM ("aktiver zero-latch sperrt die
-     * sofortdosis"). Der Vertrag ist umgedreht: ein historisch gehaltener
-     * Zero-Latch ist BASALSCHUTZ und darf die autorisierte
-     * Mahlzeiten-Direktdosis nicht mehr blockieren. Was er weiterhin darf -
-     * und was dieser Test in derselben Lage mitprueft - ist sperren, solange
-     * eine AKTUELLE Gefahr steht.
-     *
-     * Gemessener Anlass: ein Fruehstueck. Ab dem Marker meldete die Kette
-     * rund eine Viertelstunde lang `currentHazard zeroLatch` als EINZIGEN
-     * Blocker, bei `descentRiskActive=false`, `lowThreat=NONE`, gesundem
-     * Signal - und mehrere autorisierte Einheiten lagen still.
-     *
-     * NACHWEIS 2 (Gefahr sperrt weiter) steht bewusst VOR Nachweis 1: waere
-     * er rot, waere die Freigabe wertlos.
-     */
-    @Test
-    fun `aktiver zero-latch sperrt die sofortdosis nicht mehr`(@TempDir dir: File) {
-        zeroLatchAn = true
-        aufschubAn = true
-        upfrontAnteil = 1.0
-        primeHuelleU = 3.75
-        fundamentAnteil = 0.8
-        fundamentAn = true
-        markerAuthorized = true
-        // Fall-Lage des Latch: das Low-Tor zuendet, BG bleibt ueber dem Tief.
-        flach = 140.0
-        steigungProMin = -1.2
-        knickAbMin = 25
-        steigungNachKnick = 0.0
-        bolusIobU = 2.5
-        clock = start
-        transportReset()
-        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
-        // A/B GEGEN DENSELBEN VERLAUF. Die Entkopplung heisst: der Zero-Latch
-        // veraendert die Sofortanteil-Entscheidung NICHT mehr. Das ist
-        // pruefbar, ohne dass die Menge in dieser Lage fliessen muss - und
-        // genau so gehoert es geprueft. Ein Test, der auf "die Dosis geht
-        // heraus" wartet, misst mit, was ANDERE Riegel tun (in dieser
-        // Fall-Lage haelt der Abwaertsriegel weiter, HISTORICAL_LATCH), und
-        // waere damit gegen die falsche Ursache gruen oder rot.
-        fun lauf(unter: File, latch: Boolean): List<FuseCycleRunner.Outcome> {
-            zeroLatchAn = latch
-            clock = start
-            transportReset()
-            neuerRunner(
-                FuseLedgerAdapter().also { it.loadOnce(unter.also(File::mkdirs), "test-epoch", start) },
-            )
-            var gez = false
-            repeat(30) { if (!gez) gez = cycle().zeroLatchActive || !latch }
-            markerAt = clock
-            return (0 until 30).map { cycle() }
-        }
-
-        val mitLatch = lauf(File(dir, "mit"), true)
-        val ohneLatch = lauf(File(dir, "ohne"), false)
-
-        fun gefahr(o: FuseCycleRunner.Outcome) =
-            o.lowThreat != null &&
-                o.lowThreat!!.verdict != app.aaps.fuse.core.controller.LowThreatGate.Verdict.NONE
-
-        // Der Test prueft nur etwas, wenn der Latch im A-Lauf wirklich stand.
-        assertTrue(mitLatch.any { it.zeroLatchActive }, "der Latch muss im A-Lauf stehen")
-        assertTrue(ohneLatch.none { it.zeroLatchActive }, "und im B-Lauf nicht")
-
-        // ---- NACHWEIS 1: der Latch aendert die Sofortanteil-Entscheidung
-        //      nicht mehr - Zyklus fuer Zyklus identisch.
-        assertEquals(
-            ohneLatch.map { it.phaseAUpfrontRequestedU },
-            mitLatch.map { it.phaseAUpfrontRequestedU },
-            "der Zero-Latch darf die Sofortdosis nicht mehr veraendern",
-        )
-        // DEN ZUSTAND NICHT ZYKLUSWEISE VERGLEICHEN. Die beiden Laeufe haben
-        // vor dem Marker eine verschiedene Geschichte - ohne Latch dosiert
-        // der Loop im Warm-up anders, und das SOLL er: die Entkopplung
-        // betrifft den Sofortanteil, nicht das Basal. Der B-Lauf startet
-        // deshalb mit ein paar Zyklen, in denen die Autorisierung noch nicht
-        // gilt (Zustand null). Gleich sein MUSS die Aussage, nicht der
-        // Startversatz.
-        assertTrue(
-            mitLatch.none { it.phaseAUpfrontState == "BLOCKED_ZERO_LATCH" },
-            "der Zero-Latch darf kein Zustandsgrund des Sofortanteils mehr sein: " +
-                mitLatch.map { it.phaseAUpfrontState }.distinct(),
-        )
-        assertEquals(
-            ohneLatch.mapNotNull { it.phaseAUpfrontState }.distinct().toSet(),
-            mitLatch.mapNotNull { it.phaseAUpfrontState }.distinct().toSet(),
-            "und es duerfen keine anderen Zustaende auftreten als ohne Latch",
-        )
-
-        // ---- NACHWEIS 2: aktuelle Gefahr sperrt unveraendert -------------
-        val mitGefahr = mitLatch.filter(::gefahr)
-        assertTrue(mitGefahr.isNotEmpty(), "die Lage muss Verdikt-Zyklen tragen")
-        assertTrue(
-            mitGefahr.all { it.phaseAUpfrontRequestedU == 0.0 },
-            "aktuelle Gefahr sperrt unveraendert: " +
-                mitGefahr.filter { it.phaseAUpfrontRequestedU > 0.0 }.map { it.phaseAUpfrontRequestedU },
-        )
-
-        // ---- Der Zustand darf nicht luegen (Blocker 1 des Audits) --------
-        // Invariante statt Einzelfall: WENN angefordert wird, darf die Zeile
-        // nicht "verriegelt" melden. `phaseAUpfrontPendingU` ist im
-        // Anforderungszyklus noch > 0 (die Bilanz sinkt erst mit der
-        // Buchung); stuende der Latch-Zweig weiter vor REQUESTED, traefe das
-        // jede Freigabe - und derselbe Text landet ueber
-        // FusePlugin.deferredReason im MARKERDIALOG.
-        assertTrue(
-            mitLatch.none { it.phaseAUpfrontRequestedU > 0.0 && it.phaseAUpfrontState == "BLOCKED_ZERO_LATCH" },
-            "kein Zyklus darf gleichzeitig anfordern und verriegelt melden",
-        )
-
-        // ---- Die Autorisierung besteht unter dem Latch fort --------------
-        assertTrue(
-            mitLatch.any { it.mealFoundation.armed && it.zeroLatchActive },
-            "die Autorisierung muss unter dem Latch bestehen",
-        )
-    }
-
-    /**
-     * ABGRENZUNG (Bauauftrag Toni 28.08.: "keine zusaetzliche Freigabe fuer
-     * Normal- oder Liveness-Korrekturen").
-     *
-     * Der bedarfsbegrenzte Ruhekandidat gibt REINEN Normalbedarf frei -
-     * `ruheReineBasisU` ist exakt `vetted.smbU`, und der Merge stempelt
-     * `grant = null`. Seine einzige Absicherung gegen aktuelle Lagen war
-     * `Hazards.any`. Waere der Zero-Latch dort ersatzlos herausgefallen,
-     * haette dieselbe Aenderung still die KORREKTURBAHN unter verriegeltem
-     * Basal geoeffnet - mit einem Zeitfenster von rund 17 Zyklen (Ruhe-
-     * Streak 3 gegen Zero-Latch-Ausgang 20).
-     *
-     * Deshalb fuehrt `ruheKandidatRohU` den Latch als EIGENE Bedingung.
-     * Dieser Test haelt das fest.
-     */
-    @Test
-    fun `der bedarfsbegrenzte ruhekandidat bleibt unter dem zero-latch gesperrt`(@TempDir dir: File) {
-        zeroLatchAn = true
-        aufschubAn = true
-        upfrontAnteil = 1.0
-        primeHuelleU = 3.75
-        fundamentAnteil = 0.8
-        fundamentAn = true
-        markerAuthorized = true
-        flach = 140.0
-        steigungProMin = -1.2
-        knickAbMin = 25
-        steigungNachKnick = 0.0
-        bolusIobU = 2.5
-        clock = start
-        transportReset()
-        neuerRunner(
-            FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) },
-            ruheParams = app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
-                calmCycles = 3, minUkf = 0.0, minGuardDistanceMgdl = 5.0,
-                calmTreatment = app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED,
-                ruleSetVersion = app.aaps.fuse.plugin.export.FuseStateJson.RULE_SET_VERSION,
-            ),
-        )
-        var gezuendet = false
-        repeat(30) { if (!gezuendet) gezuendet = cycle().zeroLatchActive }
-        assertTrue(gezuendet, "der Latch muss zuenden")
-        steigungNachKnick = 0.8
-        val laufe = (0 until 40).map { cycle() }
-        val unterLatch = laufe.filter { it.zeroLatchActive }
-        assertTrue(unterLatch.isNotEmpty(), "es muss Zyklen unter aktivem Latch geben")
-        assertTrue(
-            unterLatch.none { it.decision.bindingLimit.contains("calmDemand") },
-            "kein bedarfsbegrenzter Ruheanteil unter aktivem Latch: " +
-                unterLatch.map { it.decision.bindingLimit }.distinct(),
-        )
-    }
+    // Konsolidierung 2.0: die Tests des Phase-A-Sofortanteils und seines Ruhe-Ausgangs (Uebertrag nach Phase A,
+    // Verfall des Uebertrags, Huellen-Klemmung des Uebertrags, Batch-Zustaende, Endpfad- und Zero-Latch-Proben,
+    // bedarfsbegrenzter Ruhekandidat) sind mit dem Mechanismus entfallen. Der Verfall des Aufschubs an der Frist
+    // steht weiter in `P6 Fall 4`.
 
 
     // ---- FALL 1: BOLUS_IN_QUEUE in Phase A --------------------------------
@@ -8577,19 +7759,6 @@ class TransportWiringTest : TestBaseWithProfile() {
             zeroLatchAn = b("zeroLatchEnabled", zeroLatchAn)
             zeroLatchRuheZyklen = i("zeroLatchCalmExitMin", zeroLatchRuheZyklen)
             zeroLatchRuheAbstand = d("zeroLatchCalmDistanceMgdl", zeroLatchRuheAbstand)
-            // DIE RUHE-EINSTELLUNGEN - bis 28.08. fehlten sie hier komplett.
-            // Fehlt das Feld (Trails vor RuleSet 32), bleibt es bei AUS, also
-            // beim aufgezeichneten Verhalten.
-            ruheAusPolitik = if (!b("calmRecoveryEnabled", false)) null else runCatching {
-                app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
-                    calmCycles = i("calmRecoveryCycles", 3),
-                    minUkf = d("calmRecoveryMinUkf", 0.0),
-                    minGuardDistanceMgdl = d("calmRecoveryGuardDistanceMgdl", 5.0),
-                    calmTreatment = app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment
-                        .ofSetting(i("calmTreatmentMode", 0)),
-                    ruleSetVersion = i("ruleSetVersion", app.aaps.fuse.plugin.export.FuseStateJson.RULE_SET_VERSION),
-                )
-            }.getOrNull()
             livenessBgMin = d("livenessBgMinDayMgdl", livenessBgMin)
             livenessBgMinNacht = pol?.optDouble("livenessBgMinNightMgdl")?.takeIf { it.isFinite() }
             livenessReArmMin = i("livenessReArmMin", livenessReArmMin)
@@ -8705,32 +7874,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // die Karte ist seit dem Zeitzonen-Fix oben ebenfalls lokal gefuellt
         // - eine Uhr fuer beide Seiten.
 
-        // DIE WIRKSAMEN RUHEPARAMETER SICHTBAR MACHEN - und widersprechen,
-        // wenn sie der aufgezeichneten Politik widersprechen. Genau dieser
-        // stille Widerspruch hat die Abnahme vom 28.08. entwertet.
-        fun ruheParameterPruefen(name: String, wirksam: app.aaps.fuse.core.controller.UpfrontRecovery.Params) {
-            val ausPolitik = pol?.optBoolean("calmRecoveryEnabled", false) ?: false
-            val modus = pol?.optString("calmTreatment") ?: "?"
-            // KEIN toString() DES OBJEKTS - das druckt die Adresse. Was
-            // geprueft werden muss, sind die WERTE gegen die Politik.
-            println(
-                "RUHE[$name]: wirksam=" + (wirksam != app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF) +
-                    "  Politik: enabled=$ausPolitik modus=$modus" +
-                    " zyklen=" + (pol?.optInt("calmRecoveryCycles", -1) ?: -1) +
-                    " minUkf=" + (pol?.optDouble("calmRecoveryMinUkf", -1.0) ?: -1.0) +
-                    " guard=" + (pol?.optDouble("calmRecoveryGuardDistanceMgdl", -1.0) ?: -1.0)
-            )
-            if (ausPolitik && wirksam == app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF) {
-                error(
-                    "REPLAY LIEFE OHNE RUHEFUNKTION, obwohl die aufgezeichnete " +
-                        "Politik sie scharf hat ($modus). Ein Lauf in dieser " +
-                        "Verfassung beweist nichts ueber den Ruhepfad - er hat " +
-                        "am 28.08. eine ganze Abnahme entwertet."
-                )
-            }
-        }
-
-        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, livenessStart: Boolean = true, upfrontStart: Double? = null, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null, rejoin: Boolean = false, ruhe: app.aaps.fuse.core.controller.UpfrontRecovery.Params = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF, dosingKandidat: String? = null, fruehOverride: Int? = null, counterfactualIobFeedback: Boolean = false): File {
+        fun lauf(name: String, fensterMs: Long?, trendRegel: String? = null, fenster: Int = 18, livenessStart: Boolean = true, upfrontStart: Double? = null, guardsStart: Boolean = false, reversalConfirm: Int = 2, gapBreakMs: Long? = null, reifeTag: String? = null, rejoin: Boolean = false, dosingKandidat: String? = null, fruehOverride: Int? = null, counterfactualIobFeedback: Boolean = false): File {
             transportReset()
             boluses = emptyList()
             // Gegenfaktuelle Rueckfuehrung (Codex-Harness 18.09.): jeder Lauf
@@ -8820,14 +7964,8 @@ class TransportWiringTest : TestBaseWithProfile() {
             dosingKandidat?.let { dosingKandidatAnwenden(it) } // B3: die Matrix schlaegt die Aufzeichnung
             fruehOverride?.let { fruehHorizont = it } // H8-Matrix schlaegt die Aufzeichnung
             val adapter = FuseLedgerAdapter().also { it.loadOnce(File(dir, name).also(File::mkdirs), "test-epoch", zyklen.first().ts) }
-            // EIN EXPLIZITER TREIBER-OVERRIDE SCHLAEGT DIE POLITIK, sonst gilt
-            // die aufgezeichnete Einstellung. Vor dem 28.08. stand hier
-            // unbedingt `ruhe` - und weil dessen Default AUS ist, lief jeder
-            // Replay ohne Ruhefunktion, egal was das Geraet fuhr.
-            val ruheWirksam = if (ruhe != app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF) ruhe
-            else ruheAusPolitik ?: app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF
-            ruheParameterPruefen(name, ruheWirksam)
-            neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik, ruheParams = ruheWirksam)
+            // Konsolidierung 2.0: der Ruhe-Ausgang ist entfallen, mit ihm seine Treiber-Uebersteuerung.
+            neuerRunner(adapter, fensterMs = fensterMs, trendRegel = trendRegel, gapPolitik = gapPolitik, reifePolitik = reifePolitik, wiedereinstieg = rejoinPolitik)
             val outFile = File(outDir, "replay_$name.csv")
             val h8Zeilen = mutableListOf<String>()
             outFile.printWriter().use { w ->
@@ -9152,51 +8290,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             }
             return
         }
-        val ruheEnv = System.getenv("FUSE_REPLAY_UPFRONT_CALM")
-        if (ruheEnv != null) {
-            // RUHE-MATRIX (Auflage Toni 25.08. spaet). Jeder Kandidat
-            // laeuft durch den VOLLSTAENDIGEN Endpfad; die CSV weist Grant,
-            // vor/nach MarkerFloor, nach Endriegel und publizierte Menge
-            // einzeln aus. Format: N:minUkf:minAbstand, mehrere durch Komma.
-            //
-            // Der Referenzlauf setzt NICHTS - `Params.OFF` ist der heutige
-            // Vertrag, und die Matrix misst gegen ihn.
-            lauf("calmRef", null, fenster = 10, upfrontStart = 1.0)
-            ruheEnv.split(",").forEach { spec ->
-                val t = spec.trim().split(":")
-                // DIE BEHANDLUNG IST PFLICHT, kein vierter Wert mit Default:
-                // "ruhig" allein sagt nicht, was mit der Menge geschieht, und
-                // genau diese Verwechslung war die Sicherheitskante.
-                // Format: N:minUkf:minAbstand:(demand|shift)
-                require(t.size == 4) {
-                    "Ruhe-Spezifikation braucht N:minUkf:minAbstand:(demand|shift), war '$spec'"
-                }
-                val behandlung = when (t[3].trim().lowercase()) {
-                    "demand" ->
-                        app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED
-                    "shift" ->
-                        app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED
-                    // Der dosierwirksame Modus - der einzige, der im Replay
-                    // andere ENDMENGEN erzeugen kann.
-                    "batch" ->
-                        app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.CALM_BATCH
-                    else -> error(
-                        "unbekannte Behandlung '${t[3]}' - erlaubt: demand, shift, batch",
-                    )
-                }
-                val p = app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
-                    calmCycles = t[0].toInt(),
-                    minUkf = t[1].toDouble(),
-                    minGuardDistanceMgdl = t[2].toDouble(),
-                    calmTreatment = behandlung,
-                    ruleSetVersion = app.aaps.fuse.plugin.export.FuseStateJson.RULE_SET_VERSION,
-                )
-                lauf("calm${t[0]}_${t[1].replace(".", "")}_${t[2].replace(".", "")}_${t[3].trim()}",
-                     null, fenster = 10, upfrontStart = 1.0, ruhe = p)
-            }
-            lauf("calmRefNach", null, fenster = 10, upfrontStart = 1.0)
-            return
-        }
+        // FUSE_REPLAY_UPFRONT_CALM (Ruhe-Matrix) ist mit dem Ruhe-Ausgang entfallen (Konsolidierung 2.0).
         if (System.getenv("FUSE_REPLAY_REJOIN") != null) {
             // PRODUKT-REJOIN gegen die Produktion, ueber denselben
             // Ausschnitt. Anders als FUSE_REPLAY_MATURITY aendert das NICHT
@@ -11353,38 +10447,20 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
 
-    // ---- P0-GEGENPROBEN ZUM RUHE-AUSGANG (Toni 25.08. spaet) ----------
+    // ---- KLEMMPROBEN DES AUFSCHUBS (Rig des frueheren Ruhe-Ausgangs) -------
     //
-    // Die Einheitstests in UpfrontRecoveryTest pruefen die ENTSCHEIDUNG.
-    // Was sie nicht pruefen koennen: was am ECHTEN MarkerFloor ankommt.
-    // In Phase A existieren weitere Marker- und Prime-Autorisierungen; der
-    // Vollbatch koennte ueber eine benachbarte Autorisierung
-    // wiederhereinkommen. Diese Proben laufen deshalb mit der
-    // vollstaendigen Geraetepolitik.
-
-    private fun mahlzeitMitRuhe(dir: File, params: app.aaps.fuse.core.controller.UpfrontRecovery.Params) {
-        fundamentAn = true
-        flach = 180.0
-        steigungProMin = 2.5
-        markerAuthorized = true
-        markerAt = start + 2 * 60_000L
-        clock = start
-        transportReset()
-        val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
-        neuerRunner(l, ruheParams = params)
-    }
+    // Konsolidierung 2.0: der Ruhe-Ausgang ist entfallen, mit ihm seine
+    // Gegenproben. Die beiden Klemmproben unten pruefen den Aufschub
+    // (DeferredPrime) und fahren dafuer weiter denselben Verlauf. Den offenen
+    // Bestand, den bisher die Verschiebung des Sofortanteils lieferte, laedt
+    // die Probe vor ([ruheLauf], `aufschubVorladenU`).
 
     /**
-     * Treibt einen Sofortbatch in den Aufschub und danach in eine RUHIGE
-     * Lage: die Fallgefahr endet und der Zucker steigt wieder - aber mit
-     * +0,10/min LANGSAMER als die +0,20/min, die der allgemeine Latch fuer
-     * seine schnelle Erholung verlangt. Genau dazwischen liegt
-     * CALM_RECOVERED; darueber waere es FULL_BATCH_ELIGIBLE, darunter
-     * bliebe es blockiert.
+     * Treibt eine Mahlzeit in einen Abstieg und danach in eine RUHIGE Lage:
+     * die Fallgefahr endet und der Zucker steigt wieder.
      */
     private fun ruheLauf(
         dir: File,
-        behandlung: app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment?,
         zyklen: Int = 40,
         // Der Abstieg. Damit der HISTORISCHE Latch ueberhaupt scharf wird,
         // muss der Guard-Boden im harten Horizont liegen - BG 150 bei
@@ -11394,7 +10470,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         abstiegIob: Double = 2.0,
         wendeZyklus: Int = 8,
         // Die Ruhe: positiv, aber unter den +0,20/min der schnellen
-        // Erholung - sonst FULL_BATCH_ELIGIBLE statt CALM_RECOVERED.
+        // Erholung des allgemeinen Latches.
         ruheRate: Double = 0.10,
         ruheIob: Double = 0.5,
         // Ein MANUELLER Ersatzbolus - er zehrt an derselben gepinnten
@@ -11403,17 +10479,14 @@ class TransportWiringTest : TestBaseWithProfile() {
         manuellBeiZyklus: Int? = null,
         manuellU: Double = 4.0,
         huelleU: Double = 3.75,
+        // Offener Aufschub, im Zyklus des manuellen Bolus vorgeladen; null = keiner.
+        aufschubVorladenU: Double? = null,
     ): List<FuseCycleRunner.Outcome> {
         aufschubAn = true
         upfrontAnteil = 1.0
         primeHuelleU = huelleU
         fundamentAnteil = 0.8
-        mahlzeitMitRuhe(dir, behandlung?.let {
-            app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
-                calmCycles = 3, minUkf = 0.05, minGuardDistanceMgdl = 5.0,
-                calmTreatment = it, ruleSetVersion = app.aaps.fuse.plugin.export.FuseStateJson.RULE_SET_VERSION,
-            )
-        } ?: app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF)
+        mahlzeit(dir)
         flach = abstiegBg
         steigungProMin = abstiegRate
         bolusIobU = abstiegIob
@@ -11423,232 +10496,16 @@ class TransportWiringTest : TestBaseWithProfile() {
                 steigungProMin = ruheRate
                 bolusIobU = ruheIob
             }
-            if (i == manuellBeiZyklus)
+            if (i == manuellBeiZyklus) {
+                aufschubVorladenU?.let { u ->
+                    check(ledger.episodes.deferredPrime.pinnedForMarkerTs > 0L) { "Vorbedingung: der Aufschub ist gepinnt" }
+                    ledger.episodes.deferredPrime = ledger.episodes.deferredPrime.copy(openU = u)
+                }
                 boluses = listOf(BS(timestamp = clock, amount = manuellU, type = BS.Type.NORMAL))
+            }
             alle += transport(dir)
         }
         return alle
-    }
-
-    /**
-     * DIE MUTATIONSPROBE ZUR OBIGEN: gaebe der ruhige Pfad den Vollbatch
-     * frei, muesste die Referenzgleichheit brechen. Der Test hier faehrt
-     * denselben Ausschnitt mit FULL_BATCH_ELIGIBLE-Semantik - erzwungen
-     * ueber eine schnelle Erholung - und belegt, dass der Ausschnitt
-     * ueberhaupt empfindlich ist.
-     */
-    @Test
-    fun `die Referenzgleichheit ist empfindlich - der Vollbatchpfad bricht sie`(@TempDir dir: File) {
-        val referenz = ruheLauf(File(dir, "ref"), null)
-        // +0,30/min statt +0,10: ueber der Erholungsschwelle des allgemeinen
-        // Latches, also FULL_BATCH_ELIGIBLE statt CALM_RECOVERED.
-        val schnell = run {
-            aufschubAn = true
-            upfrontAnteil = 1.0
-            primeHuelleU = 3.75
-            fundamentAnteil = 0.8
-            mahlzeitMitRuhe(File(dir, "rising"),
-                            app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF)
-            flach = 150.0
-            steigungProMin = -1.5
-            bolusIobU = 2.0
-            val alle = mutableListOf<FuseCycleRunner.Outcome>()
-            repeat(40) { i ->
-                if (i == 8) {
-                    steigungProMin = 0.30
-                    bolusIobU = 0.5
-                }
-                alle += transport(File(dir, "rising"))
-            }
-            alle
-        }
-        val unterschiede = referenz.zip(schnell).count { (r, q) ->
-            kotlin.math.abs(r.decision.smbU - q.decision.smbU) > 1e-9
-        }
-        assertTrue(unterschiede > 0) {
-            "wenn der Vollbatchpfad denselben Verlauf erzeugt wie der " +
-                "blockierte, prueft die Referenzgleichheit nichts"
-        }
-    }
-
-    /**
-     * P0.2: DIE VERSCHIEBUNG BUCHT GENAU EINMAL - und ob im selben Zyklus
-     * schon ein Schritt herausgeht, steht ausdruecklich da.
-     *
-     * `DeferredPrime.releaseStep` laeuft NACH MarkerFloor und sieht den
-     * frisch verschobenen Betrag. Das ist nicht zwingend falsch, darf aber
-     * nicht stillschweigend geschehen: sonst heisst "verschoben" im Bericht,
-     * waehrend tatsaechlich sofort ein Schritt angefordert wurde.
-     */
-    @Test
-    fun `die Verschiebung bucht genau einmal und haelt die Bilanz`(@TempDir dir: File) {
-        val alle = ruheLauf(dir, app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED)
-        val mitShift = alle.withIndex()
-            .filter { (_, o) -> (o.upfrontChain?.calmShiftedU ?: 0.0) > 0.0 }
-        assertEquals(1, mitShift.size) {
-            "genau EINE Buchung, war: " + mitShift.map { it.index }
-        }
-        val (i, s) = mitShift.single()
-
-        alle.drop(i + 1).forEachIndexed { k, o ->
-            assertEquals(0.0, o.upfrontChain?.calmShiftedU ?: 0.0, 1e-9,
-                         "kein zweiter Transfer im Folgezyklus ${i + 1 + k}")
-        }
-
-        // DIE GRUNDLINIE IST DER OFFENE BETRAG ZUR BUCHUNGSZEIT, nicht der
-        // des Vorzyklus. Zwischen zwei Zyklen kann regulaer etwas geliefert
-        // worden sein; die erste Fassung dieses Tests las diese Lieferung als
-        // Buchungsloch (2,05 + 0,35 gegen 2,70 statt gegen 2,40).
-        val offenVorher = s.upfrontChain!!.upfrontOpenU
-        assertTrue(offenVorher > 0.0, "vor der Verschiebung muss etwas offen sein")
-        assertEquals(offenVorher, s.phaseAUpfrontTransferredU + s.phaseAUpfrontLapsedU, 1e-6) {
-            "transferred + lapsed muss dem offenen Betrag entsprechen: " +
-                "${s.phaseAUpfrontTransferredU} + ${s.phaseAUpfrontLapsedU} vs $offenVorher"
-        }
-        assertEquals(0.0, s.phaseAUpfrontPendingU, 1e-9,
-                     "nach der Verschiebung ist nichts mehr offen")
-
-        assertEquals(0.0, s.deferredPrimeReleasedU, 1e-9) {
-            "im Verschiebezyklus darf 'verschoben' nicht heimlich " +
-                "'sofort angefordert' heissen - freigegeben wurden " +
-                "${s.deferredPrimeReleasedU} U"
-        }
-    }
-
-
-    /**
-     * DER REALE ABENDFALL ALS NULLVERTRAG (Toni 25.08. spaet).
-     *
-     * Die Geometrie des Abendfalls, nachgestellt:
-     *
-     *   Sofortanteil offen, aktuelles Abwaertsrisiko beendet,
-     *   NUR der historische Latch blockiert, Ruhe-Streak erreicht,
-     *   BG knapp ueber dem Guard-Boden, normaler Bedarf 0
-     *
-     * Er ist ausdruecklich KEINE Wirksamkeitsprobe - dafuer gibt es
-     * `der Ruhe-Kandidat entriegelt genau den historischen Latch`. Hier
-     * wird die andere Haelfte belegt: dass aus "der Riegel ist abgestanden"
-     * eben NICHT die volle Autorisierung wird. Genau das waere passiert,
-     * haette der Ruhe-Ausgang den Vollbatchpfad erreicht: mehrere Einheiten
-     * knapp ueber dem Guard-Boden, in einem Zyklus mit
-     * `insulinReq <= 0`.
-     */
-    @Test
-    fun `im Abendfall bleibt die Anforderung bei Bedarf 0 auch dann 0`(@TempDir dir: File) {
-        // DIE ECHTE GEOMETRIE, nicht irgendeine fallende. Der erste Anlauf
-        // dieses Tests fiel von 150 mit -3,0/min - viel steiler als der
-        // gemessene Abendverlauf. Die Riegel-Ursachen stimmten
-        // dabei sogar (20x CURRENT_DESCENT_RISK, dann 20x HISTORICAL_LATCH),
-        // aber CALM_RECOVERED entstand nie: nach einem so steilen Sturz
-        // braucht die UKF viel zu lange, um ueber die Ruheschwelle zu
-        // kommen.
-        //
-        // Gemessen am echten Fall: BG knapp ueber dem Guard-Boden, `lowThreat` durchgehend NONE,
-        // viele Zyklen voellig ohne aktuelle Gefahr, Latchgrund
-        // WAITING_RATE. Ein SANFTER Abstieg dicht ueber dem Guard-Boden
-        // stellt genau das her - der Boden liegt im Horizont (das Risiko
-        // feuert), und die Erholung ist flach genug, dass der Latch
-        // WAITING_RATE bleibt.
-        val alle = ruheLauf(
-            dir, app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.DEMAND_LIMITED,
-            zyklen = 45, abstiegBg = 82.0, abstiegRate = -0.5, abstiegIob = 2.0,
-            wendeZyklus = 6, ruheRate = 0.10, ruheIob = 0.3,
-        )
-        val ruhig = alle.filter { it.upfrontChain?.recoveryMode == "CALM_RECOVERED" }
-        assertTrue(ruhig.isNotEmpty()) {
-            "die Abendlage muss erreicht werden. Riegel-Ursachen: " +
-                alle.mapNotNull { it.upfrontChain?.descentGateCause }
-                    .groupingBy { it }.eachCount() +
-                "; Ruhe-Modi: " +
-                alle.mapNotNull { it.upfrontChain?.recoveryMode }
-                    .groupingBy { it }.eachCount() +
-                "; Ablehnungsgruende: " +
-                alle.mapNotNull { it.upfrontChain?.recoveryDenial }
-                    .groupingBy { it }.eachCount() +
-                "; Streaks: " +
-                alle.mapNotNull { it.upfrontChain?.recoveryStreak }.distinct().sorted() +
-                "; Batchzustaende: " +
-                alle.map { it.phaseAUpfrontState ?: "-" }.groupingBy { it }.eachCount() +
-                "; offen: " +
-                alle.map { String.format("%.2f", it.phaseAUpfrontPendingU) }
-                    .distinct().sorted() +
-                "; Phasen: " +
-                alle.map { it.mealFoundation.phase }.groupingBy { it }.eachCount()
-        }
-
-        // Der Fall ist nur dann der Abendfall, wenn wirklich etwas offen ist.
-        val offen = ruhig.maxOf { it.phaseAUpfrontPendingU }
-        assertTrue(offen >= 1.0) {
-            "es muss ein nennenswerter Sofortanteil offen sein, war $offen U"
-        }
-
-        // DER NULLVERTRAG, Zyklus fuer Zyklus.
-        var ohneBedarf = 0
-        ruhig.forEach { o ->
-            val k = o.upfrontChain!!
-            if (k.normalNeedBeforeMarkerFloorU > 0.0) return@forEach
-            ohneBedarf++
-            assertEquals(0.0, k.calmDemandU, 1e-9,
-                         "bei Bedarf 0 entsteht kein Ruhe-Kandidat")
-            assertEquals(0.0, k.requestedRtU, 1e-9) {
-                "bei Bedarf 0 bleibt die Anforderung 0 - war ${k.requestedRtU} U " +
-                    "bei ${k.upfrontOpenU} U offen, Grant ${k.grantU} aus ${k.grantSource}"
-            }
-            assertTrue(k.grantSource != "MEAL_UPFRONT") {
-                "und aus dem abgestandenen Riegel darf nie der Sofortanteil werden"
-            }
-            // HIER STAND `requestedRtU < upfrontOpenU`, und das war zu
-            // schwach (Toni 25.08. spaet): ein fehlerhafter Vollbatch, den
-            // irgendein Deckel auf einen Bruchteil kappt, haette die
-            // Ungleichung bestanden.
-            //
-            // NICHT maxSMB - den umgeht der Sofortanteil ausdruecklich, das
-            // ist gerade sein Zweck. Aber iobTH, maxIOB, die
-            // Transporthaftung, die Resthuelle und die nachgelagerten
-            // AAPS-/Pumpengrenzen koennen ihn sehr wohl verkleinern; jede
-            // davon haette den Fehler unter der Schwelle versteckt.
-            //
-            // Die starke Fassung ist `requestedRtU == 0` oben - sie laesst
-            // gar keinen Anteil zu, gedeckelt oder nicht.
-            //
-            // WAS HIER NICHT STEHEN DARF, und der erste Anlauf tat es:
-            // `markerFloorLiftU == 0`. Gemessen hebt MarkerFloor in diesen
-            // Zyklen sehr wohl 0,30 U an - den gewoehnlichen PRIME-Boden,
-            // den es unabhaengig vom Ruhe-Ausgang gibt. Danach nullt der
-            // historische Latch die Menge wieder, weshalb `requestedRtU`
-            // trotzdem 0 ist. Eine Zusicherung "gar kein Lift" haette also
-            // eine Eigenschaft verlangt, die das System nicht hat, und
-            // waere an vorbestehendem Verhalten gescheitert statt an einem
-            // Fehler des Ruhe-Ausgangs.
-            //
-            // Verlangt ist "kein Lift AUF DEN CALM-ANTEIL" - und der ist
-            // hier 0, also kann keine Anhebung ihm zugerechnet werden. Die
-            // Zurechenbarkeit selbst prueft der Referenzvergleich, der
-            // markerFloorLiftU gegen den BLOCKED-Lauf stellt.
-            assertEquals(0.0, k.calmDemandU, 1e-9,
-                         "und der Calm-Anteil, auf den nichts gehoben werden darf, ist 0")
-        }
-        assertTrue(ohneBedarf > 0) {
-            "der Fall 'ruhig, aber kein Bedarf' muss vorkommen - sonst prueft " +
-                "der Nullvertrag nichts"
-        }
-
-        // UND DIE GEGENRICHTUNG: solange das AKTUELLE Risiko lief, war der
-        // Riegel CURRENT_DESCENT_RISK und nichts wurde angefordert.
-        val mitRisiko = alle.filter {
-            it.upfrontChain?.descentGateCause == "CURRENT_DESCENT_RISK"
-        }
-        assertTrue(mitRisiko.isNotEmpty(), "der Abstieg muss echtes Risiko erzeugt haben")
-        mitRisiko.forEach { o ->
-            val k = o.upfrontChain!!
-            assertEquals(0.0, k.calmDemandU, 1e-9,
-                         "bei aktuellem Risiko gibt es keinen Ruhe-Kandidaten")
-            assertEquals(0.0, k.requestedRtU, 1e-9,
-                         "und es wird nichts angefordert")
-            assertTrue(o.upfrontChain?.recoveryMode != "CALM_RECOVERED") {
-                "aktuelles Risiko ist absolut - es kann keinen ruhigen Pfad geben"
-            }
-        }
     }
 
 
@@ -11673,7 +10530,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Aufschub, und die naechste Lieferung klemmt - genau die Kette des
         // Abendfalls (Bolus, kurz darauf die erste, geklemmte Lieferung).
         val alle = ruheLauf(
-            dir, app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED,
+            dir,
             zyklen = 45, abstiegBg = 180.0, abstiegRate = -4.0, abstiegIob = 2.5,
             wendeZyklus = 10, ruheRate = 0.15, ruheIob = 0.3,
             manuellBeiZyklus = 16, manuellU = 4.0,
@@ -11754,7 +10611,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `der Klemmfall meldet Bestand, Kuerzung, Grund und Zeitstempel`(@TempDir dir: File) {
         val alle = ruheLauf(
-            dir, app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED,
+            dir,
             zyklen = 45, abstiegBg = 180.0, abstiegRate = -4.0, abstiegIob = 2.5,
             // +0,25/min: UEBER der Erholungsschwelle. Der historische
             // Latch loest, es wird wieder geliefert - und nur eine
@@ -11762,6 +10619,8 @@ class TransportWiringTest : TestBaseWithProfile() {
             // (`clampToHull` laeuft nur bei `actuatedU > 0`).
             wendeZyklus = 10, ruheRate = 0.25, ruheIob = 0.0,
             manuellBeiZyklus = 16, manuellU = 4.0, huelleU = 4.5,
+            // Konsolidierung 2.0: den offenen Aufschub lieferte die Verschiebung des Sofortanteils - vorgeladen.
+            aufschubVorladenU = 3.60,
         )
         // NUR die Klemmungen NACH dem manuellen Bolus. Davor gibt es
         // ebenfalls welche - dort ist der Grund korrekterweise
@@ -14808,18 +13667,16 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(3, zweite.count { istNullAbbruch(it) }) { "neue Null, neue Reihe: ${zweite.map { it.reason }}" }
     }
 
-    // ---- Stufe 2: Ruhe-Ausgang im Produktionspfad ---------------------------
+    // ---- Stufe 2: Ruhe-Parameter im Produktionspfad -------------------------
     //
-    // Der Rig reichte bisher IMMER eine Uebersteuerung (`ruheParams`, Default
-    // OFF) - der Produktionspfad `upfrontRecoveryParams == null` ->
-    // `Config.calmParams` aus den Einstellungen lief in keinem Test.
-    // `ruheParams = null` nimmt jetzt diesen Pfad. Sichtbar wird er an
-    // `recoveryRequired`: in jedem Zyklus die Ruhezyklenzahl der WIRKSAMEN
-    // Parameter, bei ausgeschaltetem Ruhe-Ausgang 0.
+    // Der Produktionspfad liest die Ruhe-Parameter aus den Einstellungen
+    // (`Config.calmParams`). Konsolidierung 2.0: der Ruhe-Ausgang ist
+    // entfallen, mit ihm die Uebersteuerung des Rigs; der Trail fuehrt die
+    // eingestellte Ruhezyklenzahl weiter in `recoveryRequired`, bei
+    // ausgeschaltetem Ruhe-Ausgang 0.
 
     private fun ruheErforderlich(
         dir: File,
-        ruhe: app.aaps.fuse.core.controller.UpfrontRecovery.Params?,
         an: Boolean,
     ): List<Int?> {
         whenever(preferences.get(FuseBooleanKey.CalmRecoveryEnabled)).thenReturn(an)
@@ -14830,23 +13687,18 @@ class TransportWiringTest : TestBaseWithProfile() {
         flach = 110.0
         steigungProMin = 0.0
         val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
-        neuerRunner(l, ruheParams = ruhe)
+        neuerRunner(l)
         clock = start
         return volleZyklen(40).map { it.upfrontChain?.recoveryRequired }
     }
 
     @Test
     fun `Stufe 2 Ruhe-Ausgang folgt im Produktionspfad den Einstellungen`(@TempDir dir: File) {
-        val aus = ruheErforderlich(File(dir, "aus"), ruhe = null, an = false)
-        val an = ruheErforderlich(File(dir, "an"), ruhe = null, an = true)
-        // Kontrolle: mit Uebersteuerung gilt sie, nicht die Einstellung.
-        val uebersteuert = ruheErforderlich(
-            File(dir, "uebersteuert"), ruhe = app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF, an = true,
-        )
-        for ((name, lauf) in listOf("aus" to aus, "an" to an, "uebersteuert" to uebersteuert))
+        val aus = ruheErforderlich(File(dir, "aus"), an = false)
+        val an = ruheErforderlich(File(dir, "an"), an = true)
+        for ((name, lauf) in listOf("aus" to aus, "an" to an))
             assertTrue(lauf.size >= 10) { "$name: zu wenige volle Zyklen (${lauf.size})" }
         assertTrue(aus.all { it == 0 }) { "aus: $aus" }
         assertTrue(an.all { it == 7 }) { "an: $an" }
-        assertTrue(uebersteuert.all { it == 0 }) { "uebersteuert: $uebersteuert" }
     }
 }

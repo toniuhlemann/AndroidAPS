@@ -464,10 +464,10 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(zyklen.none { it.o.livenessDenial == "EXPECTATION_ACCOUNT" })
     }
 
-    /** Die Direktdosis-Familie, wie sie in der Entscheidung als Quelle erscheint. */
+    /** Die Direktdosis-Familie, wie sie in der Entscheidung als Quelle erscheint (die Quelle des Sofortanteils
+     *  ist mit der Konsolidierung 2.0 entfallen). */
     private val direktQuellen = setOf(
         app.aaps.fuse.core.controller.AuthorizedLift.Source.PRIME,
-        app.aaps.fuse.core.controller.AuthorizedLift.Source.MEAL_UPFRONT,
     )
 
     /**

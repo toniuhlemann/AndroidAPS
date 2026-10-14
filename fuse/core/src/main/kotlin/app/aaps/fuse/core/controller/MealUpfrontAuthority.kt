@@ -140,6 +140,10 @@ object MealUpfrontAuthority {
      * waeren genau die zweite Wahrheit, an der diese Kette schon einmal
      * auseinandergelaufen ist.
      *
+     * Konsolidierung 2.0: Aufschub-Tor und Wiederfreigabe des Sofortanteils
+     * sind entfallen; es fragen noch der Phase-A-Uebertrag und die
+     * aufgeschobene Prime-Freigabe.
+     *
      * `reboundRaw` bleibt ueberall sonst unveraendert in Kraft.
      */
     fun reboundBlocks(reboundRaw: Boolean, authorityHolds: Boolean): Boolean =

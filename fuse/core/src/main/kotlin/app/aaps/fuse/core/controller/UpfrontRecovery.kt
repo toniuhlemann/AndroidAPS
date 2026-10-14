@@ -1,119 +1,30 @@
 package app.aaps.fuse.core.controller
 
 /**
- * WANN DARF DER PHASE-A-SOFORTBATCH NACH EINEM ABFALL WIEDER RAUS?
- * (Bauauftrag Toni 25.08. spaet, neu geschnitten nach der Messung des
- * Abendfalls.)
+ * DER RUHE-AUSGANG DES PHASE-A-SOFORTBATCHES - was davon bleibt.
  *
- * DER ANLASS. Der Sofortbatch wird korrekt zurueckgehalten, solange
- * `MEASURED_DESCENT_RISK`, Low-Threat, Zero-Latch oder Rebound aktiv sind.
- * Ist das AKTUELLE Risiko vorbei, haengt er aber weiter am allgemeinen
- * [DescentRecoveryLatch], und der verlangt drei Zyklen mit mindestens
- * +0,20 mg/dl/min.
- *
- * DIE MESSUNG an einem realen Abendessen (ueber die ganze Phase A):
- *
- *   descentLatchActive   in jedem Zyklus
- *   descentRiskActive    nur anfangs - die letzten Zyklen durchgehend false,
- *                        `NOT_FALLING`, Rate leicht STEIGEND
- *   Batch                mehrere Einheiten geplant, 0 angefordert, 0 publiziert
- *
- * Der blockierende Grund war also abgestanden. ABER: BG knapp ueber dem
- * Guard-Boden - nur wenige mg/dl Abstand -, und unmittelbar
- * nach Phase A meldete der Regler selbst `NO_DEMAND` mit
- * `insulinReq <= 0`. Ein Ruhe-Ausgang, der nur den Latch loest, haette
- * also nichts freigegeben - aber [MarkerFloor] liest keinen Bedarf,
- * sondern eine Autorisierung. Aus "Block entfaellt" waere der volle Batch
- * knapp ueber dem Boden geworden.
- *
- * ZWEI GETRENNTE FRAGEN, und ihre Vermischung war der Fehler:
- *
- *   1. IST GERADE NOCH GEFAHR? -> [Hazards]. Bleibt absolut. Kein Marker,
- *      keine Ruhe und kein Zeitablauf ueberstimmt sie.
- *   2. IST DIE LAGE NACH DEM ENDE DER GEFAHR STABIL GENUG - UND WOFUER?
- *      -> diese Klasse. Sie kommt nach der ersten Frage, nicht statt ihr.
- *
- * WARUM [Decision] EIN SEALED INTERFACE IST UND KEIN BOOLEAN.
- * Die Vorgaengerfassung gab `releases: Boolean` heraus. Ein Aufrufer mit
- * `if (result.releases)` erreicht damit denselben Vollbatchpfad wie die
- * bestaetigte schnelle Erholung - eine versteckte Vollbatch-Autorisierung.
- * Der Typ zwingt den Aufrufer jetzt zur exhaustiven Fallunterscheidung.
- *
- * UND [Decision.CalmRecovered] TRAEGT ABSICHTLICH KEINE MENGE. Nicht
- * `authCapU`, nicht "freigegeben bis". Der Grund steht in [MarkerFloor]:
- * dort wird angehoben, sobald ein `grant` ankommt, und `grant == null`
- * bedeutet "kein Boden". Die Sicherheitskante ist also nicht ein Deckel
- * IN MarkerFloor, sondern dass im ruhigen Pfad gar kein
- * `MEAL_UPFRONT`-Grant entsteht. Ein Mengenfeld an dieser Stelle waere
- * genau der Weg, auf dem die volle Autorisierung doch wieder
- * durchgereicht wird.
- *
- * DER GELTUNGSBEREICH IST ENG: ausschliesslich `MEAL_UPFRONT` innerhalb
- * Phase A. Normal-SMB, Liveness, Prime-Rest und Phase B bleiben unter dem
- * allgemeinen Descent-Latch. Diese Klasse trifft daher gar keine
- * Dosierentscheidung - sie beantwortet nur, ob und WOFUER der
- * Batch-Aufschub endet.
- *
- * DIE PARAMETER SIND INJIZIERT UND HABEN BEWUSST KEINE PRODUKTIONS-
- * DEFAULTS: sie werden am echten Abendfall und an Kontrollverlaeufen
- * replay-kalibriert, und zwar durch den VOLLSTAENDIGEN Endpfad
- * (liftUpfront -> finalVerify -> MarkerFloor -> MeasuredDescentGate ->
- * Publikation).
+ * Konsolidierung 2.0: Sofortanteil und Ruhe-Ausgang sind entfallen, mit ihnen
+ * die Entscheidung selbst (Gefahrenliste, Ruhezaehlung, Freigabetypen). Hier
+ * stehen nur noch die Typen, die weiter gelesen werden: [Track] und
+ * [TrackMode] fuer den Ledger (Feld und Codec bleiben bis zum Ledger-Abbau),
+ * [Params] und [CalmTreatment] fuer Einstellungen und Politik-Export samt
+ * Fingerprint. Kein Dosierpfad liest sie.
  */
 object UpfrontRecovery {
 
     /**
-     * WIE EIN BESTAETIGT RUHIGER BATCH BEHANDELT WIRD. Beide Wege sind
-     * architektonisch sauber und werden im Replay VERGLICHEN - keiner ist
-     * voreingestellt.
+     * Die Behandlungswahl des entfallenen Ruhe-Ausgangs - eingestellt und
+     * exportiert, ohne Wirkung auf die Dosierung.
      */
     enum class CalmTreatment {
 
-        /**
-         * BEDARFSBEGRENZT: hoechstens das, was der normale Pfad VOR
-         * [MarkerFloor] tatsaechlich verlangt. Kein `MEAL_UPFRONT`-Grant
-         * wird gestempelt, also kann der Boden nichts wiederherstellen.
-         * Im gemessenen Abendfall liefert dieser Weg NICHTS, weil der
-         * Regler dort `insulinReq <= 0` sah - das ist kein Mangel des
-         * Weges, sondern sein Zweck.
-         */
+        /** Bedarfsbegrenzt. */
         DEMAND_LIMITED,
 
-        /**
-         * KONTROLLIERT VERSCHOBEN: der offene Sofortanteil geht in den
-         * schrittweisen [DeferredPrime]-Pfad, statt zu verfallen oder als
-         * Vollbatch auszuzahlen. Bewahrt die Menge, ohne den vollen Batch
-         * knapp ueber dem Boden auf einmal freizugeben.
-         */
+        /** In den schrittweisen Aufschub verschoben. */
         SHIFT_TO_DEFERRED,
 
-        /**
-         * DER DOSIERWIRKSAME MODUS (Bauauftrag Toni 25.08. spaet).
-         *
-         * WARUM ER NOETIG IST. Die beiden anderen Wege loesen das
-         * eigentliche Problem nicht: [DEMAND_LIMITED] laesst nur
-         * vorhandenen Normalbedarf durch - im gemessenen Abendfall war der
-         * 0 -, und [SHIFT_TO_DEFERRED] bewahrt die Menge, gibt sie aber
-         * schrittweise. Der volle Batch blieb bisher allein
-         * [Decision.FullBatchEligible] vorbehalten, also der schnellen
-         * Erholung, die genau dann nicht eintritt, wenn man sie braucht.
-         *
-         * WAS ER TUT: nach N lueckenlos bestaetigten ruhigen Zyklen darf der
-         * NOCH OFFENE Sofortanteil als Batch heraus - innerhalb Phase A,
-         * nur bei gueltigem gepinntem Marker und offenem Anteil.
-         *
-         * WAS IHN BEGRENZT, und das ist keine neue Rechnung: er laeuft
-         * durch denselben `MealFoundation.liftUpfront`-Pfad wie der
-         * Vollbatch. Dort verrechnet `remainingUpfrontU` den manuellen
-         * Bolus (keine Doppelgabe), und `AuthorizedLift.lift` traegt
-         * Huelle, iobTH, maxIOB, Transporthaftung und Pumpenraster.
-         *
-         * WAS ABSOLUT BLEIBT: saemtliche aktuellen Gefahren. Eine
-         * [Decision.CalmRecovered] entsteht nur, wenn [Hazards.any] in
-         * DIESEM Zyklus falsch war - das ist am Konstruktor geprueft.
-         *
-         * Endet Phase A vorher, bleibt es beim bestehenden Uebertragspfad.
-         */
+        /** Als Batch freigegeben. */
         CALM_BATCH,
         ;
 
@@ -137,32 +48,6 @@ object UpfrontRecovery {
 
     /** Welcher Weg den letzten Trackeintrag erzeugt hat. */
     enum class TrackMode { NONE, RISING, CALM }
-
-    /**
-     * WARUM EIN GELADENER ZAEHLER VERWORFEN WURDE (Toni 25.08. spaet).
-     *
-     * Ein stiller leerer Track ist nicht dasselbe wie ein absichtlich
-     * verworfener: im Trail waere beides "streak 0", und niemand koennte
-     * unterscheiden, ob nie beobachtet wurde oder ob eine
-     * Konfigurationsaenderung die Beobachtung entwertet hat.
-     */
-    enum class TrackReset {
-        /** Nichts verworfen - fortgesetzt, oder es gab nichts zu erben. */
-        NONE,
-
-        /** Der geladene Stand war unvollstaendig oder widerspruechlich. */
-        INCONSISTENT,
-
-        /** Anderer Marker: der Zaehler gehoerte zu einer anderen Mahlzeit. */
-        MARKER_CHANGED,
-
-        /**
-         * Andere Regel- oder Konfigurationsgeneration. Zwei Beobachtungen
-         * unter alten und eine dritte unter gelockerten Schwellen duerfen
-         * nicht gemeinsam freigeben.
-         */
-        CONFIG_CHANGED,
-    }
 
     /**
      * SCHEMA DES TRACKS SELBST - getrennt von der RuleSet-Version.
@@ -193,123 +78,10 @@ object UpfrontRecovery {
     // mg/dl/min - ein gespeicherter Zaehler stammt aus der lockereren Regel.
     const val TRACK_SCHEMA = 4
 
-    enum class Denial {
-        /** Kein Aufschub offen - die Frage stellt sich nicht. */
-        NOTHING_DEFERRED,
-
-        /** Aktuelle Gefahr. Absolut. */
-        CURRENT_HAZARD,
-
-        /** Ausserhalb Phase A. */
-        NOT_PHASE_A,
-
-        /** Kein Marker / keine Batch-Identitaet. */
-        NO_AUTHORITY,
-
-        /** Ruhe noch nicht lange genug bestaetigt. */
-        CALM_STREAK_SHORT,
-
-        /** Die GEMESSENE Reihe faellt - s. [app.aaps.fuse.core.signal.GlucoseStability]. */
-        STILL_FALLING,
-
-        /**
-         * Die Stabilitaet ist NICHT BEURTEILBAR - zu wenige Punkte, ein Loch,
-         * ein Segmentwechsel, unbrauchbare Zahlen oder veraltete Daten.
-         *
-         * EIGENER GRUND, nicht mit STILL_FALLING gebuendelt: "faellt" und
-         * "weiss ich nicht" sind zwei verschiedene Auskuenfte, und nur die
-         * zweite ist behebbar, indem man wartet. Fehlende Daten bleiben
-         * ausdruecklich eine Sperre.
-         */
-        SIGNAL_UNDETERMINED,
-
-        /** Zu nah am Guard-Boden. */
-        GUARD_DISTANCE,
-
-        /** Ruhe-Ausgang ausgeschaltet oder ohne Behandlungswahl. */
-        DISABLED,
-    }
-
     /**
-     * Die AKTUELLEN harten Blocker. Alle sechs sind Ausschlusskriterien;
-     * der Marker ueberstimmt keinen davon.
-     *
-     * DER ZERO-LATCH STEHT HIER NICHT MEHR (Toni 28.08.). Er war der
-     * einzige Eintrag, der KEINE aktuelle Gefahr beschreibt, sondern einen
-     * historisch gehaltenen Basalschutz - gemessen an einem realen
-     * Fruehstueck: eine Viertelstunde lang meldete die Kette `currentHazard
-     * zeroLatch` als EINZIGEN Blocker, bei `descentRiskActive=false`,
-     * `lowThreat=NONE`, `rebound=false` und gesundem Signal. Mehrere
-     * autorisierte Einheiten blieben liegen, weil das Basal verriegelt war.
-     * Basalschutz und Mahlzeitenfreigabe sind zwei Entscheidungen.
-     *
-     * WO ER STATTDESSEN WIRKT, damit die Entkopplung eng bleibt: der
-     * bedarfsbegrenzte Ruhekandidat im Runner (`ruheKandidatRohU`) fuehrt
-     * ihn als EIGENE Bedingung weiter. Dieser Pfad gibt reinen
-     * NORMAL-Bedarf frei, keinen autorisierten Mahlzeitenanteil - fuer ihn
-     * bleibt der verriegelte Basalzustand ein Ausschluss. Faellt die
-     * Bedingung dort weg, oeffnet dieselbe Aenderung still die
-     * Korrekturbahn; das ist der Grund, warum sie dort steht und nicht
-     * hier.
-     */
-    class Hazards(
-        val descentRisk: Boolean,
-        /**
-         * GEMESSENES TIEF - eigener Eintrag, absolut (Toni 28.08.).
-         *
-         * Frueher steckte es im gebuendelten `lowThreat`. Das war gefaehrlich,
-         * sobald jenes Buendel faellt: [Decision.FullBatchEligible] kehrt
-         * FUENFZEHN ZEILEN VOR der Bodenabstandspruefung zurueck, und ein
-         * MEASURED_LOW liefert `distanceToFloorMgdl == null` - der schnelle
-         * Erholungspfad haette also an einem gemessenen Tief vorbeigehen
-         * koennen. Deshalb steht es hier fuer sich.
-         */
-        val measuredLow: Boolean,
-        /**
-         * DER AM MARKER GEPINNTE ABWAERTSRISIKO-VERTRAG (Toni 28.08.).
-         *
-         * Hier stand `lowThreat = verdict != NONE`, also das 120-Minuten-
-         * BASALVERDIKT des Low-Tors. Das ist die Frage "lohnt sich ein
-         * Basalstopp?" - gebaut als einziger Weg zu einer Zero-TBR - und nicht
-         * die Frage "ist diese Mahlzeitendosis gefaehrlich?". Der 120er ist
-         * VIERMAL so lang wie der SMB-Riegel (30) und DOPPELT so lang wie der
-         * markerbezogene (60); ein Bodenkontakt zwischen 60 und 120 Minuten
-         * fiel nur in das Basalfenster. Genau so lag der gemessene Fall.
-         *
-         * FEHLENDER ODER UNGUELTIGER PIN IST KEINE ENTWARNUNG: der Aufrufer
-         * muss dann `true` uebergeben. Das steht hier, weil man es an einem
-         * Boolean nicht mehr sieht.
-         */
-        val pinnedMealRisk: Boolean,
-        val rebound: Boolean,
-        val signalUnhealthy: Boolean,
-        val technical: Boolean,
-        val ledgerHold: Boolean,
-    ) {
-
-        val any: Boolean
-            get() = descentRisk || measuredLow || pinnedMealRisk || rebound ||
-                signalUnhealthy || technical || ledgerHold
-
-        /** Fuer den Export: welche genau. */
-        val names: String
-            get() = listOfNotNull(
-                "descentRisk".takeIf { descentRisk },
-                "measuredLow".takeIf { measuredLow },
-                "pinnedMealRisk".takeIf { pinnedMealRisk },
-                "rebound".takeIf { rebound },
-                "signal".takeIf { signalUnhealthy },
-                "technical".takeIf { technical },
-                "ledgerHold".takeIf { ledgerHold },
-            ).joinToString("+").ifEmpty { KEINE_GEFAHR }
-    }
-
-    /** Der Exportwert von [Hazards.names], wenn keine Gefahr besteht. */
-    const val KEINE_GEFAHR = "none"
-
-    /**
-     * Die Ruheparameter. KEIN Produktionsdefault - der Aufrufer muss sie
-     * nennen, und bis zur Replay-Kalibrierung nennt sie nur der Replay.
+     * Die Ruheparameter aus den Einstellungen (`Config.calmParams` im
+     * Runner). Seit der Konsolidierung nur noch fuer den Politik-Export und
+     * dessen Fingerprint.
      */
     class Params private constructor(
         val enabled: Boolean,
@@ -394,23 +166,9 @@ object UpfrontRecovery {
     }
 
     /**
-     * DER FORTGESCHRIEBENE RUHEZAEHLER - und alles, was ihn nach einem
-     * Prozessneustart ueberhaupt fortsetzbar macht (Toni 25.08. spaet).
-     *
-     * Nur den Streak zu speichern genuegt nicht. Ein wiederaufgenommener
-     * Zaehler gibt potenziell MEHR Insulin frei; er darf deshalb nur
-     * fortgesetzt werden, wenn Markeridentitaet, Signalanschluss und
-     * Zeitkontinuitaet stimmen - und wenn saemtliche aktuellen Gefahren im
-     * aufnehmenden Zyklus erneut negativ geprueft wurden. Letzteres
-     * garantiert [evaluate] dadurch, dass [Hazards.any] VOR jeder
-     * Fortschreibung zurueckkehrt.
-     *
-     * ZUM CODEC-BEFUND: heute ist dieser Zustand faktisch NICHT restartfest
-     * - `FuseLedgerAdapter` deklariert das Feld, der Codec fuehrt es weder
-     * in `encodeEpisodes` noch in `encodeFoundation`. Der Typ ist hier
-     * bereits so geschnitten, dass eine spaetere Persistierung die
-     * Identitaeten mitnehmen MUSS; [ofPersisted] lehnt unvollstaendige oder
-     * widerspruechliche Kombinationen fail-closed ab.
+     * DER PERSISTIERTE RUHEZAEHLER - nur noch fuer den Ledger: der Codec
+     * liest und schreibt ihn, kein Dosierpfad wertet ihn aus (Konsolidierung
+     * 2.0). [ofPersisted] prueft geladene Staende weiter fail-closed.
      */
     class Track(
         /** `armedTs` des Markers, zu dem dieser Zaehler gehoert. */
@@ -468,265 +226,4 @@ object UpfrontRecovery {
             }
         }
     }
-
-    /**
-     * DAS ERGEBNIS - als sealed interface, damit der Aufrufer die drei
-     * Faelle nicht zusammenfassen KANN.
-     */
-    sealed interface Decision {
-
-        val track: Track
-        val hazards: String
-        val guardDistanceMgdl: Double?
-
-        /**
-         * Warum ein geladener Zaehler verworfen wurde. Sichtbar, nicht
-         * still: ein Konfigurationswechsel entwertet Beobachtungen, und das
-         * muss im Trail stehen.
-         */
-        val trackReset: TrackReset
-
-        /**
-         * NUR FUER DEN EXPORT. Steuerfluss laeuft ueber `when` auf den Typ -
-         * ein String liesse sich wieder zu `== "CALM_RECOVERED" || ...`
-         * zusammenfassen, und genau das soll der Typ verhindern.
-         */
-        val modeName: String
-            get() = when (this) {
-                is Blocked -> "BLOCKED"
-                is FullBatchEligible -> "FULL_BATCH_ELIGIBLE"
-                is CalmRecovered -> "CALM_RECOVERED"
-            }
-
-        /** Aktuelle Gefahr, fehlende Vorbedingung oder Ruhe noch nicht reif. */
-        class Blocked(
-            override val track: Track,
-            override val hazards: String,
-            override val guardDistanceMgdl: Double?,
-            val denial: Denial,
-            val requiredCycles: Int,
-            override val trackReset: TrackReset,
-        ) : Decision
-
-        /**
-         * Die bestehende, streng bestaetigte RISING-Erholung des
-         * allgemeinen Latches. Fuehrt auf den unveraenderten
-         * Vollbatchpfad - hier DARF ein `MEAL_UPFRONT`-Grant entstehen.
-         */
-        class FullBatchEligible(
-            override val track: Track,
-            override val hazards: String,
-            override val guardDistanceMgdl: Double?,
-            override val trackReset: TrackReset,
-        ) : Decision {
-
-            init {
-                // DIE IMPLIKATION AM TYP, nicht als Kommentar (Toni 25.08.
-                // spaet). Beide Freigabetypen entstehen ausschliesslich
-                // NACH der Gefahrenpruefung. Ein Aufrufer darf sich darauf
-                // verlassen, ohne die Reihenfolge in `evaluate` zu kennen -
-                // und wer sie umsortiert, laeuft hier auf.
-                require(hazards == KEINE_GEFAHR) {
-                    "FullBatchEligible bei aktueller Gefahr: $hazards"
-                }
-            }
-        }
-
-        /**
-         * Gefahr vorbei, aber keine starke Erholung.
-         *
-         * HIER STEHT ABSICHTLICH KEINE MENGE. Kein `authCapU`, kein
-         * "freigegeben bis", kein `eligibleU`. Wer hier ein Mengenfeld
-         * ergaenzt, oeffnet den Weg, auf dem [MarkerFloor] die volle
-         * Autorisierung wiederherstellt - genau die Kante, die der
-         * gemessene Abendfall sichtbar gemacht hat. Der Aufrufer muss
-         * ueber [treatment] entscheiden, was geschieht, und darf dabei
-         * KEINEN `MEAL_UPFRONT`-Grant stempeln.
-         */
-        class CalmRecovered(
-            override val track: Track,
-            override val hazards: String,
-            /** Nicht-null: der Abstand wurde geprueft, sonst waere es [Blocked]. */
-            override val guardDistanceMgdl: Double,
-            val calmStreak: Int,
-            val treatment: CalmTreatment,
-            override val trackReset: TrackReset,
-        ) : Decision {
-
-            init {
-                require(hazards == KEINE_GEFAHR) {
-                    "CalmRecovered bei aktueller Gefahr: $hazards"
-                }
-            }
-        }
-    }
-
-    /**
-     * @param params die injizierten Ruheparameter.
-     * @param prior der Zaehlerstand aus dem Ledger.
-     * @param deferredOpen ist ueberhaupt ein Batch aufgeschoben?
-     * @param inPhaseA laeuft Phase A noch?
-     * @param markerIdentity `armedTs` des gepinnten Markers; 0 = keine
-     *   Autorisierung. Ein Markerwechsel bricht den Ruhezaehler ab - der
-     *   Zaehler gehoert zu EINER Autorisierung, nicht zum Geraet.
-     * @param hazards die AKTUELLEN harten Blocker.
-     * @param risingConfirmed hat der allgemeine Latch seine schnelle
-     *   Erholung bestaetigt? Dieser Weg bleibt unveraendert bestehen.
-     * @param ukfRatePerMin aktuelle UKF-Rate.
-     * @param q1Falling faellt q1 gegenueber dem Vorzyklus?
-     * @param guardDistanceMgdl Abstand von q1 zum Guard-Boden.
-     * @param sourceTs der Signalpunkt dieses Zyklus - Anschlussnachweis.
-     * @param nowTs Anker dieses Zyklus - fuer den Restart-Schutz.
-     */
-    /**
-     * DIE RESTART-ASYMMETRIE IST MIT DEM STABILITAETSTOR ENTFALLEN (Toni
-     * 28.08.). Der alte `q1Falling`-Riegel verglich mit EINEM prozesslokalen
-     * Vorzykluswert; nach einem Neustart war der `null`, also galt "nicht
-     * gefallen" - das Tor stand fuer einen Zyklus still offen, waehrend der
-     * Ruhezaehler aus dem Ledger geerbt wurde. Ein fehlender Vorwert ist aber
-     * "Vergleich unbekannt", nicht "kein Abfall".
-     *
-     * Die gemessene Reihe kennt diesen Fall nicht: fehlt sie oder ist sie zu
-     * kurz, lautet das Urteil UNDETERMINED und sperrt. Ein geerbter Zaehler
-     * ersetzt damit keinen aktuellen Nachweis mehr.
-     */
-    fun evaluate(
-        params: Params,
-        prior: Track,
-        deferredOpen: Boolean,
-        inPhaseA: Boolean,
-        markerIdentity: Long,
-        hazards: Hazards,
-        risingConfirmed: Boolean,
-        /**
-         * Das Urteil ueber die GEMESSENE Reihe. `null` heisst "gar nicht
-         * gerechnet" und wird wie UNDETERMINED behandelt - nie wie stabil.
-         */
-        stability: app.aaps.fuse.core.signal.GlucoseStability.Result?,
-        guardDistanceMgdl: Double?,
-        sourceTs: Long,
-        nowTs: Long,
-    ): Decision {
-        // EINMAL erben, nicht fuenfmal: der Grund muss in JEDEM Ausgang
-        // sichtbar sein, auch in den blockierten - sonst laesst sich "nie
-        // beobachtet" nicht von "durch Konfigurationswechsel entwertet"
-        // unterscheiden.
-        val (basis, resetGrund) = geerbt(prior, markerIdentity, params.fingerprint)
-
-        fun nein(d: Denial, t: Track = Track.EMPTY) =
-            Decision.Blocked(t, hazards.names, guardDistanceMgdl, d, params.calmCycles,
-                             resetGrund)
-
-        // Die aktuelle Gefahr steht VOR allem anderen und loescht den
-        // Ruhezaehler - eine Ruhe, die von einer Gefahr unterbrochen wurde,
-        // war keine. Dass dieser Zweig zuerst kommt, ist zugleich die
-        // Zusicherung aus dem Track-KDoc: ein fortgesetzter Zaehler hat die
-        // Gefahren in DIESEM Zyklus erneut negativ geprueft.
-        if (hazards.any) return nein(Denial.CURRENT_HAZARD)
-        if (!deferredOpen) return nein(Denial.NOTHING_DEFERRED, basis)
-        if (!inPhaseA) return nein(Denial.NOT_PHASE_A, basis)
-        if (markerIdentity <= 0L) return nein(Denial.NO_AUTHORITY)
-
-        // WEG 1 - unveraendert: die bestaetigte schnelle Erholung des
-        // allgemeinen Latches. Sie brauchte nie eine Ruhezaehlung.
-        if (risingConfirmed) return Decision.FullBatchEligible(
-            Track(markerIdentity, maxOf(1, basis.streak),
-                  sourceTs, nowTs, TrackMode.RISING, params.fingerprint),
-            hazards.names, guardDistanceMgdl, resetGrund,
-        )
-
-        val treatment = params.calmTreatment
-        if (!params.enabled || treatment == null)
-            return nein(Denial.DISABLED, basis)
-
-        // WEG 2 - die bestaetigte ruhige Lage. Jede verletzte Bedingung
-        // setzt den Zaehler auf 0; ein einzelner flacher Zyklus genuegt
-        // ausdruecklich nicht.
-        // HIER STANDEN ZWEI NULLTOLERANZEN (bis 28.08.):
-        //   ukfRatePerMin < params.minUkf  ->  STILL_FALLING
-        //   q1Falling                      ->  Q1_FALLING
-        // An einem realen Fruehstueck hielten sie mehrere autorisierte Einheiten
-        // minutenlang fest, obwohl q1 praktisch flach lag: die
-        // Filterrate blieb knapp negativ und q1 wackelte nur um wenige
-        // Zehntel. Ein nachlaufender Filter und ein einzelner Wackler
-        // waren damit staerker als die gemessene Lage.
-        //
-        // Der Nachweis laeuft jetzt ueber die GEMESSENE Reihe. Er ist
-        // dreiwertig, und "nicht beurteilbar" bleibt eine Sperre.
-        // GEHOERT WIRD DIE STABILISIERUNG IM JUENGSTEN ABSCHNITT, nicht das
-        // Fensterurteil (Toni 28.08.). Ein historischer Rueckgang bis auf das
-        // heutige Niveau ist kein laufender Abfall - die Reihe
-        // 110,100,100,100,100,100,100,100 ist seit sechs Minuten unveraendert
-        // und faellt im Fensterurteil trotzdem durch. Genau diese Lage soll
-        // der Ruhe-Ausgang loesen koennen; dafuer war er gebaut.
-        when (stability?.stabilisation) {
-            app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.WITHIN_TOLERANCE -> Unit
-            app.aaps.fuse.core.signal.GlucoseStability.Stabilisation.FALLING_BEYOND_TOLERANCE ->
-                return nein(Denial.STILL_FALLING)
-            else -> return nein(Denial.SIGNAL_UNDETERMINED)
-        }
-        if (guardDistanceMgdl == null || !guardDistanceMgdl.isFinite() ||
-            guardDistanceMgdl < params.minGuardDistanceMgdl
-        ) return nein(Denial.GUARD_DISTANCE)
-
-        // LUECKENLOS heisst dreierlei: dieselbe Autorisierung, ein
-        // Signalanschluss und Zeitkontinuitaet. Nach einem Neustart, einem
-        // Markerwechsel oder einer Zykluspause faengt die Zaehlung neu an,
-        // statt erfundene Zyklen zu erben.
-        val anschluss = basis.streak > 0 &&
-            nowTs > basis.lastEvaluationTs &&
-            nowTs - basis.lastEvaluationTs <= LUECKENLOS_MAX_MS &&
-            sourceTs > basis.lastAcceptedSourceTs &&
-            sourceTs - basis.lastAcceptedSourceTs <= LUECKENLOS_MAX_MS
-        // DIE VORGESCHICHTE ZAEHLT AUCH ZEITLICH (Toni 28.08.).
-        //
-        // Hier stand `else 1`: nach jedem Markerwechsel begann die Zaehlung
-        // wieder bei eins, obwohl die gemessene Reihe laengst belegte, dass
-        // die Lage seit mehreren Zyklen ruhig ist. An einem realen Fruehstueck
-        // kostete das allein rund vier Minuten - eine Wartezeit aus
-        // unvollstaendiger Nutzung der Historie, nicht aus einer
-        // Sicherheitsbedingung.
-        //
-        // WAS DAMIT NICHT WANDERT: Autorisierung, Budget und
-        // Lieferidentitaet kommen unveraendert aus dem NEUEN Marker - der
-        // Zaehler belegt Signalruhe, nicht Berechtigung. Und die AKTUELLEN
-        // Gefahren stehen weiter ganz oben in dieser Funktion und werden in
-        // DIESEM Zyklus geprueft; eine ruhige Vorgeschichte ueberstimmt
-        // keine davon.
-        val ausHistorie = stability?.confirmedCycles ?: 0
-        val streak = if (anschluss) basis.streak + 1
-        else maxOf(1, minOf(ausHistorie, params.calmCycles))
-        val track = Track(markerIdentity, streak, sourceTs, nowTs, TrackMode.CALM,
-                          params.fingerprint)
-        if (streak < params.calmCycles)
-            return Decision.Blocked(track, hazards.names, guardDistanceMgdl,
-                                    Denial.CALM_STREAK_SHORT, params.calmCycles, resetGrund)
-        return Decision.CalmRecovered(track, hazards.names, guardDistanceMgdl, streak, treatment,
-                                      resetGrund)
-    }
-
-    /**
-     * Ein Zaehler gehoert zu EINER Autorisierung und EINER Generation. Passt
-     * eines von beidem nicht - oder ist der geladene Stand inkonsistent -,
-     * wird er verworfen statt uminterpretiert, und der GRUND faehrt mit.
-     */
-    private fun geerbt(
-        prior: Track,
-        markerIdentity: Long,
-        fingerprint: String,
-    ): Pair<Track, TrackReset> = when {
-        prior.streak <= 0 -> Track.EMPTY to TrackReset.NONE
-        !prior.consistent -> Track.EMPTY to TrackReset.INCONSISTENT
-        prior.markerIdentity != markerIdentity -> Track.EMPTY to TrackReset.MARKER_CHANGED
-        prior.fingerprint != fingerprint -> Track.EMPTY to TrackReset.CONFIG_CHANGED
-        else -> prior to TrackReset.NONE
-    }
-
-    /**
-     * Groesster Abstand zweier Zyklen, der noch als "lueckenlos" gilt.
-     * Zwei Minuten decken die gemessene Kadenz (58-62 s) samt einer
-     * ausgefallenen Runde; darueber ist die Reihe unterbrochen und die
-     * Ruhe nicht mehr bestaetigt.
-     */
-    const val LUECKENLOS_MAX_MS = 2 * 60_000L
 }

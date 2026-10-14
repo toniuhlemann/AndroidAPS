@@ -413,55 +413,7 @@ object MealFoundation {
         return max(0.0, auth.phaseAUpfrontU - abzuege.sum())
     }
 
-    /**
-     * DER PHASE-A-SOFORT-LIFT (iLet-Prinzip, Bauauftrag Toni 24.08.).
-     *
-     * NUR in Phase A - danach regeln Uebergabe, Uebertrag und Aufschub. Der
-     * Betrag kommt aus [remainingUpfrontU] (Bilanz statt Einmal-Zustand),
-     * das Restbudget ist die Phase-A-Huelle minus Geliefertem (Verteidigung
-     * in der Tiefe - der Betrag ist per Bilanz schon kleiner), und
-     * Guard/Tail folgen der BESTEHENDEN MarkerAuthorization-Politik ueber
-     * die GEPINNTE Autorisierung. Die maxSMB-Ausnahme traegt die Quelle
-     * [AuthorizedLift.Source.MEAL_UPFRONT] in [AuthorizedLift.lift];
-     * iobTH, maxIOB, Transporthaftung und Pumpenraster bleiben hart.
-     *
-     * ALS GANZER BATCH, nie zerteilt (Nachtrag Toni 25.08. mittags): der
-     * ganze verbleibende Betrag wird in EINEM Zug angefordert. Kappt eine
-     * Mengengrenze, flieszt der erlaubte Teil und der echte Rest bleibt
-     * ueber die Bilanz offen - aber es gibt keine absichtliche Zerlegung
-     * in Pumpenschritte mehr.
-     */
-    @Suppress("LongParameterList")
-    fun liftUpfront(
-        base: FuseController.Decision,
-        auth: Authorization,
-        phase: Phase,
-        deliveredPhaseAU: Double,
-        manualAfterMarkerU: Double?,
-        state: FuseController.State,
-        tailHeadroomU: Double? = null,
-        transportCommitmentU: Double = 0.0,
-        /** B1: Kontextgrenze des Zyklus, s. [AuthorizedLift.lift]. */
-        contextExposureLimitU: Double? = null,
-        tickEps: Double = 1e-9,
-    ): FuseController.Decision {
-        if (phase != Phase.PHASE_A) return base
-        val floorU = remainingUpfrontU(auth, deliveredPhaseAU, manualAfterMarkerU) ?: return base
-        if (floorU <= 0.0) return base
-        return AuthorizedLift.lift(
-            base = base,
-            source = AuthorizedLift.Source.MEAL_UPFRONT,
-            floorU = floorU,
-            remainingU = max(0.0, auth.phaseABudgetU - deliveredPhaseAU),
-            state = state,
-            authorized = auth.pinnedMarkerAuthorized,
-            tailHeadroomU = tailHeadroomU,
-            extraCapU = null,
-            transportCommitmentU = transportCommitmentU,
-            contextExposureLimitU = contextExposureLimitU,
-            tickEps = tickEps,
-        )
-    }
+    // Konsolidierung 2.0: der Phase-A-Sofort-Lift (liftUpfront, Quelle MEAL_UPFRONT) ist entfallen.
 
     /**
      * Was Phase B zu diesem Zeitpunkt freigeben duerfte.
