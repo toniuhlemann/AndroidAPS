@@ -774,6 +774,19 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         val weitereMit = mit.filter { it.frueh()?.initial == false && it.dErw() > 0.0 }
         assertTrue(weitereMit.isNotEmpty()) { "keine weitere Portion mit G3/G4" }
         assertTrue(weitereMit.all { it.o.erwartungskonto!!.fruehHebung?.guardLift == true })
+        // Diagnose: die Pruefung mit Erwartung steht bei jeder Portion im Export (wer haette gesperrt?). Die Schwanzwerte
+        // gibt es nur mit Schwanzpruefung - im Gestell ist sie aus, am Geraet an.
+        assertTrue(weitereMit.all {
+            val x = it.o.erwartungskonto!!
+            val schwanz = it.o.decision.tail?.usable == true
+            x.fruehUntenMitErwartungMgdl != null &&
+                (!schwanz || (x.fruehSchwanzMitErwartungU != null && x.fruehSchwanzKappeU != null))
+        }) {
+            "Diagnose der Pruefung mit Erwartung fehlt: " + weitereMit.joinToString { z ->
+                val x = z.o.erwartungskonto!!
+                "${z.minute}:${x.fruehUntenMitErwartungMgdl}/${x.fruehSchwanzMitErwartungU}/${x.fruehSchwanzKappeU}"
+            }
+        }
 
         val ohne = fruehLauf(fStabil, File(dir, "ohne")) { fruehKonfiguration(anteil = 0.0) }
         pruefeMechanik(ohne, 0.0, 1.0, 2.0)

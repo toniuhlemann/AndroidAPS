@@ -6389,6 +6389,10 @@ class FuseCycleRunner(
                 fruehGemessenFreiU = if (fruehGilt) fruehGemessenFreiU else 0.0,
                 fruehHebung = fruehHebung.takeIf { fruehGilt },
                 fruehEndgrund = fruehEndgrund,
+                fruehUntenMitErwartungMgdl = predictionMitErwartung?.minLowerBgPriorFree,
+                fruehBremseUntenMitErwartungMgdl = restraintMitErwartung?.minLowerBgPriorFree,
+                fruehSchwanzMitErwartungU = tailMitErwartung?.takeIf { it.usable }?.headroomU,
+                fruehSchwanzKappeU = fruehSchwanzKappeU.takeIf { fruehGilt },
             ),
             // Fixvertrag 30.08.: das typisierte Zyklus-IOB fuer
             // APSResult.iobData / DeviceStatus openaps.iob.
@@ -6986,6 +6990,16 @@ class FuseCycleRunner(
         val fruehHebung: app.aaps.fuse.core.controller.AuthorizedLift.EarlyLift? = null,
         /** v2: Endpruefung der Portion - `null` = bestanden, sonst der Grund. */
         val fruehEndgrund: String? = null,
+        /**
+         * v2, Diagnose der Pruefung MIT Erwartung (G3/G4), ohne die Portion selbst: die gehobene prior-freie Untergrenze
+         * der Hauptbahn und der Bremsbahn [mg/dl], der Schwanz-Spielraum mit Erwartung [U] und die Schwanzkappe, die der
+         * Lift angewandt hat [U]. `null` = in diesem Zyklus nicht gerechnet. Dosierneutral - ohne sie war nicht zu
+         * sagen, ob Guard oder Schwanz eine Portion gesperrt hat.
+         */
+        val fruehUntenMitErwartungMgdl: Double? = null,
+        val fruehBremseUntenMitErwartungMgdl: Double? = null,
+        val fruehSchwanzMitErwartungU: Double? = null,
+        val fruehSchwanzKappeU: Double? = null,
     )
 
     /** E-034: was dieser Zyklus im Konto gebucht hat. */

@@ -2599,7 +2599,12 @@ object FuseStateJson {
                     .put("measuredPassedU", fin(x.fruehGemessenFreiU))
                     .put("liftGuard", x.fruehHebung?.guardLift ?: JSONObject.NULL)
                     .put("liftTail", x.fruehHebung?.tailLift ?: JSONObject.NULL)
-                    .put("endReason", x.fruehEndgrund ?: JSONObject.NULL))
+                    .put("endReason", x.fruehEndgrund ?: JSONObject.NULL)
+                    // Diagnose der Pruefung MIT Erwartung (G3/G4): wer hat die Portion gesperrt?
+                    .put("lowerWithExpMgdl", fin(x.fruehUntenMitErwartungMgdl))
+                    .put("restraintLowerWithExpMgdl", fin(x.fruehBremseUntenMitErwartungMgdl))
+                    .put("tailHeadroomWithExpU", fin(x.fruehSchwanzMitErwartungU))
+                    .put("tailCapU", fin(x.fruehSchwanzKappeU)))
             }
         }
         val b = x.buchung
