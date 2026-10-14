@@ -23,6 +23,7 @@ import app.aaps.core.objects.extensions.combine
 import app.aaps.core.objects.extensions.round
 import app.aaps.fuse.core.controller.ExpectationAccount
 import app.aaps.fuse.core.controller.LivenessChannel
+import app.aaps.fuse.core.controller.LowThreatGate
 import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.controller.MarkerReauthorization
 import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
@@ -1075,6 +1076,60 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         }
         assertTrue(fruehe(v1).all { it.konto?.early == null }) { "v1-Probe hat ein v2-Konto" }
         assertTrue(fruehe(v1).any { "FALLING" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) { "v1 pausiert nicht mehr an der Kanalkonstante" }
+    }
+
+    /** Langsames Abdriften vor dem Druck bei normalem Zucker; ein Bolus davor sorgt fuer Bolus-IOB. */
+    private val fTieftor = Fuse20Folgen.Folge(
+        "TIEFTOR", 1_701_252_000_000L, -90, 180,
+        listOf(-90 to 128.0, -45 to 118.0, 0 to 100.0, 8 to 97.0, 20 to 101.0, 45 to 150.0, 90 to 200.0, 180 to 140.0),
+        markerMin = 0,
+    )
+
+    /**
+     * Toni (Fruehstueck): das Tieftor meldete "fallend mit Bolus-Ueberdeckung" bei flachem Abdriften und normalem
+     * Zucker - das setzte die Stabilitaetsstrecke zurueck, der Start galt als instabil, und die Anfangsportion kam erst
+     * nach einer neuen vollen Strecke. Jetzt entscheidet fuer den Start die Fallgrenze: die Strecke bleibt, die
+     * Anfangsportion fliesst am Druck. Nach ihr bremst derselbe Befund die weiteren Portionen wie bisher.
+     * Synthetische Werte.
+     */
+    @Test
+    fun `der Ueberdeckungsbefund des Tieftors haelt den Mahlzeitstart nicht auf, danach bremst er`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fTieftor, dir, vorZyklus = { m ->
+            if (m == -60) boliSetzen(
+                boluses + BS(
+                    id = ++bolusId, timestamp = clock, amount = 1.5, type = BS.Type.NORMAL,
+                    ids = IDs(pumpId = clock, pumpType = PumpType.GENERIC_AAPS, pumpSerial = Fuse20Folgen.PUMPE_SERIAL),
+                ),
+            )
+        }) {
+            fruehKonfiguration(g1 = true, g2 = true, anteil = 0.5)
+            whenever(preferences.get(FuseDoubleKey.ExpectationStabilityBgMgdl)).thenReturn(80.0)
+            whenever(preferences.get(FuseIntKey.ExpectationStabilityMin)).thenReturn(5)
+            whenever(preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin)).thenReturn(1.0)
+        }
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+        val start = zyklen.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }
+        // Die Probe zeigt nur etwas, wenn am Druck genau dieser Befund vorliegt - leicht fallend, kein Tief.
+        assertEquals(LowThreatGate.Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE, start.o.lowThreat?.verdict) {
+            "Probe zeigt nichts: kein Ueberdeckungsbefund am Druck (${start.o.lowThreat})"
+        }
+        val rate = requireNotNull(start.o.signal?.ukfRatePerMin)
+        assertTrue(rate < 0.0 && rate > -1.0) { "Probe zeigt nichts: Trend $rate nicht leicht fallend" }
+        assertTrue(start.o.step?.safetyReasons?.isEmpty() == true) { "Probe zeigt nichts: gemessenes Tief am Druck" }
+        // Der Start gilt als stabil, und die Anfangsportion fliesst am Druck.
+        assertTrue(start.o.erwartungskonto!!.zyklus!!.state.startStable) { "Start trotz Strecke als instabil gewertet" }
+        val anfang = zyklen.first { it.frueh()?.initial == true && it.dErw() > 0.0 }
+        assertTrue(anfang.minute <= start.minute + 1) { "Anfangsportion erst in Minute ${anfang.minute}" }
+        assertTrue(zyklen.filter { it.minute <= anfang.minute && it.o.erwartungskonto?.zyklus != null }
+            .none { "LOW_THREAT" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) { "Pause wegen Tieftor vor der Anfangsportion" }
+        // Danach, mit Insulin an Bord: derselbe Befund pausiert die weiteren Portionen.
+        val danach = zyklen.filter {
+            it.minute > anfang.minute && it.o.erwartungskonto?.zyklus != null &&
+                it.o.lowThreat?.verdict == LowThreatGate.Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE
+        }
+        assertTrue(danach.isNotEmpty()) { "Probe zeigt nichts: nach der Anfangsportion kein Ueberdeckungsbefund" }
+        assertTrue(danach.all { "LOW_THREAT" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) { "Tieftor bremst nach der Anfangsportion nicht" }
+        assertEquals(0.0, danach.sumOf { it.dErw() }, 0.0)
     }
 
     /** Zucker am Druck knapp unter der Stabilitaetsgrenze, ohne gemessenes Tief. */

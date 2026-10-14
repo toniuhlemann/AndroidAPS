@@ -455,6 +455,9 @@ class FuseCycleRunner(
         /** Rasterluft des Erwartungs-Lifts - dieselbe wie bei Prime (E-034). */
         const val EK_TICK_EPS = 1e-9
 
+        /** Name der Kontosperre aus dem Tieftor (Null-Tor) - Exportwert, nicht umbenennen. */
+        const val SPERRE_TIEFTOR = "LOW_THREAT"
+
         /** Die Direktdosis-Familie: sie bucht voll auf das Erwartungskonto (E-034, 3b). */
         val EK_DIREKTDOSIS: Set<app.aaps.fuse.core.controller.ExposureGate.FinalSource> = setOf(
             app.aaps.fuse.core.controller.ExposureGate.FinalSource.PRIME,
@@ -3313,8 +3316,10 @@ class FuseCycleRunner(
                     ekSpaetesAbwaertsrisiko(cfg, episodes, computeTs, markerTs, step, signal, iobTotal, isf)
                 },
                 "LATCH".takeIf { descentLatch.blocksPositive },
-                "LOW_THREAT".takeIf { lowThreatResult.verdict != LowThreatGate.Verdict.NONE },
+                SPERRE_TIEFTOR.takeIf { lowThreatResult.verdict != LowThreatGate.Verdict.NONE },
             ),
+            // Toni: der Ueberdeckungsbefund haelt den Mahlzeitstart nur bei deutlichem Fallen auf (s. Parameter).
+            tieftorNurUeberdeckung = lowThreatResult.verdict == LowThreatGate.Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE,
             faellt = !signal.ukfRatePerMin.isFinite() || signal.ukfRatePerMin < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN,
             ukfRateMgdlPerMin = signal.ukfRatePerMin,
             technisch = listOfNotNull(
@@ -7020,6 +7025,15 @@ class FuseCycleRunner(
         activityUPerMin: Double,
         /** Gemessene Sperren dieses Zyklus (Namen); leer = keine. */
         sperren: List<String>,
+        /**
+         * Der [SPERRE_TIEFTOR]-Eintrag in [sperren] ist NUR der Befund "fallend mit Bolus-Ueberdeckung" des Tieftors,
+         * kein gemessenes Tief. Das Tor rechnet den geglaetteten Trend linear bis zu seinem Horizont hoch und meldet
+         * damit schon ein flaches Abdriften bei normalem Zucker. Toni: das ist kein Grund, den Mahlzeitstart als
+         * instabil zu werten. Fuer die Stabilitaetsstrecke zaehlt der Befund deshalb nicht, und die offene
+         * Anfangsportion haelt er nur bei Fallen ueber die Fallgrenze auf - wie das Fallen selbst. Danach bremst er die
+         * weiteren Portionen wie bisher. Ein gemessenes Tief bleibt in jedem Fall Sperre.
+         */
+        tieftorNurUeberdeckung: Boolean = false,
         faellt: Boolean,
         /**
          * UKF-Trend dieses Zyklus [mg/dl/min] fuer die STABILITAETSSTRECKE - sie
@@ -7053,7 +7067,9 @@ class FuseCycleRunner(
         tiefImReboundFenster: Boolean = false,
     ): ErwartungskontoZyklus? {
         val fruehEingaben by lazy(LazyThreadSafetyMode.NONE) { fruehEingabenVon() }
-        val gemesseneSperre = sperren.isNotEmpty()
+        // Die Strecke fragt, ob der Zucker STABIL ist: der Ueberdeckungsbefund ist eine Hochrechnung - ob der Zucker
+        // faellt, entscheidet die Fallgrenze der Strecke.
+        val gemesseneSperre = sperren.any { it != SPERRE_TIEFTOR || !tieftorNurUeberdeckung }
         // Die Strecke: mit den GEPINNTEN Grenzen des laufenden Kontos, sonst
         // mit den eingestellten (die am naechsten Druck gepinnt werden).
         val laufend = episodes.expectation?.takeIf { ekGilt && it.authId == dosingCtx.authorizationId }
@@ -7134,7 +7150,10 @@ class FuseCycleRunner(
         val anfangOffen = konto.early != null && !konto.initialDone &&
             computeTs - konto.authId < (app.aaps.fuse.core.controller.EarlySupply.INITIAL_WINDOW_MIN * 60_000.0).toLong()
         val faelltFuerPause = if (anfangOffen) faelltFuerStrecke else faellt
-        val pausenGruende = sperren + listOfNotNull("FALLING".takeIf { faelltFuerPause }) + technisch +
+        // Ebenso die Pause: die offene Anfangsportion haelt der Ueberdeckungsbefund nur bei deutlichem Fallen auf.
+        val sperrenFuerPause =
+            if (anfangOffen && tieftorNurUeberdeckung && !faelltFuerStrecke) sperren - SPERRE_TIEFTOR else sperren
+        val pausenGruende = sperrenFuerPause + listOfNotNull("FALLING".takeIf { faelltFuerPause }) + technisch +
             listOfNotNull("EARLY_SUPPLY_OFF".takeIf { konto.early?.let { it.withdrawn || !cfg.earlySupplyEnabled } == true })
         val pausiert = pausenGruende.isNotEmpty()
         // RUECKNAHME DER FREIGABE (K5b; Codex-Befund P0): das gemessene Tief
