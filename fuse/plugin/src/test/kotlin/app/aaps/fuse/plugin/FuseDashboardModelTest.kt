@@ -199,63 +199,30 @@ class FuseDashboardModelTest {
         assertTrue(v.signal.contains("SMB-Anteil 0.19"))
     }
 
+    /**
+     * Konsolidierung 2.0: mit der Sofort-Freigabe sind ihr Verbrauch im Freigabefenster ("verbucht/frei"), der
+     * Prime-Rest und die Freigabe-Uhr aus der Markerzeile entfallen. Es bleiben die am Druck gepinnte Huelle der
+     * Autorisierung und - getrennt - die Episode, damit sich ihre Summe nicht wie ein Verbrauch der Huelle liest.
+     */
     @Test
-    fun `Marker zeigt abgegeben und frei aus DEMSELBEN Buchungsstand`() {
-        val markerTs = now - 3 * 60_000L
+    fun `Marker zeigt Huelle und Episode ohne Freigabe-Uhr`() {
         val v = FuseDashboardModel.build(
             outcome(
                 prime = PrimeRelease.Plan(true, 0.2, 2.4, "PRIME"),
-                // Der GEBUCHTE Stand dieser Autorisierung.
-                // Die EPISODE traegt 1.30 - eine alte Autorisierung hat schon
-                // gebucht. Der Verbrauch DIESER Autorisierung ist 0.30.
                 mealStats = FuseCycleRunner.MealStats(3, 1.30, 1.30, 1.30),
-                // Huelle UND Verbrauch aus der Budgetrechnung dieser
-                // Autorisierung - nicht `primeSpentU` gegen die Einstellung.
                 envelopeU = 3.0,
                 envelopeSpentU = 0.30,
             ),
-            null,
-            now,
-            // Zwei UHREN: 90 min Marker, 25 min Freigabe. Die Anzeige hat sie
-            // bis 17.08.2026 vermischt und die Freigabe gegen die
-            // Vorgabe-Konstante gerechnet - bei einem 25-min-Fenster stand
-            // deshalb "15/15 min Freigabe" (abgelaufen) ueber einer noch
-            // offenen Prime-Menge. Der Test fuehrt die beiden jetzt ausdruecklich getrennt.
-            FuseScreenModel.MarkerInfo(markerTs, 90, 3.0, primeWindowMin = 25),
-            ledger(),
-            null,
-        )
-        assertTrue(v.marker.contains("AKTIV seit 3/90 min")) { v.marker }
-        // EIN BUCHUNGSSTAND: aus dem Prime-Rest (0.2 von 3.0) haette die
-        // alte Fassung 2.80 gerechnet - eine andere Zahl aus einem anderen
-        // Moment als die Episodenzeile darunter.
-        assertTrue(v.marker.contains("Autorisierung:")) { v.marker }
-        assertTrue(v.marker.contains("verbucht 0.30 U")) { v.marker }
-        assertTrue(v.marker.contains("frei 2.70 U")) { v.marker }
-        assertFalse(v.marker.contains("publiziert")) { "alter Mischstand: " + v.marker }
-        assertFalse(v.marker.contains("abgegeben")) {
-            "ohne Pumpennachweis ist \"abgegeben\" zu stark: " + v.marker
-        }
-        // DIE EPISODE STEHT GETRENNT - sonst laese man ihre Summe als
-        // Verbrauch dieser Autorisierung.
-        assertTrue(v.marker.contains("Episode 1.30 U")) { v.marker }
-        assertTrue(v.marker.contains("frei 2.70 U")) { v.marker }
-        assertTrue(v.marker.contains("3/25 min Freigabe")) { v.marker }
-    }
-
-    /** Ohne bekannte Einstellung wird KEINE Dauer genannt - eine erfundene
-     *  waere schlimmer als keine, und genau daran ist die alte Fassung
-     *  gescheitert. */
-    @Test
-    fun `ohne bekanntes Freigabefenster nennt die Zeile keine Dauer`() {
-        val v = FuseDashboardModel.build(
-            outcome(prime = PrimeRelease.Plan(true, 0.2, 2.4, "PRIME")),
             null, now,
-            FuseScreenModel.MarkerInfo(now - 3 * 60_000L, 90, 3.0, primeWindowMin = null),
+            FuseScreenModel.MarkerInfo(now - 3 * 60_000L, 90, 3.0),
             ledger(), null,
         )
-        assertTrue(v.marker.contains("Freigabe-Fenster unbekannt")) { v.marker }
-        assertFalse(Regex("""\d+/\d+ min Freigabe""").containsMatchIn(v.marker)) { v.marker }
+        assertTrue(v.marker.contains("AKTIV seit 3/90")) { v.marker }
+        assertTrue(v.marker.contains("Autorisierung: Huelle 3.00")) { v.marker }
+        assertTrue(v.marker.contains("Episode 1.30")) { v.marker }
+        assertFalse(v.marker.contains("verbucht")) { v.marker }
+        assertFalse(v.marker.contains("Freigabe")) { v.marker }
+        assertFalse(v.windows?.contains("Prime") == true) { "${v.windows}" }
     }
 
     @Test
@@ -384,7 +351,7 @@ class FuseDashboardModelTest {
                     stabilSeitTs = null, rueckfall = rueckfall,
                 ),
             ),
-            null, now, FuseScreenModel.MarkerInfo(now - seitMin * 60_000L, 90, 3.0, primeWindowMin = 25), ledger(), null,
+            null, now, FuseScreenModel.MarkerInfo(now - seitMin * 60_000L, 90, 3.0), ledger(), null,
         ).marker
         val ohneKurve = zeile("NO_CURVE")
         assertTrue(ohneKurve.contains("Mahlzeit angekündigt - Konto fehlt: Rückfall wie ohne Marker")) { ohneKurve }

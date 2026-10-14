@@ -3,7 +3,6 @@ package app.aaps.fuse.plugin
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.NightWindow
-import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.fuse.core.observer.Health
 import java.util.Locale
 
@@ -55,14 +54,8 @@ object FuseDashboardModel {
         val marker: String,
         /** Evidenz-Episode: Phase, Alter/Deckel, verbucht, Bestand, Kredit. */
         val evidence: String,
-        /** Totband-/Prime-/Onset-Status; null = nichts aktiv -> Zeile weg. */
+        /** Totband-/Onset-Status; null = nichts aktiv -> Zeile weg. */
         val windows: String?,
-        /**
-         * DER SOFORT-BATCH, getrennt nach geplant / aufgeschoben /
-         * geliefert / verbleibend (Nachtrag Toni 25.08., Punkt 9).
-         * null = kein Sofortanteil konfiguriert -> Zeile weg.
-         */
-        val upfrontBatch: String?,
         /** IOB verdichtet: netto (Bolus/Basal in Klammern). */
         val iobLine: String,
         /** Nur bei offener Transportmenge - sonst null -> Zeile weg. */
@@ -133,7 +126,6 @@ object FuseDashboardModel {
             marker = markerText(null, nowMs, marker),
             evidence = "noch nicht bewertet",
             windows = null,
-            upfrontBatch = null,
             iobLine = "IOB -",
             transport = null,
             limits = "-",
@@ -193,8 +185,7 @@ object FuseDashboardModel {
             gate = gate,
             marker = markerText(outcome, nowMs, marker),
             evidence = evidenceText(outcome),
-            windows = windowsText(outcome, nowMs, marker),
-            upfrontBatch = null,
+            windows = windowsText(outcome),
             iobLine = iobLine(outcome),
             transport = ledger?.transportCommitmentU?.takeIf { it > 0.0 }
                 ?.let { "Transport offen ${u(it)} - wird vom Spielraum abgezogen" },
@@ -240,14 +231,14 @@ object FuseDashboardModel {
     }
 
     /**
-     * Totband-, Prime- und Onset-Status. Der Totband-Zustand wird ueber
+     * Totband- und Onset-Status. Der Totband-Zustand wird ueber
      * DIESELBE Funktion berechnet wie im Regler ([NightWindow]), mit
      * demselben Kreditsignal (`creditMgdlPerMin > 0`) - eine zweite,
      * "aehnliche" Formel in der Anzeige war der Fehlerweg des 15.08.
      * (Verdrahtung fehlte, Anzeige haette "entwaffnet" gelogen).
      * null = nichts davon aktiv -> die Zeile verschwindet ganz.
      */
-    private fun windowsText(outcome: FuseCycleRunner.Outcome, nowMs: Long, marker: FuseScreenModel.MarkerInfo?): String? {
+    private fun windowsText(outcome: FuseCycleRunner.Outcome): String? {
         val state = outcome.state
         val teile = mutableListOf<String>()
         if (state != null && (state.nightWindow || state.reboundWindow)) {
@@ -275,19 +266,15 @@ object FuseDashboardModel {
             else
                 "$fenster-Totband entwaffnet (${if (outcome.evidenceMayOverrideRebound || creditActive) "Kredit" else "Marker"})"
         }
-        val markerAktiv = marker != null && marker.armedTs > 0L &&
-            (nowMs - marker.armedTs) / 60_000L < marker.windowMin
-        if (markerAktiv) outcome.prime?.let { p ->
-            teile += "Prime ${u(p.remainingU.coerceAtLeast(0.0))} offen"
-        }
+        // Konsolidierung 2.0: der Prime-Rest ("Prime x offen") ist mit der Sofort-Freigabe entfallen.
         outcome.onset?.takeIf { it.active }?.let { o ->
             teile += "Onset offen ${u(o.remainingU.coerceAtLeast(0.0))}"
         }
         return teile.takeIf { it.isNotEmpty() }?.joinToString("  |  ")
     }
 
-    // Konsolidierung 2.0: die Sofort-Batch-Zeile (geplant/geliefert/offen/Zustand) ist mit dem
-    // Mahlzeitenfundament entfallen; die Zeile bleibt bis Schritt 5 im Bildschirm und ist leer (unsichtbar).
+    // Konsolidierung 2.0: die Sofort-Batch-Zeile (geplant/geliefert/offen/Zustand) ist mit dem Sofortanteil
+    // entfallen, samt ihrer Zeile im Bildschirm.
 
     private fun markerText(outcome: FuseCycleRunner.Outcome?, nowMs: Long, marker: FuseScreenModel.MarkerInfo?): String {
         if (marker == null) return "Markerzustand unbekannt"
@@ -300,49 +287,14 @@ object FuseDashboardModel {
             ?.let { "\nMahlzeit angekündigt - Konto fehlt: Rückfall wie ohne Marker (${rueckfallLabel(it)})" } ?: ""
         if (elapsed >= marker.windowMin)
             return "Abgelaufen seit ${elapsed - marker.windowMin} min  |  Huelle ${u(marker.envelopeU)} konfiguriert$rueckfall"
-        // ---- EIN BUCHUNGSSTAND FUER DIE GANZE ZEILE ---------------------
-        //
-        // Hier stand `envelopeU - prime.remainingU`: der Prime-Rest VOR der
-        // Buchung dieses Zyklus. Die Episodenzeile darunter zeigte den Stand
-        // DANACH - die neueste Abgabe fehlte oben und stand unten schon
-        // drin. Zwei Buchungsstaende in einer Anzeige lesen sich wie ein
-        // Widerspruch, und man sieht nicht, welcher gilt.
-        //
-        // `mealStats.totalU` waere der falsche Bezug: es summiert die ganze
-        // EPISODE, und die Lieferliste wird bei einer Neuautorisierung
-        // innerhalb derselben Episode ausdruecklich nicht geleert. Nach
-        // "alte Autorisierung 1 U, dann neue volle Huelle" haette die Zeile
-        // vor der ersten Anforderung schon 1 U verbraucht gemeldet.
-        //
-        // Huelle UND Verbrauch kommen aus [FuseCycleRunner.envelopeUseOf],
-        // in der Fassung NACH dem Publikations-Gate. Konsolidierung 2.0: mit
-        // dem Mahlzeitenfundament ist die Rechnung ohne Fundament geblieben -
-        // `primeSpentU` (Verbrauch im Freigabefenster) gegen die am Druck
-        // gepinnte Huelle.
+        // DIE HUELLE GEHOERT ZUR AUTORISIERUNG: die am Druck gepinnte Kredit-Huelle, aus
+        // [FuseCycleRunner.envelopeUseOf] in der Fassung NACH dem Publikations-Gate. Die EPISODE laeuft eigen
+        // weiter und wird getrennt genannt - sonst laese sich ihre Summe wie ein Verbrauch der Huelle.
+        // Konsolidierung 2.0: mit der Sofort-Freigabe sind ihr Verbrauch im Freigabefenster ("verbucht/frei") und
+        // die Freigabe-Uhr entfallen.
         val huelle = outcome?.envelopeU ?: marker.envelopeU
-        val verbucht = outcome?.envelopeSpentU?.coerceAtLeast(0.0)
-        val verfuegbar = verbucht?.let { (huelle - it).coerceAtLeast(0.0) }
-        // "VERBUCHT", nicht "abgegeben": an AAPS uebergeben, nicht von der
-        // Pumpe bestaetigt. Der Runner haelt denselben Unterschied.
-        val amount = if (verbucht == null || verfuegbar == null) "Huelle ${u(huelle)}"
-        else "Huelle ${u(huelle)}  |  verbucht ${u(verbucht)}  |  frei ${u(verfuegbar)}"
-        // Die EPISODE laeuft eigen weiter und wird GETRENNT genannt - sonst
-        // liest sich ihre Summe wie der Verbrauch dieser Autorisierung.
-        val episodeSumme = outcome?.mealStats?.totalU
-            ?.takeIf { verbucht == null || kotlin.math.abs(it - verbucht) > 0.005 }
-            ?.let { "  |  Episode ${u(it)}" } ?: ""
-        // GEGEN DIE EINSTELLUNG, nicht gegen die Vorgabe-Konstante. Hier stand
-        // `PrimeRelease.WINDOW_MIN` (15); bei einem laenger eingestellten Fenster ergab
-        // das "15/15 min Freigabe" - abgelaufen - direkt ueber der Zeile
-        // mit offener Prime-Restmenge. Die Anzeige widersprach sich selbst, weil sie
-        // eine andere Uhr las als der Regler.
-        val release = marker.primeWindowMin?.let { w ->
-            "${elapsed.coerceAtMost(w)}/$w min Freigabe"
-        } ?: "Freigabe-Fenster unbekannt"
-        // DIE HUELLE GEHOERT ZUR AUTORISIERUNG, die Episode laeuft eigen
-        // weiter - beide Zahlen nebeneinander ohne Etikett lasen sich,
-        // als waere die eine der Rest der anderen.
-        return "AKTIV seit $elapsed/${marker.windowMin} min  |  Autorisierung: $amount$episodeSumme\n$release$rueckfall"
+        val episodeSumme = outcome?.mealStats?.totalU?.let { "  |  Episode ${u(it)}" } ?: ""
+        return "AKTIV seit $elapsed/${marker.windowMin} min  |  Autorisierung: Huelle ${u(huelle)}$episodeSumme$rueckfall"
     }
 
     /** Der Grund des Rueckfalls ohne Konto in Klartext (typisiert uebersetzt, nie roh). */

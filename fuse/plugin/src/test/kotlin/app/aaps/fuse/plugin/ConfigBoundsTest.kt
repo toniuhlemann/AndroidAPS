@@ -40,8 +40,6 @@ class ConfigBoundsTest {
         org.junit.jupiter.api.Assertions.assertEquals(0.35, FuseDoubleKey.MealDemandRatioCap.defaultValue, 1e-12)
         org.junit.jupiter.api.Assertions.assertEquals(140.0, FuseDoubleKey.LivenessBgMinDayMgdl.defaultValue, 1e-12)
         org.junit.jupiter.api.Assertions.assertEquals(160.0, FuseDoubleKey.LivenessBgMinNightMgdl.defaultValue, 1e-12)
-        org.junit.jupiter.api.Assertions.assertEquals(110.0, FuseDoubleKey.LivenessBgMinMealMgdl.defaultValue, 1e-12)
-        org.junit.jupiter.api.Assertions.assertEquals(1, FuseIntKey.MealArmCycles.defaultValue)
     }
 
     /** Ein Satz, der durchgehen MUSS - die Mitte des Erlaubten. */
@@ -49,15 +47,15 @@ class ConfigBoundsTest {
         smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0,
         riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0,
         onsetChannelEnabled = true, onsetEnvelopeU = 1.5,
-        primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2,
-        maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, zeroLatchEnabled = false, zeroLatchCalmExitMin = 20, zeroLatchReasonGoneExitCycles = 0, partialRecoveryEnabled = false, zeroLatchCalmDistanceMgdl = 30.0, reversalGuardEnabled = false, reversalFallUkf = 2.0, reversalLookbackMin = 20, reversalReboundUkf = 1.0, reversalConfirmCycles = 2, correctionRearmEnabled = false, rearmHoldMin = 5, rearmConfirmCycles = 2, rearmUpUkf = 0.3, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessMealPowerMin = 120, correctionExposureLimitU = 3.0, mealExposureLimitU = 7.0, correctionDemandRatioCap = 0.20, mealDemandRatioCap = 0.35, livenessBgMinDayMgdl = 140.0, livenessBgMinNightMgdl = 160.0, livenessBgMinMealMgdl = 110.0, mealArmCycles = 1, livenessReArmMin = 10, iobThPercent = 100,
+        primeEnvelopeU = 1.2,
+        maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, zeroLatchEnabled = false, zeroLatchCalmExitMin = 20, zeroLatchReasonGoneExitCycles = 0, partialRecoveryEnabled = false, zeroLatchCalmDistanceMgdl = 30.0, reversalGuardEnabled = false, reversalFallUkf = 2.0, reversalLookbackMin = 20, reversalReboundUkf = 1.0, reversalConfirmCycles = 2, correctionRearmEnabled = false, rearmHoldMin = 5, rearmConfirmCycles = 2, rearmUpUkf = 0.3, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessMealPowerMin = 120, correctionExposureLimitU = 3.0, mealExposureLimitU = 7.0, correctionDemandRatioCap = 0.20, mealDemandRatioCap = 0.35, livenessBgMinDayMgdl = 140.0, livenessBgMinNightMgdl = 160.0, livenessReArmMin = 10, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, signalRejoinEnabled = false, theilSenWindowMin = 18,
         absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120,
         nightStartMin = 1380, nightEndMin = 420,
         nightDeadbandMgdl = 45.0,
         reboundDeadbandMgdl = 25.0, reboundWindowMin = 45,
         driveLowerQuantilePct = 50, tailGuardEnabled = false, markerAuthorized = false,
-        mealFoundationEnabled = false, mealFoundationPhaseAShare = 1.0, mealFoundationPhaseAUpfrontShare = 0.0, mealFoundationEndMin = 60, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, endZeroWhenReasonGone = true,
+        tailFloorMgdl = 70.0, tailRecoveryU = 0.0, endZeroWhenReasonGone = true,
     )
 
     private fun ok(cfg: FuseCycleRunner.Config, was: String) {
@@ -78,8 +76,8 @@ class ConfigBoundsTest {
     @Test
     fun `die Marker-Huelle am oberen Rand des Dialogs geht durch`() {
         assertTrue(FuseDoubleKey.PrimeEnvelopeU.max >= 3.0, "der Bereich wurde zurueckgedreht?")
-        ok(mitte().copy(primeWindowMin = 15, primeEnvelopeU = FuseDoubleKey.PrimeEnvelopeU.max), "primeEnvelopeU am Maximum")
-        ok(mitte().copy(primeWindowMin = 15, primeEnvelopeU = FuseDoubleKey.PrimeEnvelopeU.min), "primeEnvelopeU am Minimum")
+        ok(mitte().copy(primeEnvelopeU = FuseDoubleKey.PrimeEnvelopeU.max), "primeEnvelopeU am Maximum")
+        ok(mitte().copy(primeEnvelopeU = FuseDoubleKey.PrimeEnvelopeU.min), "primeEnvelopeU am Minimum")
     }
 
     /**
@@ -104,7 +102,7 @@ class ConfigBoundsTest {
             Feld("tailRecoveryU", FuseDoubleKey.TailRecoveryU) { c, v -> c.copy(tailRecoveryU = v) },
             Feld("bolusShareLambda", FuseDoubleKey.BolusShareLambda) { c, v -> c.copy(bolusShareLambda = v) },
             Feld("onsetEnvelopeU", FuseDoubleKey.OnsetEnvelopeU) { c, v -> c.copy(onsetEnvelopeU = v) },
-            Feld("primeEnvelopeU", FuseDoubleKey.PrimeEnvelopeU) { c, v -> c.copy(primeWindowMin = 15, primeEnvelopeU = v) },
+            Feld("primeEnvelopeU", FuseDoubleKey.PrimeEnvelopeU) { c, v -> c.copy(primeEnvelopeU = v) },
         )
         for (f in felder) {
             ok(f.setze(mitte(), f.key.max), "${f.name} = ${f.key.max} (Dialog-Maximum)")
@@ -154,8 +152,6 @@ class ConfigBoundsTest {
         assertTrue(mitte().expectationParams == null) { "ohne Kurve keine Erwartung" }
         assertTrue(konto().expectationParams != null) { "gueltige Kurve, Standardwerte" }
         val doubles = listOf<Pair<FuseDoubleKey, (FuseCycleRunner.Config, Double) -> FuseCycleRunner.Config>>(
-            FuseDoubleKey.ExpectationPhi0Stable to { c, v -> c.copy(expectationPhi0Stable = v) },
-            FuseDoubleKey.ExpectationPhi0AfterLow to { c, v -> c.copy(expectationPhi0AfterLow = v) },
             FuseDoubleKey.ExpectationStabilityBgMgdl to { c, v -> c.copy(expectationStabilityBgMgdl = v) },
             FuseDoubleKey.ExpectationReleaseThresholdU to { c, v -> c.copy(expectationReleaseThresholdU = v) },
         )
@@ -179,7 +175,6 @@ class ConfigBoundsTest {
     @Test
     fun `ungueltige Konto-Werte schalten nur die Erwartung ab`() {
         for (c in listOf(
-            konto().copy(expectationPhi0Stable = 1.5),
             konto().copy(expectationStabilityBgMgdl = Double.NaN),
             konto().copy(expectationStabilityMin = 0),
             konto().copy(expectationHorizonMin = FuseIntKey.ExpectationHorizonMin.max + 1),
@@ -201,7 +196,7 @@ class ConfigBoundsTest {
     @Test
     fun `Werte jenseits des Dialogs werden abgewiesen`() {
         assertThrows(IllegalArgumentException::class.java) {
-            FuseCycleRunner.validate(mitte().copy(primeWindowMin = 15, primeEnvelopeU = FuseDoubleKey.PrimeEnvelopeU.max + 0.5))
+            FuseCycleRunner.validate(mitte().copy(primeEnvelopeU = FuseDoubleKey.PrimeEnvelopeU.max + 0.5))
         }
         assertThrows(IllegalArgumentException::class.java) {
             FuseCycleRunner.validate(mitte().copy(guardFloorMgdl = Double.NaN))

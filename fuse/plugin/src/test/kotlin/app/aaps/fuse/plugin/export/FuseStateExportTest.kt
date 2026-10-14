@@ -26,9 +26,9 @@ class FuseStateExportTest {
     private val BUILD = FuseStateJson.Build("3.4.2.5+fuse1.0.2-toni", "abc1234", true)
 
     private val cfg = FuseCycleRunner.Config(
-        smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeReleaseEnabled = true, primeWindowMin = 15, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, zeroLatchEnabled = false, zeroLatchCalmExitMin = 20, zeroLatchReasonGoneExitCycles = 0, partialRecoveryEnabled = false, zeroLatchCalmDistanceMgdl = 30.0, reversalGuardEnabled = false, reversalFallUkf = 2.0, reversalLookbackMin = 20, reversalReboundUkf = 1.0, reversalConfirmCycles = 2, correctionRearmEnabled = false, rearmHoldMin = 5, rearmConfirmCycles = 2, rearmUpUkf = 0.3, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessMealPowerMin = 120, correctionExposureLimitU = 3.0, mealExposureLimitU = 7.0, correctionDemandRatioCap = 0.20, mealDemandRatioCap = 0.35, livenessBgMinDayMgdl = 140.0, livenessBgMinNightMgdl = 160.0, livenessBgMinMealMgdl = 110.0, mealArmCycles = 1, livenessReArmMin = 10, iobThPercent = 100,
+        smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, zeroLatchEnabled = false, zeroLatchCalmExitMin = 20, zeroLatchReasonGoneExitCycles = 0, partialRecoveryEnabled = false, zeroLatchCalmDistanceMgdl = 30.0, reversalGuardEnabled = false, reversalFallUkf = 2.0, reversalLookbackMin = 20, reversalReboundUkf = 1.0, reversalConfirmCycles = 2, correctionRearmEnabled = false, rearmHoldMin = 5, rearmConfirmCycles = 2, rearmUpUkf = 0.3, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessMealPowerMin = 120, correctionExposureLimitU = 3.0, mealExposureLimitU = 7.0, correctionDemandRatioCap = 0.20, mealDemandRatioCap = 0.35, livenessBgMinDayMgdl = 140.0, livenessBgMinNightMgdl = 160.0, livenessReArmMin = 10, iobThPercent = 100,
         releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, signalRejoinEnabled = false, theilSenWindowMin = 18, absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120, nightStartMin = 1380, nightEndMin = 420, nightDeadbandMgdl = 45.0, reboundDeadbandMgdl = 25.0, reboundWindowMin = 45,
-        driveLowerQuantilePct = 50, tailGuardEnabled = false, markerAuthorized = false, mealFoundationEnabled = false, mealFoundationPhaseAShare = 1.0, mealFoundationPhaseAUpfrontShare = 0.0, mealFoundationEndMin = 60, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, endZeroWhenReasonGone = true,
+        driveLowerQuantilePct = 50, tailGuardEnabled = false, markerAuthorized = false, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, endZeroWhenReasonGone = true,
     )
 
     private fun signal() = FuseSignalSource.Signal(
@@ -522,20 +522,14 @@ class FuseStateExportTest {
 
     // ---- Politik ---------------------------------------------------------
 
-    /** v55 (H8): der WIRKSAME Horizont steht in Politik und Hash; ein unzulaessiger
-     *  konfigurierter Wert wirkt als 0 und bewegt den Hash nicht. */
+    /** Konsolidierung 2.0: H8 und seine Einstellung sind entfallen - nicht mehr in Politik und Hash; der Trail-Block
+     *  behaelt seine Feldnamen neutral (Horizonte 0), Antriebe und Rampe bleiben. */
     @Test
     fun `H8 - frueher MEAL-Horizont in Politik, Hash und Trail`() {
-        // Produktionsdefault AUS - Schluessel und Konfiguration.
-        assertEquals(0, app.aaps.fuse.plugin.FuseIntKey.EarlyAdaptiveMealHorizonMin.defaultValue)
-        assertEquals(0, cfg.earlyAdaptiveMealHorizonMin)
         val h = FuseStateJson.hashOf(cfg)!!
-        assertTrue(FuseStateJson.hashOf(cfg.copy(earlyAdaptiveMealHorizonMin = 8, earlyAdaptiveMealHorizonConfiguredMin = 8)) != h)
-        assertTrue(FuseStateJson.hashOf(cfg.copy(earlyAdaptiveMealHorizonMin = 6)) != FuseStateJson.hashOf(cfg.copy(earlyAdaptiveMealHorizonMin = 10)))
-        assertEquals(h, FuseStateJson.hashOf(cfg.copy(earlyAdaptiveMealHorizonConfiguredMin = 7)))
-        val werte = FuseStateJson.policyValues(cfg.copy(earlyAdaptiveMealHorizonMin = 0, earlyAdaptiveMealHorizonConfiguredMin = 7))
-        assertEquals(0, werte.getInt("earlyAdaptiveMealHorizonMin"))
-        assertEquals(7, werte.getInt("earlyAdaptiveMealHorizonConfiguredMin"))
+        val werte = FuseStateJson.policyValues(cfg)
+        assertFalse(werte.has("earlyAdaptiveMealHorizonMin"))
+        assertFalse(werte.has("earlyAdaptiveMealHorizonConfiguredMin"))
         val early = record(outcome()).getJSONObject("liveness").getJSONObject("earlyAdaptiveMeal")
         assertEquals(0, early.getInt("horizonMin"))
         assertFalse(early.getBoolean("eligible"))
@@ -566,7 +560,6 @@ class FuseStateExportTest {
     @Test
     fun `KI-141 - Rebound-Frist und zwei Schalter in Export und Hash`() {
         // Produktionsvoreinstellungen - der Test prueft, dass beide Richtungen zaehlen.
-        assertTrue(app.aaps.fuse.plugin.FuseBooleanKey.ConditionalTailEnabled.defaultValue)
         assertFalse(app.aaps.fuse.plugin.FuseBooleanKey.MarkerAuthorisesRelease.defaultValue)
 
         val werte = FuseStateJson.policyValues(cfg)
@@ -689,7 +682,6 @@ class FuseStateExportTest {
         assertTrue(FuseStateJson.hashOf(cfg.copy(mealExposureLimitU = 6.0)) != h)
         assertTrue(FuseStateJson.hashOf(cfg.copy(correctionDemandRatioCap = 0.15)) != h)
         assertTrue(FuseStateJson.hashOf(cfg.copy(mealDemandRatioCap = 0.30)) != h)
-        assertTrue(FuseStateJson.hashOf(cfg.copy(livenessBgMinMealMgdl = 120.0)) != h)
         assertTrue(FuseStateJson.hashOf(cfg.copy(livenessMealPowerMin = 60)) != h)
         // v25: der Zero-Latch - Schalter, Ruhe-Zyklen und Ruhe-Abstand.
         assertTrue(FuseStateJson.hashOf(cfg.copy(zeroLatchEnabled = true)) != h)
@@ -743,41 +735,6 @@ class FuseStateExportTest {
         // Hash allein sagt nicht, WAS sich unterschied.
         val werte = FuseStateJson.policyValues(cfg.copy(signalRejoinEnabled = true))
         assertTrue(werte.toString().contains("signalRejoinEnabled"))
-    }
-
-    @Test
-    fun `der Fundament-Schalter aendert den Politik-Hash`() {
-        val aus = FuseStateJson.hashOf(cfg.copy(mealFoundationEnabled = false))!!
-        val ein = FuseStateJson.hashOf(cfg.copy(mealFoundationEnabled = true))!!
-        assertTrue(aus != ein, "AUS und EIN sind zwei verschiedene Regler")
-    }
-
-    @Test
-    fun `die Phasenaufteilung aendert den Politik-Hash`() {
-        val a80 = FuseStateJson.hashOf(cfg.copy(mealFoundationPhaseAShare = 0.80))!!
-        val a75 = FuseStateJson.hashOf(cfg.copy(mealFoundationPhaseAShare = 0.75))!!
-        assertTrue(a80 != a75, "80/20 und 75/25 verteilen dieselbe Huelle verschieden")
-        // UND GEGEN DEN HEUTIGEN STAND: 100/0 ist der Vergleichsfall im
-        // Replay und muss sich von beiden unterscheiden.
-        val a100 = FuseStateJson.hashOf(cfg.copy(mealFoundationPhaseAShare = 1.00))!!
-        assertTrue(a100 != a80 && a100 != a75, "und 100/0 von beiden")
-    }
-
-    /** v28: der Sofortanteil - 0/0,5/0,75/1,0 verteilen dieselbe
-     *  Phase-A-Menge voellig verschieden ueber die Zeit (Replay-Matrix des
-     *  Bauauftrags), jede Stufe braucht ihren eigenen Fingerprint. */
-    @Test
-    fun `der phase-a-sofortanteil aendert den politik-hash`() {
-        val stufen = listOf(0.0, 0.5, 0.75, 1.0)
-            .map { FuseStateJson.hashOf(cfg.copy(mealFoundationPhaseAUpfrontShare = it))!! }
-        assertEquals(stufen.size, stufen.toSet().size, "jede Stufe ein eigener Hash: $stufen")
-    }
-
-    @Test
-    fun `das Phase-B-Fensterende aendert den Politik-Hash`() {
-        val e60 = FuseStateJson.hashOf(cfg.copy(mealFoundationEndMin = 60))!!
-        val e45 = FuseStateJson.hashOf(cfg.copy(mealFoundationEndMin = 45))!!
-        assertTrue(e60 != e45, "ein anderes Ende presst dasselbe Teilbudget in eine andere Zeit")
     }
 
     @Test
@@ -997,7 +954,7 @@ class FuseStateExportTest {
         )
     }
 
-    /** CENTRAL-only: alle vier Profilwerte und die MEAL-Schwelle bewegen
+    /** CENTRAL-only: alle vier Profilwerte bewegen
      *  den Hash einzeln - zwei Laeufe mit verschiedener Politik tragen nie
      *  denselben Fingerprint. */
     @Test
@@ -1007,7 +964,6 @@ class FuseStateExportTest {
         org.junit.jupiter.api.Assertions.assertNotEquals(basis, FuseStateJson.hashOf(cfg.copy(mealExposureLimitU = 6.0)))
         org.junit.jupiter.api.Assertions.assertNotEquals(basis, FuseStateJson.hashOf(cfg.copy(correctionDemandRatioCap = 0.15)))
         org.junit.jupiter.api.Assertions.assertNotEquals(basis, FuseStateJson.hashOf(cfg.copy(mealDemandRatioCap = 0.30)))
-        org.junit.jupiter.api.Assertions.assertNotEquals(basis, FuseStateJson.hashOf(cfg.copy(livenessBgMinMealMgdl = 120.0)))
     }
 
     @Test
@@ -1044,8 +1000,7 @@ class FuseStateExportTest {
         assertTrue(FuseStateJson.hashOf(cfg.copy(bolusShareLambda = 0.0)) != h)
         assertTrue(FuseStateJson.hashOf(cfg.copy(onsetEnvelopeU = 2.0)) != h)
         assertTrue(FuseStateJson.hashOf(cfg.copy(onsetChannelEnabled = false)) != h)
-        assertTrue(FuseStateJson.hashOf(cfg.copy(primeWindowMin = 15, primeEnvelopeU = 0.8)) != h)
-        assertTrue(FuseStateJson.hashOf(cfg.copy(primeReleaseEnabled = false)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(primeEnvelopeU = 0.8)) != h)
     }
 
     /** `Sha.lossless` WIRFT bei NaN. Der Wurf laege im runCatching des Exports

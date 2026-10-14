@@ -29,7 +29,7 @@ class ExpectationAccountPersistTest {
      * Konto v1 ist entfallen).
      */
     private fun konto(): ExpectationAccount.State {
-        val p = ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 90.0, 15, 0.3)!!
+        val p = ExpectationAccount.Params.of(kurve, 120, 90.0, 15, 0.3)!!
         val s = ExpectationAccount.armEarly(
             t0, t0 + 120 * min, p, EarlySupply.Settings.NEUTRAL, EarlySupply.Switches.NONE, true, t0, 110.0, 50.0, { 0.0 },
         )
@@ -160,7 +160,7 @@ class ExpectationAccountPersistTest {
 
     /** E-034 v2: das Konto der fruehen Versorgung - synthetische Einstellung, eine weitere Portion im Buch. */
     private fun fruehesKonto(): ExpectationAccount.State {
-        val p = ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 90.0, 15, 0.3)!!
+        val p = ExpectationAccount.Params.of(kurve, 120, 90.0, 15, 0.3)!!
         val e = app.aaps.fuse.core.controller.EarlySupply.Settings.of(1.5, 0.5, 8.0, 0.5, 1.0, 2.0, 10)!!
         val wirkung: (Double) -> Double = { t -> app.aaps.fuse.core.controller.EarlySupply.orefActionFraction(t, 45.0, 540.0) }
         val g = app.aaps.fuse.core.controller.EarlySupply.Switches(true, false, true, false)

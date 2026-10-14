@@ -605,8 +605,8 @@ object FuseStateJson {
             // ---- Mahlzeitenfundament (Punkt 12, Toni 18.08.) --------------
             //
             // IMMER GESCHRIEBEN, auch ohne Autorisierung. Konsolidierung 2.0:
-            // das Fundament ist entfallen - der Block steht bis Schritt 5 mit
-            // seinen Feldnamen und den Werten "kein Fundament" (`armed: false`,
+            // das Fundament ist entfallen - der Block steht mit seinen
+            // Feldnamen (Abbau spaeter abgestimmt) und den Werten "kein Fundament" (`armed: false`,
             // Nullen); nur die Messung VOR dem Fundament (die Normalentscheidung)
             // und die neutralen Sofortanteil-Felder kommen weiter aus dem Outcome.
             // DIE ENDKETTE DES SOFORTANTEILS - bis eben NUR im Outcome, also
@@ -1987,20 +1987,9 @@ object FuseStateJson {
         .put("driveLowerQuantilePct", p.driveLowerQuantilePct)
         .put("theilSenWindowMin", p.theilSenWindowMin)
         .put("signalRejoinEnabled", p.signalRejoinEnabled)
-        // DER RUHE-AUSGANG - dosierwirksam, also vollstaendig im Export.
-        .put("calmRecoveryEnabled", p.calmRecoveryEnabled)
-        .put("calmRecoveryCycles", p.calmRecoveryCycles)
-        .put("calmRecoveryMinUkf", p.calmRecoveryMinUkf)
-        .put("calmRecoveryGuardDistanceMgdl", p.calmRecoveryGuardDistanceMgdl)
-        .put("calmTreatmentMode", p.calmTreatmentMode)
-        // Der ausgeschriebene Modus, damit ein Leser die Zahl nicht
-        // nachschlagen muss - und damit eine Umnummerierung auffaellt.
-        .put(
-            "calmTreatment",
-            app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment
-                .ofSetting(p.calmTreatmentMode).name,
-        )
-        .put("calmRecoveryFingerprint", p.calmParams.fingerprint)
+        // Konsolidierung 2.0: die Einstellungen ohne Wirkung sind entfernt und fehlen hier - Ruhe-Ausgang,
+        // Sofort-Freigabe (Schalter, Fenster), Mahlzeitenfundament, Rebound-Evidenz-Ausnahme, Buchungsausgang,
+        // Halte-Anhebung, H8, MEAL-Schwelle und -Bewaffnung des Liveness-Kanals, Guard-Ausnahme und phi_0 des Kontos.
         .put("tailGuardEnabled", p.tailGuardEnabled)
         .put("tailFloorMgdl", fin(p.tailFloorMgdl))
         .put("tailRecoveryU", fin(p.tailRecoveryU))
@@ -2011,22 +2000,7 @@ object FuseStateJson {
         .put("bolusShareLambda", fin(p.bolusShareLambda))
         .put("onsetChannelEnabled", p.onsetChannelEnabled)
         .put("onsetEnvelopeU", fin(p.onsetEnvelopeU))
-        .put("primeReleaseEnabled", p.primeReleaseEnabled)
         .put("primeEnvelopeU", fin(p.primeEnvelopeU))
-        .put("primeWindowMin", p.primeWindowMin)
-        // DAS MAHLZEITENFUNDAMENT (Toni 19.08.). Alle drei, nicht nur der
-        // Schalter: ohne Anteil und Fensterende laesst sich im Replay nicht
-        // nachvollziehen, WELCHE Aufteilung ein Lauf gefahren hat - und genau
-        // das ist die Frage, die dort entschieden wird.
-        //
-        // Sie stehen in der POLICY und nicht im mealFoundation-Abschnitt: dort
-        // steht der Zustand einer laufenden Autorisierung, hier die
-        // Einstellung, aus der die naechste entsteht. Bei ausgeschaltetem
-        // Fundament gibt es keinen Zustand, aber sehr wohl eine Einstellung.
-        .put("mealFoundationEnabled", p.mealFoundationEnabled)
-        .put("mealFoundationPhaseAShare", fin(p.mealFoundationPhaseAShare))
-        .put("mealFoundationPhaseAUpfrontShare", fin(p.mealFoundationPhaseAUpfrontShare))
-        .put("mealFoundationEndMin", p.mealFoundationEndMin)
         // v17: der Marker-Prime-Aufschub. Schalter, gepinnter Horizont und
         // gepinnte Frist - ohne sie ist im Replay nicht trennbar, WELCHER
         // Aufschub-Regler einen Lauf gefahren hat.
@@ -2037,25 +2011,12 @@ object FuseStateJson {
         // die Profilwerte unten; die frueheren Kanal-Deckel sind mit dem
         // LEGACY-Pfad entfernt.
         .put("livenessChannelEnabled", p.livenessChannelEnabled)
-        // v51: die Rebound-Evidenz-Ausnahme am Liveness-Tor.
-        .put("livenessReboundEvidenceExceptionEnabled", p.livenessReboundEvidenceExceptionEnabled)
-        // v52: buchungsbedingter Ausgang ohne neue Sperre.
-        .put("livenessBookingExitWithoutReArmEnabled", p.livenessBookingExitWithoutReArmEnabled)
-        // v53: Halte-Anhebung im Liveness-Bedarf.
-        .put("livenessDriveHoldEnabled", p.livenessDriveHoldEnabled)
-        // v55: frueher adaptiver MEAL-Horizont - wirksam und wie konfiguriert.
-        .put("earlyAdaptiveMealHorizonMin", p.earlyAdaptiveMealHorizonMin)
-        .put("earlyAdaptiveMealHorizonConfiguredMin", p.earlyAdaptiveMealHorizonConfiguredMin)
         .put("mealPowerMin", p.livenessMealPowerMin)
         // CENTRAL-only (Legacy-Cleanup 29.08. nachts): policyMode bleibt
         // als KONSTANTE im Export, damit Viewer und alte Trails eindeutig
         // interpretierbar bleiben - LEGACY existiert nur noch in
         // historischen Aufzeichnungen.
         .put("policyMode", "CENTRAL_PROFILES")
-        // M1: die MEAL-Druckschwelle (echter Startsatz-Default 110).
-        .put("livenessBgMinMealMgdl", fin(p.livenessBgMinMealMgdl))
-        // M3: Bewaffnungszyklen unter MEAL-Vollmacht (Startsatz-Default 1).
-        .put("mealArmCycles", p.mealArmCycles)
         .put("correctionExposureLimitU", fin(p.correctionExposureLimitU))
         .put("mealExposureLimitU", fin(p.mealExposureLimitU))
         .put("correctionDemandRatioCap", fin(p.correctionDemandRatioCap))
@@ -2092,9 +2053,6 @@ object FuseStateJson {
             if (p.expectationAccountEnabled) put(
                 "expectationAccount",
                 JSONObject()
-                    .put("guardException", p.expectationGuardException)
-                    .put("phi0Stable", fin(p.expectationPhi0Stable))
-                    .put("phi0AfterLow", fin(p.expectationPhi0AfterLow))
                     .put("stabilityBgMgdl", fin(p.expectationStabilityBgMgdl))
                     .put("stabilityMin", p.expectationStabilityMin)
                     .put("releaseThresholdU", fin(p.expectationReleaseThresholdU))
@@ -2204,18 +2162,8 @@ object FuseStateJson {
             // Rampe + Abschlag: fehlten bis v1 - zwei Laeufe mit verschiedenen
             // Rampen bekamen denselben Hash (Audit 07.08.). Version 1->2.
             p.riseRampLowR, p.riseRampHighR, p.bolusShareLambda, p.onsetEnvelopeU, p.primeEnvelopeU,
-            // v32: die beiden Ruheschwellen. Zwei Laeufe mit 0,00 und 0,20
-            // mg/dl/min sind verschiedene Regler, ebenso 5 und 10 mg/dl
-            // Bodenabstand - letzteres machte den Fix im Motivationsfall
-            // vollstaendig wirkungslos.
-            p.calmRecoveryMinUkf, p.calmRecoveryGuardDistanceMgdl,
-            // v11: der Phase-A-Anteil. 80/20 und 75/25 verteilen dieselbe
-            // Huelle verschieden - ohne ihn trugen beide denselben Hash, und
-            // die Feldlaeufe waeren nicht trennbar gewesen.
-            p.mealFoundationPhaseAShare,
-            // v27: der Sofortanteil - 0/0,5/0,75/1,0 verteilen dieselbe
-            // Phase-A-Menge voellig verschieden ueber die Zeit.
-            p.mealFoundationPhaseAUpfrontShare,
+            // Konsolidierung 2.0 (Schritt 5): die Eingaenge der entfernten Einstellungen fehlen - der Hash wechselt
+            // dadurch einmalig. Positionskonstanten frueher entfernter Schalter (Stufe 1) bleiben stehen.
             // v16: Schwelle und Fenster des Low-Tors. Beide entscheiden, ab
             // wann eine Zero-TBR als nutzlos gilt - dosierwirksam auf der
             // TBR-Achse und bis v15 im Fingerprint unsichtbar.
@@ -2250,13 +2198,11 @@ object FuseStateJson {
         // nicht als Text: dieselbe Kurve mit anderem Leerraum ist dieselbe
         // Politik.
         val kontoZahlen = if (!p.expectationAccountEnabled) emptyList() else listOf(
-            p.expectationPhi0Stable, p.expectationPhi0AfterLow,
             p.expectationStabilityBgMgdl, p.expectationReleaseThresholdU,
         )
         if (kontoZahlen.any { !it.isFinite() }) return null
         val kontoTeile = if (!p.expectationAccountEnabled) emptyList() else listOf(
             "expectationAccount:on",
-            p.expectationGuardException.toString(),
             p.expectationStabilityMin.toString(),
             p.expectationHorizonMin.toString(),
             // Konsolidierung 2.0: der Pruefstand-Schalter des Arms EK-S ist entfallen - die Stelle steht als
@@ -2297,14 +2243,11 @@ object FuseStateJson {
             Sha.lossless(p.mealExposureLimitU),
             Sha.lossless(p.correctionDemandRatioCap),
             Sha.lossless(p.mealDemandRatioCap),
-            // M1: dosierwirksam sobald gesetzt (haengt an der
-            // Markervollmacht), "unset" als eigener Zustand.
-            Sha.lossless(p.livenessBgMinMealMgdl),
         )
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
             doubles.map { Sha.lossless(it) } +
             listOf(
-                p.iobThPercent, p.releaseHorizonMin, p.liabilityHorizonMin, p.primeWindowMin,
+                p.iobThPercent, p.releaseHorizonMin, p.liabilityHorizonMin,
                 p.driveTauMin, p.driveLowerQuantilePct,
                 // v22: das Fenster des Hauptschaetzers - dosierwirksam auf
                 // JEDER Bahn (Guard, Drive, Kennung), s. Journal.
@@ -2315,28 +2258,14 @@ object FuseStateJson {
                 // Zyklen bei vernachlaessigbarer Mehrmenge). AUS und EIN sind zwei
                 // verschiedene Regler.
                 p.signalRejoinEnabled,
-                // v32: der Ruhe-Ausgang aus Phase A. DOSIERWIRKSAM, sobald
-                // der Modus auf CALM_BATCH steht - dann verlaesst der offene
-                // Sofortanteil den historischen Latch. Schalter, Zyklenzahl
-                // und Modus gehoeren deshalb in den Hash; die beiden
-                // Schwellen stehen als Doubles darueber.
-                p.calmRecoveryEnabled,
-                p.calmRecoveryCycles,
-                p.calmTreatmentMode,
                 // 2.0 (Stufe 1, K3): die schnelle Bremsbahn ist fest an. Der
                 // Eingang bleibt als Konstante "true" stehen - zeichengleich mit
                 // dem bisherigen eingeschalteten Stand, also kein Hash-Wechsel.
-                p.tailGuardEnabled, true, p.onsetChannelEnabled, p.primeReleaseEnabled,
+                p.tailGuardEnabled, true, p.onsetChannelEnabled,
                 // v3: der Null-Ausgang aendert das Aktuationsverhalten - zwei
                 // Laeufe mit verschiedener Stellung duerfen nicht denselben
                 // Hash tragen.
                 p.endZeroWhenReasonGone,
-                // v11: Schalter und Fensterende des Fundaments. AUS und EIN
-                // sind zwei verschiedene Regler, und ein anderes Phase-B-Ende
-                // presst dasselbe Teilbudget in eine andere Zeit - beides
-                // dosierwirksam, beides bis v10 unsichtbar im Hash.
-                p.mealFoundationEnabled,
-                p.mealFoundationEndMin,
                 // v12: die Frist des Rebound-Sonderrechts. Zwei Laeufe mit
                 // 120 und 0 Minuten sind verschiedene Regler.
                 p.evidenceReboundOverrideMaxMin,
@@ -2351,21 +2280,6 @@ object FuseStateJson {
                 // nach Wenden verschieden schnell wieder.
                 p.livenessChannelEnabled,
                 p.livenessReArmMin,
-                // v51: die Rebound-Evidenz-Ausnahme. AUS und EIN sind zwei
-                // verschiedene Regler, sobald ein Marker nach einem Tief
-                // gedrueckt wird.
-                p.livenessReboundEvidenceExceptionEnabled,
-                // v52: AUS und EIN unterscheiden sich nach einem grossen Lift
-                // in der Wiederanlaufsperre.
-                p.livenessBookingExitWithoutReArmEnabled,
-                // v53: dosierwirksam im bewaffneten Kanal.
-                p.livenessDriveHoldEnabled,
-                // v55: der WIRKSAME fruehe MEAL-Horizont (0/6/8/10) - H6, H8
-                // und H10 sind verschiedene Regler.
-                p.earlyAdaptiveMealHorizonMin,
-                // v40 (M3): dosierwirksam unter MEAL-Vollmacht, sobald
-                // kleiner 3 gesetzt - modusunabhaengig immer im Hash.
-                p.mealArmCycles,
                 // v38/v44: der policyMode ist CENTRAL-only eine Konstante
                 // (zeichenstabil "true" wie der fruehere aktive Modus -
                 // kein unnoetiger Hash-Wechsel fuer zentrale Bestaende).
@@ -2422,9 +2336,7 @@ object FuseStateJson {
                 // Leistungsdauer - alle dosierwirksam, alle bisher nur im
                 // Export. Wie bei KI-141 bewusst OHNE Anhebung von
                 // RULE_SET_VERSION (Fingerprint der Ruhe-Erholung); der Hash
-                // wechselt einmalig. Der KONFIGURIERTE H8-Horizont bleibt
-                // draussen: ein unzulaessiger Wert wirkt als 0, im Hash steht
-                // der wirksame (v55).
+                // wechselt einmalig.
                 p.nightStartMin,
                 p.nightEndMin,
                 // 2.0 (Stufe 1, K3): beide Totbaender fest an, Konstanten.

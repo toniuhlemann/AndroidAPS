@@ -29,25 +29,21 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.BolusShareLambda.key,
     FuseDoubleKey.OnsetEnvelopeU.key,
     FuseDoubleKey.PrimeEnvelopeU.key,
-    FuseDoubleKey.MealFoundationPhaseAShare.key,
     FuseBooleanKey.DeferredPrimeEnabled.key,
     FuseDoubleKey.MarkerPrimeDescentHorizonMin.key,
     FuseIntKey.DeferredPrimeEndMin.key,
     FuseBooleanKey.PartialRecoveryEnabled.key,
     FuseBooleanKey.LivenessChannelEnabled.key,
-    FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled.key,
     FuseBooleanKey.SignalRejoinEnabled.key,
     FuseIntKey.LivenessMealPowerMin.key,
-    // Die zentralen Profilwerte (CENTRAL-only, echte Defaults). MealDemandRatioCap wirkt nur noch ohne Konto und
-    // ist nicht mehr einstellbar (Konsolidierung); gesichert wird er weiter.
+    // Die zentralen Profilwerte (CENTRAL-only, echte Defaults).
     FuseDoubleKey.CorrectionExposureLimitU.key,
     FuseDoubleKey.MealExposureLimitU.key,
     FuseDoubleKey.CorrectionDemandRatioCap.key,
     FuseBooleanKey.ZeroLatchEnabled.key,
     FuseIntKey.ZeroLatchCalmExitMin.key,
     FuseIntKey.ZeroLatchReasonGoneExitCycles.key,
-    // 2.0 (Stufe 1, K2): CorrectionSeriesWindowMin und CorrectionSeriesCapU
-    // sind nicht mehr einstellbar (Variante 2 entfernt).
+    // 2.0 (Stufe 1, K2): der Serien-Deckel ist entfernt (Variante 2).
     FuseDoubleKey.ZeroLatchCalmDistanceMgdl.key,
     FuseBooleanKey.CorrectionReversalGuardEnabled.key,
     FuseDoubleKey.ReversalFallUkf.key,
@@ -77,15 +73,12 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseIntKey.LiabilityHorizonMin.key,
     FuseIntKey.NightStartMin.key,
     FuseIntKey.NightEndMin.key,
-    // 2.0 (Stufe 1, K3): FastRestraintEnabled, ConditionalTailEnabled,
-    // NightDeadbandEnabled und ReboundDeadbandEnabled sind nicht mehr
-    // einstellbar (Funktion fest an); die Schluessel bleiben registriert.
+    // 2.0 (Stufe 1, K3): schnelle Bremsbahn, bedingte Schwanzkante und beide Totbaender sind fest an.
     FuseBooleanKey.OnsetChannelEnabled.key,
-    FuseBooleanKey.MealFoundationEnabled.key,
     FuseBooleanKey.ExpectationLedgerEnabled.key,
-    // 2.0 (Stufe 1, K1): ForecastShadowCollectionEnabled ist nicht mehr einstellbar.
-    // Konsolidierung: Direktdosis, Ruhe-Ausgang, Konto v1, Marker-Autorisierung und die Mahlzeitenteile des
-    // Liveness-Kanals sind nicht mehr einstellbar - der Regler liest sie bis zu ihrem Abbau unveraendert.
+    // Konsolidierung 2.0: die Einstellungen ohne Wirkung sind entfernt (s. FuseRetiredKey - registriert nur fuer die
+    // Sicherung). Nicht einstellbar, aber wirksam: MarkerAuthorisesRelease (praediktorfreier Markerpfad) und
+    // MealDemandRatioCap (Bedarfsdeckel im Mahlzeitkontext); gesichert werden beide weiter.
     FuseBooleanKey.TailGuardEnabled.key,
     FuseBooleanKey.TbrEndZeroWhenReasonGone.key,
     // Das Erwartungskonto (Testkandidat E-034) - eigener Abschnitt.
@@ -207,8 +200,6 @@ object FuseSettingsReport {
                 ),
                 "Erwartungskonto: wirkt mit" to listOf(
                     zahl(FuseDoubleKey.PrimeEnvelopeU, "Freigabe-Huelle", "U"),
-                    schalter(FuseBooleanKey.MealFoundationEnabled, "Mahlzeitenfundament"),
-                    zahl(FuseDoubleKey.MealFoundationPhaseAShare, "Anteil Phase A", ""),
                     ganz(FuseIntKey.AbsorptionCreditWindowMin, "Absorption", "min"),
                     ganz(FuseIntKey.MarkerBoostMaxMin, "Sonderrechte", "min"),
                     schalter(FuseBooleanKey.DeferredPrimeEnabled, "Marker-Prime-Aufschub"),
@@ -241,7 +232,6 @@ object FuseSettingsReport {
                     zahl(FuseDoubleKey.LivenessBgMinDayMgdl, "Druck-Schwelle Tag", "mg/dl"),
                     zahl(FuseDoubleKey.LivenessBgMinNightMgdl, "Druck-Schwelle Nacht", "mg/dl"),
                     ganz(FuseIntKey.LivenessReArmMin, "Re-Arm-Sperre", "min"),
-                    schalter(FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled, "Buchungsausgang ohne Sperre"),
                     schalter(FuseBooleanKey.OnsetChannelEnabled, "Onset-Kanal"),
                     zahl(FuseDoubleKey.OnsetEnvelopeU, "Onset-Huelle", "U"),
                     schalter(FuseBooleanKey.CorrectionReversalGuardEnabled, "V-Reversal-Schutz"),

@@ -194,8 +194,6 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
      */
     private fun konfiguration(
         kontoAn: Boolean,
-        phi0Stabil: Double = 0.5,
-        phi0Tief: Double = 0.25,
         markerAutorisiert: Boolean = true,
     ) {
         whenever(preferences.get(anyOrNull<BooleanKey>())).thenReturn(false)
@@ -205,8 +203,6 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         FuseStringKey.entries.forEach { k -> whenever(preferences.get(k)).thenReturn(k.defaultValue) }
         whenever(preferences.get(FuseBooleanKey.MarkerAuthorisesRelease)).thenReturn(markerAutorisiert)
         whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenReturn(true)
-        whenever(preferences.get(FuseDoubleKey.ExpectationPhi0Stable)).thenReturn(phi0Stabil)
-        whenever(preferences.get(FuseDoubleKey.ExpectationPhi0AfterLow)).thenReturn(phi0Tief)
         whenever(preferences.get(FuseStringKey.ExpectationCurve)).thenReturn(if (kontoAn) kurve else "")
         whenever(preferences.get(DoubleKey.ApsSmbMaxIob)).thenReturn(MAX_IOB)
         whenever(constraintsChecker.getMaxIOBAllowed()).thenAnswer { ConstraintObject(MAX_IOB, aapsLogger) }
@@ -233,10 +229,11 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     /** Ein Zyklus der Probe: das Ergebnis, das Konto danach und die gelieferte Menge. */
     private class Zyklus(val minute: Int, val o: FuseCycleRunner.Outcome, val konto: ExpectationAccount.State?, val geliefertU: Double)
 
-    private fun neuerRunner(arm: FuseCycleRunner.Pruefarm?) = FuseCycleRunner(
+    private fun neuerRunner(arm: FuseCycleRunner.Pruefarm?, uebergabe: FuseCycleRunner.MahlzeitUebergabe? = null) = FuseCycleRunner(
         iobCobCalculator, profileFunction, activePlugin, constraintsChecker, commandQueue,
         preferences, persistenceLayer, processedTbrEbData, dateUtil, ledger, "ek-session", { markerPress },
         pruefarm = arm,
+        mahlzeitVorNeubau = uebergabe,
         rejoinPolicy = app.aaps.fuse.core.signal.RejoinPolicy.enabled(),
         predict = { input ->
             predictReject?.let { app.aaps.fuse.core.predictor.PredictorOutcome.Rejected(it, "erzwungen") }
@@ -363,11 +360,10 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(zyklen.any { it.o.erwartungskonto!!.zyklus?.armiertInDiesemZyklus == true }) { "keine Buchung am Druck" }
     }
 
-    /** Ohne gueltige Kurve gilt kein Konto, auch wenn der alte Schalter noch gespeichert an ist. */
+    /** Ohne gueltige Kurve gilt kein Konto - der alte Schalter ist entfernt (FuseRetiredKey) und wird nie gelesen. */
     @Test
     fun `ohne gueltige Kurve gilt kein Konto, gleich was der alte Schalter sagt`(@TempDir dir: File) {
         konfiguration(kontoAn = false)
-        whenever(preferences.get(FuseBooleanKey.ExpectationAccountEnabled)).thenReturn(true)
         val zyklen = lauf(Fuse20Folgen.F1, dir)
         assertTrue(zyklen.all { it.o.erwartungskonto?.gilt != true && it.konto == null }) { "Konto ohne Kurve" }
     }
@@ -394,6 +390,9 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         konfiguration(kontoAn = false)
         val ohne = lauf(ohneDruck(fStabil), File(dir, "ohne").also(File::mkdirs))
         assertEquals(ohne.map { it.minute }, mit.map { it.minute })
+        // Die eine Ausnahme (Toni): im Rueckfall bremst das Rebound-Fenster die Mahlzeit nicht - eigene Probe unten. Diese
+        // Folge hat kein Tief, also kein Rebound-Fenster; die Paarung gilt deshalb fuer jeden Zyklus.
+        assertTrue(mit.none { it.o.state?.reboundRestMin != null }) { "die Folge erreicht ein Rebound-Fenster" }
         for ((a, b) in mit.zip(ohne)) {
             val k = "Minute ${a.minute}"
             assertEquals(b.o.abortReason, a.o.abortReason, k)
@@ -498,6 +497,50 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             assertEquals(0.0, z.dErw(), 0.0, "Minute ${z.minute}")
             // Die Ankuendigung bleibt: die Vollmacht steht weiter im Trail.
             assertEquals(fStabil.ts(0), z.o.dosingContextAuthorizationId, "Minute ${z.minute}: Vollmacht")
+        }
+    }
+
+    /**
+     * TONI: eine LEDGER-REPARATUR mitten in der Mahlzeit bucht kein neues Konto. Die Reparatur legt eine leere Generation
+     * an, und der Runner wird im selben Prozess neu gebaut - der Druck bleibt beobachtet. Mit der Uebergabe des alten
+     * Runners bleibt die Vollmacht sichtbar, und die Mahlzeit laeuft ausgewiesen im Rueckfall (ACCOUNT_LOST). Gegenprobe
+     * ohne Uebergabe: die Vollmacht ist weg - genau die Luecke, die die Uebergabe schliesst.
+     */
+    @Test
+    fun `Reparatur mitten in der Mahlzeit - keine Neubuchung, Rueckfall mit Meldung, Vollmacht sichtbar`(@TempDir dir: File) {
+        val reparaturMin = 30
+        for (mitUebergabe in listOf(true, false)) {
+            val d = File(dir, if (mitUebergabe) "mit" else "ohne").also(File::mkdirs)
+            val zyklen = fruehLauf(fStabil, d, vorZyklus = { m ->
+                if (m == reparaturMin) {
+                    val u = runner.mahlzeitUebergabe()
+                    assertNotNull(u) { "Vorbedingung: eine laufende Vollmacht" }
+                    assertEquals(fStabil.ts(0), u!!.kontoGebuchtFuerAuth) { "Vorbedingung: das Konto war gebucht" }
+                    // Die Reparatur: eine leere Generation (hier ihr Mahlzeitteil - Vollmacht, Konto, Autorisierung) und
+                    // ein neuer Runner im selben Prozess.
+                    ledger.episodes.apply {
+                        markerPowerPinnedFor = 0L
+                        markerPowerDeadlineTs = 0L
+                        expectation = null
+                        markerAuth = null
+                    }
+                    runner = neuerRunner(null, if (mitUebergabe) u else null)
+                }
+            }) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+            val danach = zyklen.filter { it.minute in reparaturMin until 120 }
+            assertTrue(danach.isNotEmpty())
+            for (z in danach) {
+                val k = "${if (mitUebergabe) "mit" else "ohne"} Minute ${z.minute}"
+                assertNull(z.konto, "$k: neues Konto gebucht")
+                assertEquals(0.0, z.dErw(), 0.0, k)
+                if (mitUebergabe) {
+                    assertEquals("ACCOUNT_LOST", z.o.erwartungskonto?.rueckfall, "$k: Rueckfall nicht ausgewiesen")
+                    assertEquals("MEAL", z.o.dosingContextProfile, "$k: Vollmacht")
+                    assertEquals(fStabil.ts(0), z.o.dosingContextAuthorizationId, "$k: Autorisierung")
+                } else {
+                    assertEquals("CORRECTION", z.o.dosingContextProfile, "$k: ohne Uebergabe bliebe die Vollmacht")
+                }
+            }
         }
     }
 
@@ -667,8 +710,8 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     /**
      * Tief kurz nach dem Druck, danach langer Anstieg ohne Wende: die
      * Marker-Sonderrechte enden nach markerBoostMaxMin, das Tief liegt dann
-     * noch im Rebound-Fenster. Heute greift die Bremse dort wieder; im
-     * Mahlzeitkontext des Kontos nie (Tonis Regel).
+     * noch im Rebound-Fenster. Ohne Vollmacht greift die Bremse dort; im
+     * Mahlzeitkontext nie (Tonis Regel) - weder im Konto noch im Rueckfall.
      */
     private val fReboundNachDruck = Fuse20Folgen.Folge(
         "REBOUND", 1_700_474_400_000L, -90, 180,
@@ -679,20 +722,27 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     @Test
     fun `das Rebound-Fenster blockiert die Mahlzeit im Kontokontext nie`(@TempDir dir: File) {
         val nachSonderrechten = 50..90
-        fun laufMit(arm: FuseCycleRunner.Pruefarm?, name: String): List<Zyklus> {
+        fun laufMit(f: Fuse20Folgen.Folge, arm: FuseCycleRunner.Pruefarm?, name: String): List<Zyklus> {
             konfiguration(kontoAn = true)
             whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(REBOUND_FENSTER_MIN)
-            return lauf(fReboundNachDruck, File(dir, name).also(File::mkdirs), arm)
+            return lauf(f, File(dir, name).also(File::mkdirs), arm)
                 .filter { it.o.abortReason == null && it.o.state != null }
         }
-        // Heute (Schalter aus): nach dem Ende der Sonderrechte greift das Fenster wieder.
-        val heute = laufMit(FuseCycleRunner.Pruefarm.REF, "REF").filter { it.minute in nachSonderrechten }
-        assertTrue(heute.isNotEmpty())
-        assertTrue(heute.none { it.o.state!!.markerBoost }) { "die Sonderrechte enden in der Probe nicht" }
-        assertTrue(heute.any { it.o.state!!.reboundWindow }) { "die Probe erreicht das Rebound-Fenster nicht" }
+        // Ohne Vollmacht (dieselbe Folge ohne Druck) greift das Fenster in diesen Minuten - die Probe erreicht es.
+        val ohneVollmacht = laufMit(ohneDruck(fReboundNachDruck), null, "ohne").filter { it.minute in nachSonderrechten }
+        assertTrue(ohneVollmacht.isNotEmpty())
+        assertTrue(ohneVollmacht.any { it.o.state!!.reboundWindow }) { "die Probe erreicht das Rebound-Fenster nicht" }
+        // Schalter aus (Arm REF): die Sonderrechte enden, die Mahlzeit laeuft im Rueckfall. TONI (Konsolidierung 2.0):
+        // auch dort bremst das Fenster nicht, solange die Vollmacht laeuft.
+        val ref = laufMit(fReboundNachDruck, FuseCycleRunner.Pruefarm.REF, "REF").filter { it.minute in nachSonderrechten }
+        assertTrue(ref.isNotEmpty())
+        assertTrue(ref.none { it.o.state!!.markerBoost }) { "die Sonderrechte enden in der Probe nicht" }
+        assertTrue(ref.all { it.o.erwartungskonto?.rueckfall == "NO_CURVE" }) { "der Rueckfall ist nicht ausgewiesen" }
+        assertTrue(ref.none { it.o.state!!.reboundWindow }) { "das Rebound-Fenster bremst im Rueckfall" }
+        assertTrue(ref.any { it.o.state!!.reboundSuppressedByMarker }) { "die Rebound-Bedingung lag im Rueckfall nicht an" }
         // Konto an: im ganzen gepinnten Fenster entwaffnet - die Bedingung lag an, gebremst wird nicht.
         // (Konsolidierung 2.0: wie konfiguriert - der v1-Arm EK ist entfallen.)
-        val imFenster = laufMit(null, "konto").filter { it.o.erwartungskonto?.gilt == true }
+        val imFenster = laufMit(fReboundNachDruck, null, "konto").filter { it.o.erwartungskonto?.gilt == true }
         assertTrue(imFenster.any { it.minute in nachSonderrechten }) { "das Konto gilt dort nicht" }
         assertTrue(imFenster.none { it.o.state!!.reboundWindow }) { "das Rebound-Fenster bremst im Kontokontext" }
         assertTrue(
@@ -702,24 +752,52 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     }
 
     /**
-     * Frage der Forschung: nach einem Rueckfall steuert der heutige
-     * Pfad - dann darf auch die Rebound-Bremse nicht mehr am Konto haengen.
-     * Das Konto geht mitten in der Episode verloren; nach den Sonderrechten
-     * greift das Fenster wie heute.
+     * TONI (Konsolidierung 2.0): "Rebound blockiert keine Mahlzeit" gilt auch im Rueckfall ohne Konto. Das Konto geht
+     * mitten in der Episode verloren; solange die Mahlzeit-Vollmacht laeuft, bremst das Fenster trotzdem nicht - es ist
+     * entwaffnet wie im Kontofenster, der Rueckfall steht ausgewiesen daneben.
      */
     @Test
-    fun `nach einem Rueckfall bremst das Rebound-Fenster wie heute`(@TempDir dir: File) {
+    fun `im Rueckfall bremst das Rebound-Fenster die Mahlzeit nicht, solange die Vollmacht laeuft`(@TempDir dir: File) {
         konfiguration(kontoAn = true)
         whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(REBOUND_FENSTER_MIN)
-        // Konsolidierung 2.0: wie konfiguriert - der v1-Arm EK ist entfallen.
         val zyklen = lauf(fReboundNachDruck, dir, vorZyklus = { m ->
             if (m == 20) ledger.episodes.expectation = null
         }).filter { it.o.abortReason == null && it.o.state != null }
         val danach = zyklen.filter { it.minute in 50..90 && !it.o.state!!.markerBoost }
         assertTrue(danach.isNotEmpty())
         assertTrue(danach.all { it.o.erwartungskonto?.rueckfall == "ACCOUNT_LOST" }) { "der Rueckfall ist nicht ausgewiesen" }
-        assertTrue(danach.none { it.o.state!!.reboundSuppressedByMarker }) { "die Bremse haengt nach dem Rueckfall am Konto" }
-        assertTrue(danach.any { it.o.state!!.reboundWindow }) { "die Probe erreicht das Rebound-Fenster nicht" }
+        assertTrue(danach.any { it.o.state!!.reboundSuppressedByMarker }) { "die Probe erreicht das Rebound-Fenster nicht" }
+        assertTrue(danach.none { it.o.state!!.reboundWindow }) { "das Rebound-Fenster bremst im Rueckfall" }
+    }
+
+    /**
+     * Derselbe Unterschied als Menge: Rueckfall ohne Konto (keine Kurve) gegen dieselbe Folge ohne Druck. Ohne Vollmacht
+     * haelt das Rebound-Totband den Bedarf zurueck; im Rueckfall dosiert FUSE in denselben Zyklen.
+     */
+    @Test
+    fun `Rueckfall im Rebound-Fenster dosiert, derselbe Lauf ohne Vollmacht nicht`(@TempDir dir: File) {
+        konfiguration(kontoAn = false)
+        whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(REBOUND_FENSTER_MIN)
+        val mit = lauf(fReboundNachDruck, File(dir, "mit").also(File::mkdirs))
+        konfiguration(kontoAn = false)
+        whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(REBOUND_FENSTER_MIN)
+        val ohne = lauf(ohneDruck(fReboundNachDruck), File(dir, "ohne").also(File::mkdirs))
+        val ohneJeMinute = ohne.associateBy { it.minute }
+        // Die Zyklen, in denen ohne Vollmacht das Rebound-Totband haelt und im Rueckfall eine Menge hinausgeht.
+        val gebremst = mit.filter { z ->
+            val b = ohneJeMinute[z.minute] ?: return@filter false
+            z.o.erwartungskonto?.rueckfall != null && z.geliefertU > 0.0 &&
+                b.geliefertU == 0.0 && b.o.decision.bindingLimit == "reboundDeadband"
+        }
+        assertTrue(gebremst.isNotEmpty()) {
+            "Vorbedingung: ohne Vollmacht haelt das Totband, im Rueckfall fliesst Insulin - " +
+                mit.filter { it.o.erwartungskonto?.rueckfall != null }.joinToString { "${it.minute}:${it.geliefertU}" }
+        }
+        // Im Rueckfall nennt kein Zyklus das Rebound-Totband, ohne Vollmacht bremst das Fenster.
+        assertTrue(mit.filter { it.o.erwartungskonto?.rueckfall != null }.none { it.o.decision.bindingLimit == "reboundDeadband" })
+        assertTrue(ohne.any { it.o.state?.reboundWindow == true })
+        // Gemessene Tiefs bleiben hart: im gemessenen Tief geht auch im Rueckfall nichts hinaus.
+        assertTrue(mit.filter { it.o.step?.safetyReasons?.isNotEmpty() == true }.all { it.geliefertU == 0.0 })
     }
 
     /**
@@ -823,7 +901,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         anteil: Double = 0.5, portionU: Double = 1.0, zeitraumU: Double = 2.0, budgetU: Double = FRUEH_BUDGET_U,
         skalaTief: Double = 1.0,
     ) {
-        konfiguration(kontoAn = true, phi0Stabil = 1.0, phi0Tief = 1.0)
+        konfiguration(kontoAn = true)
         whenever(preferences.get(FuseBooleanKey.EarlySupplyEnabled)).thenReturn(true)
         whenever(preferences.get(FuseDoubleKey.EarlySupplyScaleStable)).thenReturn(1.0)
         whenever(preferences.get(FuseDoubleKey.EarlySupplyScaleAfterLow)).thenReturn(skalaTief)

@@ -27,11 +27,9 @@ class ExpectationAccountTest {
     }
 
     private fun params(
-        phiStabil: Double = 0.5,
-        phiTief: Double = 0.0,
         schwelle: Double = 0.2,
         h: Int = 120,
-    ) = ExpectationAccount.Params.of(kurve, h, phiStabil, phiTief, 100.0, 10, schwelle)!!
+    ) = ExpectationAccount.Params.of(kurve, h, 100.0, 10, schwelle)!!
 
     private fun inputs(
         nach: Long,
@@ -126,11 +124,10 @@ class ExpectationAccountTest {
 
     @Test
     fun `ungueltige Einstellungen schalten die Erwartung ab`() {
-        assertNull(ExpectationAccount.Params.of(kurve, 120, 1.5, 0.0, 100.0, 10, 0.2))
-        assertNull(ExpectationAccount.Params.of(kurve, 20, 0.5, 0.0, 100.0, 10, 0.2))
-        assertNull(ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 100.0, 3, 0.2))
-        assertNull(ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 100.0, 10, 3.0))
-        assertNull(ExpectationAccount.Params.of(kurve, 120, 0.5, 0.0, 40.0, 10, 0.2))
+        assertNull(ExpectationAccount.Params.of(kurve, 20, 100.0, 10, 0.2))
+        assertNull(ExpectationAccount.Params.of(kurve, 120, 100.0, 3, 0.2))
+        assertNull(ExpectationAccount.Params.of(kurve, 120, 100.0, 10, 3.0))
+        assertNull(ExpectationAccount.Params.of(kurve, 120, 40.0, 10, 0.2))
     }
 
     // ---- Buchung am Marker ------------------------------------------------------

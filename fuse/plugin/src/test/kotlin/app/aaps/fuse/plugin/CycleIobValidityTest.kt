@@ -194,20 +194,16 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseIntKey.NightStartMin)).thenReturn(1380)
         whenever(preferences.get(FuseIntKey.NightEndMin)).thenReturn(480)
         whenever(preferences.get(FuseDoubleKey.NightDeadbandMgdl)).thenReturn(45.0)
-        whenever(preferences.get(FuseBooleanKey.NightDeadbandEnabled)).thenReturn(false)
         whenever(preferences.get(FuseDoubleKey.ReboundDeadbandMgdl)).thenReturn(25.0)
-        whenever(preferences.get(FuseBooleanKey.ReboundDeadbandEnabled)).thenReturn(true)
         whenever(preferences.get(FuseIntKey.DriveLowerQuantilePct)).thenReturn(50)
         whenever(preferences.get(FuseIntKey.TheilSenWindowMin)).thenReturn(18)
         whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(45)
         whenever(preferences.get(FuseBooleanKey.TailGuardEnabled)).thenReturn(true)
         whenever(preferences.get(FuseDoubleKey.TailFloorMgdl)).thenReturn(70.0)
         whenever(preferences.get(FuseDoubleKey.TailRecoveryU)).thenReturn(0.0)
-        whenever(preferences.get(FuseBooleanKey.FastRestraintEnabled)).thenReturn(true)
         whenever(preferences.get(FuseDoubleKey.BolusShareLambda)).thenReturn(1.0)
         whenever(preferences.get(FuseBooleanKey.OnsetChannelEnabled)).thenReturn(true)
         whenever(preferences.get(FuseDoubleKey.OnsetEnvelopeU)).thenReturn(1.5)
-        whenever(preferences.get(FuseBooleanKey.PrimeReleaseEnabled)).thenReturn(true)
         whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeU)).thenReturn(1.2)
         // Der Kanaldeckel hat seit v18 einen validate-Riegel (P0): der
         // Mockito-Default 0.0 laege ausserhalb 20..90 und wuerde jeden
@@ -220,9 +216,7 @@ class CycleIobValidityTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.MealExposureLimitU)).thenReturn(7.0)
         whenever(preferences.get(FuseDoubleKey.CorrectionDemandRatioCap)).thenReturn(0.20)
         whenever(preferences.get(FuseDoubleKey.MealDemandRatioCap)).thenReturn(0.35)
-        whenever(preferences.get(FuseDoubleKey.LivenessBgMinMealMgdl)).thenReturn(110.0)
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinNightMgdl)).thenReturn(160.0)
-        whenever(preferences.get(FuseIntKey.MealArmCycles)).thenReturn(1)
         whenever(preferences.get(FuseIntKey.ZeroLatchCalmExitMin)).thenReturn(20)
         // Nullphasen-Varianten: Default AUS bzw. gueltiges Fenster -
         // ungemockt liefert Mockito 0, und die Config-Validierung

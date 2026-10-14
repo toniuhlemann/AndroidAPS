@@ -823,14 +823,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseDoubleKey.MarkerPrimeDescentHorizonMin)).thenAnswer { aufschubHorizontMin }
         whenever(preferences.get(FuseIntKey.DeferredPrimeEndMin)).thenAnswer { aufschubFristMin }
         whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenAnswer { livenessAn }
-        whenever(preferences.get(FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled)).thenAnswer { livenessAusnahmeAn }
-        whenever(preferences.get(FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled)).thenAnswer { buchungsAusgangAn }
-        whenever(preferences.get(FuseBooleanKey.LivenessDriveHoldEnabled)).thenAnswer { halteAnhebungAn }
-        whenever(preferences.get(FuseIntKey.EarlyAdaptiveMealHorizonMin)).thenAnswer { fruehHorizont }
         whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenAnswer { mealPowerMin }
-        whenever(preferences.get(FuseIntKey.MealArmCycles)).thenAnswer { mealArmZyklen }
-        whenever(preferences.get(FuseDoubleKey.LivenessBgMinMealMgdl)).thenAnswer { mealBgMin }
-        whenever(preferences.getIfExists(FuseDoubleKey.LivenessBgMinMealMgdl)).thenAnswer { mealBgMin }
         whenever(preferences.get(FuseDoubleKey.CorrectionExposureLimitU)).thenAnswer { corrExpLimit }
         whenever(preferences.get(FuseDoubleKey.MealExposureLimitU)).thenAnswer { mealExpLimit }
         whenever(preferences.get(FuseDoubleKey.CorrectionDemandRatioCap)).thenAnswer { corrRatioCapZ }
@@ -852,28 +845,20 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseIntKey.NightStartMin)).thenAnswer { nachtStartMin }
         whenever(preferences.get(FuseIntKey.NightEndMin)).thenAnswer { nachtEndeMin }
         whenever(preferences.get(FuseDoubleKey.NightDeadbandMgdl)).thenReturn(45.0)
-        whenever(preferences.get(FuseBooleanKey.NightDeadbandEnabled)).thenAnswer { nightDeadband }
         whenever(preferences.get(FuseDoubleKey.ReboundDeadbandMgdl)).thenReturn(25.0)
-        whenever(preferences.get(FuseBooleanKey.ReboundDeadbandEnabled)).thenReturn(true)
         whenever(preferences.get(FuseIntKey.DriveLowerQuantilePct)).thenAnswer { quantilePct }
         whenever(preferences.get(FuseIntKey.TheilSenWindowMin)).thenAnswer { theilSenFensterMin }
         whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenAnswer { reboundFensterMin }
         whenever(preferences.get(FuseIntKey.EvidenceReboundOverrideMaxMin)).thenAnswer { reboundOverrideMaxMin }
         whenever(preferences.get(FuseBooleanKey.TailGuardEnabled)).thenAnswer { tailGuard }
-        whenever(preferences.get(FuseBooleanKey.ConditionalTailEnabled)).thenAnswer { conditionalTail }
         whenever(preferences.get(FuseBooleanKey.MarkerAuthorisesRelease)).thenAnswer { markerAuthorized }
         whenever(preferences.get(FuseBooleanKey.SignalRejoinEnabled)).thenAnswer { rejoinAn }
         whenever(preferences.get(FuseDoubleKey.TailFloorMgdl)).thenReturn(70.0)
         whenever(preferences.get(FuseDoubleKey.TailRecoveryU)).thenReturn(0.0)
-        whenever(preferences.get(FuseBooleanKey.FastRestraintEnabled)).thenReturn(true)
         whenever(preferences.get(FuseDoubleKey.BolusShareLambda)).thenReturn(1.0)
         whenever(preferences.get(FuseBooleanKey.OnsetChannelEnabled)).thenReturn(true)
         whenever(preferences.get(FuseDoubleKey.OnsetEnvelopeU)).thenReturn(1.5)
-        whenever(preferences.get(FuseBooleanKey.PrimeReleaseEnabled)).thenReturn(true)
         whenever(preferences.get(FuseDoubleKey.PrimeEnvelopeU)).thenAnswer { primeHuelleU }
-        whenever(preferences.get(FuseBooleanKey.MealFoundationEnabled)).thenAnswer { fundamentAn }
-        whenever(preferences.get(FuseDoubleKey.MealFoundationPhaseAShare)).thenAnswer { fundamentAnteil }
-        whenever(preferences.get(FuseDoubleKey.MealFoundationPhaseAUpfrontShare)).thenAnswer { upfrontAnteil }
         whenever(preferences.get(FuseBooleanKey.CorrectionReversalGuardEnabled)).thenAnswer { reversalAn }
         whenever(preferences.get(FuseDoubleKey.ReversalFallUkf)).thenReturn(2.0)
         whenever(preferences.get(FuseIntKey.ReversalLookbackMin)).thenReturn(20)
@@ -883,7 +868,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseIntKey.RearmHoldMin)).thenReturn(5)
         whenever(preferences.get(FuseIntKey.RearmConfirmCycles)).thenReturn(2)
         whenever(preferences.get(FuseDoubleKey.RearmUpUkf)).thenAnswer { rearmUpUkfWert }
-        whenever(preferences.get(FuseIntKey.MealFoundationEndMin)).thenAnswer { fundamentEndeMin }
         whenever(preferences.get(LongKey.FslCalibrationStart)).thenAnswer { kalibrierStart }
         whenever(preferences.get(FuseLongKey.MealMarkerStamp)).thenReturn(0L)
         whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenAnswer { markerAt }
@@ -901,7 +885,6 @@ class TransportWiringTest : TestBaseWithProfile() {
     private fun kontoAn() {
         whenever(preferences.get(FuseStringKey.ExpectationCurve)).thenReturn(rigKurve)
         for (k in listOf(
-            FuseDoubleKey.ExpectationPhi0Stable, FuseDoubleKey.ExpectationPhi0AfterLow,
             FuseDoubleKey.ExpectationStabilityBgMgdl, FuseDoubleKey.ExpectationStabilityFallMgdlPerMin,
             FuseDoubleKey.ExpectationReleaseThresholdU,
         )) whenever(preferences.get(k)).thenReturn(k.defaultValue)
@@ -3959,7 +3942,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         livenessAn = false
         fundamentAn = true
         markerAuthorized = true
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
         flach = 120.0
         steigungProMin = 0.5
         clock = start
@@ -4006,7 +3988,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         livenessReArmMin = 10
         tailGuard = true
         markerAuthorized = true
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
         mealBgMin = 120.0
         flach = 100.0
         steigungProMin = 0.3
@@ -4043,7 +4024,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         livenessReArmMin = 10
         tailGuard = true
         markerAuthorized = true
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
         flach = 150.0
         steigungProMin = 0.3
         knickAbMin = 12
@@ -4139,7 +4119,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         markerAuthorized = true
         fundamentAn = false
         aufschubAn = false
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
         // Livefall: Marker BEWUSST ohne Direktdosis - und nur so bleibt der
         // Evidenz-Topf im Rig ueberhaupt positiv (jede fruehe Abgabe zehrt
         // als Abzug am Bestand, bevor der Kredit je fliessen kann).
@@ -4247,7 +4226,6 @@ class TransportWiringTest : TestBaseWithProfile() {
         livenessReArmMin = 10
         tailGuard = true
         markerAuthorized = true
-        whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(20)
         whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenReturn(1L)
         flach = 100.0
         steigungProMin = 0.3
@@ -5244,7 +5222,6 @@ class TransportWiringTest : TestBaseWithProfile() {
             // Sie bestimmt Liveness-Ratio und Onset-Schwelle.
             riseRampLowRWert = d("riseRampLowR", riseRampLowRWert)
             whenever(preferences.get(FuseDoubleKey.ReboundDeadbandMgdl)).thenReturn(d("reboundDeadbandMgdl", 25.0))
-            whenever(preferences.get(FuseIntKey.PrimeWindowMin)).thenReturn(i("primeWindowMin", 15))
             whenever(preferences.get(FuseDoubleKey.SmbRatio)).thenReturn(d("smbRatioCorrection", 0.15))
             whenever(preferences.get(FuseDoubleKey.SmbRatioRise)).thenReturn(d("smbRatioRise", 0.35))
         }
@@ -9068,36 +9045,18 @@ class TransportWiringTest : TestBaseWithProfile() {
 
     // ---- Stufe 2: Ruhe-Parameter im Produktionspfad -------------------------
     //
-    // Der Produktionspfad liest die Ruhe-Parameter aus den Einstellungen
-    // (`Config.calmParams`). Konsolidierung 2.0: der Ruhe-Ausgang ist
-    // entfallen, mit ihm die Uebersteuerung des Rigs; der Trail fuehrt die
-    // eingestellte Ruhezyklenzahl weiter in `recoveryRequired`, bei
-    // ausgeschaltetem Ruhe-Ausgang 0.
+    // Konsolidierung 2.0: der Ruhe-Ausgang ist samt seinen Einstellungen entfallen; der Trail fuehrt
+    // `recoveryRequired` neutral (0).
 
-    private fun ruheErforderlich(
-        dir: File,
-        an: Boolean,
-    ): List<Int?> {
-        whenever(preferences.get(FuseBooleanKey.CalmRecoveryEnabled)).thenReturn(an)
-        whenever(preferences.get(FuseIntKey.CalmRecoveryCycles)).thenReturn(7)
-        whenever(preferences.get(FuseDoubleKey.CalmRecoveryMinUkf)).thenReturn(0.0)
-        whenever(preferences.get(FuseDoubleKey.CalmRecoveryGuardDistanceMgdl)).thenReturn(12.0)
-        whenever(preferences.get(FuseIntKey.CalmTreatmentMode)).thenReturn(1)
+    @Test
+    fun `Stufe 2 Ruhe-Ausgang ist entfallen - recoveryRequired steht neutral`(@TempDir dir: File) {
         flach = 110.0
         steigungProMin = 0.0
         val l = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
         neuerRunner(l)
         clock = start
-        return volleZyklen(40).map { it.upfrontChain?.recoveryRequired }
-    }
-
-    @Test
-    fun `Stufe 2 Ruhe-Ausgang folgt im Produktionspfad den Einstellungen`(@TempDir dir: File) {
-        val aus = ruheErforderlich(File(dir, "aus"), an = false)
-        val an = ruheErforderlich(File(dir, "an"), an = true)
-        for ((name, lauf) in listOf("aus" to aus, "an" to an))
-            assertTrue(lauf.size >= 10) { "$name: zu wenige volle Zyklen (${lauf.size})" }
-        assertTrue(aus.all { it == 0 }) { "aus: $aus" }
-        assertTrue(an.all { it == 7 }) { "an: $an" }
+        val lauf = volleZyklen(40).map { it.upfrontChain?.recoveryRequired }
+        assertTrue(lauf.size >= 10) { "zu wenige volle Zyklen (${lauf.size})" }
+        assertTrue(lauf.all { it == 0 }) { "$lauf" }
     }
 }

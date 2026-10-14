@@ -692,7 +692,6 @@ class Fuse20GleichwertigkeitTest : TestBaseWithProfile() {
                 val sha = java.security.MessageDigest.getInstance("SHA-256").digest(roh).joinToString("") { "%02x".format(it) }
                 val soll = vorgabe.kurveSha
                 require(soll == null || soll.equals(sha, ignoreCase = true)) { "Kurvendatei weicht vom Hash ab" }
-                whenever(preferences.get(FuseBooleanKey.ExpectationAccountEnabled)).thenReturn(true)
                 whenever(preferences.get(FuseStringKey.ExpectationCurve)).thenReturn(Fuse20Folgen.kurvenText(String(roh, Charsets.UTF_8)))
                 zeilenArm += "kurveSha;$sha"
             }

@@ -10,6 +10,7 @@ import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
+import org.mockito.kotlin.verifyNoMoreInteractions
 import org.mockito.kotlin.whenever
 
 /**
@@ -39,7 +40,6 @@ class FuseCentralProfileBackupTest {
         assertEquals(7.0, json.getDouble(FuseDoubleKey.MealExposureLimitU.key), 1e-12)
         assertEquals(0.20, json.getDouble(FuseDoubleKey.CorrectionDemandRatioCap.key), 1e-12)
         assertEquals(0.35, json.getDouble(FuseDoubleKey.MealDemandRatioCap.key), 1e-12)
-        assertEquals(110.0, json.getDouble(FuseDoubleKey.LivenessBgMinMealMgdl.key), 1e-12)
     }
 
     @Test
@@ -74,7 +74,6 @@ class FuseCentralProfileBackupTest {
         verify(ziel).remove(FuseDoubleKey.MealExposureLimitU)
         verify(ziel).remove(FuseDoubleKey.CorrectionDemandRatioCap)
         verify(ziel).remove(FuseDoubleKey.MealDemandRatioCap)
-        verify(ziel).remove(FuseDoubleKey.LivenessBgMinMealMgdl)
         verify(ziel, never()).put(any<FuseDoubleKey>(), any<Double>())
     }
 
@@ -87,28 +86,22 @@ class FuseCentralProfileBackupTest {
         verify(ziel).remove(FuseDoubleKey.MealExposureLimitU)
     }
 
+    /**
+     * Konsolidierung 2.0: eine alte Laufkonfiguration mit den entfernten Schluesseln des Liveness-Kanals
+     * (MEAL-Schwelle, Bewaffnungszyklen) bricht nicht ab und fasst sie nicht an - gelesen werden nur die vier
+     * Profilwerte, ein gespeicherter Altwert bleibt, wie er ist.
+     */
     @Test
-    fun `ein altes Backup ohne MealArmCycles stellt den Default her`() {
-        val ziel = mock<Preferences>()
-        FuseCentralProfileBackup.lese(JSONObject(), ziel)
-        verify(ziel).remove(FuseIntKey.MealArmCycles)
-        verify(ziel, never()).put(eq(FuseIntKey.MealArmCycles), any<Int>())
-    }
-
-    @Test
-    fun `ein Backup mit MealArmCycles 3 bleibt 3`() {
-        val json = JSONObject().put(FuseIntKey.MealArmCycles.key, 3)
-        val ziel = mock<Preferences>()
-        FuseCentralProfileBackup.lese(json, ziel)
-        verify(ziel).put(FuseIntKey.MealArmCycles, 3)
-    }
-
-    @Test
-    fun `ein MealArmCycles-Ausreisser im Backup wird entfernt`() {
-        val json = JSONObject().put(FuseIntKey.MealArmCycles.key, 99)
+    fun `entfernte Schluessel einer alten Konfiguration bleiben unberuehrt`() {
+        val json = JSONObject()
+            .put(FuseRetiredKey.MealArmCycles.key, 3)
+            .put(FuseRetiredKey.LivenessBgMinMealMgdl.key, 120.0)
         val ziel = mock<Preferences>()
         FuseCentralProfileBackup.lese(json, ziel)
-        verify(ziel).remove(FuseIntKey.MealArmCycles)
-        assertTrue(FuseIntKey.MealArmCycles.max < 99)
+        verify(ziel).remove(FuseDoubleKey.CorrectionExposureLimitU)
+        verify(ziel).remove(FuseDoubleKey.MealExposureLimitU)
+        verify(ziel).remove(FuseDoubleKey.CorrectionDemandRatioCap)
+        verify(ziel).remove(FuseDoubleKey.MealDemandRatioCap)
+        verifyNoMoreInteractions(ziel)
     }
 }

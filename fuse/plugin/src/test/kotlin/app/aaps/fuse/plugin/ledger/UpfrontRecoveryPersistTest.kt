@@ -27,16 +27,8 @@ class UpfrontRecoveryPersistTest {
     private val stamp = InterventionStamp("test-epoche", 7L)
     private val marker = 1_700_000_000_000L
 
-    private fun parameter(
-        zyklen: Int = 3,
-        minUkf: Double = 0.05,
-        abstand: Double = 5.0,
-        behandlung: UpfrontRecovery.CalmTreatment =
-            UpfrontRecovery.CalmTreatment.DEMAND_LIMITED,
-        version: Int = 31,
-    ) = UpfrontRecovery.Params.of(zyklen, minUkf, abstand, behandlung, version)
-
-    private fun voll(fingerprint: String = parameter().fingerprint) = UpfrontRecovery.Track(
+    /** Konsolidierung 2.0: die Ruheparameter samt Fingerprint-Bildung sind entfallen - ein fester Text genuegt. */
+    private fun voll(fingerprint: String = "s4|rs31|c3") = UpfrontRecovery.Track(
         markerIdentity = marker,
         streak = 2,
         lastAcceptedSourceTs = 1_700_000_060_000L,
@@ -69,28 +61,8 @@ class UpfrontRecoveryPersistTest {
         assertTrue(nachher.consistent, "und der geladene Stand ist konsistent")
     }
 
-    /**
-     * DER FINGERPRINT MUSS DIE FUENF GROESSEN WIRKLICH TRENNEN - sonst
-     * traegt der Round-trip zwar einen String, aber keinen Vertrag.
-     */
-    @Test
-    fun `jede Parameteraenderung erzeugt einen anderen Fingerprint`() {
-        val basis = parameter().fingerprint
-        assertTrue(basis.isNotEmpty())
-        listOf(
-            "Zyklen" to parameter(zyklen = 4).fingerprint,
-            "minUkf" to parameter(minUkf = 0.06).fingerprint,
-            "Abstand" to parameter(abstand = 6.0).fingerprint,
-            "Behandlung" to parameter(
-                behandlung = UpfrontRecovery.CalmTreatment.SHIFT_TO_DEFERRED,
-            ).fingerprint,
-            "RuleSet" to parameter(version = 32).fingerprint,
-        ).forEach { (was, anderer) ->
-            assertTrue(anderer != basis, "$was muss den Fingerprint aendern")
-        }
-        assertEquals(basis, parameter().fingerprint, "und er ist stabil")
-        assertEquals("off", UpfrontRecovery.Params.OFF.fingerprint)
-    }
+    // Konsolidierung 2.0: `jede Parameteraenderung erzeugt einen anderen Fingerprint` ist mit den Ruheparametern
+    // entfallen - der Ledger liest und schreibt den Fingerprint nur noch als Text (Round-trip oben).
 
     // ---- PROBE 2: Altdatei ohne Track ---------------------------------
 

@@ -18,7 +18,7 @@ class ErwartungskontoStornoTest {
     private val t0 = 1_786_000_000_000L
     private val wirkung: (Double) -> Double = { t -> EarlySupply.orefActionFraction(t, 45.0, 540.0) }
     private val werte = requireNotNull(ExpectationAccount.Curve.ausEckwerten(1.0, 2.0, 3.0, 4.0)).values()
-    private val params = requireNotNull(ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3))
+    private val params = requireNotNull(ExpectationAccount.Params.of(werte, 120, 90.0, 15, 0.3))
     private val einstellung = requireNotNull(EarlySupply.Settings.of(1.0, 0.5, 8.0, 0.5, 1.0, 2.0, 10))
 
     private fun konto() = ExpectationAccount.armEarly(

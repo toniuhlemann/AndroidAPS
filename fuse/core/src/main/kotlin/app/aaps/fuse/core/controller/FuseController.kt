@@ -416,7 +416,7 @@ object FuseController {
          * capIob + Transporthaftung.
          *
          * ABSOLUTE Mengengrenze der Klasse IOB_TH_REACHED/MAX_IOB_REACHED:
-         * keine Autorisierung hebt sie (MarkerAuthorization.lifts = false),
+         * keine Autorisierung hebt sie (MarkerAuthorization.liftsEarlySupply = false),
          * sie ist KEIN Gefahrensignal (nicht in UNSAFE_BLOCKS, TbrAction
          * NO_NEW_POSITIVE - Invariante 7: erzeugt nie eigenstaendig
          * Zero-TBR) und sie BEENDET wie die beiden IOB-Grenzen eine

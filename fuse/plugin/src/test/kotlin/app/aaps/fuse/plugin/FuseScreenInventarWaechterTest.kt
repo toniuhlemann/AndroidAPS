@@ -228,6 +228,34 @@ class FuseScreenInventarWaechterTest {
         assertTrue(seiten.none { it in bereiche }) { "Unterseite gleichnamig mit einem Bereich: ${seiten.filter { it in bereiche }}" }
     }
 
+    /**
+     * KEINE LEERE UNTERSEITE (Konsolidierung 2.0): eine Unterseite, deren Werte alle entfernt wurden, muss mit ihnen
+     * verschwinden - sonst oeffnet der Nutzer eine Seite ohne einen einzigen Einstellwert. Derselbe statische Blick
+     * wie oben: jede Unterseite baut mindestens einen Schluessel in der Bauform des Vertrags.
+     */
+    @Test
+    fun `jede Unterseite baut mindestens einen Einstellwert`() {
+        val block = bildschirmBlock().lines()
+            .map { it.substringBefore("//") }
+            .filterNot { it.trim().startsWith("*") || it.trim().startsWith("/*") }
+            .joinToString("\n")
+        val seiten = Regex("""\bunterseite\(\s*"([a-z_]+)"[^{]*\{""").findAll(block).toList()
+        assertTrue(seiten.isNotEmpty()) { "keine Unterseite gefunden - Muster passt nicht mehr" }
+        for (m in seiten) {
+            var tiefe = 1
+            var i = m.range.last + 1
+            while (tiefe > 0) {
+                when (block[i]) {
+                    '{' -> tiefe++
+                    '}' -> tiefe--
+                }
+                i++
+            }
+            val inhalt = block.substring(m.range.last + 1, i - 1)
+            assertTrue(muster.containsMatchIn(inhalt)) { "Unterseite ${m.groupValues[1]} baut keinen Einstellwert" }
+        }
+    }
+
     @Test
     fun `der Waechter greift ueberhaupt`() {
         val gebaut = gebauteKeys()

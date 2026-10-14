@@ -230,7 +230,32 @@ class FuseCycleRunner(
      * ist er bitgleich zu vorher.
      */
     private val predict: (PredictorInput) -> PredictorOutcome = TrajectoryCore::predict,
+    /**
+     * DIE LAUFENDE MAHLZEIT EINES VORGAENGER-RUNNERS IM SELBEN PROZESS (Ledger-Reparatur, Toni). Die Reparatur legt
+     * eine leere Generation an - ohne Uebergabe ginge die Mahlzeit-Vollmacht verloren und der Marker galte als
+     * vorgefunden. `null` = Prozessstart oder keine laufende Mahlzeit.
+     */
+    mahlzeitVorNeubau: MahlzeitUebergabe? = null,
 ) {
+
+    /** Noch nicht angewandte Uebergabe des Vorgaenger-Runners, s. Konstruktor; einmal angewandt oder verworfen. */
+    private var mahlzeitVorNeubau: MahlzeitUebergabe? = mahlzeitVorNeubau
+
+    /**
+     * Was ein Neubau des Runners im laufenden Prozess von der laufenden Mahlzeit wissen muss: der Marker, die Frist
+     * seiner Mahlzeit-Vollmacht und ob fuer ihn schon ein Konto gebucht war (dann nie ein zweites, Toni: keine
+     * Neubuchung unbekannten Budgets).
+     */
+    data class MahlzeitUebergabe(val markerTs: Long, val vollmachtBisTs: Long, val kontoGebuchtFuerAuth: Long)
+
+    /** Die Uebergabe fuer einen Nachfolger im selben Prozess; `null` ohne laufende Mahlzeit-Vollmacht. */
+    fun mahlzeitUebergabe(): MahlzeitUebergabe? {
+        val e = ledger.episodes
+        val pin = e.markerPowerPinnedFor
+        if (pin <= 0L || e.markerPowerDeadlineTs <= pin) return null
+        val gebucht = if (ekArmiertFuerAuth == pin || e.expectation?.authId == pin) pin else 0L
+        return MahlzeitUebergabe(pin, e.markerPowerDeadlineTs, gebucht)
+    }
 
     // BEIDE Verbraucher bekommen DIESELBE Politik - das ist die eine
     // Wahrheit, und sie ist hier sichtbar an genau einer Stelle.
@@ -391,9 +416,6 @@ class FuseCycleRunner(
             require(it.driveLowerQuantilePct in PairSlopeBand.MIN_PCT..PairSlopeBand.MAX_PCT) {
                 "driveLowerQuantile=${it.driveLowerQuantilePct}"
             }
-            require(it.earlyAdaptiveMealHorizonMin in app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.ALLOWED_HORIZONS_MIN) {
-                "earlyAdaptiveMealHorizonMin=${it.earlyAdaptiveMealHorizonMin}"
-            }
             require(it.theilSenWindowMin in FuseIntKey.TheilSenWindowMin.min..FuseIntKey.TheilSenWindowMin.max) {
                 "theilSenWindowMin=${it.theilSenWindowMin}"
             }
@@ -405,7 +427,6 @@ class FuseCycleRunner(
             require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in FuseDoubleKey.BolusShareLambda.min..FuseDoubleKey.BolusShareLambda.max) { "bolusShareLambda=${it.bolusShareLambda}" }
             require(it.onsetEnvelopeU.isFinite() && it.onsetEnvelopeU in FuseDoubleKey.OnsetEnvelopeU.min..FuseDoubleKey.OnsetEnvelopeU.max) { "onsetEnvelopeU=${it.onsetEnvelopeU}" }
             require(it.primeEnvelopeU.isFinite() && it.primeEnvelopeU in FuseDoubleKey.PrimeEnvelopeU.min..FuseDoubleKey.PrimeEnvelopeU.max) { "primeEnvelopeU=${it.primeEnvelopeU}" }
-            require(it.primeWindowMin in FuseIntKey.PrimeWindowMin.min..FuseIntKey.PrimeWindowMin.max) { "primeWindowMin=${it.primeWindowMin}" }
             require(it.liabilityHorizonMin >= 30 && it.liabilityHorizonMin >= it.releaseHorizonMin && it.liabilityHorizonMin <= 360) {
                 "liabilityHorizon=${it.liabilityHorizonMin} (releaseHorizon=${it.releaseHorizonMin}, UI 30..360)"
             }
@@ -427,8 +448,6 @@ class FuseCycleRunner(
             require(it.livenessReArmMin in FuseIntKey.LivenessReArmMin.min..FuseIntKey.LivenessReArmMin.max) { "livenessReArmMin=${it.livenessReArmMin}" }
             require(it.livenessBgMinDayMgdl.isFinite() && it.livenessBgMinDayMgdl in FuseDoubleKey.LivenessBgMinDayMgdl.min..FuseDoubleKey.LivenessBgMinDayMgdl.max) { "livenessBgMinDayMgdl=${it.livenessBgMinDayMgdl}" }
             require(it.livenessBgMinNightMgdl.isFinite() && it.livenessBgMinNightMgdl in FuseDoubleKey.LivenessBgMinNightMgdl.min..FuseDoubleKey.LivenessBgMinNightMgdl.max) { "livenessBgMinNightMgdl=${it.livenessBgMinNightMgdl}" }
-            require(it.livenessBgMinMealMgdl.isFinite() && it.livenessBgMinMealMgdl in FuseDoubleKey.LivenessBgMinMealMgdl.min..FuseDoubleKey.LivenessBgMinMealMgdl.max) { "livenessBgMinMealMgdl=${it.livenessBgMinMealMgdl}" }
-            require(it.mealArmCycles in FuseIntKey.MealArmCycles.min..FuseIntKey.MealArmCycles.max) { "mealArmCycles=${it.mealArmCycles}" }
         }
 
         /** Raster des selbst gebauten IOB-Arrays. 5 min wie in AAPS — feiner
@@ -871,8 +890,8 @@ class FuseCycleRunner(
         /** Abgabe-Bilanz seit Marker-Druck - null ohne Marker. */
         val mealStats: MealStats?,
         // Konsolidierung 2.0: die Sicht aufs Mahlzeitenfundament (`mealFoundation`) und die manuelle Deckung nach
-        // dem Marker (`manualBolusAfterMarkerU`) sind mit dem Fundament entfallen - der Export schreibt den Block bis
-        // Schritt 5 mit neutralen Werten.
+        // dem Marker (`manualBolusAfterMarkerU`) sind mit dem Fundament entfallen - der Export schreibt den Block mit
+        // neutralen Werten (die Feldnamen bleiben, Abbau spaeter abgestimmt).
         /** Der SMB-Stand VOR der (entfallenen) Fundament-Anhebung [U] - reine Messung, die Normalentscheidung. */
         val preFoundationSmbU: Double = 0.0,
         /**
@@ -1411,7 +1430,8 @@ class FuseCycleRunner(
 
     /**
      * HALTE-ANHEBUNG EINES ZYKLUS, gebuendelt wegen der 255-Parameter-Grenze von [Outcome]. Konsolidierung 2.0: die
-     * Halte-Anhebung samt Messbestaetigung ist entfallen; der Block steht bis Schritt 5 mit seinen Vorgaben im Trail.
+     * Halte-Anhebung samt Messbestaetigung ist entfallen; der Block steht mit seinen Vorgaben im Trail (die
+     * Feldnamen bleiben, Abbau spaeter abgestimmt).
      * `upliftMgdl` null = nicht ausgewertet (kein Kandidat gerechnet); der
      * exportierte `releaseMeanMgdl` bleibt die unangehobene Bahn, `needU`
      * enthaelt die Anhebung.
@@ -1428,29 +1448,17 @@ class FuseCycleRunner(
     )
 
     /**
-     * FRUEHER ADAPTIVER MEAL-BEDARF EINES ZYKLUS (Toni, H8), gebuendelt wegen der Parametergrenze von
-     * [Outcome]. Rein beschreibend. Konsolidierung 2.0: H8 ist entfallen - [eligible], [selected], [denial],
-     * [markerAgeMin], [earlyReleaseMeanMgdl] und [source] stehen neutral; die Beschreibung unten ist der Stand davor.
+     * DIE ANTRIEBE UND BAHNEN DES LIVENESS-KANALS EINES ZYKLUS, gebuendelt wegen der Parametergrenze von [Outcome]
+     * (der Trail-Block heisst nach dem entfallenen H8). Rein beschreibend. Konsolidierung 2.0: H8 und seine
+     * Einstellung sind entfallen - Horizonte (0), [eligible], [selected], [denial], [markerAgeMin],
+     * [earlyReleaseMeanMgdl] und [source] stehen neutral; die Feldnamen bleiben (Abbau spaeter abgestimmt).
      *
-     * DREI GETRENNTE AUSSAGEN (Review 18.09.: "aktiv" las sich wie "H8 hat
-     * dosiert"):
-     *  - [eligible]: die Eintrittsbedingungen sind erfuellt. Dann lesen
-     *    Ratio-Rampe und Kanaldruck den W10-Antrieb, und die H8-Bahn nimmt am
-     *    `max` teil. false und alle Bahnen null = nicht gebildet ([denial]).
-     *  - [selected]: die H8-Bahn lag echt ueber der produktiven und STELLTE
-     *    die Freigabe-Mittelbahn des Kanals. Nur moeglich, wenn der Kanal in
-     *    diesem Zyklus gerechnet hat.
-     *  - [candidateAfterHeadroomU]: das Angebot des Kanals nach Deckelrest und
-     *    Raster. Ob daraus eine Abgabe wurde, entscheiden danach der
-     *    Normalpfad-Vergleich und die Endpruefung - das steht in
-     *    `liveness.liftU` und in der Entscheidung, nicht hier.
-     * [source] ist nur bei [selected] gesetzt.
-     * IM ABBRUCHZYKLUS (NO_INPUT, Neustart-Dublette, ...) wird H8 nicht bewertet:
-     * konfigurierter und wirksamer Horizont stehen trotzdem da, [denial] ist
-     * [NOT_EVALUATED], alles Weitere bleibt leer (Toni 18.09.).
-     * `productionReleaseMeanMgdl`/`effectiveReleaseMeanMgdl`/`candidateAfterHeadroomU`
-     * sind nur gesetzt, wenn der Liveness-Kanal in diesem Zyklus einen Kandidaten
-     * gerechnet hat.
+     * Es bleiben der Antrieb der Ratio-Rampe ([ratioDriveMgdlPerMin], W18; Onset hebt), die in diesem Zyklus gelesene
+     * Rampe, die W10-Rate und UKF-Rate sowie die Bahnen und das Angebot des Kanals:
+     * `productionReleaseMeanMgdl`/`effectiveReleaseMeanMgdl`/`candidateAfterHeadroomU` sind nur gesetzt, wenn der
+     * Liveness-Kanal in diesem Zyklus einen Kandidaten gerechnet hat. Ob daraus eine Abgabe wurde, entscheiden danach
+     * der Normalpfad-Vergleich und die Endpruefung - das steht in `liveness.liftU` und in der Entscheidung, nicht
+     * hier. Im Abbruchzyklus ist [denial] [NOT_EVALUATED], alles Weitere bleibt leer.
      */
     data class EarlyAdaptiveMealDiagnosis(
         val configuredHorizonMin: Int = 0,
@@ -1695,14 +1703,6 @@ class FuseCycleRunner(
                     ?.takeIf { it.valid }
             }.getOrNull()
             val iob = iobTotalAbbruch?.iob
-            // H8 AUCH IM ABBRUCH (Toni 18.09.): konfigurierter und wirksamer
-            // Horizont bleiben sichtbar - aus der Politik dieses Zyklus, sonst
-            // (Abbruch vor readConfig, z. B. Neustart-Dublette) tolerant direkt
-            // gelesen. Bewertet wird nichts, die Bahnfelder bleiben leer.
-            val h8Konfiguriert = policy?.earlyAdaptiveMealHorizonConfiguredMin
-                ?: runCatching { preferences.get(FuseIntKey.EarlyAdaptiveMealHorizonMin) }.getOrNull()
-            val h8Wirksam = policy?.earlyAdaptiveMealHorizonMin
-                ?: h8Konfiguriert?.let { app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.effectiveHorizonMin(it) }
             return Outcome(
                 decision = FuseController.noInput(reason), tbr = cancelTbr,
                 // Dasselbe valid-geprueft gelesene IobTotal wie die
@@ -1749,11 +1749,8 @@ class FuseCycleRunner(
                 descentLatchReason = if (episodes.descentRecoveryLatch.active) "ABORT_UNCHANGED" else null,
                 descentRecoveryCycles = episodes.descentRecoveryRuntime.consecutiveRecoveryCycles,
                 descentLatchedAtTs = episodes.descentRecoveryLatch.latchedAtTs,
-                earlyAdaptiveMeal = EarlyAdaptiveMealDiagnosis(
-                    configuredHorizonMin = h8Konfiguriert ?: 0,
-                    horizonMin = h8Wirksam ?: 0,
-                    denial = EarlyAdaptiveMealDiagnosis.NOT_EVALUATED,
-                ),
+                // Konsolidierung 2.0: H8 und seine Einstellung sind entfallen - die Horizonte stehen 0.
+                earlyAdaptiveMeal = EarlyAdaptiveMealDiagnosis(denial = EarlyAdaptiveMealDiagnosis.NOT_EVALUATED),
             )
         }
 
@@ -2153,6 +2150,23 @@ class FuseCycleRunner(
         // Konsolidierung 2.0: die Direktdosis-Autorisierung (MealUpfrontAuthority) und ihr Rebound-Riegel sind mit
         // dem Mahlzeitenfundament entfallen - zuletzt lasen sie nur der Phase-A-Uebertrag und der Trail.
 
+        // ---- NEUBAU IM LAUFENDEN PROZESS (Ledger-Reparatur, Toni) ----------
+        // Die Reparatur legt eine leere Generation an. Toni: mitten in der Mahlzeit keine Neubuchung, Rueckfall mit
+        // Meldung, die Vollmacht bleibt sichtbar. Der neue Runner uebernimmt deshalb Vollmacht und "Konto war
+        // gebucht" vom alten - nur fuer DENSELBEN Marker, nur in der Frist und nur, wenn die Generation keine eigene
+        // Vollmacht traegt. Danach greift die Regel wie nach einem verlorenen Konto (ACCOUNT_LOST).
+        mahlzeitVorNeubau?.let { u ->
+            mahlzeitVorNeubau = null
+            if (markerTs == u.markerTs && !episodeGate.creditRevoked && computeTs < u.vollmachtBisTs &&
+                episodes.markerPowerPinnedFor == 0L
+            ) {
+                episodes.markerPowerPinnedFor = u.markerTs
+                episodes.markerPowerDeadlineTs = u.vollmachtBisTs
+                markerPowerLastSeenTs = u.markerTs
+                if (u.kontoGebuchtFuerAuth == u.markerTs) ekArmiertFuerAuth = u.markerTs
+            }
+        }
+
         // ---- ERWARTUNGSKONTO (Testkandidat E-034): GILT ES IN DIESEM ZYKLUS? --
         //
         // VOR allem, was der Marker in der Dosierung bewirkt (Sonderrechte, Onset-Kanal, Fenster, Kredit, Bahn):
@@ -2213,8 +2227,12 @@ class FuseCycleRunner(
         // Erwartungskonto, bleibt das Fenster fuer das ganze gepinnte Fenster
         // entwaffnet; den Schutz nach einem Tief tragen dort die gemessenen
         // Sperren, die Pausen und die Stabilitaetsstrecke des Kontos und der
-        // Guard fuer d_mess. Ohne Konto: wie heute (im Rueckfall wie ohne Marker).
-        val reboundEntwaffnet = markerBoost || ekGilt
+        // Guard fuer d_mess.
+        // TONI (Konsolidierung 2.0): die Regel gilt auch im Rueckfall ohne Konto - solange die Mahlzeit-Vollmacht
+        // laeuft, bremst das Rebound-Fenster die Dosierung nicht: weder Totband noch Ratio-Deckel, tau-Kuerzung,
+        // Sub-Step-Riegel, Null-Ende oder Liveness-Tor. Gemessene Tiefs, Null-Tor und Tief-Sperre bleiben hart, alles
+        // andere im Rueckfall bleibt wie ohne Marker.
+        val reboundEntwaffnet = markerBoost || ekGilt || kontoRueckfall
         val reboundWindow = reboundRaw && !reboundEntwaffnet
         val reboundSuppressedByMarker = reboundRaw && reboundEntwaffnet
 
@@ -3819,14 +3837,14 @@ class FuseCycleRunner(
         // HIER sind alle Stationen zugleich bekannt - eine spaetere Rekon-
         // struktion aus Einzelfeldern waere genau die Art Nachrechnung, die
         // schon einmal die falsche Geschichte erzaehlt hat.
-        // Konsolidierung 2.0: die Felder des entfallenen Sofortanteils und Ruhe-Ausgangs stehen neutral (0/null),
-        // `recoveryRequired` traegt weiter den eingestellten Wert; alle uebrigen Stationen rechnen wie bisher.
+        // Konsolidierung 2.0: die Felder des entfallenen Sofortanteils und Ruhe-Ausgangs stehen neutral (0/null) -
+        // mit der Einstellung auch `recoveryRequired`; alle uebrigen Stationen rechnen wie bisher.
         upfrontChainThisCycle = UpfrontChain(
             recoveryMode = null,
             calmTreatment = null,
             recoveryStreak = 0,
             recoveryTrackReset = null,
-            recoveryRequired = cfg.calmParams.calmCycles,
+            recoveryRequired = 0,
             recoveryDenial = null,
             currentHazard = null,
             // Nur wenn ueberhaupt ein Fenster anliegt, ist die Aussage
@@ -3894,7 +3912,10 @@ class FuseCycleRunner(
                 evidencePhase = dosierEvidenz?.phase,
                 onsetActive = onset.active,
                 mealWindow = mealWindow,
-                reboundWindow = reboundWindow,
+                // Die Klassifikation sieht im Rueckfall das Rebound-Fenster wie ohne Marker: sonst machte die
+                // Entwaffnung aus der Rebound-Lage einen Korrekturkontext mit Reversal-Riegel - mehr Bremse als ohne
+                // Marker.
+                reboundWindow = if (kontoRueckfall) reboundRaw else reboundWindow,
                 signalHealthy = step.health == Health.READY,
                 ledgerSealed = true,
             ),
@@ -4346,8 +4367,10 @@ class FuseCycleRunner(
             // EXCLUDED/REBOUND_ACTIVE - serielle Blockade bei hohem q1,
             // steilem Anstieg und freiem MEAL-Headroom.
             // Konsolidierung 2.0: die Rebound-Evidenz-Ausnahme ist entfallen -
-            // der Torausdruck ist wieder genau `reboundRaw && !override`.
-            val reboundSperrt = reboundRaw && !reboundOverrideErlaubt
+            // der Torausdruck ist wieder `reboundRaw && !override`; im Rueckfall
+            // ohne Konto sperrt das Rebound-Fenster nicht (Toni: es blockiert
+            // die Mahlzeit nicht, solange die Vollmacht laeuft).
+            val reboundSperrt = reboundRaw && !reboundOverrideErlaubt && !kontoRueckfall
             val hartNachRebound = when {
                 measuredLow -> "MEASURED_LOW"
                 descentRisk.active -> "DESCENT_RISK"
@@ -4997,7 +5020,7 @@ class FuseCycleRunner(
         // Konsolidierung 2.0: die Fortschreibung des Abwaerts-Uebertrags (Phase A) ist mit dem Fundament entfallen.
 
         val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
-            computeTs - maxOf(markerTs, episodes.primeWindowStartTs) < cfg.primeWindowMin * 60_000L &&
+            computeTs - maxOf(markerTs, episodes.primeWindowStartTs) < PrimeRelease.WINDOW_MIN * 60_000L &&
             computeTs - markerTs < PrimeRelease.WALL_CEILING_MIN * 60_000L
 
         // ---- 5 Kanal -------------------------------------------------------
@@ -5418,11 +5441,9 @@ class FuseCycleRunner(
             livenessShadowCandidateU = livenessShadowCandidateU,
             livenessShadowHeadroomU = livenessShadowHeadroomU,
             // Konsolidierung 2.0: die Halte-Anhebung ist entfallen - ihr Block steht neutral (Vorgaben).
-            // H8 ist entfallen: Eignung, Auswahl, Grund und H8-Bahn stehen neutral; Horizonte, Antriebe und die
-            // Bahnen des Kanals bleiben.
+            // H8 und seine Einstellung sind entfallen: Horizonte (0), Eignung, Auswahl, Grund und H8-Bahn stehen
+            // neutral; die Antriebe und die Bahnen des Kanals bleiben.
             earlyAdaptiveMeal = EarlyAdaptiveMealDiagnosis(
-                configuredHorizonMin = cfg.earlyAdaptiveMealHorizonConfiguredMin,
-                horizonMin = cfg.earlyAdaptiveMealHorizonMin,
                 w10DriveMgdlPerMin = band.mean,
                 ukfRatePerMin = signal.ukfRatePerMin,
                 productionReleaseMeanMgdl = livenessProductionReleaseMeanMgdl,
@@ -5633,9 +5654,6 @@ class FuseCycleRunner(
         fun anwenden(c: Config): Config =
             if (!kontoAn) c.copy(
                 expectationAccountEnabled = false,
-                expectationGuardException = FuseBooleanKey.ExpectationGuardExceptionEnabled.defaultValue,
-                expectationPhi0Stable = FuseDoubleKey.ExpectationPhi0Stable.defaultValue,
-                expectationPhi0AfterLow = FuseDoubleKey.ExpectationPhi0AfterLow.defaultValue,
                 expectationStabilityBgMgdl = FuseDoubleKey.ExpectationStabilityBgMgdl.defaultValue,
                 expectationStabilityMin = FuseIntKey.ExpectationStabilityMin.defaultValue,
                 expectationStabilityFallMgdlPerMin = FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.defaultValue,
@@ -6484,7 +6502,7 @@ class FuseCycleRunner(
         // war schlicht falsch, und genau so laufen zwei Pfade auseinander.
         val actuatedU = if (gate.allowed) combined.decision.smbU else 0.0
         val primeWindowOpen = mealMarkerActive && markerTs > 0 &&
-            computeTs - maxOf(markerTs, episodes.primeWindowStartTs) < cfg.primeWindowMin * 60_000L &&
+            computeTs - maxOf(markerTs, episodes.primeWindowStartTs) < PrimeRelease.WINDOW_MIN * 60_000L &&
             computeTs - markerTs < PrimeRelease.WALL_CEILING_MIN * 60_000L
         val buchung = buche(
             episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive,
@@ -7265,45 +7283,19 @@ class FuseCycleRunner(
         val bolusShareLambda: Double,
         val onsetChannelEnabled: Boolean,
         val onsetEnvelopeU: Double,
-        val primeReleaseEnabled: Boolean,
+        /** Die Kredit-Huelle - am Druck gepinnt (s. [FuseDoubleKey.PrimeEnvelopeU]). Konsolidierung 2.0: Sofort-
+         *  Freigabe, Mahlzeitenfundament und Ruhe-Ausgang sind samt ihren Einstellungen entfallen. */
         val primeEnvelopeU: Double,
-        // Konsolidierung 2.0: das Mahlzeitenfundament ist entfallen. Die vier Werte werden nur noch fuer Politik und
-        // Politik-Hash gelesen (bis Schritt 5), nie mehr zum Dosieren.
-        val mealFoundationEnabled: Boolean,
-        val mealFoundationPhaseAShare: Double,
-        val mealFoundationPhaseAUpfrontShare: Double,
-        val mealFoundationEndMin: Int,
         /** Punkt 6: Schalter (default aus), gepinnter Marker-Horizont und
          *  gepinnte Ablauffrist - s. [FuseBooleanKey.DeferredPrimeEnabled]. */
         val deferredPrimeEnabled: Boolean,
-        /**
-         * DER RUHE-AUSGANG AUS PHASE A - Schalter und Schwellen aus den
-         * Einstellungen. Ist er aus, ergibt [calmParams] `Params.OFF` und
-         * es bleibt exakt beim bisherigen Vertrag.
-         */
-        // Die Vorgaben sind FAIL-CLOSED: ohne ausdrueckliche Verdrahtung ist
-        // der Ruhe-Ausgang aus, und `calmParams` ergibt `Params.OFF`. Ein
-        // vergessener Aufrufer bekommt damit den bisherigen Vertrag, nicht
-        // eine stille Freigabe.
-        val calmRecoveryEnabled: Boolean = false,
-        val calmRecoveryCycles: Int = 3,
-        val calmRecoveryMinUkf: Double = 0.0,
-        val calmRecoveryGuardDistanceMgdl: Double = 5.0,
-        val calmTreatmentMode: Int = 0,
         val markerPrimeDescentHorizonMin: Double,
         val deferredPrimeEndMin: Int,
         /** Liveness-Kanal (Bauvertrag 22.08. nachts) - s.
          *  [FuseBooleanKey.LivenessChannelEnabled]. */
         val livenessChannelEnabled: Boolean,
-        // Konsolidierung 2.0: Rebound-Evidenz-Ausnahme, buchungsbedingter Ausgang, Halte-Anhebung und H8 sind
-        // entfallen. Die vier Werte (H8: wirksam und konfiguriert) werden nur noch fuer Politik, Politik-Hash und
-        // Trail gelesen (bis Schritt 5), nie mehr zum Dosieren.
-        val livenessReboundEvidenceExceptionEnabled: Boolean = false,
-        val livenessBookingExitWithoutReArmEnabled: Boolean = false,
-        val livenessDriveHoldEnabled: Boolean = false,
-        val earlyAdaptiveMealHorizonMin: Int = 0,
-        /** Derselbe Schluessel, wie konfiguriert (Trail: konfiguriert vs. wirksam). */
-        val earlyAdaptiveMealHorizonConfiguredMin: Int = 0,
+        // Konsolidierung 2.0: Rebound-Evidenz-Ausnahme, buchungsbedingter Ausgang, Halte-Anhebung, H8 und das
+        // MEAL-Profil des Kanals (Druckschwelle, Bewaffnungszyklen) sind samt ihren Einstellungen entfallen.
         /** MEAL/CORRECTION (Bauauftrag 23.08. nachts) - s. FuseKeys.
          *  Werte sind bereits LESE-MIGRIERT (ungesetzt = alter Globalwert). */
         val livenessMealPowerMin: Int,
@@ -7316,24 +7308,14 @@ class FuseCycleRunner(
         val mealDemandRatioCap: Double,
         val livenessBgMinDayMgdl: Double,
         val livenessBgMinNightMgdl: Double,
-        /** M1/M3: MEAL-Druckschwelle und Bewaffnungszyklen unter Vollmacht. Konsolidierung 2.0: der Kanal hat kein
-         *  MEAL-Profil mehr - beide werden nur noch fuer Politik, Hash und validate gelesen (bis Schritt 5). */
-        val livenessBgMinMealMgdl: Double,
-        val mealArmCycles: Int,
         val livenessReArmMin: Int,
-        val primeWindowMin: Int,
         /** Die Null sofort verlassen, sobald ihr Schutzgrund weg ist. */
         val endZeroWhenReasonGone: Boolean,
         // ---- ERWARTUNGSKONTO (Testkandidat E-034), Default AUS -------------
         /** Das Konto gilt - seit der Konsolidierung genau dann, wenn eine gueltige Kurve eingetragen ist. */
         val expectationAccountEnabled: Boolean = false,
-        /** Die Guard-Ausnahme, wie JETZT eingestellt: Abschalten wirkt
-         *  sofort, Einschalten erst ab dem naechsten Marker (gepinnt).
-         *  Konsolidierung 2.0: die Ausnahme ist entfallen; der Wert steht nur
-         *  noch im Politik-Export und Hash. */
-        val expectationGuardException: Boolean = FuseBooleanKey.ExpectationGuardExceptionEnabled.defaultValue,
-        val expectationPhi0Stable: Double = FuseDoubleKey.ExpectationPhi0Stable.defaultValue,
-        val expectationPhi0AfterLow: Double = FuseDoubleKey.ExpectationPhi0AfterLow.defaultValue,
+        // Konsolidierung 2.0: Guard-Ausnahme und Vorgriff phi_0 des Kontos v1 sind samt ihren Einstellungen
+        // entfallen; der Anteil am Marker kommt aus dem Skalierer der fruehen Versorgung.
         val expectationStabilityBgMgdl: Double = FuseDoubleKey.ExpectationStabilityBgMgdl.defaultValue,
         val expectationStabilityMin: Int = FuseIntKey.ExpectationStabilityMin.defaultValue,
         /** Fallgrenze der Stabilitaetsstrecke als Rueckgang [mg/dl/min] - s. [FuseDoubleKey.ExpectationStabilityFallMgdlPerMin]. */
@@ -7365,35 +7347,12 @@ class FuseCycleRunner(
                 app.aaps.fuse.core.controller.ExpectationAccount.Params.of(
                     curveValues = kurve.values(),
                     horizonMin = expectationHorizonMin,
-                    phi0Stable = expectationPhi0Stable,
-                    phi0AfterLow = expectationPhi0AfterLow,
                     stabilityBgMgdl = expectationStabilityBgMgdl,
                     stabilityMin = expectationStabilityMin,
                     releaseThresholdU = expectationReleaseThresholdU,
-                    // Konsolidierung 2.0: die v1-Guard-Ausnahme ist entfallen; [expectationGuardException] liest nur
-                    // noch der Politik-Export.
                     stabilityFallMgdlPerMin = expectationStabilityFallMgdlPerMin,
                 )
             }
-
-        /**
-         * DIE RUHEPARAMETER AUS DEN EINSTELLUNGEN - an genau EINER Stelle.
-         *
-         * Ist der Schalter aus, ergibt sich `Params.OFF`. Der Fingerprint
-         * traegt die RuleSet-Version mit. Konsolidierung 2.0: der Ruhe-Ausgang
-         * ist entfallen; gelesen werden die Parameter nur noch vom
-         * Politik-Export (Fingerprint) und vom Trail (`recoveryRequired`).
-         */
-        val calmParams: app.aaps.fuse.core.controller.UpfrontRecovery.Params
-            get() = if (!calmRecoveryEnabled) app.aaps.fuse.core.controller.UpfrontRecovery.Params.OFF
-            else app.aaps.fuse.core.controller.UpfrontRecovery.Params.of(
-                calmCycles = calmRecoveryCycles,
-                minUkf = calmRecoveryMinUkf,
-                minGuardDistanceMgdl = calmRecoveryGuardDistanceMgdl,
-                calmTreatment = app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.ofSetting(calmTreatmentMode),
-                ruleSetVersion =
-                    app.aaps.fuse.plugin.export.FuseStateJson.RULE_SET_VERSION,
-            )
     }
 
     /**
@@ -7449,29 +7408,11 @@ class FuseCycleRunner(
         bolusShareLambda = preferences.get(FuseDoubleKey.BolusShareLambda),
         onsetChannelEnabled = preferences.get(FuseBooleanKey.OnsetChannelEnabled),
         onsetEnvelopeU = preferences.get(FuseDoubleKey.OnsetEnvelopeU),
-        primeReleaseEnabled = preferences.get(FuseBooleanKey.PrimeReleaseEnabled),
         primeEnvelopeU = preferences.get(FuseDoubleKey.PrimeEnvelopeU),
-        mealFoundationEnabled = preferences.get(FuseBooleanKey.MealFoundationEnabled),
-        mealFoundationPhaseAShare = preferences.get(FuseDoubleKey.MealFoundationPhaseAShare),
-        mealFoundationPhaseAUpfrontShare = preferences.get(FuseDoubleKey.MealFoundationPhaseAUpfrontShare),
-        mealFoundationEndMin = preferences.get(FuseIntKey.MealFoundationEndMin),
         deferredPrimeEnabled = preferences.get(FuseBooleanKey.DeferredPrimeEnabled),
-        calmRecoveryEnabled = preferences.get(FuseBooleanKey.CalmRecoveryEnabled),
-        calmRecoveryCycles = preferences.get(FuseIntKey.CalmRecoveryCycles),
-        calmRecoveryMinUkf = preferences.get(FuseDoubleKey.CalmRecoveryMinUkf),
-        calmRecoveryGuardDistanceMgdl =
-            preferences.get(FuseDoubleKey.CalmRecoveryGuardDistanceMgdl),
-        calmTreatmentMode = preferences.get(FuseIntKey.CalmTreatmentMode),
         markerPrimeDescentHorizonMin = preferences.get(FuseDoubleKey.MarkerPrimeDescentHorizonMin),
         deferredPrimeEndMin = preferences.get(FuseIntKey.DeferredPrimeEndMin),
         livenessChannelEnabled = preferences.get(FuseBooleanKey.LivenessChannelEnabled),
-        livenessReboundEvidenceExceptionEnabled = preferences.get(FuseBooleanKey.LivenessReboundEvidenceExceptionEnabled),
-        livenessBookingExitWithoutReArmEnabled = preferences.get(FuseBooleanKey.LivenessBookingExitWithoutReArmEnabled),
-        livenessDriveHoldEnabled = preferences.get(FuseBooleanKey.LivenessDriveHoldEnabled),
-        // H8 (Toni 18.09.): nur 0/6/8/10 wirken, jeder andere Wert ist AUS.
-        earlyAdaptiveMealHorizonMin = app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed
-            .effectiveHorizonMin(preferences.get(FuseIntKey.EarlyAdaptiveMealHorizonMin)),
-        earlyAdaptiveMealHorizonConfiguredMin = preferences.get(FuseIntKey.EarlyAdaptiveMealHorizonMin),
         // MEAL/CORRECTION-LESE-MIGRATION (Bauauftrag §7): ungesetzte neue
         // Schluessel folgen dem bisherigen Globalwert - das Update ist
         // dosierneutral; die Grenzen-Klammer zaehlt Ausreisser als "nie
@@ -7489,20 +7430,7 @@ class FuseCycleRunner(
         // (160) - die fruehere Folgt-Tag-Migration ist mit dem Cleanup
         // beendet; ein bewusst gesetzter Wert bleibt unangetastet.
         livenessBgMinNightMgdl = preferences.get(FuseDoubleKey.LivenessBgMinNightMgdl),
-        // M1, CENTRAL-Startsatz: ECHTER Default 110 mg/dl (Toni 29.08.
-        // nachts, aus den beiden Mahlzeitenfaellen: ~45/35 min frueherer
-        // Druck als 140, ohne direkt ueber Ziel zu zuenden).
-        livenessBgMinMealMgdl = preferences.get(FuseDoubleKey.LivenessBgMinMealMgdl),
-        // M3: ein Speicher ohne den Schluessel liefert 0 - dann gilt der
-        // Startsatz-Default (1), wie beim PrimeWindowMin-Muster.
-        mealArmCycles = preferences.get(FuseIntKey.MealArmCycles).takeIf { it > 0 }
-            ?: FuseIntKey.MealArmCycles.defaultValue,
         livenessReArmMin = preferences.get(FuseIntKey.LivenessReArmMin),
-        // Ein ungesetzter Wert (0) ist kein Konfigurationsfehler, sondern ein
-        // Speicher, der den Schluessel noch nicht kennt - dann gilt die
-        // Vorgabe. Echte Fehlwerte faengt die Bereichspruefung darunter.
-        primeWindowMin = preferences.get(FuseIntKey.PrimeWindowMin).takeIf { it > 0 }
-            ?: PrimeRelease.WINDOW_MIN,
         endZeroWhenReasonGone = preferences.get(FuseBooleanKey.TbrEndZeroWhenReasonGone),
     ).let { mitErwartungskonto(it) }.let { pruefarm?.anwenden(it) ?: it }.also { validate(it) }
 
@@ -7511,8 +7439,8 @@ class FuseCycleRunner(
      * Mahlzeitenweg). Ein eigener Hauptschalter waere ueberfluessig: ohne gueltige Kurve hat das Konto nichts zu
      * erwarten. Dann bleibt die Konfiguration auf den Standardwerten, gleich was gespeichert ist - kein Konto-Wert
      * beruehrt einen Lauf ohne Kurve, und die Gleichwertigkeitsprobe sieht dieselbe Konfiguration wie vorher. Der
-     * alte Schalter [FuseBooleanKey.ExpectationAccountEnabled] bleibt registriert (Sicherungen, Rueckweg 1.x), wird
-     * aber nicht mehr gelesen.
+     * alte Schalter [FuseRetiredKey.ExpectationAccountEnabled] bleibt registriert (Sicherungen, Rueckweg 1.x), wird
+     * aber nie gelesen.
      */
     private fun mitErwartungskonto(basis: Config): Config {
         // Die wirksame Kurve (Toni): vier Eckwerte vor Expertenzeile.
@@ -7526,9 +7454,6 @@ class FuseCycleRunner(
         if (app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(kurve) == null) return basis
         return basis.copy(
             expectationAccountEnabled = true,
-            expectationGuardException = preferences.get(FuseBooleanKey.ExpectationGuardExceptionEnabled),
-            expectationPhi0Stable = preferences.get(FuseDoubleKey.ExpectationPhi0Stable),
-            expectationPhi0AfterLow = preferences.get(FuseDoubleKey.ExpectationPhi0AfterLow),
             expectationStabilityBgMgdl = preferences.get(FuseDoubleKey.ExpectationStabilityBgMgdl),
             expectationStabilityMin = preferences.get(FuseIntKey.ExpectationStabilityMin),
             expectationStabilityFallMgdlPerMin = preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin),

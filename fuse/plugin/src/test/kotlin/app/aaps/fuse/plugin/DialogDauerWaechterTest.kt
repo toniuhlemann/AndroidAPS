@@ -37,11 +37,6 @@ class DialogDauerWaechterTest {
         "../core/ui/src/main/res/values/strings.xml",
     ).readText()
 
-    private fun pluginStrings(): String = datei(
-        "src/main/res/values/strings.xml",
-        "fuse/plugin/src/main/res/values/strings.xml",
-    ).readText()
-
     /**
      * Der Dialog nennt die Groessenordnung des Kontos als PARAMETER, nicht als Ziffer - die Menge haengt an Kurve,
      * Skalierer und Budgetgrenze, ein fester Wert im Text waere nach der naechsten Einstellung falsch.
@@ -80,18 +75,12 @@ class DialogDauerWaechterTest {
     }
 
     /**
-     * KEINE ANZEIGE DARF GEGEN DIE VORGABE-KONSTANTE RECHNEN.
+     * KEINE FREIGABE-UHR MEHR IN DER ANZEIGE.
      *
-     * Zweiter Geraetefund am selben Tag: der FUSE-Reiter zeigte "15/15 min
-     * Freigabe" bei laenger eingestelltem Fenster - und darunter in
-     * derselben Karte eine noch offene Prime-Menge. Die Zeile widersprach sich selbst,
-     * weil sie `PrimeRelease.WINDOW_MIN` (die VORGABE) las, waehrend der
-     * Regler die EINSTELLUNG benutzt.
-     *
-     * `PrimeRelease.WINDOW_MIN` ist als Vorgabe voellig richtig - aber nur
-     * dort, wo eine Einstellung FEHLT (der Rueckfall in `FuseCycleRunner`).
-     * In einer Anzeige ist sie immer falsch, sobald der Nutzer etwas anderes
-     * eingestellt hat.
+     * Zweiter Geraetefund am selben Tag: der FUSE-Reiter zeigte die Freigabe-Uhr gegen die Vorgabe-Konstante
+     * `PrimeRelease.WINDOW_MIN` statt gegen die Einstellung - und darunter in derselben Karte eine noch offene
+     * Prime-Menge. Konsolidierung 2.0: Sofort-Freigabe und Einstellung sind entfallen, mit ihnen die Uhr. Eine
+     * Anzeige, die sie wieder gegen die Konstante rechnet, faellt hier auf.
      */
     @Test
     fun `die Anzeige rechnet nicht gegen die Vorgabe-Konstante`() {
@@ -108,22 +97,6 @@ class DialogDauerWaechterTest {
         assertFalse(Regex("""PrimeRelease\.WINDOW_MIN""").containsMatchIn(code)) {
             "FuseDashboardModel rechnet gegen die Vorgabe statt gegen die Einstellung"
         }
-        assertTrue(src.contains("primeWindowMin")) {
-            "die eingestellte Fensterdauer wird nicht gelesen"
-        }
-    }
-
-    /**
-     * Die Beschreibung der Freigabe-Einstellung darf ihre eigene Fensterdauer
-     * nicht als Zahl behaupten - sie ist ein statischer Text ohne Parameter und
-     * kann der Einstellung darunter nie folgen.
-     */
-    @Test
-    fun `die Freigabe-Beschreibung behauptet keine feste Dauer`() {
-        val zeile = pluginStrings().lines()
-            .first { it.contains("fuse_prime_release_summary\"") }
-        assertFalse(Regex("""nur \d+ Minuten""").containsMatchIn(zeile)) {
-            "feste Minutenangabe in einer statischen Beschreibung: $zeile"
-        }
+        assertFalse(code.contains("min Freigabe")) { "die Freigabe-Uhr ist zurueck" }
     }
 }

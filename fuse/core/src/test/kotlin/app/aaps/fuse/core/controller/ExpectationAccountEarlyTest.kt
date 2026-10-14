@@ -14,7 +14,7 @@ class ExpectationAccountEarlyTest {
 
     /** Synthetisch: gleichmaessig 1 U je 30 min bis 120 min. */
     private val werte = requireNotNull(ExpectationAccount.Curve.ausEckwerten(1.0, 2.0, 3.0, 4.0)).values()
-    private val params = requireNotNull(ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3))
+    private val params = requireNotNull(ExpectationAccount.Params.of(werte, 120, 90.0, 15, 0.3))
     private val einstellung = requireNotNull(EarlySupply.Settings.of(1.0, 0.5, 8.0, 0.5, 1.0, 2.0, 10))
     private val alle = EarlySupply.Switches(true, true, true, true)
 
@@ -144,9 +144,9 @@ class ExpectationAccountEarlyTest {
 
     @Test
     fun `die Fallgrenze der Strecke wird geprueft und am Marker festgehalten`() {
-        assertEquals(null, ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3, stabilityFallMgdlPerMin = 3.5))
-        assertEquals(null, ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3, stabilityFallMgdlPerMin = -0.5))
-        val p = requireNotNull(ExpectationAccount.Params.of(werte, 120, 0.5, 0.5, 90.0, 15, 0.3, stabilityFallMgdlPerMin = 1.0))
+        assertEquals(null, ExpectationAccount.Params.of(werte, 120, 90.0, 15, 0.3, stabilityFallMgdlPerMin = 3.5))
+        assertEquals(null, ExpectationAccount.Params.of(werte, 120, 90.0, 15, 0.3, stabilityFallMgdlPerMin = -0.5))
+        val p = requireNotNull(ExpectationAccount.Params.of(werte, 120, 90.0, 15, 0.3, stabilityFallMgdlPerMin = 1.0))
         val s = ExpectationAccount.armEarly(t0, t0 + 120 * 60_000L, p, einstellung, alle, true, t0, 100.0, 50.0, wirkung)
         assertEquals(1.0, s.stabilityFallMgdlPerMin, 0.0)
         // Standard = die bisherige Kanalkonstante, als Rueckgang.

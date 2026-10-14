@@ -27,7 +27,7 @@ import kotlin.math.min
  *    der gemergten Menge - sonst kehrte der Saegezahn zurueck, den der
  *    Liveness-Kanal per Vertrag umgeht.
  *  - Die Grenze ist eine ABSOLUTE Mengengrenze (Block EXPOSURE_LIMIT,
- *    MarkerAuthorization.lifts = false, TbrAction NO_NEW_POSITIVE,
+ *    MarkerAuthorization.liftsEarlySupply = false, TbrAction NO_NEW_POSITIVE,
  *    GUARD_CHAIN_PASSED ja, UNSAFE nein - Invariante 7: erzeugt nie
  *    eigenstaendig Zero-TBR).
  *  - TEILKAPPUNG senkt die Menge und benennt die Grenze; der publizierte

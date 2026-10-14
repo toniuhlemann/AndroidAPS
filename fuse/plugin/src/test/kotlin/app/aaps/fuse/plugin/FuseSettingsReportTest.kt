@@ -84,18 +84,6 @@ class FuseSettingsReportTest {
         assertTrue(gueltig.value.startsWith("gueltig - 24 Stuetzwerte")) { gueltig.value }
     }
 
-    /** H8: nicht mehr einstellbar (Konsolidierung) - die Texthilfe nennt den Horizont weiter wie der Regler. */
-    @Test
-    fun `frueher MEAL-Horizont nennt AUS und unzulaessige Werte als wirkt als AUS`() {
-        // Die Auswahl des Dialogs ist genau die wirksame Menge, AUS zuerst.
-        assertEquals(listOf(0, 6, 8, 10), EarlyAdaptiveMealHorizonText.auswahl)
-        assertEquals(app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed.ALLOWED_HORIZONS_MIN, EarlyAdaptiveMealHorizonText.auswahl.toSet())
-        assertEquals(listOf("AUS", "6 min", "8 min", "10 min"), EarlyAdaptiveMealHorizonText.auswahl.map(EarlyAdaptiveMealHorizonText::eintrag))
-        // Die Zeile im Bildschirm (updatePreferenceSummary) sagt dasselbe wie der Bericht.
-        assertEquals("Aktuell: AUS\nErklaerung", EarlyAdaptiveMealHorizonText.zusammenfassung(0, "Erklaerung"))
-        assertEquals("Aktuell: 7 min - unzulaessig, wirkt als AUS\nErklaerung", EarlyAdaptiveMealHorizonText.zusammenfassung(7, "Erklaerung"))
-    }
-
     @Test
     fun `Uhrzeiten erscheinen als Uhrzeit nicht als Minutenzahl`() {
         val rows = FuseSettingsReport.build(standardPreferences()).gruppen.flatMap { it.second }

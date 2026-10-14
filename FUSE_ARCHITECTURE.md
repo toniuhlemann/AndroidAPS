@@ -198,7 +198,7 @@ Relevant code:
 - [`FuseController.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/FuseController.kt)
 - [`CandidateSearch.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/CandidateSearch.kt)
 - [`CandidateGate.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/CandidateGate.kt)
-- [`PrimeRelease.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/PrimeRelease.kt)
+- [`AuthorizedLift.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/AuthorizedLift.kt)
 - [`MarkerFloor.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/MarkerFloor.kt)
 - [`SubStepAccumulator.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/SubStepAccumulator.kt)
 - [`NightWindow.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/NightWindow.kt)
@@ -291,24 +291,21 @@ Relevant code:
 - [`MarkerFallback.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/MarkerFallback.kt)
 - [`MarkerPrompt.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/MarkerPrompt.kt)
 - [`OnsetChannel.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/OnsetChannel.kt)
-- [`PrimeRelease.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/PrimeRelease.kt)
+- [`ExpectationAccount.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/ExpectationAccount.kt)
+- [`EarlySupply.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/EarlySupply.kt)
+- [`AuthorizedLift.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/AuthorizedLift.kt)
+- [`MarkerAuthorization.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/MarkerAuthorization.kt)
+- [`DeferredPrime.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/DeferredPrime.kt)
 
-FUSE exposes exactly one meal control: a marker. It is not a carbohydrate estimate and creates no COB. Pressing it offers three choices, and the third is new: declare the meal WITH the advance release; declare it WITHOUT advance release; or withdraw the marker. 'Without advance release' means the meal window, the ramps and the deadband openings still apply, but the release envelope funds nothing - it is carried as its own fact (`MealMarkerNoPrime` -> `declinedByUser` -> plan reason `USER_NO_PRIME`) rather than as a zero envelope, so 'declined' stays distinguishable from 'spent' (`ENVELOPE_SPENT`) in the record.
+FUSE exposes exactly one meal control: a marker. It is not a carbohydrate estimate and creates no COB. Pressing it declares the meal for the expectation account, or as 'marker only' (no expectation budget and no declared-absorption credit), or withdraws a running marker. Since the 2.0 consolidation the expectation account is the meal path. The earlier advance release, the meal foundation, the upfront share with its calm exit, the first account version (advance share phi_0, guard exception, direct-dose booking) and the meal parts of the liveness channel are gone, together with their settings (end of this chapter).
 
-The contract is amount-based:
+The expectation account splits the meal demand into a measured part, R_mess = (BG - target) / ISF - IOB, and an expectation part derived from a fixed personal expectation curve and the active insulin model. One budget is booked at the press and only consumed, never refilled. Each delivery splits into d_mess = min(d, max(0, R_mess)), which passes every check like a correction, and d_erw = d - d_mess, the only part that consumes the budget. The budget is paid as an initial portion and then as per-cycle portions within a rolling period book; four switches (G1-G4) decide whether a portion may lift the guard or the tail, and the final check re-tests the amount with the announced meal. There is no d_erw before stability, during any pause (measured lock, signal, pump, ledger), after a frozen release, after a measured low until an explicit confirmation (low lock), after the main switch withdrew it, or after the window end. All parameters are pinned at the press, so changing a setting never changes a running meal.
 
-- one configured envelope in insulin units, default 1.2 U, configurable up to 6 U;
-- a consumable remainder and a per-cycle maximum;
-- a deliverable release window, configurable from 5 to 45 minutes (default 15), inside a hard wall-clock ceiling of 45 minutes;
-- restart-safe accounting in the ledger;
-- withdrawal ends the authorization and the credit immediately, but not the episode and not the bookkeeping;
-- no claim that already delivered insulin can be reversed - the dialog says so.
+The account applies only while a valid curve is configured. A marker without a valid account - no curve, no account booked, account lost, dropped on load, context mismatch - doses exactly as without a marker. Two rules from the user frame that fallback: the announcement stays visible and the fallback is reported with its reason, and the rebound window does not block the meal while the meal authorization runs ('rebound never blocks a meal'). Measured lows, the zero gate and the low lock stay hard. A lost account is never rebooked with an unknown budget; a ledger repair in the middle of a meal hands the running authorization to the rebuilt runner, so the meal continues visibly in the fallback instead of being forgotten.
 
-Withdrawal deliberately does not reset the books. Ending the episode as well would let 'press by mistake, withdraw, press properly' fund the envelope a second time. Identity and revocation are therefore separate facts (`MarkerEpisode.startsNewEpisode`, `MarkerEpisodeGate.creditRevoked`, and the permanently consumed anchor `lastConsumedMarkerTs`).
+What remains of the earlier meal machinery is small and named: the credit envelope pinned at the press (`PrimeEnvelopeU`) funds the declared-absorption credit of the trajectory and bounds the tail lift; the marker boost keeps the night deadband and the windows open for its duration; the deferred-prime pin pauses the account on measured downward risk over a pinned horizon; the predictor-free marker path (`MarkerFallback`, switch `MarkerAuthorisesRelease`) lets an authorized amount through when only the horizon coverage is missing. The window constants of the old release stay only for the ledger, which keeps its format for the way back to 1.x.
 
-The advance release is spread over the window instead of being delivered at once. The reason is measured: the same amount delivered inside a few minutes produced an IOB peak that then blocked the guard for hours - precisely while absorption was arriving. Spreading gives the same head start with a lower peak at the moment it matters.
-
-Two later refinements shape the same advance without changing its budget. The meal foundation ([`MealFoundation.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/MealFoundation.kt)) splits the authorized amount into an immediate share and a windowed remainder that is paid out over a configurable window and stays revocable - it distributes budget over time, it never creates budget, and its parameters are frozen when the meal arms, so changing a setting cannot retroactively change a running meal. And when the cycle can show that delivering the advance right now is not safe - an unresolved transport backlog, a measured downward risk - the release is deferred rather than silently dropped ([`DeferredPrime.kt`](fuse/core/src/main/kotlin/app/aaps/fuse/core/controller/DeferredPrime.kt)): the deferral is a typed, exported state, and the deferred share is released or expires under the same books.
+Withdrawal deliberately does not reset the books. Ending the episode as well would let 'press by mistake, withdraw, press properly' fund the meal a second time. Identity and revocation are therefore separate facts (`MarkerEpisode.startsNewEpisode`, `MarkerEpisodeGate.creditRevoked`, and the permanently consumed anchor `lastConsumedMarkerTs`).
 
 The marker-authorized amount can coexist with a protective zero TBR. That required giving the SMB block cause a type: a safety-zero model judgment can be overridden for the marker-funded amount, while pump busy, invalid input, missing snapshot, fake extended bolus, ledger failure, or transport failure cannot (chapter 10).
 
@@ -316,7 +313,7 @@ The authorization contract has four parts, and each is a floor rather than a ski
 
 - **MarkerFloor** sets a minimum at the END of the model chain, so an authorization raises a result rather than bypassing a test;
 - **MarkerFallback** makes exactly two predictor reasons overridable (`ARRAY_TOO_SHORT`, `PENDING_MODEL_TOO_SHORT` - both statements about horizon coverage); eight other predictor reasons are not;
-- **PrimeRelease.lift** deliberately skips the tail cap under explicit authorization, because that cap falls to zero at low BG and would otherwise null the marker-funded share entirely - an exception of this weight must not live only in a source comment;
+- **AuthorizedLift** with `MarkerAuthorization.liftsEarlySupply` lets a portion lift only model judgments (guard and tail, each per G1-G4), never a measured finding or a quantity limit; the tail cap binds the expectation share unless a switch lifts it explicitly;
 - **the typed SMB block cause** (chapter 10) decides which block a human may override at all.
 
 The dividing line is not dangerous versus harmless, it is who knows better. The human knows about the food; the model does not. The human knows nothing about the pump, the transport path, the ledger or a missing measurement, so those are never overridable.
@@ -327,11 +324,13 @@ Six named denials distinguish cases that require different human reactions. `MAR
 
 This is the most consequential experimental path in FUSE. It has run on a real pump since 15.08.2026 for a single user; that is exposure, not validation. The following are not yet closed:
 
-- hand-off from the early release into confirmed meal absorption;
+- hand-off from the expectation share into confirmed meal absorption;
 - large and slowly absorbed meals;
 - false-marker live behavior;
 - formal interaction with entered carbs and manual boluses;
 - switching between FCL and HCL behavior.
+
+Settings without effect were removed in the consolidation. Their keys stay registered as `FuseRetiredKey` - never read, but exportable - because an AAPS backup carries only registered keys and the import clears everything first: without the registration a backup taken on 2.0 would silently lose those stored values, and the way back to the 1.x APK would fall back to its defaults. An old backup that contains them loads without error. `FuseSchluesselRueckwegTest` pins the 1.x key set and its exportability.
 
 ### 8.1 Evidence stock
 
@@ -371,7 +370,7 @@ If an insulin kernel cannot be established, unknown residual effect is bounded c
 
 `3/3` means all three terms could actually be calculated; a lower count or a bounded flag tells a consumer that it is reading an upper bound, not a computed result. That distinction is the whole point of exporting completeness at all.
 
-There is exactly one exception. Under explicit manual authorization the tail cap is skipped in `PrimeRelease.lift`, because at low BG it falls to zero and would otherwise null the marker-funded share completely. The exception is bounded by the envelope and by the marker floor; it does not extend to transport, ledger or pump failures.
+There is exactly one exception, and it is switch-bound: under the marker authorization the expectation share may lift the tail only where G2 (initial portion) or G4 (further portions, tested with the announced meal) allows it (`AuthorizedLift`). The exception is bounded by the account budget and by the marker floor; it does not extend to transport, ledger or pump failures.
 
 ## 10. SMB and TBR channel policy
 
@@ -448,7 +447,7 @@ The ledger is the only owner of amount liability. The transport journal and trea
 
 Besides amounts, the ledger carries the entire meal bookkeeping, restart-safe: prime window start, committed evidence, episode identity, the permanently consumed marker anchor, the revocation flag, the persisted evidence stock, and a pending reservation whose three states (`RESERVED`, `REQUESTED`, `REJECTED`) decide whether an amount stays booked or is released.
 
-A hold does not merely stop the candidate search. Two amount-producing paths bypass a candidate reject - the ratio path when the insulin kernel fails, and the advance release, which lifts after the candidate gate on purpose. The ledger hold gate therefore sits behind all stages of the amount chain (chapter 3) and zeroes without compromise. On the TBR axis it applies 'no new positive': running zero or negative temps stay, only a positive temp is ended. Blind braking and blind letting go are both wrong when the ledger by definition does not know what is out there.
+A hold does not merely stop the candidate search. Two amount-producing paths bypass a candidate reject - the ratio path when the insulin kernel fails, and the expectation share, which lifts after the candidate gate on purpose. The ledger hold gate therefore sits behind all stages of the amount chain (chapter 3) and zeroes without compromise. On the TBR axis it applies 'no new positive': running zero or negative temps stay, only a positive temp is ended. Blind braking and blind letting go are both wrong when the ledger by definition does not know what is out there.
 
 The delivery journal records the transport path as named events - created, send attempt started, write accepted, write refused, temporary id observed, pump id observed, delivery confirmed, proven not sent, liability accounted - together with the ambiguity boundary and the source of a refusal. It supplies state and provenance; its quantities are never added to IOB a second time. Anyone who wants to understand why 'not visible' does not mean 'not delivered' reads this channel.
 
@@ -557,7 +556,7 @@ FUSE is not implemented as another autoISF factor - autoISF being the AAPS exten
 - one-minute cadence and pump increment accumulation are first-class;
 - every decision is reconstructable without parsing human reason text;
 - AAPS-native actuation is retained, so the new controller does not become a second pump stack;
-- a bounded, human-authorized advance release with its own consumable envelope;
+- a human-authorized expectation account with one budget booked at the press and consumed, never refilled;
 - an evidence stock that funds the trajectory from measured, unpaid disturbance;
 - deadbands that are contextual and can be disarmed by evidence rather than by a clock;
 - a persistent liability ledger that resolves in both directions.
@@ -574,7 +573,7 @@ Whether these differences produce better glucose outcomes must be established by
 - the missing context-dependent ceiling behind the correction burst of 27.08.2026 - closed on 29.08.2026 by the central dosing policy: dosing context, exposure gate, typed SMB status (chapter 7).
 
 ### Open
-- hand-off from the advance release into confirmed absorption at large and slowly absorbed meals - the evidence stock (chapter 8.1) is the mechanism, its four parameters are unswept alpha hypotheses;
+- hand-off from the expectation share into confirmed absorption at large and slowly absorbed meals - the evidence stock (chapter 8.1) is the mechanism, its four parameters are unswept alpha hypotheses;
 - sweeping the central profile start set (two exposure limits, two ratio caps) against live data - the shipped values are a working start set, tuned one value at a time;
 - false-marker behaviour in life;
 - formal FCL/HCL switching and the semantics of entered carbohydrates and manual boluses;
@@ -595,7 +594,8 @@ The repository builds `3.4.2.5+fuse1.0.2-toni`. The `1.0.x` line means 'the auth
 | Signal continuity and robust rate | `fuse/core/.../signal` | `SignalWindowTest`, `PairSlopeBandTest`, `PostGapMetricsTest` |
 | Observer state machine | `fuse/core/.../observer` | observer tests under the same module |
 | Predictor and trajectories | `TrajectoryCore`, `UnitInsulinKernel` | predictor/kernel tests |
-| Candidate and caps | `FuseController`, `CandidateSearch`, `PrimeRelease` | controller, cap, marker-authorization tests |
+| Candidate and caps | `FuseController`, `CandidateSearch`, `AuthorizedLift` | controller, cap, marker-authorization tests |
+| Expectation account and early supply | `ExpectationAccount`, `EarlySupply` | `ExpectationAccountTest`, `ExpectationAccountEarlyTest`, `ErwartungskontoRigTest` |
 | TBR semantics | `TbrPolicy`, `FuseTbrTranslator` | `TbrPolicyTest`, `FuseTbrTranslatorTest`, `FuseAbortTbrTest` |
 | Ledger and migration | `LedgerReducer`, plugin ledger store/codec | ledger, codec, migration, persistence tests |
 | Pump eligibility | `FusePumpGate` | `FusePumpGateTest`, `FuseActivePumpSnapshotTest` |
@@ -612,7 +612,7 @@ The repository builds `3.4.2.5+fuse1.0.2-toni`. The `1.0.x` line means 'the auth
 | Dosing context and exposure gate | `DosingContext`, `ExposureGate`, `AuthorizedLift` | `DosingContextTest`, `ExposureGateTest`, `TransportWiringTest` |
 | Typed SMB status | `SmbStatus` | `SmbStatusTest` |
 | Liveness channel | `LivenessChannel` | `LivenessChannelTest` |
-| Central profile defaults and backup | `FuseKeys`, `FuseCentralProfileBackup` | `ConfigBoundsTest`, `FuseCentralProfileBackupTest` |
+| Central profile defaults and backup | `FuseKeys`, `FuseCentralProfileBackup` | `ConfigBoundsTest`, `FuseCentralProfileBackupTest`, `FuseSchluesselRueckwegTest` |
 | UI semantics | `FuseScreenModel`, `FuseSettingsReport` | `FuseScreenModelTest`, `FuseSettingsReportTest` |
 
 143 test classes and 2172 test methods run under `fuse/**` on the JVM. Tested here means covered by automated tests; it does not mean clinically evaluated and it does not mean observed to behave well in life. The user interface is the known weak spot: three defects were found by hand on the device on 10.08.2026 and none of them by the test suite of the day, which is why a static idiom watcher exists and why UI work counts as finished only after a look at the device.

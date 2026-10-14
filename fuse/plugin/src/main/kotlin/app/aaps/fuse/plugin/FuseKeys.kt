@@ -3,6 +3,7 @@ package app.aaps.fuse.plugin
 import app.aaps.core.keys.interfaces.BooleanPreferenceKey
 import app.aaps.core.keys.interfaces.DoublePreferenceKey
 import app.aaps.core.keys.interfaces.IntPreferenceKey
+import app.aaps.core.keys.interfaces.NonPreferenceKey
 import app.aaps.core.keys.interfaces.StringPreferenceKey
 
 /**
@@ -101,24 +102,6 @@ enum class FuseDoubleKey(
      * davor). Wirkt NUR auf `lower` - die Dosis haengt an der Mittelbahn
      * (s. DriveDiscount).
      */
-    /**
-     * Kleinste UKF-Rate, die noch als "ruhig" gilt [mg/dl/min].
-     *
-     * MINIMUM 0,0, nicht negativ: `FLOOR_BEYOND_HORIZON` kann das AKTUELLE
-     * Risiko aufheben, waehrend die UKF-Rate noch deutlich negativ ist.
-     * Eine negative Schwelle liesse den Sofortbatch dann auf einer weiter
-     * fallenden Kurve zuenden, sofern q1 gerade nicht faellt.
-     */
-    CalmRecoveryMinUkf("fuse_calm_recovery_min_ukf", 0.0, 0.0, 1.0),
-
-    /**
-     * Mindestabstand von q1 zum Guard-Boden fuer die Ruhefreigabe [mg/dl].
-     *
-     * MINIMUM 5, nicht 0: bei 0 waere eine Freigabe unmittelbar AM
-     * Guard-Boden einstellbar. 5 ist der bislang untersuchte Kandidat.
-     */
-    CalmRecoveryGuardDistanceMgdl("fuse_calm_recovery_guard_distance", 5.0, 5.0, 100.0),
-
     BolusShareLambda("fuse_bolus_share_lambda", 1.0, 0.0, 2.0),
 
 
@@ -165,41 +148,6 @@ enum class FuseDoubleKey(
     // Liveness-Deadlock-Messung: eine Mahlzeit brauchte deutlich mehr Insulin, als
     // die damalige Huelle je Stunde freigab.
     PrimeEnvelopeU("fuse_prime_envelope_u", 1.2, 0.0, 6.0),
-
-    /**
-     * ANTEIL VON PHASE A AM GEMEINSAMEN MAHLZEITENBUDGET.
-     *
-     * 1.0 ist der HEUTIGE Stand: alles sofort, kein Fundament. Die
-     * Replay-Kandidaten lagen darunter. Der Default bleibt 1.0, damit ein
-     * Flash das Verhalten NICHT aendert - das Fundament ist eine eigene,
-     * spaeter zu treffende Therapieentscheidung.
-     *
-     * NUR DER ANTEIL IST EINSTELLBAR, nicht die absoluten Mengen: die ergeben
-     * sich aus [PrimeEnvelopeU]. Zwei Knoepfe fuer dieselbe Menge waeren zwei
-     * Wahrheiten, und eine davon veraltet (Spezifikation 13.7).
-     */
-    MealFoundationPhaseAShare("fuse_meal_foundation_phase_a_share", 1.0, 0.5, 1.0),
-
-    /**
-     * PHASE-A-SOFORTANTEIL nach iLet-Prinzip (Bauauftrag Toni 24.08.).
-     *
-     * `upfrontU = phaseABudgetU x UpfrontShare` wird im ersten berechtigten
-     * Zyklus nach dem Markerdruck SOFORT angefordert; der Rest laeuft
-     * weiter linear ueber das Prime-Fenster. Anlass: wiederkehrende fruehe
-     * Mahlzeitenpeaks - die Phase-A-Menge ist nicht zwingend zu klein, sie
-     * kommt zu spaet (iLet liefert ~75 % des gelernten Mahlzeitenbedarfs
-     * als unmittelbare Dosis).
-     *
-     * Default 0,00 = BITGLEICH heutiges Verhalten. GEPINNT beim Armen wie
-     * die Geschwister: eine Aenderung wirkt erst beim naechsten frischen
-     * Marker. Die Sofortdosis wird als typisierte Quelle MEAL_UPFRONT
-     * gefuehrt und NICHT von maxSMB zerteilt; PrimeWindowMin bleibt
-     * unveraendert die Phasengrenze zu Phase B (Lieferkurve und
-     * Phasengrenze sind zwei verschiedene Groessen). NUR DER ANTEIL ist
-     * einstellbar, die Menge folgt aus [PrimeEnvelopeU] x
-     * [MealFoundationPhaseAShare] - eine Wahrheit, kein zweiter Knopf.
-     */
-    MealFoundationPhaseAUpfrontShare("fuse_meal_foundation_phase_a_upfront_share", 0.0, 0.0, 1.0),
 
     /**
      * V-REVERSAL-SCHUTZ (Bauauftrag Toni 25.08.): die
@@ -285,29 +233,6 @@ enum class FuseDoubleKey(
     ZeroLatchCalmDistanceMgdl("fuse_zero_latch_calm_distance_mgdl", 30.0, 10.0, 60.0),
 
     /**
-     * VARIANTE 2 des Nullphasen-Vergleichs: DECKEL DER MARKERLOSEN
-     * KORREKTURSERIE [U] im rollierenden Fenster
-     * [FuseIntKey.CorrectionSeriesWindowMin]. 0 = AUS.
-     *
-     * Gemessener Anlass: eine markerlose Korrekturserie schuettete in
-     * einer halben Stunde ein Mehrfaches des statischen Korrekturbedarfs
-     * aus, und die lange Schutz-Null danach war die Gegenreaktion darauf.
-     * Der Deckel begrenzt die SERIE, nicht den einzelnen SMB.
-     *
-     * ER FASST DIE BASALACHSE NICHT AN: er wirkt ausschliesslich im
-     * Exposure-Gate, das nur SMB-Mengen begrenzt. Null-TBR, Zero-Latch und
-     * Schutzgruende laufen unveraendert.
-     *
-     * GEZAEHLT WIRD, WAS DEN TRANSPORT UEBERSTANDEN HAT: die Buchung wird
-     * bei Verwurf und bei bewiesenem Nicht-Senden zurueckgedreht.
-     *
-     * 2.0 (Stufe 1, K2): NICHT MEHR GELESEN - Variante 2 ist entfernt. Der
-     * Schluessel bleibt registriert (gespeicherter Wert, Sicherung, Rueckweg
-     * auf 1.x); die Serienliste wird fuer diesen Rueckweg weiter gebucht.
-     */
-    CorrectionSeriesCapU("fuse_correction_series_cap_u", 0.0, 0.0, 5.0),
-
-    /**
      * Nahhorizont des harten Endriegels fuer NEUES positives Insulin [min].
      * Getrennt vom 120-minuetigen TBR-Nutzenfenster: Basal rechtzeitig
      * zurueckhalten und einen Mahlzeiten-SMB hart verbieten sind zwei
@@ -377,26 +302,6 @@ enum class FuseDoubleKey(
      */
     LivenessBgMinNightMgdl("fuse_liveness_bg_min_night_mgdl", 160.0, 100.0, 250.0),
 
-    /**
-     * ERWEITERUNG M1 (Bauauftrag 7.5.1, Toni 29.08.): eigene Druckschwelle
-     * des Liveness-Kanals unter GUELTIGER MEAL-Vollmacht [mg/dl, ABSOLUT].
-     *
-     * Beleg: 55 min Verzug bei einer Mahlzeit am Abend und 35 min bei einem
-     * Fruehstueck - die Korrektur-Schwelle (140/160) verhinderte unter stehender
-     * Marker-Autorisierung jede Druckzaehlung, waehrend r laengst >= 1 lief
-     * und der Normalpfad GUARD-gedeckelt war.
-     *
-     * ECHTER Startsatz-Default 110 (Toni 29.08. nachts, aus den beiden
-     * Mahlzeitenfaellen: ~45/35 min frueherer Druck als 140, ohne direkt
-     * ueber Ziel zu zuenden) - der fruehere Tag-/Nacht-Fallback ist mit
-     * dem CENTRAL-only-Cleanup beendet. CORRECTION behaelt Tag/Nacht
-     * IMMER. Untergrenze 80: unter der Vollmacht darf die Schwelle nahe
-     * an den Zielbereich, aber nie unter den Guard-Boden-Bereich - die
-     * gemessenen Riegel (Tief, Fallen, Rebound) bleiben davon unberuehrt
-     * absolut.
-     */
-    LivenessBgMinMealMgdl("fuse_liveness_bg_min_meal_mgdl", 110.0, 80.0, 250.0),
-
     /** Totband der NACHT [mg/dl ueber Ziel]: darunter kein SMB im Nachtfenster.
      *  0 = aus. Ein erklaerter Marker hebt es auf (Toni 09.08.). */
     NightDeadbandMgdl("fuse_night_deadband_mgdl", 45.0, 0.0, 100.0),
@@ -429,16 +334,6 @@ enum class FuseDoubleKey(
     // kommen aus dem Kern (ExpectationAccount), damit Dialog und Rechnung nie
     // auseinanderlaufen. Ein ungueltiger Wert schaltet die ERWARTUNG ab (nur
     // Ersetzung), er bricht keinen Zyklus ab und hat keinen Ersatzwert.
-
-    /**
-     * Anteil der erwarteten Stoerung bei STABILEM Start (phi_0). Budget
-     * A_0 = phi_0 * F(Ende), hoechstens die Huelle der Episode.
-     * Standard 0: keine Erwartung, nur Ersetzung.
-     */
-    ExpectationPhi0Stable("fuse_expectation_phi0_stable", 0.0, 0.0, 1.0),
-
-    /** Derselbe Anteil bei Start nach Tief oder im Fallen. Standard 0. */
-    ExpectationPhi0AfterLow("fuse_expectation_phi0_after_low", 0.0, 0.0, 1.0),
 
     /**
      * Stabilitaet nach Tief: BG ueber dieser Grenze, kein Fallen, keine
@@ -529,18 +424,6 @@ enum class FuseIntKey(
 ) : IntPreferenceKey {
 
     /**
-     * ENDE DES PHASE-B-FENSTERS [min ab Markerdruck] (Toni 18.08.).
-     *
-     * Bis hierhin verteilt das Mahlzeitenfundament sein Teilbudget. Danach
-     * ist es fertig - der Rest verfaellt, statt spaeter in einer Lage zu
-     * landen, fuer die er nie gedacht war.
-     *
-     * Die Untergrenze liegt ueber dem Prime-Fenster (15 min): ein Ende davor
-     * ergaebe gar kein Phase-B-Fenster.
-     */
-    MealFoundationEndMin("fuse_meal_foundation_end_min", 60, 20, 180),
-
-    /**
      * ABLAUFFRIST DES MARKER-PRIME-AUFSCHUBS [min ab Markerdruck]
      * (Punkt 6, Toni 22.08.). Wird BEIM MARKER GEPINNT; nach Ablauf
      * verfaellt der offene Rest sichtbar mit typisiertem Grund -
@@ -562,18 +445,6 @@ enum class FuseIntKey(
      * (deutlich weniger Risiko-Insulin im Gegenfenster).
      */
     LivenessReArmMin("fuse_liveness_rearm_min", 10, 0, 60),
-
-    /**
-     * ERWEITERUNG M3 (Bauauftrag 7.5.5, Toni 29.08.): Bewaffnungszyklen
-     * des Liveness-Kanals unter GUELTIGER MEAL-Vollmacht.
-     *
-     * CORRECTION bleibt IMMER bei den drei Druckzyklen (ARM_STREAK) -
-     * autoISF-artige Sofortreaktion gehoert nur der autorisierten
-     * Mahlzeit. Startsatz-Default 1 (Toni 29.08. nachts): unter der
-     * ausdruecklichen Vollmacht reagiert der Kanal im ersten vollstaendig
-     * passenden Zyklus.
-     */
-    MealArmCycles("fuse_meal_arm_cycles", 1, 1, 10),
 
     /**
      * MARKER-LEISTUNGSFRIST [min] (Bauauftrag Toni 23.08. nachts): so lange
@@ -616,13 +487,6 @@ enum class FuseIntKey(
      * Nachholen ausgelassener Basalmenge findet ausdruecklich NICHT statt.
      */
     ZeroLatchReasonGoneExitCycles("fuse_zero_latch_reason_gone_exit_cycles", 0, 0, 60),
-
-    /** Rollierendes Fenster [min] des Serien-Deckels
-     *  [FuseDoubleKey.CorrectionSeriesCapU]. Ohne Deckel wirkungslos.
-     *
-     *  2.0 (Stufe 1, K2): NICHT MEHR GELESEN - Variante 2 ist entfernt; der
-     *  Schluessel bleibt registriert (gespeicherter Wert, Rueckweg auf 1.x). */
-    CorrectionSeriesWindowMin("fuse_correction_series_window_min", 30, 10, 120),
 
     /** V-Reversal-Schutz: Rueckblickfenster [min], in dem das
      *  Fall-Minimum den Riegel traegt (Pflichtfall: Minimum 11 min vor
@@ -685,22 +549,6 @@ enum class FuseIntKey(
      *  Der eigentliche Aggressivitaets-Regler des Markers; bewusst als
      *  Einstellung, weil das Feintuning im laufenden Betrieb passiert. */
     AbsorptionCreditWindowMin("fuse_absorption_credit_window_min", 60, 20, 180),
-    /**
-     * Ueber wieviele Minuten die Freigabe-Huelle verteilt wird.
-     *
-     * ZWEITER REGLER NEBEN DER MENGE (Toni 16.08.): "also zusaetzlich zur
-     * Huellengroesse, das Fenster ueber welches das Insulin abgegeben werden
-     * soll - so waere man flexibel". Anlass war ein langsam resorbiertes Fruehstueck:
-     * die volle Huelle floss in ZEHN Minuten ab, danach sperrte der Guard
-     * bei hohem IOB zwei Stunden - genau als die Resorption lief. Dieselbe
-     * Menge ueber 25 Minuten haette denselben Vorlauf bei kleinerer
-     * IOB-Spitze zum Resorptionszeitpunkt.
-     *
-     * Obergrenze ist die Wanduhr-Kappe des Markers (45 min); darueber hinaus
-     * gaebe es nichts mehr zu verteilen.
-     */
-    PrimeWindowMin("fuse_prime_window_min", 15, 5, 45),
-
 
     /** Dauer der Marker-SONDERRECHTE ab Druck (erklaerter Kredit + Entwaffnung
      *  der Rebound-Bremsen + Marker-Zweig des Mahlzeit-Fensters). Endet
@@ -773,26 +621,6 @@ enum class FuseIntKey(
     TheilSenWindowMin("fuse_theil_sen_window_min", 18, 8, 18),
 
     /**
-     * FRUEHER ADAPTIVER MEAL-HORIZONT [min] - DEFAULT 0 = AUS (Bauauftrag Toni
-     * 18.09., Kandidat H8, kein Aktivierungs-GO).
-     *
-     * Eingeschaltet bildet FUSE im frueh autorisierten Mahlzeitenfenster
-     * (Marker +10..+45 min) aus dem robusten W10-Anstieg (ab der Liveness-
-     * Druckschwelle 1,0 mg/dl/min, UKF >= 0) einen kurzen
-     * Bruttobedarf `target + W10 * H` und fuehrt ihn per `max` mit der
-     * produktiven Freigabe-Mittelbahn zusammen - s.
-     * [app.aaps.fuse.core.controller.EarlyAdaptiveMealNeed]. Wirksam sind nur
-     * 0, 6, 8 und 10; jeder andere Wert (auch ein alter oder fehlender
-     * Schluessel) wirkt als 0. Theil-Sen-Fenster, Release-, Prognose- und
-     * Sicherheitshorizonte bleiben unveraendert. Der Dialog bietet nur diese
-     * vier Werte an (Auswahlliste, [EarlyAdaptiveMealHorizonText]).
-     *
-     * DOSIERWIRKSAM: steht im Politik-Hash (v55), in policyValues, Backup und
-     * Report; der Trail traegt konfigurierten und wirksamen Wert.
-     */
-    EarlyAdaptiveMealHorizonMin("fuse_early_adaptive_meal_horizon_min", 0, 0, 10),
-
-    /**
      * DIE DAUER DES REBOUND-FENSTERS [min] nach dem juengsten Tief
      * (signal.q1 unter [FuseController.REBOUND_LOW_MGDL]). War bis 26.08.
      * fest; [FuseController.REBOUND_WINDOW_MIN] ist nur noch der Default.
@@ -826,24 +654,6 @@ enum class FuseIntKey(
      * ausgerechnet nach einem Flash am kuerzesten.
      */
     ReboundWindowMin("fuse_rebound_window_min", 45, 45, 240),
-
-    /**
-     * Lueckenlose Ruhezyklen bis zur Freigabe - s.
-     * [FuseBooleanKey.CalmRecoveryEnabled].
-     *
-     * MINIMUM 2, nicht 1: der Codevertrag lautet ausdruecklich "ein
-     * einzelner ruhiger Zyklus genuegt nicht". Eine Einstellung, die das
-     * unterlaeuft, waere ein Widerspruch zur Klasse selbst.
-     */
-    CalmRecoveryCycles("fuse_calm_recovery_cycles", 3, 2, 20),
-
-    /**
-     * DIE BEHANDLUNG: 0 = bedarfsbegrenzt, 1 = in den schrittweisen
-     * Aufschub verschoben, 2 = Sofortbatch (DOSIERWIRKSAM).
-     * Abbildung in [app.aaps.fuse.core.controller.UpfrontRecovery.CalmTreatment.ofSetting] -
-     * ein unbekannter Wert ergibt den harmlosesten Modus.
-     */
-    CalmTreatmentMode("fuse_calm_treatment_mode", 0, 0, 2),
 
     /** Erwartungskonto: Dauer der Stabilitaetsbedingung [min] (s. FuseDoubleKey). */
     ExpectationStabilityMin(
@@ -979,25 +789,6 @@ enum class FuseBooleanKey(
     ExpectationLedgerEnabled("fuse_expectation_ledger_enabled", false),
 
     /**
-     * MASTER-Schalter der Prognose-Forschungssammler (Toni/Codex 23.08.):
-     * Trend-/Tau-Matrix und ADAPTIVE-DOWN-Lanes. REIN diagnostisch, wird
-     * nie von Dosierlogik gelesen (die Wende-KLASSIFIKATION selbst ist
-     * Produktionseingang des Liveness-Exits und laeuft immer). Default AN,
-     * solange die Messphase laeuft; im Normalbetrieb abschaltbar, damit
-     * Forschungscode nicht unbegrenzt still mitrechnet. AUS exportiert
-     * `enabled:false` statt fehlender Felder; jedes Umschalten eroeffnet
-     * eine neue Sammel-Epoche. BEWUSST NICHT im Policy-Hash: keine
-     * Dosierregel. Keine Einzelschalter je Variante - eine im Code
-     * versionierte Matrix (methodId) ist reproduzierbarer als
-     * Schalter-Kombinatorik.
-     *
-     * 2.0 (Stufe 1, K1): NICHT MEHR GELESEN - die Sammler sind entfernt, der
-     * Export traegt enabled fest false. Der Schluessel bleibt registriert
-     * (gespeicherter Wert, Sicherung, Rueckweg auf 1.x).
-     */
-    ForecastShadowCollectionEnabled("fuse_forecast_shadow_collection_enabled", true),
-
-    /**
      * ZERO-TBR-LATCH (Bauauftrag Toni 24.08. abends). Der Befund dazu:
      * binnen rund anderthalb Stunden eroeffnete das Low-Tor
      * MEHRFACH eine berechtigte Zero-TBR, und der punktuelle Nutzenwert
@@ -1038,24 +829,6 @@ enum class FuseBooleanKey(
      * als zweite Schutzlinie unveraendert. Default AUS.
      */
     PositiveCorrectionRearmEnabled("fuse_positive_correction_rearm_enabled", false),
-
-    /**
-     * DAS MAHLZEITENFUNDAMENT - DEFAULT AUS.
-     *
-     * Anders als der Erwartungs-Ledger ist dies DOSIERWIRKSAM: eingeschaltet
-     * verschiebt es einen Teil des autorisierten Budgets aus der fruehen
-     * Spitze in ein nachlaufendes Fenster. Tonis Reihenfolge (Spezifikation
-     * 12) sieht davor Offline-Replay und eine Abnahme auf der VirtualPump vor,
-     * und danach genau EINE produktive Testvariable ohne gleichzeitige
-     * lambda-Scharfschaltung.
-     *
-     * Auch bei [FuseDoubleKey.MealFoundationPhaseAShare] = 1.0 (keine Phase B)
-     * ist der Schalter nicht wirkungslos: der Sofortanteil
-     * [FuseDoubleKey.MealFoundationPhaseAUpfrontShare] wird aus der
-     * Fundament-Autorisierung bemessen, und die entsteht nur bei
-     * eingeschaltetem Fundament.
-     */
-    MealFoundationEnabled("fuse_meal_foundation_enabled", false),
 
     /**
      * STUFENWEISE BASALRUECKKEHR aus einer Schutz-Null (AUS = bisheriges
@@ -1108,44 +881,6 @@ enum class FuseBooleanKey(
     LivenessChannelEnabled("fuse_liveness_channel_enabled", false),
 
     /**
-     * REBOUND-EVIDENZ-AUSNAHME AM LIVENESS-TOR - DEFAULT AUS (Toni 14.09.,
-     * kein Aktivierungs-GO). DOSIERWIRKSAM: eingeschaltet darf das rohe
-     * Rebound-Fenster den Kanal auch dann nicht mehr sperren, wenn der
-     * versiegelte Evidenzkredit durch Buchungen verbraucht ist - vorausgesetzt
-     * MEAL-Vollmacht, gepinntes und nicht abgelaufenes Rebound-Sonderrecht
-     * DIESES Markers, Tief VOR dem Markerdruck, Evidenzbestand ACTIVE oder
-     * PENDING_SEAL und gemessen stabile Rohreihe. Keine Menge, kein anderer
-     * Pfad; alle Riegel, Deckel und das Publikations-Gate bleiben.
-     */
-    LivenessReboundEvidenceExceptionEnabled("fuse_liveness_rebound_evidence_exception_enabled", false),
-
-    /**
-     * BUCHUNGSBEDINGTER AUSGANG OHNE NEUE WIEDERANLAUFSPERRE - DEFAULT AUS
-     * (Tonis Vertrag 15.09., Experiment, kein Aktivierungs-GO). Beendet das
-     * Rebound-Tor einen laufenden Liveness-Lauf, weil der eigene Buchungsabzug
-     * den Evidenzbestand erschoepft hat, endet der Lauf weiterhin - es entsteht
-     * nur keine NEUE zeitliche Sperre. Nur ohne erfasste Gefahr, ohne jede
-     * weitere Torsperre, ohne manuelle Intervention, ohne Konfigurationswechsel
-     * und mit vollstaendiger Diagnose; bestehende Sperren bleiben. Keine Menge,
-     * kein anderes Tor.
-     */
-    LivenessBookingExitWithoutReArmEnabled("fuse_liveness_booking_exit_without_rearm_enabled", false),
-
-    /**
-     * HALTE-ANHEBUNG DES STOERUNGSTERMS IM LIVENESS-BEDARF - DEFAULT AUS
-     * (Tonis Auftrag 15.09., Experiment, kein Aktivierungs-GO). DOSIERWIRKSAM:
-     * eingeschaltet haelt der laufende, bereits bewaffnete Kanal NUR unter
-     * gueltiger MEAL-Autorisierung (CORRECTION nie) den positiven
-     * Modellantrieb fuer die Bedarfsrechnung 20 min, bevor er mit dem
-     * konfigurierten tau abklingt - nur mit Messbestaetigung (zwei frische
-     * Rohwert-Bloecke mit neuem Hoch, Bedarf je Block einmal), nie im
-     * Rebound-Fenster, Anhebung hoechstens
-     * 40 mg/dl. Keine Bewaffnung, kein Tor, kein Deckel und keine Grenze aendert
-     * sich - s. [app.aaps.fuse.core.controller.LivenessDriveHold].
-     */
-    LivenessDriveHoldEnabled("fuse_liveness_drive_hold_enabled", false),
-
-    /**
      * WIEDEREINSTIEG NACH CGM-FUNKLUECKE (Toni 25.08. abends).
      *
      * Eingeschaltet reift der Antriebsschaetzer NUR nach einer eindeutig
@@ -1164,15 +899,6 @@ enum class FuseBooleanKey(
      * "blind abgebrochen" zu "aus benanntem Grund geblockt" wechselte.
      */
     SignalRejoinEnabled("fuse_signal_rejoin_enabled", false),
-
-    /**
-     * DER RUHE-AUSGANG AUS PHASE A (Bauauftrag Toni 25.08. spaet).
-     *
-     * DOSIERWIRKSAM, wenn der Modus auf CALM_BATCH steht: dann darf der
-     * noch offene Sofortanteil nach bestaetigter Ruhe als Batch heraus.
-     * Default AUS - die Kalibrierung der Schwellen steht aus.
-     */
-    CalmRecoveryEnabled("fuse_calm_recovery_enabled", false),
 
     /**
      * DER MARKER AUTORISIERT INSULIN BEI GEMESSENEM TIEF (Tonis Entscheidung,
@@ -1203,32 +929,6 @@ enum class FuseBooleanKey(
     MarkerAuthorisesRelease("fuse_marker_authorises_low", false),
 
     /**
-     * BEDINGTE BAHN im Schwanz-Guard (11.08.).
-     *
-     * Der Schwanz rechnet sein Budget aus der PRIOR-FREIEN Bahn - also aus
-     * einem Verlauf OHNE Kohlenhydrate. Auf flacher Kurve mit Insulin an Bord
-     * ist sie niedrig, das Budget klein, der Spielraum negativ: er sperrt.
-     * Gemessen: eine lange Sperre am Stueck, waehrend der BG stieg.
-     *
-     * Das ist ein Zirkelschluss - er widerlegt die Ankuendigung mit einem
-     * Modell, das die Ankuendigung nicht kennt. Mit der bedingten Bahn darf
-     * der ERKLAERTE Antrieb auch auf die Sicherheitskante wirken, solange ein
-     * Markerkredit laeuft.
-     *
-     * SCHRANKE UND WIDERRUF GIBT ES BEREITS und sie sind nicht neu erfunden:
-     * der Kredit ist `(Huelle - geliefert) * ISF / Absorptionsfenster`, er
-     * schrumpft mit jeder Lieferung, endet mit den Sonderrechten und frueher
-     * bei erkannter Wende. Zusaetzlich deckelt die Invariante
-     * `priorFree <= lower` die Hebung auf die ANZEIGEBAHN - hoeher kommt die
-     * Sicherheitskante nie.
-     *
-     * 2.0 (Stufe 1, K3): NICHT MEHR GELESEN - die bedingte Schwanzkante ist
-     * fest an. Der Schluessel bleibt registriert, damit gespeicherter Wert,
-     * Sicherung und der Rueckweg auf 1.x erhalten bleiben.
-     */
-    ConditionalTailEnabled("fuse_conditional_tail_enabled", true),
-
-    /**
      * Schwanz-Guard: bewertet die unvermeidbare Restwirkung HINTER dem
      * Haftungshorizont.
      *
@@ -1252,39 +952,6 @@ enum class FuseBooleanKey(
      */
     TailGuardEnabled("fuse_tail_guard_enabled", false),
 
-    /** NACHT-TOTBAND aktiv (Toni 09.08.): im Nachtfenster kein SMB unterhalb
-     *  Ziel + Nacht-Totband. Schalter getrennt vom Wert, damit ein Abschalten
-     *  die eingestellte Schwelle nicht verliert.
-     *
-     *  2.0 (Stufe 1, K3): NICHT MEHR GELESEN - das Totband ist fest an. Der
-     *  Schluessel bleibt registriert (gespeicherter Wert, Rueckweg auf 1.x). */
-    NightDeadbandEnabled("fuse_night_deadband_enabled", true),
-
-    /** REBOUND-TOTBAND aktiv: nach einem Tief kein SMB unterhalb
-     *  Ziel + Rebound-Totband. War bis 09.08. fest eingebaut.
-     *
-     *  2.0 (Stufe 1, K3): NICHT MEHR GELESEN - wieder fest eingebaut. Der
-     *  Schluessel bleibt registriert (gespeicherter Wert, Rueckweg auf 1.x). */
-    ReboundDeadbandEnabled("fuse_rebound_deadband_enabled", true),
-
-    /**
-     * Zweite Bahn aus der SCHNELLEN Rate, die ausschliesslich BREMSEN darf.
-     *
-     * DEFAULT AN, und anders als beim Schwanz-Guard ist das unkritisch: der
-     * Eingriff ist beweisbar einseitig. Er nimmt das MINIMUM beider Bahnen und
-     * kann damit keine Dosis erhoehen und keinen bestehenden Block entfernen —
-     * nur zusaetzlich zurueckhalten.
-     *
-     * Gemessen: FUSE gab nach dem Wendepunkt noch eine ganze Serie von SMBs,
-     * bei schnell FALLENDER Glukose, weil `rSigned` dort noch
-     * einen steilen Anstieg sagte. Genau diese Zyklen faengt die Bremse.
-     *
-     * 2.0 (Stufe 1, K3): NICHT MEHR GELESEN - die Bremsbahn ist fest an. Der
-     * Schluessel bleibt registriert (gespeicherter Wert, Sicherung, Rueckweg
-     * auf 1.x).
-     */
-    FastRestraintEnabled("fuse_fast_restraint_enabled", true),
-
     /**
      * Der oeffnende schnelle Kanal (OnsetChannel): Bruecke zwischen "UKF sieht
      * den Anstieg" und "Theil-Sen bestaetigt". NICHT einseitig - er hebt die
@@ -1292,14 +959,6 @@ enum class FuseBooleanKey(
      * Haftungshuelle, Uebergabe an die Rampe bei r >= riseRampLowR.
      */
     OnsetChannelEnabled("fuse_onset_channel_enabled", true),
-
-    /**
-     * Sofort-Freigabe am Mahlzeiten-Marker (PrimeRelease): verteilte Abgabe
-     * ab Knopfdruck, OHNE auf CGM-Evidenz zu warten. Nur mit Marker, nur im
-     * 15-min-Fenster, Clearance-Gate gegen die Guardbahn, alle Sperren und
-     * Deckel gewinnen. Huelle: PrimeEnvelopeU.
-     */
-    PrimeReleaseEnabled("fuse_prime_release_enabled", true),
 
     /**
      * Eine laufende Schutz-Null endet, sobald ihr Grund im aktuellen Zyklus
@@ -1318,31 +977,6 @@ enum class FuseBooleanKey(
      * er der Rueckweg ist: die Wirkung ist am Geraet noch ungemessen.
      */
     TbrEndZeroWhenReasonGone("fuse_tbr_end_zero_when_reason_gone", true),
-
-    /**
-     * DAS ERWARTUNGSKONTO (Testkandidat, Vorregistrierung E-034) - DEFAULT AUS.
-     *
-     * An: im Mahlzeitkontext (bewusster Marker bis Fensterende) ersetzt das
-     * Konto den Bedarf von Normalpfad, H8, Onset-Kanal, Phase B und
-     * Liveness-Kanal durch R_roh = R_mess + phi * Z mit einmal gebuchtem
-     * Budget. Die Direktdosis-Familie bleibt; gemessene Sperren, Schwanz und
-     * alle Mengengrenzen bleiben. Aus: bitgleich zum heutigen Stand.
-     *
-     * Nur fuer den Testzweig. Besteht der Kandidat, wird der Schalter mit dem
-     * Aufraeumplan entfernt; scheitert er, wird der Zweig geschlossen.
-     */
-    // Konsolidierung 2.0: nicht mehr gelesen - das Konto gilt mit gueltiger Kurve. Registriert fuer Sicherungen
-    // und den Rueckweg 1.x.
-    ExpectationAccountEnabled("fuse_expectation_account_enabled", false),
-
-    /**
-     * Die Guard-Ausnahme des Erwartungsanteils - Rueckfallebene, DEFAULT AN.
-     *
-     * Aus: der Erwartungsanteil fliesst nur ueber den Normalpfad mit Guard;
-     * Budget und Buchung bleiben unveraendert. Abschalten wirkt sofort,
-     * Einschalten erst ab dem naechsten Marker.
-     */
-    ExpectationGuardExceptionEnabled("fuse_expectation_guard_exception_enabled", true),
 
     /**
      * FRUEHE VERSORGUNG (E-034 v2), Default AUS. Nur mit eingeschaltetem
@@ -1393,3 +1027,71 @@ enum class FuseStringKey(
      */
     ExpectationCurve("fuse_expectation_curve", ""),
 }
+
+/**
+ * ENTFALLENE EINSTELLUNGEN (Konsolidierung 2.0) - ohne Wirkung, in keinem Bildschirm, und FUSE liest sie nie.
+ *
+ * Sie bleiben REGISTRIERT, damit eine AAPS-Sicherung ihre gespeicherten Werte weiter mitnimmt: die Sicherung
+ * schreibt nur registrierte Schluessel, und der Import loescht vor dem Schreiben alles (`sp.clear()`). Ohne diese
+ * Liste verloere jede Sicherung aus 2.0 diese Werte still - und der Rueckweg ueber die 1.x-APK, die sie wieder
+ * liest, fiele auf deren Vorgaben zurueck. 2.0 entfernt Code, keine gespeicherten Einstellungen. Eine alte
+ * Sicherung mit diesen Schluesseln laedt unveraendert: sie werden zurueckgeschrieben und bleiben ungelesen.
+ *
+ * Kein Einstellungstyp: die Sicherung behandelt jeden gespeicherten Wert gleich, Grenzen und Vorgaben braucht
+ * nur ein Schluessel, der gelesen wird.
+ */
+enum class FuseRetiredKey(
+    override val key: String,
+    override val exportable: Boolean = true,
+) : NonPreferenceKey {
+
+    // Sofortanteil und Ruhe-Ausgang
+    MealFoundationPhaseAUpfrontShare("fuse_meal_foundation_phase_a_upfront_share"),
+    CalmRecoveryEnabled("fuse_calm_recovery_enabled"),
+    CalmRecoveryCycles("fuse_calm_recovery_cycles"),
+    CalmRecoveryMinUkf("fuse_calm_recovery_min_ukf"),
+    CalmRecoveryGuardDistanceMgdl("fuse_calm_recovery_guard_distance"),
+    CalmTreatmentMode("fuse_calm_treatment_mode"),
+
+    // Sofort-Freigabe am Marker (Prime)
+    PrimeReleaseEnabled("fuse_prime_release_enabled"),
+    PrimeWindowMin("fuse_prime_window_min"),
+
+    // Mahlzeitenfundament
+    MealFoundationEnabled("fuse_meal_foundation_enabled"),
+    MealFoundationPhaseAShare("fuse_meal_foundation_phase_a_share"),
+    MealFoundationEndMin("fuse_meal_foundation_end_min"),
+
+    // Erwartungskonto v1 (Hauptschalter, Vorgriff phi_0, Guard-Ausnahme)
+    ExpectationAccountEnabled("fuse_expectation_account_enabled"),
+    ExpectationPhi0Stable("fuse_expectation_phi0_stable"),
+    ExpectationPhi0AfterLow("fuse_expectation_phi0_after_low"),
+    ExpectationGuardExceptionEnabled("fuse_expectation_guard_exception_enabled"),
+
+    // Mahlzeitenteile und Experimente des Liveness-Kanals (MEAL-Schwelle und -Bewaffnung, Rebound-Evidenz-Ausnahme,
+    // Buchungsausgang, Halte-Anhebung, H8)
+    LivenessBgMinMealMgdl("fuse_liveness_bg_min_meal_mgdl"),
+    MealArmCycles("fuse_meal_arm_cycles"),
+    LivenessReboundEvidenceExceptionEnabled("fuse_liveness_rebound_evidence_exception_enabled"),
+    LivenessBookingExitWithoutReArmEnabled("fuse_liveness_booking_exit_without_rearm_enabled"),
+    LivenessDriveHoldEnabled("fuse_liveness_drive_hold_enabled"),
+    EarlyAdaptiveMealHorizonMin("fuse_early_adaptive_meal_horizon_min"),
+
+    // Schon in Stufe 1 (K1-K3) nicht mehr gelesen: Prognose-Sammler, Serien-Deckel, fest eingeschaltete Mechanismen
+    ForecastShadowCollectionEnabled("fuse_forecast_shadow_collection_enabled"),
+    CorrectionSeriesCapU("fuse_correction_series_cap_u"),
+    CorrectionSeriesWindowMin("fuse_correction_series_window_min"),
+    ConditionalTailEnabled("fuse_conditional_tail_enabled"),
+    FastRestraintEnabled("fuse_fast_restraint_enabled"),
+    NightDeadbandEnabled("fuse_night_deadband_enabled"),
+    ReboundDeadbandEnabled("fuse_rebound_deadband_enabled"),
+}
+
+/**
+ * Alle FUSE-Schluesselklassen, die das Plugin beim Start registriert (`ownPreferences`) - EINE Liste fuer Plugin
+ * und Waechter: was hier fehlt, nimmt keine Sicherung mit.
+ */
+internal val fuseSchluesselKlassen: List<Class<out NonPreferenceKey>> = listOf(
+    FuseDoubleKey::class.java, FuseIntKey::class.java, FuseBooleanKey::class.java, FuseLongKey::class.java,
+    FuseStringKey::class.java, FuseRetiredKey::class.java,
+)

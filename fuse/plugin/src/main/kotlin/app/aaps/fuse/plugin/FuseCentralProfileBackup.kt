@@ -10,10 +10,11 @@ import org.json.JSONObject
  * Ein Geraet, das nur mit den Startsatz-Defaults faehrt, faehrt trotzdem
  * eine konkrete Konfiguration - ein Backup ohne diese Zahlen wuerde nach
  * einer spaeteren Default-Aenderung NICHT mehr die tatsaechlich gefahrene
- * Politik wiederherstellen. Deshalb sichert [schreibe] fuer alle fuenf
- * Double-Regler den WIRKSAMEN Wert (get() = gesetzter Wert oder Default);
- * MealArmCycles laeuft ueber den generischen put() der Exportkette und
- * steht damit ebenfalls immer im Backup.
+ * Politik wiederherstellen. Deshalb sichert [schreibe] fuer alle vier
+ * Profilwerte den WIRKSAMEN Wert (get() = gesetzter Wert oder Default).
+ * Konsolidierung 2.0: MEAL-Druckschwelle und Bewaffnungszyklen des
+ * Liveness-Kanals sind samt ihren Einstellungen entfallen - dieser Weg fasst
+ * ihre gespeicherten Werte nicht mehr an.
  *
  * [lese] bleibt migrationsfest: ein ALTES Backup ohne diese Felder
  * entfernt die Schluessel - danach gelten die AKTUELLEN Defaults, nie ein
@@ -27,7 +28,6 @@ object FuseCentralProfileBackup {
         FuseDoubleKey.MealExposureLimitU,
         FuseDoubleKey.CorrectionDemandRatioCap,
         FuseDoubleKey.MealDemandRatioCap,
-        FuseDoubleKey.LivenessBgMinMealMgdl,
     )
 
     fun schreibe(json: JSONObject, preferences: Preferences) {
@@ -44,16 +44,5 @@ object FuseCentralProfileBackup {
                 .takeIf { it.isFinite() && it in k.min..k.max }
             if (wert != null) preferences.put(k, wert) else preferences.remove(k)
         }
-        // M3-MIGRATION (Toni 29.08.): ein ALTES Backup ohne MealArmCycles
-        // stellt den Default-Zustand wieder her - store() liess sonst
-        // einen bereits gespeicherten Wert stehen, und das Backup
-        // behauptete einen Regler, den es nie enthielt. Entfernen = unset,
-        // der Config-Bau liefert dann den Startsatz-Default (1); ein
-        // Ausreisser im Backup zaehlt als nie gesetzt.
-        val zyklen = if (json.has(FuseIntKey.MealArmCycles.key))
-            json.optInt(FuseIntKey.MealArmCycles.key) else 0
-        if (zyklen in FuseIntKey.MealArmCycles.min..FuseIntKey.MealArmCycles.max)
-            preferences.put(FuseIntKey.MealArmCycles, zyklen)
-        else preferences.remove(FuseIntKey.MealArmCycles)
     }
 }

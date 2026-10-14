@@ -34,21 +34,16 @@ object FuseScreenModel {
     /** Marker-Zustand fuer Timer-Zeile - kommt vom Fragment (Plugin-Prefs),
      *  nicht aus dem Outcome: der Timer soll auch zwischen Zyklen laufen. */
     /**
-     * @param windowMin Lebensdauer des MARKERS [min] (90).
-     * @param primeWindowMin Lebensdauer der FREIGABE [min] aus der
-     *   EINSTELLUNG. Zwei verschiedene Uhren, und die Anzeige hat sie bis
-     *   17.08.2026 vermischt: sie zeigte die Freigabe gegen die KONSTANTE
-     *   `PrimeRelease.WINDOW_MIN` (15) statt gegen den eingestellten Wert.
-     *   Bei einem laenger eingestellten Fenster stand deshalb "15/15 min Freigabe" -
-     *   also abgelaufen - waehrend darunter noch eine offene Prime-Menge stand.
-     *   `null` = unbekannt, dann nennt die Zeile keine Dauer.
+     * @param windowMin Lebensdauer des MARKERS [min].
+     * @param envelopeU die eingestellte Kredit-Huelle [U].
+     * Konsolidierung 2.0: die Freigabe-Uhr (Einstellung des Freigabefensters) und
+     * die Episoden-Wahl fuer die Freigabezeile sind mit der Sofort-Freigabe
+     * entfallen.
      */
     data class MarkerInfo(
         val armedTs: Long,
         val windowMin: Int,
         val envelopeU: Double,
-        val noPrime: Boolean = false,
-        val primeWindowMin: Int? = null,
     )
 
     /**
@@ -229,20 +224,7 @@ object FuseScreenModel {
             // Lieferbestaetigung ist Sache des Ledgers.
             row(b, "seit Mahlzeit", "${f2(ms.totalU)} U publiziert nach ${ms.sinceMin} min (T0+30: ${f2(ms.first30U)} / T0+60: ${f2(ms.first60U)})")
         }
-        outcome.prime?.let { pr ->
-            primeText(pr)?.let { txt ->
-                // Die Episoden-Wahl gehoert VOR den Lieferstand: ein
-                // "0,00/x,xx U geliefert" saehe aus wie eine Stoerung, dabei
-                // ist es die Wahl des Drucks.
-                val stand = when {
-                    marker?.takeIf { it.armedTs > 0 }?.noPrime == true -> "  [ohne Vorschuss - Wahl beim Druck]"
-                    marker != null && marker.armedTs > 0 && marker.envelopeU > 0 ->
-                        "  [${f2((marker.envelopeU - pr.remainingU).coerceAtLeast(0.0))}/${f2(marker.envelopeU)} U geliefert]"
-                    else -> ""
-                }
-                row(b, "Freigabe", txt + stand)
-            }
-        }
+        // Konsolidierung 2.0: die Freigabezeile der Sofort-Freigabe ist mit ihr entfallen (`prime` ist leer).
         if (outcome.candidate != null || outcome.candidateGap != null) sec(b, "Pruefungen")
         outcome.candidate?.let { c ->
             row(
@@ -414,15 +396,6 @@ object FuseScreenModel {
         "ENVELOPE_SPENT"  -> "zu - Huelle verbraucht"
         "DISABLED"        -> "aus"
         else              -> "zu - ${o.reason}"
-    }
-
-    private fun primeText(p: app.aaps.fuse.core.controller.PrimeRelease.Plan): String? = when (p.reason) {
-        "NO_MARKER", "DISABLED" -> null // ohne Marker keine Zeile - kein Geruest
-        "PRIME"                 -> "laeuft - ${f2(p.floorU)} U diese Minute, Rest ${f2(p.remainingU)} U"
-        "WINDOW_OVER"           -> "zu - 15-min-Fenster vorbei"
-        "CLEARANCE"             -> "zu - Bahn zu nah am Boden"
-        "ENVELOPE_SPENT"        -> "zu - Huelle verbraucht"
-        else                    -> "zu - ${p.reason}"
     }
 
     /** Abschnitts-Kopf im autoISF-Stil (Tonis Lesbarkeits-Wunsch 08.08.). */

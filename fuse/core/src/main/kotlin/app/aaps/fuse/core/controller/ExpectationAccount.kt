@@ -4,50 +4,35 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * DAS ERWARTUNGSKONTO (Testkandidat hinter Schalter, Vorregistrierung E-034).
+ * DAS ERWARTUNGSKONTO (E-034) - der Mahlzeitenweg.
  *
- * WAS ES ERSETZT: Im Mahlzeitkontext - von der bewussten Markerautorisierung
- * bis zum Ende des gepinnten Fensters - wird der Bedarf nicht mehr aus der
- * Ratenfortschreibung am Freigabehorizont gelesen, sondern als
+ * Im Mahlzeitkontext - von der bewussten Markerautorisierung bis zum Ende des gepinnten Fensters - besteht der
+ * Bedarf aus zwei Teilen:
  *
- *     R_roh(a) = R_mess(a) + phi * Z(a)
- *     R_mess(a) = (BG(a) - Ziel) / ISF - IOB_gesamt(a)
- *     Z(a)      = F(min(a + H, Ende)) - F(a)
+ *     R_mess(a) = (BG(a) - Ziel) / ISF - IOB_gesamt(a)     der gemessene Anteil
+ *     X(a)                                              der Erwartungsanteil ([EarlySupply.demandU])
  *
- * mit F einer FESTEN persoenlichen Erwartungskurve (Stuetzwerte, nicht
- * gelernt) und IOB_gesamt aus dem Geraet (Boli, manuelle Boli,
- * Basalabweichung). R_mess darf negativ sein und bleibt es; phi * Z ist die
- * unbudgetierte Erwartung.
+ * mit einer FESTEN persoenlichen Erwartungskurve F (Stuetzwerte, nicht gelernt) und IOB_gesamt aus dem Geraet
+ * (Boli, manuelle Boli, Basalabweichung). Angefordert wird max(0, R_mess) + X ([Evaluation.requestU]).
  *
- * WAS ES BEGRENZT: Ein Erwartungsbudget A_0 = phi_0 * Z(0), hoechstens die
- * tatsaechliche Huelle der Episode (bei "ohne Vorschuss" also 0), wird EINMAL
- * am Marker gebucht und nur verbraucht, nie aufgefuellt. Jede Lieferung d
- * teilt sich in d_mess = min(d, max(0, R_mess)) und d_erw = d - d_mess
- * (Autorisierungsentwurf Abschnitt 2); nur d_erw verbraucht das Budget, und
- * nur d_erw darf die Guard-Ausnahme nutzen - d_mess laeuft ohne Ausnahme
- * durch alle Pruefungen. Die
- * Direktdosis-Familie bucht voll auf das Konto; was sie ueber A_0 hinaus
- * liefert, ist durch die bestehende Markerautorisierung gedeckt und wird so
- * ausgewiesen - keine stille Ueberschreitung.
+ * WAS ES BEGRENZT: das Budget der fruehen Versorgung ([armEarly], [EarlySupply.budgetU]) wird EINMAL am Marker
+ * gebucht und nur verbraucht, nie aufgefuellt. Jede Lieferung d teilt sich in d_mess = min(d, max(0, R_mess)) und
+ * d_erw = d - d_mess; nur d_erw verbraucht das Budget, d_mess laeuft durch alle Pruefungen wie ohne Konto.
+ * Lieferbar ist zuerst die Anfangsportion, danach je Zyklus eine Portion im Zeitraumbuch ([State.early]). Ohne
+ * fruehe Versorgung - Hauptschalter aus, ungueltige Werte, ungueltige Kontoparameter - bucht das Konto Budget 0
+ * mit neutralen Pins ([EarlySupply.Pins.NEUTRAL]): dann fliesst nur der gemessene Anteil. Konsolidierung 2.0: das
+ * Konto v1 (Vorgriff phi_0 auf den Kurvenrest, Budget aus der Huelle, Guard-Ausnahme, Direktdosis-Buchung) ist
+ * entfallen.
  *
- * Konsolidierung 2.0: die Direktdosis-Familie und die Guard-Ausnahme von v1
- * sind entfallen (Buchung, Felder, Boden), danach auch das Konto v1 selbst
- * (Vorgriff phi_0 x Kurvenrest, Budget aus der Huelle). Jedes Konto rechnet
- * mit den Regeln der fruehen Versorgung (v2, [State.early], [stepEarly]); ohne
- * fruehe Versorgung - Hauptschalter aus, ungueltige Werte, ungueltige
- * Kontoparameter - mit Budget 0 und neutralen Pins ([EarlySupply.Pins.NEUTRAL]):
- * dann fliesst nur der gemessene Anteil. Die Formeln oben sind der Stand v1.
+ * WANN KEIN d_erw: vor erfuellter Stabilitaet (Start nach Tief oder im Fallen, und nach einem gemessenen Tief in
+ * der Episode erneut), in jeder Pause (gemessene Sperre, Signal-, Pumpen- oder Ledgerzustand), bei eingefrorenem
+ * Rest (Ruecknahme bei ausbleibender Stoerung), nach einem gemessenen Tief bis zur ausdruecklichen Bestaetigung
+ * (Tief-Sperre), nach dem Entzug durch den Hauptschalter und nach dem Fensterende. Unverbrauchte Erlaubnis
+ * verpflichtet nie zur Lieferung.
  *
- * WANN KEIN d_erw: vor erfuellter Stabilitaet (Start nach Tief oder im
- * Fallen, und nach einem gemessenen Tief in der Episode erneut), in jeder Pause (gemessene Sperre, Signal-, Pumpen- oder
- * Ledgerzustand), bei eingefrorenem Rest (Ruecknahme bei ausbleibender
- * Stoerung) und nach dem Fensterende. Unverbrauchte Erlaubnis verpflichtet
- * nie zur Lieferung.
- *
- * REINE FUNKTIONEN. Die Verdrahtung, die Sperren und die Guard-Ausnahme
- * leben im Runner; hier stehen nur Rechnung, Buchung und Zustand. Alle
- * gepinnten Groessen liegen im [State], damit eine spaetere Aenderung der
- * Einstellung eine laufende Episode nicht verschiebt.
+ * REINE FUNKTIONEN. Die Verdrahtung und die Sperren leben im Runner; hier stehen nur Rechnung, Buchung und Zustand.
+ * Alle gepinnten Groessen liegen im [State], damit eine spaetere Aenderung der Einstellung eine laufende Episode
+ * nicht verschiebt.
  */
 object ExpectationAccount {
 
@@ -170,14 +155,13 @@ object ExpectationAccount {
     }
 
     /**
-     * Die Einstellungen, geprueft. `null` aus [of] heisst: Erwartung aus. Konsolidierung 2.0: der Schalter der
-     * v1-Guard-Ausnahme ist mit ihr entfallen; phi_0 bleibt (Pinnung im Konto ohne fruehe Versorgung, Gueltigkeit).
+     * Die Einstellungen, geprueft. `null` aus [of] heisst: Erwartung aus - das Konto bucht dann ohne Erwartung
+     * ([armWithoutExpectation]). Konsolidierung 2.0: Guard-Ausnahme und Vorgriff phi_0 des Kontos v1 sind samt ihren
+     * Einstellungen entfallen; den Anteil am Marker waehlt der Skalierer der fruehen Versorgung.
      */
     data class Params(
         val curve: Curve,
         val horizonMin: Int,
-        val phi0Stable: Double,
-        val phi0AfterLow: Double,
         val stabilityBgMgdl: Double,
         val stabilityMin: Int,
         val releaseThresholdU: Double,
@@ -188,8 +172,6 @@ object ExpectationAccount {
             fun of(
                 curveValues: List<Double>,
                 horizonMin: Int,
-                phi0Stable: Double,
-                phi0AfterLow: Double,
                 stabilityBgMgdl: Double,
                 stabilityMin: Int,
                 releaseThresholdU: Double,
@@ -197,8 +179,6 @@ object ExpectationAccount {
             ): Params? {
                 val curve = Curve.of(curveValues) ?: return null
                 if (horizonMin !in MIN_HORIZON_MIN..MAX_HORIZON_MIN) return null
-                if (!phi0Stable.isFinite() || phi0Stable !in 0.0..1.0) return null
-                if (!phi0AfterLow.isFinite() || phi0AfterLow !in 0.0..1.0) return null
                 if (!stabilityBgMgdl.isFinite() || stabilityBgMgdl !in MIN_STABILITY_BG_MGDL..MAX_STABILITY_BG_MGDL)
                     return null
                 if (stabilityMin !in MIN_STABILITY_MIN..MAX_STABILITY_MIN) return null
@@ -206,10 +186,7 @@ object ExpectationAccount {
                 if (!stabilityFallMgdlPerMin.isFinite() ||
                     stabilityFallMgdlPerMin !in MIN_STABILITY_FALL_MGDL_PER_MIN..MAX_STABILITY_FALL_MGDL_PER_MIN
                 ) return null
-                return Params(
-                    curve, horizonMin, phi0Stable, phi0AfterLow, stabilityBgMgdl, stabilityMin,
-                    releaseThresholdU, stabilityFallMgdlPerMin,
-                )
+                return Params(curve, horizonMin, stabilityBgMgdl, stabilityMin, releaseThresholdU, stabilityFallMgdlPerMin)
             }
         }
     }
@@ -329,8 +306,8 @@ object ExpectationAccount {
     )
 
     /**
-     * Konsolidierung 2.0: das Konto bei UNGUELTIGEN Kontoparametern (u. a. die phi_0-Werte, die bis Schritt 5 im
-     * Parametersatz geprueft werden) - ohne Erwartung, ohne Budget, mit neutralen Pins: nur Ersetzung des Bedarfs.
+     * Das Konto bei UNGUELTIGEN Kontoparametern ([Params.of] ergibt `null`) - ohne Erwartung, ohne Budget, mit
+     * neutralen Pins: nur Ersetzung des Bedarfs.
      */
     fun armWithoutExpectation(
         authId: Long,

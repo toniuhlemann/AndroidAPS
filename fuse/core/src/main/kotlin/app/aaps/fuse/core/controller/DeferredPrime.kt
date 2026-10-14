@@ -1,44 +1,20 @@
 package app.aaps.fuse.core.controller
 
 /**
- * DER MARKER-PRIME-AUFSCHUB (Punkt 6, Tonis Bau-GO 22.08.).
+ * DER MARKER-PRIME-AUFSCHUB - was davon bleibt: der PIN (Punkt 6).
  *
- * Konsolidierung 2.0: es bleibt der PIN - Horizont und Frist am Marker, der
- * typisierte Verfall und der restartfeste Zustand. Er traegt die Kontopause
- * DESCENT_RISK_MARKER und das Liveness-Tor im Runner. Rueckhalt in den
- * offenen Betrag und die Freigabe danach sind entfallen; [State.openU] wird
- * nicht mehr gebucht (0) und bleibt nur fuer den Ledger. Die Vertragsliste
- * unten ist der Stand davor.
+ * Am Marker werden Horizont und Ablauffrist GEPINNT; eine spaetere Einstellungsaenderung verschiebt eine laufende
+ * Frist nicht. Der Pin traegt im Runner die Kontopause DESCENT_RISK_MARKER und das Liveness-Tor: beide pruefen das
+ * Abwaertsrisiko ueber den gepinnten Horizont - nur fuer markerautorisiertes Insulin, reine Korrekturen behalten
+ * ihren eigenen Riegel. Ein neuer Marker, ein Widerruf oder das Abschalten beenden den Pin mit typisiertem Verfall,
+ * nach der Frist verfaellt er sichtbar ([LapseReason]); der Zustand ueberlebt den Neustart im Ledger.
  *
- * DER GEMESSENE ANLASS: ein Abendessen-Marker bei fallendem, bolus-
- * ueberdecktem BG. Der Bodenkontakt lag JENSEITS des Endriegels;
- * markerautorisiertes Insulin floss in den Fall, die Ueberdeckung wuchs, und
- * es folgte ein Tief. Die Mahlzeit kam erst deutlich nach dem Marker - das
- * Insulin war RICHTIG autorisiert und nur zur FALSCHEN ZEIT unterwegs. Der
- * Replay: ein laengerer Horizont NUR fuer markerautorisiertes Insulin haette
- * die Menge aufgeschoben, ohne Fehlaufschub in den Gutfaellen - bei sehr
- * kleiner Fallzahl und knapper Marge, darum bleibt die Grenze konfigurierbar
- * und der Schalter default AUS.
+ * DER GEMESSENE ANLASS: ein Abendessen-Marker bei fallendem, bolus-ueberdecktem BG - markerautorisiertes Insulin
+ * floss in den Fall, und es folgte ein Tief; die Mahlzeit kam erst deutlich nach dem Marker. GRENZE, ehrlich
+ * benannt (Toni): der Pin schuetzt nur vor Ueberversorgung bei bereits GEMESSENEM Fallen.
  *
- * WAS DER AUFSCHUB IST - UND WAS NICHT (Tonis Vertragsliste, woertlich):
- *  - Zurueckgehaltenes Insulin bleibt AUTORISIERUNG, keine garantierte
- *    spaetere Dosis.
- *  - H_prime gilt AUSSCHLIESSLICH fuer markerautorisiertes Insulin; reine
- *    Korrekturen behalten den separaten 30-min-Riegel.
- *  - Horizont und Ablauffrist werden BEIM MARKER GEPINNT - eine spaetere
- *    Einstellungsaenderung verschiebt eine laufende Frist nicht.
- *  - Freigabe nur nach bestaetigter Erholung, gesundem Signal, ohne Tief und
- *    ohne Rebound; hoechstens EIN Pumpenschritt je Zyklus, kein Aufhol-Burst.
- *  - Normale SMBs, Fundament und manuelle Boli reduzieren DENSELBEN offenen
- *    Gesamtbetrag; die Gesamtversorgung bleibt immer unter der gepinnten
- *    Huelle.
- *  - "Ueberlebt das Fundamentfenster" heisst NICHT "unbegrenzt offen": nach
- *    der gepinnten Frist verfaellt der Rest SICHTBAR mit typisiertem Grund.
- *
- * GRENZE, ehrlich benannt (Toni): der Aufschub schuetzt nur vor
- * Ueberversorgung bei bereits GEMESSENEM Fallen. Eine zu grosse Huelle bei
- * flachem oder steigendem BG bleibt moeglich - das ist Sache der
- * Huellen-Reihe, nicht dieses Bausteins.
+ * Konsolidierung 2.0: Rueckhalt in einen offenen Betrag und die Freigabe danach sind entfallen; [State.openU] wird
+ * nicht mehr gebucht (0) und bleibt nur fuer den Ledger (Rueckweg auf 1.x).
  */
 object DeferredPrime {
 

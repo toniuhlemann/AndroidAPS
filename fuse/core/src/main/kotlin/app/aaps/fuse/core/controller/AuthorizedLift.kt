@@ -4,28 +4,15 @@ import kotlin.math.floor
 import kotlin.math.min
 
 /**
- * DER GEMEINSAME LIFT EINER AUTORISIERTEN MENGE (Toni 18.08.).
+ * DER LIFT EINER AUTORISIERTEN MENGE - der Erwartungsanteil der fruehen Versorgung (E-034 v2).
  *
- * Prime (Phase A) und das Mahlzeitenfundament (Phase B) heben beide eine
- * Basisentscheidung auf einen autorisierten BODEN an. Was sie dabei tun, ist
- * bis auf drei Groessen identisch - und diese drei sind hier Parameter statt
- * zweier Implementierungen:
+ * Er hebt eine Basisentscheidung auf einen autorisierten BODEN an - hoechstens die lieferbare Kontomenge, nie
+ * darueber hinaus - unter denselben harten Mengenkappen wie jede andere Abgabe: maxIOB, iobTH, Transporthaftung,
+ * Kontext-Expositionsgrenze, Schwanzkappe und Pumpenraster. Was die Markerautorisierung dabei ueberstimmen darf,
+ * sagt [MarkerAuthorization.liftsEarlySupply].
  *
- *   GEMEINSAM        Markerpolitik, `max(base, floor)`, maxSMB, iobTH,
- *                    maxIOB, Transporthaftung, Pumpenraster
- *   PRIME-SPEZIFISCH Prime-Restbudget, Onset-Huelle
- *   FUNDAMENT        dueU, Phase-B-Restbudget, Zeitfenster
- *
- * WARUM NICHT `PrimeRelease.lift` FUER BEIDE. Der Fundament-Aufruf muesste
- * dort einen Prime-`Plan` erfinden, und die Onset-Huelle wuerde Phase B
- * mitdeckeln - beides falsch. Toni ausdruecklich: "Die Onset-Huelle darf
- * nicht versehentlich Phase B deckeln. Normale Onset-/Evidenzabgaben werden
- * bereits ueber die max-Semantik und die tatsaechlich gelieferte
- * Gesamtmenge auf das Fundament-Soll angerechnet."
- *
- * Konsolidierung 2.0: die Prime-Quelle und das Fundament (Phase B) sind
- * entfallen; es hebt nur noch der Erwartungsanteil (E-034, fruehe Versorgung).
- * Die Prime- und Fundament-Hinweise unten sind der Stand davor.
+ * Konsolidierung 2.0: die Quellen Prime und Mahlzeitenfundament sind entfallen; es hebt nur noch der
+ * Erwartungsanteil.
  *
  * WO DIESE STUFE IM ZYKLUS SITZT:
  *
@@ -134,21 +121,13 @@ object AuthorizedLift {
     /**
      * Hebt [base] auf den autorisierten Boden [floorU] an - hoechstens.
      *
-     * @param floorU das Soll dieser Phase. Prime: die Freigabe aus der
-     *   Huelle. Fundament: `dueU`. NIE mehr als das - der Lift ist ein Boden,
-     *   kein Aufschlag.
-     * @param remainingU das Restbudget dieser Phase. Prime: die unverbrauchte
-     *   Huelle. Fundament: das offene Phase-B-Budget im Fenster.
+     * @param floorU das Soll dieses Zyklus: die lieferbare Kontomenge. NIE
+     *   mehr als das - der Lift ist ein Boden, kein Aufschlag.
+     * @param remainingU die Obergrenze der Einzeldosis: die Portion
+     *   (Anfangsanteil bzw. maximale Portion).
      * @param authorized hat ein bewusster Markerdruck Insulin autorisiert?
-     *   Der Aufrufer hat geprueft, dass die Einstellung an ist UND ein Marker
-     *   laeuft - mehr nicht.
-     * @param tailHeadroomU die Schwanzkappe. Sie bindet den AUTORISIERTEN
-     *   Anteil nicht (s. [MarkerAuthorization]: derselbe Grund, aus dem
-     *   `Block.TAIL` hebbar ist - beide Gestalten sind dieselbe
-     *   Haftungsprognose ueber 120 Minuten).
-     * @param extraCapU eine phasenspezifische Zusatzkappe. Prime reicht hier
-     *   die Onset-Huelle herein; das Fundament reicht `null` - seine
-     *   Onset-Abgaben sind ueber die max-Semantik bereits angerechnet.
+     * @param tailHeadroomU die Schwanzkappe der Portion - der Aufrufer reicht
+     *   sie nach G2/G4 herein (`null` = gehoben).
      */
     @Suppress("LongParameterList")
     fun lift(
@@ -159,7 +138,6 @@ object AuthorizedLift {
         state: FuseController.State,
         authorized: Boolean,
         tailHeadroomU: Double? = null,
-        extraCapU: Double? = null,
         transportCommitmentU: Double = 0.0,
         /** B1: die kontextabhaengige Expositionsgrenze des Zyklus (MEAL
          *  bzw. CORRECTION). Sie steht bereits in der GRANT-BILDUNG - ein
@@ -185,7 +163,6 @@ object AuthorizedLift {
         // Lift.
         if (!floorU.isFinite() || !remainingU.isFinite() || remainingU < 0.0) return base
         if (tailHeadroomU != null && !tailHeadroomU.isFinite()) return base
-        if (extraCapU != null && !extraCapU.isFinite()) return base
         if (!transportCommitmentU.isFinite() || transportCommitmentU < 0.0) return base
         // capIobU ist die EINZIGE dieser Groessen, die der State-Konstruktor
         // NICHT prueft. Die uebrigen wirft er selbst ab (isFinite und Bereich)
@@ -247,8 +224,6 @@ object AuthorizedLift {
         // d_erw, E-034); die Kappe der Portion reicht der Aufrufer nach G2/G4
         // herein.
         tailHeadroomU?.let { caps = min(caps, it) }
-        // Die phasenspezifische Zusatzkappe (Prime: Onset-Huelle).
-        extraCapU?.let { caps = min(caps, it) }
 
         val stepped = floor(min(floorU, caps) / state.pumpIncrementU + tickEps) * state.pumpIncrementU
         // Der Grant entsteht NUR bei einem tragfaehigen Betrag - `of` gibt

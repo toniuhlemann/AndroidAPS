@@ -170,10 +170,6 @@ class FuseFragment : DaggerFragment() {
             armedTs = fusePlugin.mealMarkerArmedTs(),
             windowMin = app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN,
             envelopeU = fusePlugin.mealMarkerEnvelopeU(),
-            noPrime = fusePlugin.mealMarkerNoPrime(now),
-            // Die Freigabe hat ihre EIGENE Uhr, und sie steht in den
-            // Einstellungen - nicht in der Vorgabe-Konstante.
-            primeWindowMin = fusePlugin.primeWindowMin(),
         )
         // Eigene Groesse neben Health: der Ledger kann die Abgabe ganz
         // zumachen, waehrend der Beobachter tadellos READY meldet.
@@ -212,8 +208,6 @@ class FuseFragment : DaggerFragment() {
         // nur, wenn sie etwas zu sagen haben.
         binding.fuseOverviewWindows.isVisible = dashboard.windows != null
         binding.fuseOverviewWindows.text = dashboard.windows ?: ""
-        binding.fuseOverviewUpfrontBatch.isVisible = dashboard.upfrontBatch != null
-        binding.fuseOverviewUpfrontBatch.text = dashboard.upfrontBatch ?: ""
         binding.fuseOverviewTransport.isVisible = dashboard.transport != null
         binding.fuseOverviewTransport.text = dashboard.transport ?: ""
         binding.fuseOverviewIobLine.text = dashboard.iobLine
