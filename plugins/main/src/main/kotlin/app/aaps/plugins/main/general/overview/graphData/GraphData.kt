@@ -207,8 +207,10 @@ class GraphData @Inject constructor(
             minY = -maxY
         }
         overviewData.fuseDriveScale.multiplier = maxY * scale / max(1.0, overviewData.maxFuseDriveValueFound)
-        addSeries(overviewData.fuseDriveSeries as BarGraphSeries<DeviationDataPoint>)
-        overviewData.fuseExpectedDriveSeries.forEach { addSeries(it as LineGraphSeries<ScaledDataPoint>) }
+        // Kein harter Typumbau: vor dem ersten Lauf des Graph-Workers (App-Start, reset) darf hier nie eine fremde
+        // Reihe zum Absturz fuehren - dann fehlen eben die Balken bis zum naechsten Lauf.
+        (overviewData.fuseDriveSeries as? BarGraphSeries<*>)?.let { addSeries(it) }
+        overviewData.fuseExpectedDriveSeries.forEach { s -> (s as? LineGraphSeries<*>)?.let { addSeries(it) } }
         addSeries(overviewData.fuseRampLowSeries as LineGraphSeries<ScaledDataPoint>)
         addSeries(overviewData.fuseRampHighSeries as LineGraphSeries<ScaledDataPoint>)
         addSeries(overviewData.fuseDriveMarkerSeries as LineGraphSeries<ScaledDataPoint>)
@@ -227,9 +229,9 @@ class GraphData @Inject constructor(
         overviewData.fuseGuardScale.multiplier = maxY * scale / max(10.0, overviewData.maxFuseGuardValueFound)
         addSeries(overviewData.fuseGuardSeries as LineGraphSeries<ScaledDataPoint>)
         addSeries(overviewData.fuseTailSeries as LineGraphSeries<ScaledDataPoint>)
-        overviewData.fuseGuardWithMealSeries.forEach { addSeries(it as LineGraphSeries<ScaledDataPoint>) }
+        overviewData.fuseGuardWithMealSeries.forEach { s -> (s as? LineGraphSeries<*>)?.let { addSeries(it) } }
         addSeries(overviewData.fuseGuardMarkerSeries as LineGraphSeries<ScaledDataPoint>)
-        addSeries(overviewData.fuseAccountStatusSeries as PointsWithLabelGraphSeries<DataPointWithLabelInterface>)
+        (overviewData.fuseAccountStatusSeries as? PointsWithLabelGraphSeries<*>)?.let { addSeries(it) }
     }
 
     // scale in % of vertical size (like 0.3)
