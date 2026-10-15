@@ -3820,7 +3820,23 @@ class FuseCycleRunner(
         // Konsolidierung 2.0: die beiden Ausnahmen des Ruhe-Ausgangs (Sofortanteil-Batch am historischen Latch
         // vorbei, bedarfsbegrenzter Ruhe-Kandidat danach) sind entfallen - die ganze Entscheidung geht ohne Ausnahme
         // durch den Riegel.
-        val normalNachRiegel = MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
+        //
+        // DIE ANFANGSPORTION AM ENDRIEGEL (Toni: "auch das Druecken des Markers ist meine Entscheidung" - wie ein
+        // Pen-Bolus). Die offene Anfangsportion passiert den Abwaertsriegel: den alten (Gefahr vorbei, Hysterese laeuft)
+        // wie ein aktuelles Abwaertsrisiko - fuer sie ersetzt das die fruehere Regel "niemals umgehbar". Aufgehalten
+        // hat sie das Konto vorher nur bei gemessenem Tief, technischem Grund und Fallen ueber der eingestellten
+        // Fallgrenze. Am Riegel bleiben ein gemessenes Tief und ein Signalfehler hart (MEASURED_LOW, OTHER). Hoechstens
+        // die Menge der Anfangsportion; jede weitere Portion und der Normalpfad gehen wie bisher durch den Riegel.
+        val riegelUrsacheVorher = MeasuredDescentGate.causeOf(descentLatch.blocksPositive, descentLatch.reason)
+        val anfangGrantU = bodenGrant
+            ?.takeIf { fruehAnfang && it.source == app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION }
+            ?.amountU ?: 0.0
+        val anfangAmRiegelVorbei = anfangGrantU > 0.0 && vorRiegel.smbU > 0.0 &&
+            (riegelUrsacheVorher == MeasuredDescentGate.Cause.HISTORICAL_LATCH ||
+                riegelUrsacheVorher == MeasuredDescentGate.Cause.CURRENT_DESCENT_RISK)
+        val normalNachRiegel =
+            if (anfangAmRiegelVorbei) vorRiegel.copy(smbU = kotlin.math.min(vorRiegel.smbU, anfangGrantU))
+            else MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
 
         // DER SCHWANZBERICHT GILT FUER DIE TATSAECHLICHE ENDMENGE.
         // `vorRiegel` traegt den Bericht zur ungeriegelten Menge; bleibt er
@@ -5862,6 +5878,13 @@ class FuseCycleRunner(
             ekStabilSeit, computeTs, bgMgdl, grenzeBg, falling = faelltFuerStrecke, measuredLock = gemesseneSperre,
         )
         val stabil = ExpectationAccount.Stability.stable(ekStabilSeit, computeTs, dauerMin)
+        // DIE ANFANGSPORTION KOMMT BEIM DRUCK (Toni: "auch das Druecken des Markers ist meine Entscheidung",
+        // "die erste Dosis ist die wichtigste und die muss frueh kommen"). Fuer die offene Anfangsportion zaehlt nicht die
+        // Strecke (Dauer, alter Riegel, vorhergesagtes Abwaertsrisiko, Ueberdeckungsbefund), sondern nur: Zucker ueber der
+        // Stabilitaetsgrenze, kein gemessenes Tief, kein Fallen ueber der eingestellten Fallgrenze. Gemessene Sperren
+        // (Tief, Tieftor MEASURED_LOW) und technische Gruende halten sie ueber die Pause auf.
+        val sperrenAnfang = sperren.filter { it == "SAFETY" || (it == SPERRE_TIEFTOR && !tieftorNurUeberdeckung) }
+        val stabilAnfang = bgMgdl > grenzeBg && !gemessenesTief && !faelltFuerStrecke && sperrenAnfang.isEmpty()
         if (!ekGilt || vorschau == null) return null
         // Die Vorschau muss der echte Kontext sein - sonst gilt das Konto in
         // diesem Zyklus nicht (Onset und H8 sind dann trotzdem schon aus).
@@ -5897,7 +5920,7 @@ class FuseCycleRunner(
                     params = params,
                     settings = frueh,
                     switches = schalter,
-                    startStable = stabil && !tiefImReboundFenster,
+                    startStable = (stabil || stabilAnfang) && !tiefImReboundFenster,
                     nowTs = computeTs,
                     bgMgdl = bgMgdl,
                     isfMgdlPerU = isfMgdlPerU,
@@ -5925,9 +5948,10 @@ class FuseCycleRunner(
         val anfangOffen = konto.early != null && !konto.initialDone &&
             computeTs - konto.authId < (app.aaps.fuse.core.controller.EarlySupply.INITIAL_WINDOW_MIN * 60_000.0).toLong()
         val faelltFuerPause = if (anfangOffen) faelltFuerStrecke else faellt
-        // Ebenso die Pause: die offene Anfangsportion haelt der Ueberdeckungsbefund nur bei deutlichem Fallen auf.
-        val sperrenFuerPause =
-            if (anfangOffen && tieftorNurUeberdeckung && !faelltFuerStrecke) sperren - SPERRE_TIEFTOR else sperren
+        // Ebenso die Pause (Toni): die offene Anfangsportion halten nur gemessene Sperren auf (Tief, Tieftor
+        // MEASURED_LOW) - weder der alte Riegel noch ein vorhergesagtes Abwaertsrisiko noch der Ueberdeckungsbefund. Das
+        // Fallen prueft FALLING mit der Fallgrenze, dazu die technischen Gruende. Nach ihr gelten alle Sperren wie bisher.
+        val sperrenFuerPause = if (anfangOffen) sperrenAnfang else sperren
         val pausenGruende = sperrenFuerPause + listOfNotNull("FALLING".takeIf { faelltFuerPause }) + technisch +
             listOfNotNull("EARLY_SUPPLY_OFF".takeIf { konto.early?.let { it.withdrawn || !cfg.earlySupplyEnabled } == true })
         val pausiert = pausenGruende.isNotEmpty()
@@ -5959,7 +5983,7 @@ class FuseCycleRunner(
                 iobTotalU = iobTotalU,
                 activityUPerMin = activityUPerMin,
                 paused = pausiert,
-                stableNow = stabil,
+                stableNow = stabil || (anfangOffen && stabilAnfang),
                 measuredLow = ruecknahmeGrund != null,
                 // v2: nur ein GEMESSENES Tief sperrt die fruehe Versorgung - der Neustart nimmt nur die Freigabe.
                 lowLocksEarlySupply = tiefGrund != null,

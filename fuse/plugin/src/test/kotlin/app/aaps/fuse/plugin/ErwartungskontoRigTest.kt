@@ -1273,6 +1273,88 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertEquals(0.0, danach.sumOf { it.dErw() }, 0.0)
     }
 
+    /** Steiler Fall vor dem Druck mit Bolus-IOB (setzt den Abwaertsriegel), am Druck flach. */
+    private val fAlterRiegel = Fuse20Folgen.Folge(
+        "ALTER_RIEGEL", 1_701_338_400_000L, -90, 180,
+        listOf(-90 to 160.0, -40 to 150.0, -15 to 105.0, -10 to 98.0, -5 to 96.0, 0 to 95.0, 10 to 96.0,
+            20 to 104.0, 45 to 150.0, 90 to 200.0, 180 to 140.0),
+        markerMin = 0,
+    )
+
+    /** Fallen durch den Druck mit Bolus-IOB nahe am Boden (aktuelles Abwaertsrisiko), langsamer als die Fallgrenze. */
+    private val fAktuellesRisiko = Fuse20Folgen.Folge(
+        "AKTUELLES_RISIKO", 1_701_424_800_000L, -90, 180,
+        listOf(-90 to 160.0, -30 to 131.0, 0 to 95.0, 10 to 88.0, 20 to 92.0, 45 to 140.0, 90 to 190.0, 180 to 130.0),
+        markerMin = 0,
+    )
+
+    private fun bolusVorDemDruck(m: Int, menge: Double) {
+        if (m == -60) boliSetzen(
+            boluses + BS(
+                id = ++bolusId, timestamp = clock, amount = menge, type = BS.Type.NORMAL,
+                ids = IDs(pumpId = clock, pumpType = PumpType.GENERIC_AAPS, pumpSerial = Fuse20Folgen.PUMPE_SERIAL),
+            ),
+        )
+    }
+
+    /**
+     * Toni ("auch das Druecken des Markers ist meine Entscheidung"; "die erste Dosis ist die wichtigste und die
+     * muss frueh kommen"): ein ALTER Abwaertsriegel - die Gefahr ist vorbei, die Hysterese wartet auf +0,20 mg/dl/min -
+     * haelt die Anfangsportion nicht mehr auf, auch nicht ueber die Strecke. Sie fliesst am Druck. Die weiteren
+     * Portionen haelt derselbe Riegel wie bisher. Synthetische Werte.
+     */
+    @Test
+    fun `ein alter Abwaertsriegel haelt die Anfangsportion nicht auf, die weiteren Portionen schon`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fAlterRiegel, dir, vorZyklus = { bolusVorDemDruck(it, 3.0) }) {
+            fruehKonfiguration(g1 = true, g2 = true, anteil = 0.5)
+            whenever(preferences.get(FuseIntKey.ExpectationStabilityMin)).thenReturn(5)
+            whenever(preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin)).thenReturn(1.0)
+        }
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+        val start = zyklen.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }
+        // Die Probe zeigt nur etwas, wenn am Druck ein ALTER Riegel steht und sonst nichts sperrt.
+        assertTrue(start.o.descentLatchActive) { "Probe zeigt nichts: kein Riegel am Druck" }
+        assertEquals("WAITING_RATE", start.o.descentLatchReason) { "Probe zeigt nichts: kein alter Riegel am Druck" }
+        assertFalse(start.o.descentRiskActive) { "Probe zeigt nichts: aktuelles Risiko statt altem Riegel" }
+        assertTrue(start.o.step?.safetyReasons?.isEmpty() == true) { "Probe zeigt nichts: gemessenes Tief am Druck" }
+        // Freigabe am Druck, die Anfangsportion fliesst sofort.
+        assertTrue(start.o.erwartungskonto!!.zyklus!!.state.startStable) { "Start trotz altem Riegel als instabil gewertet" }
+        val anfang = zyklen.first { it.frueh()?.initial == true && it.dErw() > 0.0 }
+        assertTrue(anfang.minute <= start.minute + 1) { "Anfangsportion erst in Minute ${anfang.minute}" }
+        assertTrue((anfang.o.smbActuatedU ?: 0.0) > 0.0) { "Anfangsportion vom Endriegel genullt" }
+        // Danach, solange der Riegel steht: keine weitere Portion.
+        val danach = zyklen.filter { it.minute > anfang.minute && it.o.descentLatchActive && it.o.erwartungskonto?.zyklus != null }
+        assertTrue(danach.isNotEmpty()) { "Probe zeigt nichts: nach der Anfangsportion kein Riegel mehr" }
+        assertTrue(danach.all { "LATCH" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) { "Riegel bremst nach der Anfangsportion nicht" }
+        assertEquals(0.0, danach.sumOf { it.dErw() }, 0.0)
+    }
+
+    /**
+     * Toni (ersetzt fuer die Anfangsportion die fruehere Regel "niemals umgehbar"): auch ein AKTUELLES Abwaertsrisiko haelt sie
+     * nicht auf, solange der Zucker nicht schneller faellt als die eingestellte Fallgrenze und kein Tief gemessen ist.
+     * Synthetische Werte.
+     */
+    @Test
+    fun `ein aktuelles Abwaertsrisiko haelt die Anfangsportion unter der Fallgrenze nicht auf`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fAktuellesRisiko, dir, vorZyklus = { bolusVorDemDruck(it, 3.0) }) {
+            fruehKonfiguration(g1 = true, g2 = true, anteil = 0.5)
+            whenever(preferences.get(FuseIntKey.ExpectationStabilityMin)).thenReturn(5)
+            whenever(preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin)).thenReturn(2.0)
+        }
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+        val start = zyklen.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }
+        assertTrue(start.o.descentRiskActive) { "Probe zeigt nichts: kein aktuelles Abwaertsrisiko am Druck" }
+        val rate = requireNotNull(start.o.signal?.ukfRatePerMin)
+        assertTrue(rate < 0.0 && rate > -2.0) { "Probe zeigt nichts: Trend $rate nicht unter der Fallgrenze fallend" }
+        assertTrue(start.o.step?.safetyReasons?.isEmpty() == true) { "Probe zeigt nichts: gemessenes Tief am Druck" }
+        val anfang = zyklen.first { it.frueh()?.initial == true && it.dErw() > 0.0 }
+        assertTrue(anfang.minute <= start.minute + 1) { "Anfangsportion erst in Minute ${anfang.minute}" }
+        assertTrue((anfang.o.smbActuatedU ?: 0.0) > 0.0) { "Anfangsportion vom Endriegel genullt" }
+        // Weitere Portionen haelt das Risiko wie bisher.
+        val danach = zyklen.filter { it.minute > anfang.minute && it.o.descentRiskActive && it.o.erwartungskonto?.zyklus != null }
+        assertEquals(0.0, danach.sumOf { it.dErw() }, 0.0)
+    }
+
     /** Zucker am Druck knapp unter der Stabilitaetsgrenze, ohne gemessenes Tief. */
     private val fUnterGrenze = Fuse20Folgen.Folge(
         "UNTERGRENZE", 1_701_165_600_000L, -90, 180,
