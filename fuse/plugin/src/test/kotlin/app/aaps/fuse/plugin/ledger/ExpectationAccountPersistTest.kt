@@ -235,7 +235,8 @@ class ExpectationAccountPersistTest {
         val json = LedgerCodec.encodeEpisodes(episoden(abweichend))
         assertTrue(json.getJSONObject("earlySupply").has("stabilityFallMgdlPerMin"))
         assertEquals(abweichend, LedgerCodec.decodeEpisodes(json).expectation)
-        json.getJSONObject("earlySupply").put("stabilityFallMgdlPerMin", 9.0)
+        // Ueber der Obergrenze (10, Toni: mindestens bis 8 einstellbar) wird das Konto verworfen.
+        json.getJSONObject("earlySupply").put("stabilityFallMgdlPerMin", 10.5)
         assertNull(LedgerCodec.decodeEpisodes(json).expectation)
     }
 

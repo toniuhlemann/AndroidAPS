@@ -64,11 +64,12 @@ object ExpectationAccount {
     /**
      * Fallgrenze der Stabilitaetsstrecke als RUECKGANG [mg/dl/min, positiv]: ein UKF-Trend unter -Grenze unterbricht
      * die Strecke. Standard = die Kanalkonstante ([LivenessChannel.UKF_FLOOR_MGDL_PER_MIN]) - so war die Strecke immer
-     * gebaut. Positiv, damit die Einstellung ohne Vorzeichen eingegeben wird.
+     * gebaut. Positiv, damit die Einstellung ohne Vorzeichen eingegeben wird. Obergrenze 10 (Toni): er denkt in
+     * 1-Minuten-Deltas, ein deutlicher Abfall muss mindestens bis 8 einstellbar sein.
      */
     const val DEFAULT_STABILITY_FALL_MGDL_PER_MIN = -LivenessChannel.UKF_FLOOR_MGDL_PER_MIN
     const val MIN_STABILITY_FALL_MGDL_PER_MIN = 0.0
-    const val MAX_STABILITY_FALL_MGDL_PER_MIN = 3.0
+    const val MAX_STABILITY_FALL_MGDL_PER_MIN = 10.0
     const val MAX_RELEASE_THRESHOLD_U = 2.0
     const val MAX_CURVE_U = 30.0
 

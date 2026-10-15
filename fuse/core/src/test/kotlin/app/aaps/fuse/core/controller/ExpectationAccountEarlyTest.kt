@@ -144,8 +144,10 @@ class ExpectationAccountEarlyTest {
 
     @Test
     fun `die Fallgrenze der Strecke wird geprueft und am Marker festgehalten`() {
-        assertEquals(null, ExpectationAccount.Params.of(werte, 120, 90.0, 15, 0.3, stabilityFallMgdlPerMin = 3.5))
+        assertEquals(null, ExpectationAccount.Params.of(werte, 120, 90.0, 15, 0.3, stabilityFallMgdlPerMin = 10.5))
         assertEquals(null, ExpectationAccount.Params.of(werte, 120, 90.0, 15, 0.3, stabilityFallMgdlPerMin = -0.5))
+        // Toni: ein deutlicher Abfall muss mindestens bis 8 (1-Minuten-Delta) einstellbar sein.
+        assertEquals(8.0, requireNotNull(ExpectationAccount.Params.of(werte, 120, 90.0, 15, 0.3, stabilityFallMgdlPerMin = 8.0)).stabilityFallMgdlPerMin, 0.0)
         val p = requireNotNull(ExpectationAccount.Params.of(werte, 120, 90.0, 15, 0.3, stabilityFallMgdlPerMin = 1.0))
         val s = ExpectationAccount.armEarly(t0, t0 + 120 * 60_000L, p, einstellung, alle, true, t0, 100.0, 50.0, wirkung)
         assertEquals(1.0, s.stabilityFallMgdlPerMin, 0.0)
