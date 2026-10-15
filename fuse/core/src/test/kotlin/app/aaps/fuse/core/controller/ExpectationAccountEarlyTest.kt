@@ -154,6 +154,15 @@ class ExpectationAccountEarlyTest {
         assertEquals(0.0, danach.restEffU, 0.0)
     }
 
+    /** Toni: die Stabilitaetsdauer darf 0 sein - dann gilt die Freigabe im ersten stabilen Zyklus. */
+    @Test
+    fun `Stabilitaetsdauer 0 gibt im ersten stabilen Zyklus frei`() {
+        assertNotNull(ExpectationAccount.Params.of(werte, 120, 90.0, 0, 0.3))
+        assertTrue(ExpectationAccount.Stability.stable(t0, t0, 0))
+        assertFalse(ExpectationAccount.Stability.stable(null, t0, 0))
+        assertFalse(ExpectationAccount.Stability.stable(t0, t0, 1))
+    }
+
     @Test
     fun `ohne Insulinmodell gibt es keinen Erwartungsanteil`() {
         val (_, e) = schritt(konto(), 0, early = null)

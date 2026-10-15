@@ -1624,6 +1624,10 @@ object FuseStateJson {
                 .put("livePeakTs", st.livePeak?.sourceTs ?: JSONObject.NULL)
                 .put("livePeakValue", fin(st.livePeak?.value))
                 .put("quietAccumMin", fin(st.quietAccumMin))
+                // Tief-Halt (Toni: die Restzeit muss sichtbar sein): Fortschritt und die festen Ausgangsgrenzen.
+                .put("lowExitAccumMin", fin(st.lowExitAccumMin))
+                .put("lowExitMgdl", fin(LOW_EXIT_GRENZEN.lowExitMgdl))
+                .put("lowExitMin", fin(LOW_EXIT_GRENZEN.lowExitMin))
                 .put("confirmCount", st.confirmCount)
                 .put("carryDurMin", fin(st.carryDurMin))
                 .put("resetCauses", JSONArray(st.resetCauses.map { it.name }))
@@ -2361,6 +2365,9 @@ object FuseStateJson {
      * Zuordnung (d_mess, d_erw, Direktdosis), Ausnahme, Stabilitaet, Pause,
      * typisierter Guard-Grund und Kurvenversion.
      */
+    /** Die festen Ausgangsgrenzen des gemessenen Tiefs (der Produktivpfad nutzt nur die Vorgaben des Observers). */
+    private val LOW_EXIT_GRENZEN = app.aaps.fuse.core.observer.ObserverParams()
+
     private fun erwartungskontoJson(x: FuseCycleRunner.ErwartungskontoExport): JSONObject {
         val o = JSONObject()
             .put("applies", x.gilt)
@@ -2457,6 +2464,7 @@ object FuseStateJson {
                     .put("tailCapU", fin(x.fruehSchwanzKappeU))
                     // Schritt 2: laeuft die Mahlzeit (weitere Portionen), die Fortsetzung im Bedarf, am Riegel vorbei.
                     .put("mealRunning", z.mahlzeitLaeuft)
+                    .put("followUpStableSinceTs", x.folgeStabilSeitTs ?: JSONObject.NULL)
                     .put("mealRunningMinR", fin(x.mahlzeitLaeuftAbR))
                     .put("stableMealRunning", z.stabilFolge)
                     .put("continuationUPerMin", fin(e.early?.continuationUPerMin ?: 0.0))

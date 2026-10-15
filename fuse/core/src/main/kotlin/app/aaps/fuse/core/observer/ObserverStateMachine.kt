@@ -372,5 +372,6 @@ class ObserverStateMachine(
             candidateId = candidateId, eventId = eventId, livePeak = livePeak,
             quietAccumMin = quietAccumMin, confirmCount = confirmCount, carryDurMin = carryDurMin,
             resetCauses = resets,
+            lowExitAccumMin = if (SafetyReason.LOW in safetyReasons) lowExitAccumMin else 0.0,
         )
 }

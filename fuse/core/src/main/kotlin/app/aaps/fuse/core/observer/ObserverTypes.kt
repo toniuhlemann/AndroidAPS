@@ -110,6 +110,11 @@ data class ObserverStep(
     val confirmCount: Int,
     val carryDurMin: Double,
     val resetCauses: Set<ResetCause>,
+    /**
+     * Wie lange der Zucker waehrend eines gemessenen Tiefs (SafetyReason.LOW) schon am Stueck auf oder ueber der
+     * Ausgangsgrenze liegt [min]; 0 ohne Tief. Nur Anzeige: daraus wird die Restzeit des Tief-Halts sichtbar.
+     */
+    val lowExitAccumMin: Double = 0.0,
 )
 
 /** Gelockte Parameter (Spec §13). Als Datenklasse, damit Tests Kanten setzen

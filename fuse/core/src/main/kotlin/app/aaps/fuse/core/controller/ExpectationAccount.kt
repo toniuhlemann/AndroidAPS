@@ -58,7 +58,8 @@ object ExpectationAccount {
     const val MAX_HORIZON_MIN = 120
     const val MIN_STABILITY_BG_MGDL = 70.0
     const val MAX_STABILITY_BG_MGDL = 180.0
-    const val MIN_STABILITY_MIN = 5
+    /** Toni: auch 0 (Freigabe im ersten stabilen Zyklus) oder wenige Minuten - die Dauer ist seine Einstellung. */
+    const val MIN_STABILITY_MIN = 0
     const val MAX_STABILITY_MIN = 60
 
     /**

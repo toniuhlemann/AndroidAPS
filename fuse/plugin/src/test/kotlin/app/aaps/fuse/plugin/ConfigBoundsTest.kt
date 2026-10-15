@@ -176,7 +176,7 @@ class ConfigBoundsTest {
     fun `ungueltige Konto-Werte schalten nur die Erwartung ab`() {
         for (c in listOf(
             konto().copy(expectationStabilityBgMgdl = Double.NaN),
-            konto().copy(expectationStabilityMin = 0),
+            konto().copy(expectationStabilityMin = -1),
             konto().copy(expectationHorizonMin = FuseIntKey.ExpectationHorizonMin.max + 1),
             konto().copy(expectationReleaseThresholdU = -0.1),
             konto().copy(expectationCurveText = "0.1; 0.2"),

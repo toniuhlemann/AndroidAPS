@@ -5366,6 +5366,7 @@ class FuseCycleRunner(
                 fruehAmRiegelVorbeiU = fruehAmRiegelVorbeiU,
                 fruehUntenMitMahlzeitMgdl = fruehUntenMitMahlzeitMgdl,
                 mahlzeitLaeuftAbR = cfg.mahlzeitLaeuftAbR,
+                folgeStabilSeitTs = ekFolgeStabilSeit,
             ),
             // Fixvertrag 30.08.: das typisierte Zyklus-IOB fuer
             // APSResult.iobData / DeviceStatus openaps.iob.
@@ -5826,6 +5827,8 @@ class FuseCycleRunner(
         val fruehUntenMitMahlzeitMgdl: Double? = null,
         /** Schritt 2: die in diesem Zyklus geltende Schwelle "Mahlzeit laeuft ab r" [mg/dl/min]. */
         val mahlzeitLaeuftAbR: Double? = null,
+        /** Anzeige: Beginn der Strecke der weiteren Portionen bei laufender Mahlzeit [ms]; `null` = keine. */
+        val folgeStabilSeitTs: Long? = null,
     )
 
     /** E-034: was dieser Zyklus im Konto gebucht hat. */

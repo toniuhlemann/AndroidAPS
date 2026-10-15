@@ -125,7 +125,7 @@ class ExpectationAccountTest {
     @Test
     fun `ungueltige Einstellungen schalten die Erwartung ab`() {
         assertNull(ExpectationAccount.Params.of(kurve, 20, 100.0, 10, 0.2))
-        assertNull(ExpectationAccount.Params.of(kurve, 120, 100.0, 3, 0.2))
+        assertNull(ExpectationAccount.Params.of(kurve, 120, 100.0, -1, 0.2))
         assertNull(ExpectationAccount.Params.of(kurve, 120, 100.0, 10, 3.0))
         assertNull(ExpectationAccount.Params.of(kurve, 120, 40.0, 10, 0.2))
     }

@@ -288,13 +288,16 @@ class PrepareIobAutosensGraphDataWorker(
                 }
                 return alle
             }
-            fun linien(abschnitte: List<List<ScaledDataPoint>>, breite: Float, farbe: Int): List<LineGraphSeries<ScaledDataPoint>> =
+            fun linien(
+                abschnitte: List<List<ScaledDataPoint>>, breite: Float, farbe: Int, gestrichelt: Boolean = false,
+            ): List<LineGraphSeries<ScaledDataPoint>> =
                 abschnitte.map { seg ->
                     LineGraphSeries(Array(seg.size) { i -> seg[i] }).also {
                         it.setCustomPaint(Paint().also { paint ->
                             paint.style = Paint.Style.STROKE
                             paint.strokeWidth = breite
                             paint.color = farbe
+                            if (gestrichelt) paint.pathEffect = DashPathEffect(floatArrayOf(10f, 6f), 0f)
                         })
                     }
                 }
@@ -308,7 +311,8 @@ class PrepareIobAutosensGraphDataWorker(
                 abschnitte({ it.expectedMealDriveMgdlPerMin }, data.overviewData.fuseDriveScale) {
                     data.overviewData.maxFuseDriveValueFound = max(data.overviewData.maxFuseDriveValueFound, abs(it))
                 },
-                3f, rh.gac(ctx, app.aaps.core.ui.R.attr.fuseDriveColor),
+                // Toni: ueber den gelben Balken des Mahlzeitfensters ist eine gelbe Linie kaum zu sehen - weiss gestrichelt.
+                3f, android.graphics.Color.WHITE, gestrichelt = true,
             )
 
             val guardArr: MutableList<ScaledDataPoint> = ArrayList()

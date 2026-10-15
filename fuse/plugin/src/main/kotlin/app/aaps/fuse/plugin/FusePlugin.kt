@@ -2867,8 +2867,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             FuseDoubleKey.ExpectationCurveAt120U.key -> FruehVersorgungText.kurvenpunkt(3, l)
             FuseDoubleKey.ExpectationStabilityBgMgdl.key ->
                 z(d(FuseDoubleKey.ExpectationStabilityBgMgdl), 0) + " mg/dl - darunter gilt der Start als 'nach Tief', das Delta darueber nicht"
-            FuseIntKey.ExpectationStabilityMin.key ->
-                "${preferences.get(FuseIntKey.ExpectationStabilityMin)} min am Stueck ueber der Grenze, ohne deutliches Fallen und Sperre - Freigabe nach Neustart, Tief oder unruhigem Start"
+            FuseIntKey.ExpectationStabilityMin.key -> preferences.get(FuseIntKey.ExpectationStabilityMin).let { n ->
+                if (n <= 0) "0 min - Freigabe im ersten stabilen Zyklus (nach Neustart, Tief oder unruhigem Start)"
+                else "$n min am Stueck ueber der Grenze, ohne deutliches Fallen und Sperre - Freigabe nach Neustart, Tief oder unruhigem Start"
+            }
             FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.key ->
                 z(d(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin), 1) + " mg/dl/min - schnelleres Fallen haelt die Anfangsportion und bei laufender Mahlzeit die weiteren Portionen auf"
             FuseDoubleKey.MealRunningMinR.key -> d(FuseDoubleKey.MealRunningMinR).let { s ->
