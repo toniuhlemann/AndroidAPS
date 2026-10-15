@@ -1610,6 +1610,11 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(nachher >= 1.0) { "nach der Bestaetigung nur $nachher U" }
         assertTrue(nachFrei.sumOf { it.dErw() } <= konto.a0U + 1e-9)
         assertTrue(konto.earlyAfterLow)
+        // Option A (Toni): nach der Bestaetigung rechnet der Guard die Mahlzeit wieder an - ab +20, soweit sie sich zeigt.
+        assertTrue(nachFrei.any { (it.frueh()?.guardScale ?: 0.0) > 0.0 }) { "nach der Bestaetigung keine Anrechnung im Guard" }
+        assertTrue(zyklen.filter { it.konto?.earlyLowLocked == true }.all { (it.frueh()?.guardScale ?: 0.0) == 0.0 }) {
+            "Anrechnung im Guard, solange die Sperre gilt"
+        }
         // Gegenprobe: dieselbe Folge OHNE Bestaetigung liefert keinen Erwartungsanteil, der Rest bleibt gesperrt.
         val ohne = fruehLauf(fTiefDannMahlzeit, File(dir, "ohne")) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
         assertEquals(0.0, ohne.sumOf { it.dErw() }, 0.0)
@@ -1617,6 +1622,10 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             "ohne Bestaetigung steht der Rest zur Verfuegung"
         }
         assertTrue(ohne.any { it.o.erwartungskonto?.zyklus?.eval?.released == true }) { "Probe zeigt nichts: keine Strecke" }
+        // Ohne Bestaetigung rechnet der Guard die Mahlzeit nach dem Tief nie an.
+        assertTrue(ohne.filter { it.konto?.earlyAfterLow == true }.all { (it.frueh()?.guardScale ?: 0.0) == 0.0 }) {
+            "ohne Bestaetigung Anrechnung im Guard"
+        }
     }
 
     /** Gegenfall 2: Tief, nur Hypo-Behandlung, keine Bestaetigung - keine erwartungsbasierte Abgabe. */

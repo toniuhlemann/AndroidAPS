@@ -262,8 +262,9 @@ object ExpectationAccount {
         /** v2: Beginn der laufenden Sperre [ms]; eine Bestaetigung zaehlt erst ab hier. 0 = nie gesperrt. */
         val earlyLowLockSinceTs: Long = 0L,
         /**
-         * v2: in dieser Mahlzeit gab es ein gemessenes Tief. Danach keine Anfangsportion, keine Anrechnung in Guard und
-         * Schwanz (G3/G4), und die weiteren Portionen rechnen ALLES vorhandene Insulin an (Toni). Nie zurueck.
+         * v2: in dieser Mahlzeit gab es ein gemessenes Tief. Danach keine Anfangsportion, und die weiteren Portionen rechnen
+         * ALLES vorhandene Insulin an (Toni). Nie zurueck. Guard und Schwanz (G3/G4) rechnen die Mahlzeit nicht an,
+         * solange die Sperre gilt - nach Tonis ausdruecklicher Bestaetigung wieder, soweit sie sich zeigt (Option A).
          */
         val earlyAfterLow: Boolean = false,
     ) {
@@ -579,7 +580,10 @@ object ExpectationAccount {
             releaseRevoked = revoked, atTs = inputs.nowTs,
             early = EarlyEvaluation(
                 demandU = x, scaleEff = scaleEff, initial = anfang, periodLeftU = zeitraumRestU,
-                guardScale = if (curve == null || expired || s.earlyAfterLow) 0.0
+                // Option A (Toni): nach einem Tief rechnen Guard und Schwanz die Mahlzeit erst wieder an, wenn er sie
+                // ausdruecklich bestaetigt hat und die Sperre aufgehoben ist - dann wie sonst, soweit sie sich zeigt und
+                // hoechstens die Kurve. Solange die Sperre gilt (unbestaetigt oder ein neues Tief), keine Anrechnung.
+                guardScale = if (curve == null || expired || s.earlyLowLocked) 0.0
                 else EarlySupply.confirmedGuardScale(s.phi0, inputs.ageMin, s.disturbanceU, s.disturbanceValid, curve),
                 continuationUPerMin = if (expired || curve == null || e == null) 0.0
                 else fortsetzung?.rateUPerMin?.takeIf { it.isFinite() && it > 0.0 } ?: 0.0,

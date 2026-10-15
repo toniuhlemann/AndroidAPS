@@ -285,8 +285,20 @@ class ExpectationAccountEarlyTest {
         assertFalse(e.early!!.initial)
         assertTrue(e.restEffU <= einstellung.maxPortionU + 1e-12)
         assertEquals(budget, frei.a0U, 0.0)
-        // Nach einem Tief keine Anrechnung in Guard und Schwanz (G3/G4).
+        // Vor +20 rechnen Guard und Schwanz ohnehin nichts an.
         assertEquals(0.0, e.early!!.guardScale, 0.0)
+        // Option A (Toni): nach der Bestaetigung rechnen sie die Mahlzeit wieder an, soweit sie sich zeigt (steigender
+        // Zucker), hoechstens die Kurve. Waehrend der Sperre (oben) nie.
+        var t = frei
+        var spaet = e
+        for (m in 11..30) {
+            val (t2, e2) = zyklus(t, m, bg = 130.0 + 4.0 * (m - 10), bestaetigt = ts(6))
+            t = t2
+            spaet = e2
+        }
+        assertTrue(t.earlyAfterLow && !t.earlyLowLocked)
+        assertTrue(spaet.early!!.guardScale > 0.0) { "nach der Bestaetigung keine Anrechnung im Guard" }
+        assertTrue(spaet.early!!.guardScale <= 1.0)
     }
 
     @Test
