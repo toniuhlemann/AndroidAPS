@@ -2056,6 +2056,8 @@ object FuseStateJson {
                     .put("stabilityBgMgdl", fin(p.expectationStabilityBgMgdl))
                     .put("stabilityMin", p.expectationStabilityMin)
                     .put("releaseThresholdU", fin(p.expectationReleaseThresholdU))
+                    .put("stabilityFallMgdlPerMin", fin(p.expectationStabilityFallMgdlPerMin))
+                    .put("mealRunningMinR", fin(p.mealRunningMinR))
                     .put("horizonMin", p.expectationHorizonMin)
                     .put("curveVersion", app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(p.expectationCurveText)
                         ?.let { app.aaps.fuse.core.controller.ExpectationAccount.curveVersion(it.values()) } ?: JSONObject.NULL)
@@ -2215,6 +2217,8 @@ object FuseStateJson {
             p.expectationStabilityFallMgdlPerMin
                 .takeIf { it != app.aaps.fuse.core.controller.ExpectationAccount.DEFAULT_STABILITY_FALL_MGDL_PER_MIN }
                 ?.let { "stabilityFall:" + Sha.lossless(it) },
+            // Schritt 2: die eigene Schwelle "Mahlzeit laeuft" ebenso nur, wenn gesetzt.
+            p.mealRunningMinR.takeIf { it != app.aaps.fuse.plugin.FuseDoubleKey.MealRunningMinR.defaultValue }?.let { "mealRunning:" + Sha.lossless(it) },
         ) + kontoZahlen.map { Sha.lossless(it) } + listOf(
             app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(p.expectationCurveText)
                 ?.values()?.joinToString(",") { Sha.lossless(it) } ?: "curve:none",
@@ -2387,6 +2391,10 @@ object FuseStateJson {
                 .put("releaseRevokedReason", z.ruecknahmeGrund ?: JSONObject.NULL)
                 .put("paused", z.pausiert)
                 .put("pauseReasons", org.json.JSONArray(z.pausenGruende))
+                // Die am Druck festgehaltene Strecke (Grenze, Dauer, Fallgrenze) - sonst stand die Fallgrenze nur im Hash.
+                .put("stabilityBgMgdl", fin(s.stabilityBgMgdl))
+                .put("stabilityMin", s.stabilityMin)
+                .put("stabilityFallMgdlPerMin", fin(s.stabilityFallMgdlPerMin))
                 .put("frozen", s.frozen)
                 .put("releaseChecked", s.releaseChecked)
                 .put("disturbanceU", fin(s.disturbanceU))
@@ -2449,6 +2457,7 @@ object FuseStateJson {
                     .put("tailCapU", fin(x.fruehSchwanzKappeU))
                     // Schritt 2: laeuft die Mahlzeit (weitere Portionen), die Fortsetzung im Bedarf, am Riegel vorbei.
                     .put("mealRunning", z.mahlzeitLaeuft)
+                    .put("mealRunningMinR", fin(x.mahlzeitLaeuftAbR))
                     .put("stableMealRunning", z.stabilFolge)
                     .put("continuationUPerMin", fin(e.early?.continuationUPerMin ?: 0.0))
                     .put("latchPassedU", fin(x.fruehAmRiegelVorbeiU))

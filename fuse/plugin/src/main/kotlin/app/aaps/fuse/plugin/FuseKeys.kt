@@ -359,9 +359,9 @@ enum class FuseDoubleKey(
      * Fallgrenze der Stabilitaetsstrecke als RUECKGANG [mg/dl/min, positiv]:
      * ein UKF-Trend unter -Grenze unterbricht sie. Standard = die bisherige
      * Kanalkonstante (schon ein leichter Rueckgang in einem Zyklus zaehlt als
-     * Fallen). Gilt fuer die Startlage am Marker und die Wiederfreigabe nach
-     * einem Tief; die Pause beim Fallen waehrend der Lieferung bleibt
-     * unveraendert.
+     * Fallen). Gilt fuer die Startlage am Marker, die Wiederfreigabe nach
+     * einem Tief, die Pause der Anfangsportion und - solange die Mahlzeit
+     * laeuft ([MealRunningMinR]) - die Pause der weiteren Portionen.
      */
     ExpectationStabilityFallMgdlPerMin(
         "fuse_expectation_stability_fall_mgdl_per_min",
@@ -369,6 +369,13 @@ enum class FuseDoubleKey(
         app.aaps.fuse.core.controller.ExpectationAccount.MIN_STABILITY_FALL_MGDL_PER_MIN,
         app.aaps.fuse.core.controller.ExpectationAccount.MAX_STABILITY_FALL_MGDL_PER_MIN,
     ),
+
+    /**
+     * Schritt 2 (Toni): ab welcher Stoerungsrate r [mg/dl/min] eine angekuendigte Mahlzeit als LAUFEND gilt - nur im
+     * Mahlzeitfenster und nur fuer die weiteren Portionen des Erwartungskontos. Eigene Schwelle, damit die Rampe
+     * (SMB-Anteil, Korrekturweg, Onset) davon unberuehrt bleibt. 0 (Standard) = wie [RiseRampLowR]. Gilt sofort.
+     */
+    MealRunningMinR("fuse_meal_running_min_r", 0.0, 0.0, 10.0),
     /**
      * DIE ERWARTUNGSKURVE IN VIER ECKWERTEN (Toni): erwartete
      * Mahlzeitwirkung [U] nach 30, 60, 90 und 120 min ab Marker, dazwischen

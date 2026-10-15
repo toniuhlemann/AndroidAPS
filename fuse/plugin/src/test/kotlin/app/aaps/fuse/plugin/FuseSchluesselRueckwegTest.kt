@@ -15,7 +15,9 @@ import java.io.File
  *    ([FuseRetiredKey]). Sonst verloere eine Sicherung aus 2.0 ihre Werte still, und der Rueckweg ueber die
  *    1.x-APK fiele auf deren Vorgaben zurueck;
  *  - es kommt kein neuer Schluessel hinzu: er fehlte in jeder alten Sicherung und stuende nach dem Import still auf
- *    seiner Vorgabe (Uebernahmevertrag: fehlende Schluessel nie still);
+ *    seiner Vorgabe (Uebernahmevertrag: fehlende Schluessel nie still). Einzige Ausnahme: seine Vorgabe IST das
+ *    bisherige Verhalten ([neuMitNeutralerVorgabe]) - dann fuehrt sein Fehlen zu keiner anderen Funktionskombination
+ *    (Vertragspunkt 3), und die Vorgabe ist hier festgehalten;
  *  - eine alte Sicherung mit den entfernten Schluesseln laedt: FUSE liest sie nie, kein Zyklus haengt an ihnen.
  */
 class FuseSchluesselRueckwegTest {
@@ -73,6 +75,15 @@ class FuseSchluesselRueckwegTest {
         "fuse_meal_marker_withdraw_for_ts", "fuse_meal_marker_withdraw_ordnung", "fuse_meal_marker_withdraw_quelle",
     )
 
+    /**
+     * Neue Schluessel NACH dem 1.x-Stand, deren Vorgabe genau das bisherige Verhalten ist - je mit dieser Vorgabe. Ein
+     * Eintrag hier braucht den Nachweis im Code (Standard = alter Ablauf), nicht nur einen Wert.
+     */
+    private val neuMitNeutralerVorgabe: Map<String, Double> = mapOf(
+        // Schritt 2: 0 = die Schwelle "Mahlzeit laeuft" ist die Rampen-Unterkante, wie vor dieser Einstellung.
+        FuseDoubleKey.MealRunningMinR.key to 0.0,
+    )
+
     private val alle get() = fuseSchluesselKlassen.flatMap { it.enumConstants!!.asIterable() }
 
     /** Was die AAPS-Sicherung mit einem gespeicherten Schluessel tut - dieselbe Regel wie `isExportableKey`. */
@@ -88,9 +99,20 @@ class FuseSchluesselRueckwegTest {
     @Test
     fun `es kommt kein neuer Schluessel hinzu und keiner doppelt`() {
         val schluessel = alle.map { it.key }
-        val neu = schluessel.toSet() - stand1x
+        val neu = schluessel.toSet() - stand1x - neuMitNeutralerVorgabe.keys
         assertTrue(neu.isEmpty()) { "neu - fehlt in jeder alten Sicherung (Uebernahmevertrag pruefen): $neu" }
         assertEquals(schluessel.size, schluessel.toSet().size, "doppelt registriert")
+    }
+
+    /** Die Ausnahme haelt nur, solange die Vorgabe das bisherige Verhalten ist - sie darf sich nicht still verschieben. */
+    @Test
+    fun `neue Schluessel stehen auf ihrer neutralen Vorgabe`() {
+        for ((key, neutral) in neuMitNeutralerVorgabe) {
+            val k = FuseDoubleKey.entries.single { it.key == key }
+            assertEquals(neutral, k.defaultValue, 0.0, "Vorgabe von $key")
+            assertTrue(neutral in k.min..k.max) { "neutrale Vorgabe von $key nicht einstellbar" }
+        }
+        assertTrue(neuMitNeutralerVorgabe.keys.none { it in stand1x }) { "kein 1.x-Schluessel ist neu" }
     }
 
     /** Das Plugin registriert genau diese Liste - eine zweite, handgepflegte Liste waere die alte Fehlerquelle. */

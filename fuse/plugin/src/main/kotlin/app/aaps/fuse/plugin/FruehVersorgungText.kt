@@ -56,7 +56,7 @@ object FruehVersorgungText {
     const val BLOCK_FRUEH =
         "Gilt nur, wenn du am Marker 'Nur Erwartung' waehlst. Budget = die fruehe Gabe, die deine Kurve rechtzeitig " +
             "deckt, mal Skalierer. Davon fliesst der Anfangsanteil sofort; der Rest ab +20 min nur, wenn sich die " +
-            "Mahlzeit zeigt. Gemessene Sperren, maxIOB, iobTH und die Expositionsgrenze bleiben immer hart."
+            "Mahlzeit zeigt. Ein gemessenes Tief, maxIOB, iobTH und die Expositionsgrenze bleiben immer hart."
 
     /** Ein Eckpunkt der Kurve: eigener Wert und ob/ab wann er das Budget bestimmt. */
     fun kurvenpunkt(index: Int, lage: Lage): String {

@@ -1423,6 +1423,44 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(gehalten.all { it.o.erwartungskonto!!.fruehAmRiegelVorbeiU == 0.0 })
     }
 
+    /**
+     * Toni: die Schwelle "Mahlzeit laeuft ab r" ist eine eigene Einstellung - sie entscheidet allein, und 0 folgt der
+     * Rampen-Unterkante. So bleibt die Rampe (SMB-Anteil, Korrekturweg) unberuehrt, wenn die Schwelle verstellt wird.
+     * Synthetische Werte.
+     */
+    @Test
+    fun `die Schwelle Mahlzeit laeuft ab r entscheidet allein, 0 folgt der Rampe`(@TempDir dir: File) {
+        fun lauf(name: String, einstellen: () -> Unit) =
+            fruehLauf(fLaufRiegel, File(dir, name), vorZyklus = { bolusVorDemDruck(it, 3.0) }) {
+                fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true, anteil = 0.5)
+                whenever(preferences.get(FuseIntKey.ExpectationStabilityMin)).thenReturn(5)
+                whenever(preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin)).thenReturn(1.0)
+                einstellen()
+            }
+        fun weitere(z: List<Zyklus>) = z.filter { it.frueh()?.initial == false && it.o.erwartungskonto?.zyklus != null }
+        fun laufend(z: List<Zyklus>) = weitere(z).count { it.o.erwartungskonto!!.zyklus!!.mahlzeitLaeuft }
+
+        // Eigene Schwelle ueber jedem r: die Mahlzeit laeuft nie - obwohl r ueber der (unveraenderten) Rampe liegt.
+        val hoch = lauf("hoch") { whenever(preferences.get(FuseDoubleKey.MealRunningMinR)).thenReturn(FuseDoubleKey.MealRunningMinR.max) }
+        assertTrue(weitere(hoch).any { (it.o.signal?.rSigned ?: 0.0) >= FuseDoubleKey.RiseRampLowR.defaultValue }) {
+            "Probe zeigt nichts: r nie ueber der Rampe"
+        }
+        assertEquals(0, laufend(hoch)) { "Mahlzeit laeuft trotz eigener Schwelle ueber r" }
+        assertTrue(weitere(hoch).all { it.o.erwartungskonto!!.mahlzeitLaeuftAbR == FuseDoubleKey.MealRunningMinR.max })
+
+        // Rampe ueber r, eigene Schwelle darunter: die Mahlzeit laeuft - die Rampe entscheidet hier nicht.
+        val unter = lauf("unter") {
+            rampeUeberR()
+            whenever(preferences.get(FuseDoubleKey.MealRunningMinR)).thenReturn(FuseDoubleKey.RiseRampLowR.defaultValue)
+        }
+        assertTrue(laufend(unter) > 0) { "Mahlzeit laeuft trotz eigener Schwelle unter r nicht" }
+
+        // 0 = wie die Rampe: mit der Rampe ueber r laeuft sie nicht, die geltende Schwelle ist die Rampe.
+        val nullWert = lauf("null") { rampeUeberR() }
+        assertEquals(0, laufend(nullWert))
+        assertTrue(weitere(nullWert).all { it.o.erwartungskonto!!.mahlzeitLaeuftAbR == FuseDoubleKey.RiseRampLowR.max })
+    }
+
     /** Stetiger Anstieg, danach leichtes Fallen, waehrend die Mahlzeit noch laeuft (r hoch, das Insulin wirkt). */
     private val fLaufFallend = Fuse20Folgen.Folge(
         "LAUF_FALLEND", 1_701_597_600_000L, -90, 180,

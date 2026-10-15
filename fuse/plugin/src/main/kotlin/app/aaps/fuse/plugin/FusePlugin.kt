@@ -2845,6 +2845,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             FuseDoubleKey.ExpectationCurveAt90U.key, FuseDoubleKey.ExpectationCurveAt120U.key,
             FuseDoubleKey.ExpectationStabilityBgMgdl.key, FuseIntKey.ExpectationStabilityMin.key,
             FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.key, FuseDoubleKey.ExpectationReleaseThresholdU.key,
+            FuseDoubleKey.MealRunningMinR.key,
             FuseIntKey.ExpectationHorizonMin.key, FuseStringKey.ExpectationCurve.key,
             FuseBooleanKey.EarlySupplyEnabled.key, FuseDoubleKey.EarlySupplyBudgetMaxU.key,
             FuseDoubleKey.EarlySupplyScaleStable.key, FuseDoubleKey.EarlySupplyScaleAfterLow.key,
@@ -2867,9 +2868,13 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             FuseDoubleKey.ExpectationStabilityBgMgdl.key ->
                 z(d(FuseDoubleKey.ExpectationStabilityBgMgdl), 0) + " mg/dl - darunter gilt der Start als 'nach Tief', das Delta darueber nicht"
             FuseIntKey.ExpectationStabilityMin.key ->
-                "${preferences.get(FuseIntKey.ExpectationStabilityMin)} min am Stueck ueber der Grenze, ohne deutliches Fallen und Sperre - so lange wartet die Anfangsportion"
+                "${preferences.get(FuseIntKey.ExpectationStabilityMin)} min am Stueck ueber der Grenze, ohne deutliches Fallen und Sperre - Freigabe nach Neustart, Tief oder unruhigem Start"
             FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.key ->
-                z(d(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin), 1) + " mg/dl/min - schnelleres Fallen verzoegert die Anfangsportion, aendert das Budget nicht"
+                z(d(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin), 1) + " mg/dl/min - schnelleres Fallen haelt die Anfangsportion und bei laufender Mahlzeit die weiteren Portionen auf"
+            FuseDoubleKey.MealRunningMinR.key -> d(FuseDoubleKey.MealRunningMinR).let { s ->
+                if (s > 0.0) z(s, 2) + " mg/dl/min - nur Folgeportionen im Mahlzeitfenster; SMB-Rampe unberuehrt"
+                else "0 - wie Rampe unten (" + z(d(FuseDoubleKey.RiseRampLowR), 2) + " mg/dl/min)"
+            }
             FuseDoubleKey.ExpectationReleaseThresholdU.key ->
                 z(d(FuseDoubleKey.ExpectationReleaseThresholdU), 2) + " U - zeigt sich bis +30 min weniger, friert der Rest ein"
             FuseIntKey.ExpectationHorizonMin.key -> "${preferences.get(FuseIntKey.ExpectationHorizonMin)} min"
@@ -3116,6 +3121,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationStabilityBgMgdl, dialogMessage = R.string.fuse_expectation_stability_bg_summary, title = R.string.fuse_expectation_stability_bg_title))
             addPreference(AdaptiveIntPreference(ctx = context, intKey = FuseIntKey.ExpectationStabilityMin, dialogMessage = R.string.fuse_expectation_stability_min_summary, title = R.string.fuse_expectation_stability_min_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationStabilityFallMgdlPerMin, dialogMessage = R.string.fuse_expectation_stability_fall_summary, title = R.string.fuse_expectation_stability_fall_title))
+            addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.MealRunningMinR, dialogMessage = R.string.fuse_meal_running_min_r_summary, title = R.string.fuse_meal_running_min_r_title))
             addPreference(AdaptiveDoublePreference(ctx = context, doubleKey = FuseDoubleKey.ExpectationReleaseThresholdU, dialogMessage = R.string.fuse_expectation_release_threshold_summary, title = R.string.fuse_expectation_release_threshold_title))
             // DIE FRUEHE VERSORGUNG (v2) eine Ebene tiefer, mit den vier Aenderungen an Guard und Schwanz (G1..G4) -
             // jede ist ein eigener Entscheid.

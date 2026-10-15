@@ -392,6 +392,7 @@ class FuseCycleRunner(
             require(it.riseRampLowR.isFinite() && it.riseRampLowR in FuseDoubleKey.RiseRampLowR.min..FuseDoubleKey.RiseRampLowR.max) { "riseRampLowR=${it.riseRampLowR}" }
             require(it.riseRampHighR.isFinite() && it.riseRampHighR in FuseDoubleKey.RiseRampHighR.min..FuseDoubleKey.RiseRampHighR.max) { "riseRampHighR=${it.riseRampHighR}" }
             require(it.riseRampHighR > it.riseRampLowR) { "riseRamp ${it.riseRampLowR}..${it.riseRampHighR} invertiert" }
+            require(it.mealRunningMinR.isFinite() && it.mealRunningMinR in FuseDoubleKey.MealRunningMinR.min..FuseDoubleKey.MealRunningMinR.max) { "mealRunningMinR=${it.mealRunningMinR}" }
             require(it.maxSmbU.isFinite() && it.maxSmbU in FuseDoubleKey.MaxSmbU.min..FuseDoubleKey.MaxSmbU.max) { "maxSmbU=${it.maxSmbU}" }
             require(it.guardFloorMgdl.isFinite() && it.guardFloorMgdl in FuseDoubleKey.GuardFloorMgdl.min..FuseDoubleKey.GuardFloorMgdl.max) { "guardFloorMgdl=${it.guardFloorMgdl}" }
             require(
@@ -3167,13 +3168,14 @@ class FuseCycleRunner(
             // (SAFETY LOW) oder das Null-Tor MEASURED_LOW.
             gemessenesTief = step.safetyReasons.isNotEmpty() ||
                 lowThreatResult.verdict == LowThreatGate.Verdict.MEASURED_LOW,
-            // SCHRITT 2 (Toni): die Mahlzeit laeuft - r (dasselbe wie in F.DRV und an der Ratio-Rampe) liegt ueber der
-            // Rampen-Unterkante. Daraus auch die beobachtete Fortsetzung fuer den Kontobedarf (r / ISF, Abklingen der Bahn).
-            mahlzeitLaeuft = signal.rSigned?.let { it.isFinite() && it > 0.0 && it >= cfg.riseRampLowR } == true,
+            // SCHRITT 2 (Toni): die Mahlzeit laeuft - r (dasselbe wie in F.DRV) liegt ueber der Schwelle "Mahlzeit laeuft
+            // ab r" (0 = die Rampen-Unterkante). Daraus auch die beobachtete Fortsetzung fuer den Kontobedarf (r / ISF,
+            // Abklingen der Bahn).
+            mahlzeitLaeuft = signal.rSigned?.let { it.isFinite() && it > 0.0 && it >= cfg.mahlzeitLaeuftAbR } == true,
             riegelHistorisch = MeasuredDescentGate.causeOf(descentLatch.blocksPositive, descentLatch.reason) ==
                 MeasuredDescentGate.Cause.HISTORICAL_LATCH,
             fortsetzung = signal.rSigned
-                ?.takeIf { it.isFinite() && it > 0.0 && it >= cfg.riseRampLowR && state.isfMgdlPerU > 0.0 }
+                ?.takeIf { it.isFinite() && it > 0.0 && it >= cfg.mahlzeitLaeuftAbR && state.isfMgdlPerU > 0.0 }
                 ?.let { app.aaps.fuse.core.controller.EarlySupply.Continuation(it / state.isfMgdlPerU, cfg.driveTauMin.toDouble()) },
         )
         ekZyklusThisCycle = ekZyklus
@@ -5363,6 +5365,7 @@ class FuseCycleRunner(
                 fruehSchwanzKappeU = fruehSchwanzKappeU.takeIf { fruehGilt },
                 fruehAmRiegelVorbeiU = fruehAmRiegelVorbeiU,
                 fruehUntenMitMahlzeitMgdl = fruehUntenMitMahlzeitMgdl,
+                mahlzeitLaeuftAbR = cfg.mahlzeitLaeuftAbR,
             ),
             // Fixvertrag 30.08.: das typisierte Zyklus-IOB fuer
             // APSResult.iobData / DeviceStatus openaps.iob.
@@ -5821,6 +5824,8 @@ class FuseCycleRunner(
          * auch in der Pause; `null` = nicht gerechnet. Dosierneutral.
          */
         val fruehUntenMitMahlzeitMgdl: Double? = null,
+        /** Schritt 2: die in diesem Zyklus geltende Schwelle "Mahlzeit laeuft ab r" [mg/dl/min]. */
+        val mahlzeitLaeuftAbR: Double? = null,
     )
 
     /** E-034: was dieser Zyklus im Konto gebucht hat. */
@@ -5914,8 +5919,8 @@ class FuseCycleRunner(
          */
         tiefImReboundFenster: Boolean = false,
         /**
-         * SCHRITT 2 (Toni): die Mahlzeit LAEUFT - die beobachtete Stoerung r (dieselbe wie in F.DRV und an der
-         * Ratio-Rampe) liegt ueber der Rampen-Unterkante. Dann gilt fuer die WEITEREN Portionen: Fallen erst ab der
+         * SCHRITT 2 (Toni): die Mahlzeit LAEUFT - die beobachtete Stoerung r (dieselbe wie in F.DRV) liegt ueber der
+         * Schwelle "Mahlzeit laeuft ab r" (0 = die Rampen-Unterkante). Dann gilt fuer die WEITEREN Portionen: Fallen erst ab der
          * eingestellten Fallgrenze, und der alte Abwaertsriegel ([riegelHistorisch]) haelt sie nicht auf - weder als
          * Pause noch ueber die Freigabe. Ein aktuelles Abwaertsrisiko, das Tieftor, gemessene Sperren und technische
          * Gruende halten weiter auf. Nach einem gemessenen Tief dieser Mahlzeit gilt das nicht.
@@ -7441,6 +7446,8 @@ class FuseCycleRunner(
         val expectationStabilityMin: Int = FuseIntKey.ExpectationStabilityMin.defaultValue,
         /** Fallgrenze der Stabilitaetsstrecke als Rueckgang [mg/dl/min] - s. [FuseDoubleKey.ExpectationStabilityFallMgdlPerMin]. */
         val expectationStabilityFallMgdlPerMin: Double = FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.defaultValue,
+        /** Schritt 2: eigene Schwelle "Mahlzeit laeuft ab r" [mg/dl/min]; 0 = die Rampen-Unterkante ([mahlzeitLaeuftAbR]). */
+        val mealRunningMinR: Double = FuseDoubleKey.MealRunningMinR.defaultValue,
         val expectationReleaseThresholdU: Double = FuseDoubleKey.ExpectationReleaseThresholdU.defaultValue,
         val expectationHorizonMin: Int = FuseIntKey.ExpectationHorizonMin.defaultValue,
         /** Die Kurve als Einstellungstext, unveraendert (Export: konfiguriert). */
@@ -7455,6 +7462,8 @@ class FuseCycleRunner(
         /** G1..G4, wie JETZT eingestellt: Abschalten wirkt sofort, Einschalten ab dem naechsten Marker. */
         val earlySupplySwitches: app.aaps.fuse.core.controller.EarlySupply.Switches = app.aaps.fuse.core.controller.EarlySupply.Switches.NONE,
     ) {
+        /** Schritt 2: die geltende Schwelle "Mahlzeit laeuft" - die eigene, sonst die Rampen-Unterkante. */
+        val mahlzeitLaeuftAbR: Double get() = if (mealRunningMinR > 0.0) mealRunningMinR else riseRampLowR
 
         /**
          * DIE KONTO-PARAMETER, geprueft - an genau EINER Stelle. `null` heisst
@@ -7488,6 +7497,7 @@ class FuseCycleRunner(
         sharedMaxIobU = preferences.get(app.aaps.core.keys.DoubleKey.ApsSmbMaxIob),
         riseRampLowR = preferences.get(FuseDoubleKey.RiseRampLowR),
         riseRampHighR = preferences.get(FuseDoubleKey.RiseRampHighR),
+        mealRunningMinR = preferences.get(FuseDoubleKey.MealRunningMinR),
         maxSmbU = preferences.get(FuseDoubleKey.MaxSmbU),
         guardFloorMgdl = preferences.get(FuseDoubleKey.GuardFloorMgdl),
         lowGateMinBenefitMgdl = preferences.get(FuseDoubleKey.LowGateMinBenefitMgdl),
