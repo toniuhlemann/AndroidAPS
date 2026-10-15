@@ -241,93 +241,124 @@ class PrepareIobAutosensGraphDataWorker(
         }
 
 
-        // FUSE: Antrieb (r durchgezogen, fastDrive gestrichelt) und Guard-Abstand.
-
-        // Quelle ist der Prozess-Ring des FusePlugin - bewusst KEIN Schreiben in
-
-        // die autoISF-Tabelle (AIV), das waere eine falsche Herkunftsbehauptung.
-
+        // FUSE (Toni): F.DRV - die Stoerung r als 5-min-Balken (wie DEV; im Mahlzeitfenster gelb, sonst gruen/rot),
+        // darueber die vom Konto erwartete Mahlzeitwirkung, dazu Rampenkanten und Marker. F.GRD - Guard-Abstand
+        // (durchgezogen), Schwanz (gestrichelt), Guard MIT der angekuendigten Mahlzeit und der Kontozustand als Streifen.
+        // Quelle ist der Prozess-Ring des FusePlugin - bewusst KEIN Schreiben in die autoISF-Tabelle (AIV), das waere
+        // eine falsche Herkunftsbehauptung.
         run {
-
-            val driveArr: MutableList<ScaledDataPoint> = ArrayList()
-
-            val fastArr: MutableList<ScaledDataPoint> = ArrayList()
-
-            val guardArr: MutableList<ScaledDataPoint> = ArrayList()
-
-            val tailArr: MutableList<ScaledDataPoint> = ArrayList()
-
+            val balkenMs = 5 * 60_000L
+            val lueckeMs = 3 * 60_000L
+            val punkte = fuseOverviewSource.fuseGraphPoints(fromTime, endTime).sortedBy { it.timestamp }
             data.overviewData.maxFuseDriveValueFound = Double.MIN_VALUE
-
             data.overviewData.maxFuseGuardValueFound = Double.MIN_VALUE
 
-            fuseOverviewSource.fuseGraphPoints(fromTime, endTime).forEach { pnt ->
+            // r je 5 min: der Mittelwert im Raster; gelb, wenn ein Punkt im Mahlzeitfenster lag und r positiv ist.
+            val farbeFenster = rh.gac(ctx, app.aaps.core.ui.R.attr.uamColor)
+            val farbePositiv = rh.gac(ctx, app.aaps.core.ui.R.attr.deviationGreenColor)
+            val farbeNegativ = rh.gac(ctx, app.aaps.core.ui.R.attr.deviationRedColor)
+            val driveArr: MutableList<DeviationDataPoint> = ArrayList()
+            punkte.filter { it.driveMgdlPerMin != null }.groupBy { it.timestamp / balkenMs }.toSortedMap().forEach { (_, g) ->
+                val r = g.mapNotNull { it.driveMgdlPerMin }.average()
+                if (!r.isFinite()) return@forEach
+                val farbe = when {
+                    r < 0.0 -> farbeNegativ
+                    g.any { it.mealWindow } -> farbeFenster
+                    else -> farbePositiv
+                }
+                driveArr.add(DeviationDataPoint(g.maxOf { it.timestamp }.toDouble(), r, farbe, data.overviewData.fuseDriveScale))
+                data.overviewData.maxFuseDriveValueFound = max(data.overviewData.maxFuseDriveValueFound, abs(r))
+            }
 
-                pnt.driveMgdlPerMin?.let { v ->
-
-                    driveArr.add(ScaledDataPoint(pnt.timestamp, v, data.overviewData.fuseDriveScale))
-
-                    data.overviewData.maxFuseDriveValueFound = max(data.overviewData.maxFuseDriveValueFound, kotlin.math.abs(v))
-
+            // Linien, die es nur im Kontofenster gibt: je zusammenhaengendem Abschnitt eine Linie - eine einzige
+            // verbaende die Mahlzeiten ueber die Zeit dazwischen.
+            fun abschnitte(
+                wert: (app.aaps.core.interfaces.overview.FuseOverviewSource.Point) -> Double?,
+                scale: Scale,
+                merke: (Double) -> Unit,
+            ): List<List<ScaledDataPoint>> {
+                val alle = ArrayList<MutableList<ScaledDataPoint>>()
+                var letzterTs = Long.MIN_VALUE
+                punkte.forEach { p ->
+                    val v = wert(p)?.takeIf { it.isFinite() } ?: return@forEach
+                    if (alle.isEmpty() || p.timestamp - letzterTs > lueckeMs) alle.add(ArrayList())
+                    alle.last().add(ScaledDataPoint(p.timestamp, v, scale))
+                    letzterTs = p.timestamp
+                    merke(v)
+                }
+                return alle
+            }
+            fun linien(abschnitte: List<List<ScaledDataPoint>>, breite: Float, farbe: Int): List<LineGraphSeries<ScaledDataPoint>> =
+                abschnitte.map { seg ->
+                    LineGraphSeries(Array(seg.size) { i -> seg[i] }).also {
+                        it.setCustomPaint(Paint().also { paint ->
+                            paint.style = Paint.Style.STROKE
+                            paint.strokeWidth = breite
+                            paint.color = farbe
+                        })
+                    }
                 }
 
-                pnt.fastDriveMgdlPerMin?.let { v ->
+            data.overviewData.fuseDriveSeries = BarGraphSeries(Array(driveArr.size) { i -> driveArr[i] }).also {
+                it.setValueDependentColor { p: DeviationDataPoint -> p.color }
+            }
+            // Toni: die UKF-Linie (schneller Antrieb) braucht es hier nicht mehr.
+            data.overviewData.fuseFastDriveSeries = LineGraphSeries<ScaledDataPoint>()
+            data.overviewData.fuseExpectedDriveSeries = linien(
+                abschnitte({ it.expectedMealDriveMgdlPerMin }, data.overviewData.fuseDriveScale) {
+                    data.overviewData.maxFuseDriveValueFound = max(data.overviewData.maxFuseDriveValueFound, abs(it))
+                },
+                3f, rh.gac(ctx, app.aaps.core.ui.R.attr.fuseDriveColor),
+            )
 
-                    fastArr.add(ScaledDataPoint(pnt.timestamp, v, data.overviewData.fuseDriveScale))
-
-                    data.overviewData.maxFuseDriveValueFound = max(data.overviewData.maxFuseDriveValueFound, kotlin.math.abs(v))
-
-                }
-
+            val guardArr: MutableList<ScaledDataPoint> = ArrayList()
+            val tailArr: MutableList<ScaledDataPoint> = ArrayList()
+            punkte.forEach { pnt ->
                 pnt.guardMarginMgdl?.let { v ->
-
                     guardArr.add(ScaledDataPoint(pnt.timestamp, v, data.overviewData.fuseGuardScale))
-
-                    data.overviewData.maxFuseGuardValueFound = max(data.overviewData.maxFuseGuardValueFound, kotlin.math.abs(v))
-
+                    data.overviewData.maxFuseGuardValueFound = max(data.overviewData.maxFuseGuardValueFound, abs(v))
                 }
-
-                // SCHWANZ-KANTE (Messung 15.08.): der Schwanz bindet OEFTER als
-                // der Guard (88x gegen 70x im 4-Tage-Trail). Ein Guard-Abstand
-                // allein zeigte "offen", waehrend FUSE laengst vom Schwanz
-                // gesperrt war - beide Kanten gehoeren in denselben Untergraphen,
+                // SCHWANZ-KANTE: der Schwanz bindet oft vor dem Guard - beide Kanten gehoeren in denselben Untergraphen,
                 // mit derselben Nulldurchgangs-Semantik.
                 pnt.tailMarginMgdl?.let { v ->
                     tailArr.add(ScaledDataPoint(pnt.timestamp, v, data.overviewData.fuseGuardScale))
-                    data.overviewData.maxFuseGuardValueFound = max(data.overviewData.maxFuseGuardValueFound, kotlin.math.abs(v))
+                    data.overviewData.maxFuseGuardValueFound = max(data.overviewData.maxFuseGuardValueFound, abs(v))
                 }
-
             }
+            data.overviewData.fuseGuardWithMealSeries = linien(
+                abschnitte({ it.guardWithMealMarginMgdl }, data.overviewData.fuseGuardScale) {
+                    data.overviewData.maxFuseGuardValueFound = max(data.overviewData.maxFuseGuardValueFound, abs(it))
+                },
+                2f, rh.gac(ctx, app.aaps.core.ui.R.attr.uamColor),
+            )
 
-            data.overviewData.fuseDriveSeries = LineGraphSeries(Array(driveArr.size) { i -> driveArr[i] }).also {
-
-                it.setCustomPaint(Paint().also { paint ->
-
-                    paint.style = Paint.Style.STROKE
-
-                    paint.strokeWidth = 3f
-
-                    paint.color = rh.gac(ctx, app.aaps.core.ui.R.attr.fuseDriveColor)
-
-                })
-
+            // Der Kontozustand als Streifen: aufeinanderfolgende Zyklen mit gleichem Zustand bilden einen Abschnitt.
+            fun zustandsFarbe(z: app.aaps.core.interfaces.overview.FuseOverviewSource.AccountStatus): Int = when (z) {
+                app.aaps.core.interfaces.overview.FuseOverviewSource.AccountStatus.AKTIV       -> 0xFF4CAF50.toInt()
+                app.aaps.core.interfaces.overview.FuseOverviewSource.AccountStatus.WARTET      -> 0xFFFFEB3B.toInt()
+                app.aaps.core.interfaces.overview.FuseOverviewSource.AccountStatus.PAUSIERT    -> 0xFFFF9800.toInt()
+                app.aaps.core.interfaces.overview.FuseOverviewSource.AccountStatus.EINGEFROREN -> 0xFF29B6F6.toInt()
+                app.aaps.core.interfaces.overview.FuseOverviewSource.AccountStatus.GESPERRT    -> 0xFFF44336.toInt()
+                app.aaps.core.interfaces.overview.FuseOverviewSource.AccountStatus.OHNE_KONTO  -> 0xFFE040FB.toInt()
+                app.aaps.core.interfaces.overview.FuseOverviewSource.AccountStatus.BEENDET     -> 0xFF9E9E9E.toInt()
             }
-
-            data.overviewData.fuseFastDriveSeries = LineGraphSeries(Array(fastArr.size) { i -> fastArr[i] }).also {
-
-                it.setCustomPaint(Paint().also { paint ->
-
-                    paint.style = Paint.Style.STROKE
-
-                    paint.strokeWidth = 2f
-
-                    paint.pathEffect = DashPathEffect(floatArrayOf(4f, 4f), 0f)
-
-                    paint.color = rh.gac(ctx, app.aaps.core.ui.R.attr.fuseFastDriveColor)
-
-                })
-
+            val streifen = ArrayList<DataPointWithLabelInterface>()
+            var laufZustand: app.aaps.core.interfaces.overview.FuseOverviewSource.AccountStatus? = null
+            var laufStart = 0L
+            var laufEnde = 0L
+            fun abschliessen() {
+                laufZustand?.let { z -> streifen.add(app.aaps.core.graph.data.FuseStatusDataPoint(laufStart, laufEnde, zustandsFarbe(z), z.name)) }
             }
+            punkte.forEach { p ->
+                if (p.accountStatus != laufZustand || p.timestamp - laufEnde > lueckeMs) {
+                    abschliessen()
+                    laufZustand = p.accountStatus
+                    laufStart = p.timestamp
+                }
+                laufEnde = p.timestamp + 60_000L
+            }
+            abschliessen()
+            data.overviewData.fuseAccountStatusSeries = PointsWithLabelGraphSeries(Array(streifen.size) { i -> streifen[i] })
 
             // Referenzlinien auf den Rampenkanten - dynamisch aus den aktuellen
             // Preferences; das Skalen-Minimum haengt an der OBEREN Kante, damit
@@ -374,17 +405,11 @@ class PrepareIobAutosensGraphDataWorker(
                 if (markers.isEmpty()) LineGraphSeries<ScaledDataPoint>()
                 else markerLines(data.overviewData.fuseGuardScale, -data.overviewData.maxFuseGuardValueFound, data.overviewData.maxFuseGuardValueFound)
             data.overviewData.fuseGuardSeries = LineGraphSeries(Array(guardArr.size) { i -> guardArr[i] }).also {
-
                 it.setCustomPaint(Paint().also { paint ->
-
                     paint.style = Paint.Style.STROKE
-
                     paint.strokeWidth = 3f
-
                     paint.color = rh.gac(ctx, app.aaps.core.ui.R.attr.fuseGuardColor)
-
                 })
-
             }
             data.overviewData.fuseTailSeries = LineGraphSeries(Array(tailArr.size) { i -> tailArr[i] }).also {
                 it.setCustomPaint(Paint().also { paint ->
@@ -394,7 +419,6 @@ class PrepareIobAutosensGraphDataWorker(
                     paint.color = rh.gac(ctx, app.aaps.core.ui.R.attr.fuseTailColor)
                 })
             }
-
         }
 
 

@@ -239,6 +239,18 @@ class EarlySupplyTest {
         )
     }
 
+    /** Anzeige (Graph F.DRV): die vom Konto erwartete Mahlzeitwirkung. */
+    @Test
+    fun `die erwartete Mahlzeitwirkung ist die Steigung der Kurve mal Skalierer mal ISF, ausserhalb 0`() {
+        // Synthetische Kurve: 1 U je 30 min, also Steigung 1/30 U/min.
+        assertEquals(50.0 / 30.0, EarlySupply.expectedDriveMgdlPerMin(kurve, 45.0, 1.0, 50.0), 1e-9)
+        assertEquals(25.0 / 30.0, EarlySupply.expectedDriveMgdlPerMin(kurve, 45.0, 0.5, 50.0), 1e-9)
+        assertEquals(0.0, EarlySupply.expectedDriveMgdlPerMin(kurve, 120.0, 1.0, 50.0), 0.0)
+        assertEquals(0.0, EarlySupply.expectedDriveMgdlPerMin(kurve, -1.0, 1.0, 50.0), 0.0)
+        assertEquals(0.0, EarlySupply.expectedDriveMgdlPerMin(kurve, 45.0, 0.0, 50.0), 0.0)
+        assertEquals(0.0, EarlySupply.expectedDriveMgdlPerMin(kurve, 45.0, 1.0, Double.NaN), 0.0)
+    }
+
     @Test
     fun `Einstellungen ausserhalb der Grenzen schalten die fruehe Versorgung aus`() {
         assertNotNull(EarlySupply.Settings.of(1.0, 0.5, 8.0, 0.5, 1.5, 4.0, 10))

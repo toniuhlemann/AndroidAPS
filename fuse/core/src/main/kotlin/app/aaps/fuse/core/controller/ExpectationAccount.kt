@@ -423,6 +423,8 @@ object ExpectationAccount {
         val guardScale: Double = 0.0,
         /** Schritt 2: die Rate der beobachteten Fortsetzung, die in [demandU] gezaehlt hat [U/min]; 0 = keine. */
         val continuationUPerMin: Double = 0.0,
+        /** Anzeige: die jetzt erwartete Mahlzeitwirkung [mg/dl/min] ([EarlySupply.expectedDriveMgdlPerMin]); 0 = keine. */
+        val expectedDriveMgdlPerMin: Double = 0.0,
     )
 
     data class Evaluation(
@@ -580,6 +582,9 @@ object ExpectationAccount {
                 else EarlySupply.confirmedGuardScale(s.phi0, inputs.ageMin, s.disturbanceU, s.disturbanceValid, curve),
                 continuationUPerMin = if (expired || curve == null || e == null) 0.0
                 else fortsetzung?.rateUPerMin?.takeIf { it.isFinite() && it > 0.0 } ?: 0.0,
+                // Ohne Budget ("Nur Marker", ohne fruehe Versorgung) erwartet das Konto nichts - die Linie bleibt 0.
+                expectedDriveMgdlPerMin = if (curve == null || expired || s.a0U <= EPS_U) 0.0
+                else EarlySupply.expectedDriveMgdlPerMin(curve, inputs.ageMin, scaleEff, s.isfAtMarkerMgdlPerU),
             ),
         )
     }

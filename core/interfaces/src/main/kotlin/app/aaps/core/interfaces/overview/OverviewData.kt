@@ -142,6 +142,12 @@ interface OverviewData {
     var maxFuseGuardValueFound: Double
     val fuseGuardScale: Scale
     var fuseGuardSeries: SeriesData
+    /** Die vom Konto erwartete Mahlzeitwirkung ueber den r-Balken - je Mahlzeitfenster ein Abschnitt. */
+    var fuseExpectedDriveSeries: List<SeriesData>
+    /** Guard-Abstand MIT der angekuendigten Mahlzeit (Pruefung der weiteren Portionen) - je Abschnitt eine Linie. */
+    var fuseGuardWithMealSeries: List<SeriesData>
+    /** Zustand des Erwartungskontos als Streifen am oberen Rand des Guard-Untergraphen. */
+    var fuseAccountStatusSeries: SeriesData
     var maxAcceIsfValueFound: Double
     var minAcceIsfValueFound: Double
     val acceIsfScale: Scale

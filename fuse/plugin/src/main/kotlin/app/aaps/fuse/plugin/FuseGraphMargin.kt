@@ -1,5 +1,7 @@
 package app.aaps.fuse.plugin
 
+import app.aaps.core.interfaces.overview.FuseOverviewSource
+
 /**
  * DIE SCHWANZ-KANTE FUER DEN UNTERGRAPHEN, in mg/dl.
  *
@@ -31,9 +33,39 @@ package app.aaps.fuse.plugin
 internal object FuseGraphMargin {
 
     /** Dieselbe Klippung wie beim Guard-Abstand: der Nulldurchgang ist die
-     *  Aussage, nicht die Tiefe einer unphysiologischen Bahn. */
-    const val LOWER_MGDL = -50.0
+     *  Aussage, nicht die Tiefe einer unphysiologischen Bahn. Toni: unten weiter
+     *  als -50 - sonst klebt eine tief gesperrte Kante am Rand und man sieht
+     *  nicht, wie weit sie zu ist. */
+    const val LOWER_MGDL = -150.0
     const val UPPER_MGDL = 150.0
+
+    /** Der Guard-Abstand einer Untergrenze [mg/dl]: `lower - floor`, geklippt; nicht auswertbar = Luecke. */
+    fun guardMarginMgdl(lowerMgdl: Double?, floorMgdl: Double?): Double? {
+        val l = lowerMgdl ?: return null
+        val f = floorMgdl ?: return null
+        val v = l - f
+        return if (v.isFinite()) v.coerceIn(LOWER_MGDL, UPPER_MGDL) else null
+    }
+
+    /**
+     * Der Kontozustand fuer den Statusstreifen - aus Geltung, Rueckfall und Kontostatus, im Live- und im
+     * Warmstartpfad dieselbe Regel. Ein Rueckfall gewinnt (Toni: den Ausfall deutlich zeigen); ohne Konto `null`.
+     */
+    fun accountStatus(applies: Boolean, fallback: String?, status: String?): FuseOverviewSource.AccountStatus? {
+        val rueckfall = fallback?.trim()?.takeIf { it.isNotEmpty() && it != "null" }
+        if (rueckfall != null) return FuseOverviewSource.AccountStatus.OHNE_KONTO
+        if (!applies) return null
+        return when (status?.trim()) {
+            "INITIAL", "ACTIVE" -> FuseOverviewSource.AccountStatus.AKTIV
+            "WAITING_FOR_STABILITY" -> FuseOverviewSource.AccountStatus.WARTET
+            "PAUSED", "NO_MODEL" -> FuseOverviewSource.AccountStatus.PAUSIERT
+            "FROZEN" -> FuseOverviewSource.AccountStatus.EINGEFROREN
+            "LOCKED_BY_LOW" -> FuseOverviewSource.AccountStatus.GESPERRT
+            "EXPECTATION_OFF" -> FuseOverviewSource.AccountStatus.OHNE_KONTO
+            "EXPIRED", "BUDGET_USED", "WITHDRAWN" -> FuseOverviewSource.AccountStatus.BEENDET
+            else -> null
+        }
+    }
 
     /**
      * ZWEITER RIEGEL gegen die Android-optString-Falle (Geraetebefund):

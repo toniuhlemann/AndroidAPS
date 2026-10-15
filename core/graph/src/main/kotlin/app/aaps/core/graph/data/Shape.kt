@@ -37,5 +37,8 @@ enum class Shape {
      * Symbol sagt WAS. Bewusst am Rand und nicht am Datenpunkt - der Marker
      * hat keinen Y-Wert, er ist ein Zeitpunkt.
      */
-    MEAL_MARKER
+    MEAL_MARKER,
+
+    /** Zustandsstreifen am oberen Graphenrand mit Dauer (FUSE-Erwartungskonto), etwas hoeher als RUNNING_MODE. */
+    STATUS_STRIP
 }

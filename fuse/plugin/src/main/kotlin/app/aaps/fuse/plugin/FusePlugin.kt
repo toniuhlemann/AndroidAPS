@@ -574,6 +574,13 @@ class FusePlugin @Inject constructor(
                     val ml = dec?.optDouble("minLowerMgdl", Double.NaN) ?: Double.NaN
                     val gf = pol?.optDouble("guardFloorMgdl", 70.0) ?: 70.0
                     val tl = j.optJSONObject("tail")
+                    // Konto (Graph F.DRV/F.GRD): Fenster, erwartete Wirkung, Guard mit Mahlzeit, Zustand. isNull() wie
+                    // unten - optString liefert auf Android fuer JSON-null den Text "null".
+                    val ekJ = j.optJSONObject("expectationAccount")
+                    val ekGilt = ekJ?.optBoolean("applies", false) == true
+                    val ekRueckfall = ekJ?.let { e -> if (e.isNull("fallback")) null else e.optString("fallback", "").takeIf { it.isNotEmpty() } }
+                    val ekStatus = ekJ?.let { e -> if (e.isNull("status")) null else e.optString("status", "").takeIf { it.isNotEmpty() } }
+                    val ekFrueh = ekJ?.optJSONObject("earlySupply")
                     val tailMargin = tl?.let {
                         FuseGraphMargin.tailMarginMgdl(
                             headroomU = it.optDouble("headroomU", Double.NaN),
@@ -592,8 +599,14 @@ class FusePlugin @Inject constructor(
                             timestamp = ts,
                             driveMgdlPerMin = r.takeIf { it.isFinite() },
                             fastDriveMgdlPerMin = fast.takeIf { it.isFinite() },
-                            guardMarginMgdl = (ml - gf).takeIf { it.isFinite() }?.coerceIn(-50.0, 150.0),
+                            guardMarginMgdl = FuseGraphMargin.guardMarginMgdl(ml, gf),
                             tailMarginMgdl = tailMargin,
+                            mealWindow = ekJ != null && (ekGilt || FuseGraphMargin.accountStatus(false, ekRueckfall, null) != null),
+                            expectedMealDriveMgdlPerMin = ekFrueh?.optDouble("expectedDriveMgdlPerMin", Double.NaN)
+                                ?.takeIf { ekGilt && it.isFinite() },
+                            guardWithMealMarginMgdl = ekFrueh?.optDouble("guardLowerWithMealMgdl", Double.NaN)
+                                ?.takeIf { it.isFinite() }?.let { FuseGraphMargin.guardMarginMgdl(it, gf) },
+                            accountStatus = ekJ?.let { FuseGraphMargin.accountStatus(ekGilt, ekRueckfall, ekStatus) },
                         )
                     )
                 }
@@ -1511,14 +1524,21 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                             timestamp = ts,
                             driveMgdlPerMin = sig?.rSigned?.takeIf { it.isFinite() },
                             fastDriveMgdlPerMin = sig?.let { (it.ukfRatePerMin + it.activityAtAnchor * it.isfAtAnchor).takeIf { v -> v.isFinite() } },
-                            guardMarginMgdl = o.decision.minLowerMgdl
-                                ?.let { ml -> ml - (o.policy?.guardFloorMgdl ?: 70.0) }
-                                ?.takeIf { it.isFinite() }?.coerceIn(-50.0, 150.0),
+                            guardMarginMgdl = FuseGraphMargin.guardMarginMgdl(o.decision.minLowerMgdl, o.policy?.guardFloorMgdl ?: 70.0),
                             // Schwanz-Kante in mg/dl - Regeln s. FuseGraphMargin
                             // (der unphysiologische Ausgang hat KEINEN ISF-Nenner,
                             // sperrt aber; er gehoert auf den unteren Anschlag).
                             tailMarginMgdl = o.decision.tail?.let { t ->
                                 FuseGraphMargin.tailMarginMgdl(t.headroomU, t.isfTailMgdlPerU, t.invalidReason)
+                            },
+                            // Konto: dieselben Regeln wie im Warmstart oben (FuseGraphMargin).
+                            mealWindow = o.erwartungskonto?.let { it.gilt || it.rueckfall != null } == true,
+                            expectedMealDriveMgdlPerMin = o.erwartungskonto?.takeIf { it.gilt }
+                                ?.zyklus?.eval?.early?.expectedDriveMgdlPerMin?.takeIf { it.isFinite() },
+                            guardWithMealMarginMgdl = o.erwartungskonto?.fruehUntenMitMahlzeitMgdl
+                                ?.let { FuseGraphMargin.guardMarginMgdl(it, o.policy?.guardFloorMgdl ?: 70.0) },
+                            accountStatus = o.erwartungskonto?.let {
+                                FuseGraphMargin.accountStatus(it.gilt, it.rueckfall, it.zyklus?.eval?.status)
                             },
                         )
                     )

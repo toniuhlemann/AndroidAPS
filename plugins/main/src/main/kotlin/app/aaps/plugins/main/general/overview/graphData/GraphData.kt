@@ -198,26 +198,27 @@ class GraphData @Inject constructor(
         //addSeries(overviewData.iobPredictions2Series)
     }
 
-    /** FUSE-Antrieb: r (durchgezogen) und fastDrive (gestrichelt) in einer
-     *  Auswahl - die Schere zwischen beiden IST die Information (Onset-Lag,
-     *  Wende, Phantom-r). Skala symmetrisch, mindestens +/-1 mg/dl/min. */
+    /** FUSE-Antrieb (Toni): die Stoerung r als Balken - im Mahlzeitfenster gelb, sonst gruen/rot -, darueber die vom
+     *  Konto erwartete Mahlzeitwirkung als Linie, dazu die Rampenkanten (r ueber der unteren = die Mahlzeit laeuft) und
+     *  die Marker. Skala symmetrisch, mindestens +/-1 mg/dl/min. */
     fun addFuseDrive(useForScale: Boolean, scale: Double) {
         if (useForScale) {
             maxY = max(1.0, overviewData.maxFuseDriveValueFound)
             minY = -maxY
         }
         overviewData.fuseDriveScale.multiplier = maxY * scale / max(1.0, overviewData.maxFuseDriveValueFound)
-        addSeries(overviewData.fuseDriveSeries as LineGraphSeries<ScaledDataPoint>)
-        addSeries(overviewData.fuseFastDriveSeries as LineGraphSeries<ScaledDataPoint>)
+        addSeries(overviewData.fuseDriveSeries as BarGraphSeries<DeviationDataPoint>)
+        overviewData.fuseExpectedDriveSeries.forEach { addSeries(it as LineGraphSeries<ScaledDataPoint>) }
         addSeries(overviewData.fuseRampLowSeries as LineGraphSeries<ScaledDataPoint>)
         addSeries(overviewData.fuseRampHighSeries as LineGraphSeries<ScaledDataPoint>)
         addSeries(overviewData.fuseDriveMarkerSeries as LineGraphSeries<ScaledDataPoint>)
     }
 
-    /** SPERR-ABSTAND, beide Kanten: Guard (minLower - guardFloor, durchgezogen)
-     *  und Schwanz (headroomU x isfTail, gestrichelt). Ueber Null offen, unter
-     *  Null gesperrt - welche Linie zuerst die Null reisst, ist die bindende
-     *  Kante. An der Quelle auf -50..150 geklippt. */
+    /** SPERR-ABSTAND: Guard (minLower - guardFloor, durchgezogen), Schwanz
+     *  (headroomU x isfTail, gestrichelt) und - im Kontofenster - der Guard MIT
+     *  der angekuendigten Mahlzeit (Pruefung der weiteren Portionen). Ueber Null
+     *  offen, unter Null gesperrt. An der Quelle auf -150..150 geklippt. Am
+     *  oberen Rand der Zustand des Erwartungskontos als Streifen. */
     fun addFuseGuard(useForScale: Boolean, scale: Double) {
         if (useForScale) {
             maxY = max(10.0, overviewData.maxFuseGuardValueFound)
@@ -226,7 +227,9 @@ class GraphData @Inject constructor(
         overviewData.fuseGuardScale.multiplier = maxY * scale / max(10.0, overviewData.maxFuseGuardValueFound)
         addSeries(overviewData.fuseGuardSeries as LineGraphSeries<ScaledDataPoint>)
         addSeries(overviewData.fuseTailSeries as LineGraphSeries<ScaledDataPoint>)
+        overviewData.fuseGuardWithMealSeries.forEach { addSeries(it as LineGraphSeries<ScaledDataPoint>) }
         addSeries(overviewData.fuseGuardMarkerSeries as LineGraphSeries<ScaledDataPoint>)
+        addSeries(overviewData.fuseAccountStatusSeries as PointsWithLabelGraphSeries<DataPointWithLabelInterface>)
     }
 
     // scale in % of vertical size (like 0.3)

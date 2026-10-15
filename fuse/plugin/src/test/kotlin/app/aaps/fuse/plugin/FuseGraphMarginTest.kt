@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin
 
+import app.aaps.core.interfaces.overview.FuseOverviewSource.AccountStatus
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
@@ -72,6 +73,36 @@ class FuseGraphMarginTest {
     fun `fehlende oder unbrauchbare Zahlen ergeben eine Luecke`() {
         assertNull(FuseGraphMargin.tailMarginMgdl(null, 80.0, null))
         assertNull(FuseGraphMargin.tailMarginMgdl(Double.NaN, 80.0, null))
+    }
+
+    /** Toni: unten weiter als -50, damit eine tief gesperrte Kante nicht am Rand klebt. */
+    @Test
+    fun `der Guard-Abstand - lower minus floor, geklippt, sonst Luecke`() {
+        assertEquals(30.0, FuseGraphMargin.guardMarginMgdl(100.0, 70.0))
+        assertEquals(-120.0, FuseGraphMargin.guardMarginMgdl(-50.0, 70.0))
+        assertEquals(FuseGraphMargin.LOWER_MGDL, FuseGraphMargin.guardMarginMgdl(-500.0, 70.0))
+        assertEquals(FuseGraphMargin.UPPER_MGDL, FuseGraphMargin.guardMarginMgdl(500.0, 70.0))
+        assertNull(FuseGraphMargin.guardMarginMgdl(null, 70.0))
+        assertNull(FuseGraphMargin.guardMarginMgdl(Double.NaN, 70.0))
+        assertNull(FuseGraphMargin.guardMarginMgdl(100.0, null))
+    }
+
+    /** Der Statusstreifen: im Live- und im Warmstartpfad dieselbe Regel. */
+    @Test
+    fun `der Kontozustand - Rueckfall gewinnt, ohne Konto keiner, sonst nach dem Status`() {
+        assertEquals(AccountStatus.OHNE_KONTO, FuseGraphMargin.accountStatus(false, "NO_CURVE", null))
+        assertEquals(AccountStatus.OHNE_KONTO, FuseGraphMargin.accountStatus(true, "ACCOUNT_LOST", "ACTIVE"))
+        assertNull(FuseGraphMargin.accountStatus(false, null, "ACTIVE"))
+        assertNull(FuseGraphMargin.accountStatus(false, "null", null))
+        assertEquals(AccountStatus.AKTIV, FuseGraphMargin.accountStatus(true, null, "INITIAL"))
+        assertEquals(AccountStatus.AKTIV, FuseGraphMargin.accountStatus(true, "null", "ACTIVE"))
+        assertEquals(AccountStatus.WARTET, FuseGraphMargin.accountStatus(true, null, "WAITING_FOR_STABILITY"))
+        assertEquals(AccountStatus.PAUSIERT, FuseGraphMargin.accountStatus(true, null, "PAUSED"))
+        assertEquals(AccountStatus.EINGEFROREN, FuseGraphMargin.accountStatus(true, null, "FROZEN"))
+        assertEquals(AccountStatus.GESPERRT, FuseGraphMargin.accountStatus(true, null, "LOCKED_BY_LOW"))
+        assertEquals(AccountStatus.BEENDET, FuseGraphMargin.accountStatus(true, null, "BUDGET_USED"))
+        assertEquals(AccountStatus.BEENDET, FuseGraphMargin.accountStatus(true, null, "EXPIRED"))
+        assertNull(FuseGraphMargin.accountStatus(true, null, "UNBEKANNT"))
     }
 
     /** Dieselbe Klippung wie beim Guard-Abstand - sonst staucht ein einzelner

@@ -3443,6 +3443,19 @@ class FuseCycleRunner(
             ),
         )
         val tailMitErwartung = if (tail == null) null else tailBaseMitErwartung?.let { TailLiability.evaluate(it) }
+        // NUR FUER GRAPH UND TRAIL (dosierneutral): die Untergrenze MIT der angekuendigten Mahlzeit in JEDEM Zyklus der
+        // weiteren Portionen - auch in der Pause. Dieselbe Rechnung wie die Pruefung G3 oben; sonst saehe man sie nur,
+        // wenn gerade eine Portion geprueft wurde.
+        val fruehUntenMitMahlzeitMgdl: Double? = ekZyklus
+            ?.takeIf { z -> z.eval.early?.initial == false && !z.eval.expired }
+            ?.let { z ->
+                val k = ExpectationAccount.Curve.of(z.state.curveValues) ?: return@let null
+                val isfZ = z.state.isfAtMarkerMgdlPerU.takeIf { it.isFinite() && it > 0.0 } ?: state.isfMgdlPerU
+                app.aaps.fuse.core.controller.EarlySupply.withExpectation(
+                    prediction, (prediction.predictionAnchorTs - z.state.authId) / 60_000.0, k, z.state.horizonMin,
+                    z.eval.early?.guardScale ?: 0.0, isfZ,
+                ).minLowerBgPriorFree
+            }
         val fruehSchwanzKappeU: Double? = when {
             // G2: die Markerautorisierung hebt den Schwanz der Anfangsportion.
             fruehAnfang && fruehHebung?.tailLift == true -> null
@@ -5349,6 +5362,7 @@ class FuseCycleRunner(
                 fruehSchwanzMitErwartungU = tailMitErwartung?.takeIf { it.usable }?.headroomU,
                 fruehSchwanzKappeU = fruehSchwanzKappeU.takeIf { fruehGilt },
                 fruehAmRiegelVorbeiU = fruehAmRiegelVorbeiU,
+                fruehUntenMitMahlzeitMgdl = fruehUntenMitMahlzeitMgdl,
             ),
             // Fixvertrag 30.08.: das typisierte Zyklus-IOB fuer
             // APSResult.iobData / DeviceStatus openaps.iob.
@@ -5802,6 +5816,11 @@ class FuseCycleRunner(
         val fruehSchwanzKappeU: Double? = null,
         /** Was die Portion des Kontos am Abwaertsriegel vorbei bekommen hat [U] (Anfang: Schritt 1, weitere: Schritt 2). */
         val fruehAmRiegelVorbeiU: Double = 0.0,
+        /**
+         * Graph und Trail: die Untergrenze MIT der angekuendigten Mahlzeit in jedem Zyklus der weiteren Portionen [mg/dl],
+         * auch in der Pause; `null` = nicht gerechnet. Dosierneutral.
+         */
+        val fruehUntenMitMahlzeitMgdl: Double? = null,
     )
 
     /** E-034: was dieser Zyklus im Konto gebucht hat. */

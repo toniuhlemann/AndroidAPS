@@ -157,6 +157,19 @@ object EarlySupply {
         }
     }
 
+    /**
+     * Die vom Konto JETZT erwartete Mahlzeitwirkung fuer die Anzeige [mg/dl/min]: die Steigung der Kurve im Markeralter
+     * mal Skalierer mal ISF. Ausserhalb der Kurve 0. Dosierneutral - nur Graph und Trail lesen sie.
+     */
+    fun expectedDriveMgdlPerMin(curve: ExpectationAccount.Curve, ageMin: Double, scale: Double, isfMgdlPerU: Double): Double {
+        if (!ageMin.isFinite() || ageMin < 0.0 || ageMin >= ExpectationAccount.CURVE_END_MIN) return 0.0
+        if (!scale.isFinite() || scale <= 0.0 || !isfMgdlPerU.isFinite() || isfMgdlPerU <= 0.0) return 0.0
+        val von = max(0.0, ageMin - 1.0)
+        val bis = min(ExpectationAccount.CURVE_END_MIN.toDouble(), ageMin + 1.0)
+        val v = scale * (curve.at(bis) - curve.at(von)) / (bis - von) * isfMgdlPerU
+        return if (v.isFinite()) max(0.0, v) else 0.0
+    }
+
     /** Die Skala, mit der Guard und Schwanz die Mahlzeit sehen: hoechstens die eingestellte Kurve, nie mehr. */
     fun guardScale(scaleEff: Double): Double = if (scaleEff.isFinite()) min(1.0, max(0.0, scaleEff)) else 0.0
 

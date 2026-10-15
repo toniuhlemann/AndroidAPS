@@ -33,7 +33,21 @@ interface FuseOverviewSource {
          * gesperrt war - genau irrefuehrend fuer die Nachvollziehung.
          */
         val tailMarginMgdl: Double? = null,
+        /** Im Fenster der Mahlzeit-Vollmacht (Konto oder Rueckfall): positives r wird dort gelb gezeichnet. */
+        val mealWindow: Boolean = false,
+        /** Die vom Konto jetzt erwartete Mahlzeitwirkung [mg/dl/min] (Kurve mal angepasster Skalierer); `null` = keine. */
+        val expectedMealDriveMgdlPerMin: Double? = null,
+        /**
+         * Die Untergrenze MIT der angekuendigten Mahlzeit minus guardFloor [mg/dl] - die Pruefung der weiteren
+         * Portionen (G3) -, wie der Guard-Abstand geklippt; `null` = in diesem Zyklus keine.
+         */
+        val guardWithMealMarginMgdl: Double? = null,
+        /** Zustand des Erwartungskontos fuer den Statusstreifen; `null` = kein Konto in diesem Zyklus. */
+        val accountStatus: AccountStatus? = null,
     )
+
+    /** Zustand des Erwartungskontos je Zyklus - der Streifen am oberen Rand des Guard-Untergraphen. */
+    enum class AccountStatus { AKTIV, WARTET, PAUSIERT, EINGEFROREN, GESPERRT, OHNE_KONTO, BEENDET }
 
     fun fuseGraphPoints(fromTime: Long, endTime: Long): List<Point>
 

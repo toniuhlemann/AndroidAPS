@@ -2451,7 +2451,10 @@ object FuseStateJson {
                     .put("mealRunning", z.mahlzeitLaeuft)
                     .put("stableMealRunning", z.stabilFolge)
                     .put("continuationUPerMin", fin(e.early?.continuationUPerMin ?: 0.0))
-                    .put("latchPassedU", fin(x.fruehAmRiegelVorbeiU)))
+                    .put("latchPassedU", fin(x.fruehAmRiegelVorbeiU))
+                    // Graph: erwartete Mahlzeitwirkung und die Untergrenze mit Mahlzeit in jedem Zyklus (dosierneutral).
+                    .put("expectedDriveMgdlPerMin", fin(e.early?.expectedDriveMgdlPerMin ?: 0.0))
+                    .put("guardLowerWithMealMgdl", fin(x.fruehUntenMitMahlzeitMgdl)))
             }
         }
         val b = x.buchung

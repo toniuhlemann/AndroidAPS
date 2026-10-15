@@ -265,6 +265,10 @@ open class PointsWithLabelGraphSeries<E : DataPointWithLabelInterface> : BaseSer
                     mPaint.style = Paint.Style.FILL_AND_STROKE
                     mPaint.strokeWidth = 5f
                     canvas.drawRect(endX, graphTop, xPlusLength, graphTop + 4, mPaint)
+                } else if (value.shape == Shape.STATUS_STRIP) {
+                    mPaint.strokeWidth = 0f
+                    mPaint.style = Paint.Style.FILL
+                    canvas.drawRect(endX, graphTop, kotlin.math.max(xPlusLength, endX + 1f), graphTop + value.size, mPaint)
                 } else if (value.shape == Shape.GENERAL_WITH_DURATION) {
                     mPaint.strokeWidth = 0f
                     if (value.label.isNotEmpty()) {
