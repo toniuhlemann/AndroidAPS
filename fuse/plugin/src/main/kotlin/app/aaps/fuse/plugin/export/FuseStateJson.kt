@@ -2446,7 +2446,12 @@ object FuseStateJson {
                     .put("lowerWithExpMgdl", fin(x.fruehUntenMitErwartungMgdl))
                     .put("restraintLowerWithExpMgdl", fin(x.fruehBremseUntenMitErwartungMgdl))
                     .put("tailHeadroomWithExpU", fin(x.fruehSchwanzMitErwartungU))
-                    .put("tailCapU", fin(x.fruehSchwanzKappeU)))
+                    .put("tailCapU", fin(x.fruehSchwanzKappeU))
+                    // Schritt 2: laeuft die Mahlzeit (weitere Portionen), die Fortsetzung im Bedarf, am Riegel vorbei.
+                    .put("mealRunning", z.mahlzeitLaeuft)
+                    .put("stableMealRunning", z.stabilFolge)
+                    .put("continuationUPerMin", fin(e.early?.continuationUPerMin ?: 0.0))
+                    .put("latchPassedU", fin(x.fruehAmRiegelVorbeiU)))
             }
         }
         val b = x.buchung

@@ -113,6 +113,47 @@ class ExpectationAccountEarlyTest {
         assertEquals(summe, s.bookedU, 1e-9)
     }
 
+    /** Schritt 2 (Toni): die beobachtete Fortsetzung der laufenden Mahlzeit - nur fuer weitere Portionen. */
+    @Test
+    fun `die Fortsetzung zaehlt nur fuer weitere Portionen, nie nach einem Tief und nie nach dem Fenster`() {
+        val f = EarlySupply.Continuation(0.05, 60.0)
+        fun mit(s: ExpectationAccount.State, min: Int, bg: Double) = ExpectationAccount.step(
+            s,
+            ExpectationAccount.Inputs(
+                nowTs = t0 + min * 60_000L, ageMin = min.toDouble(), bgMgdl = bg, targetMgdl = 100.0, isfMgdlPerU = 50.0,
+                iobTotalU = 0.0, activityUPerMin = 0.0, paused = false, stableNow = true, early = eingaben(),
+                continuation = f,
+            ),
+        )
+        // In der Anfangsportion zaehlt sie nicht.
+        val (_, anfang) = mit(konto(), 0, 100.0)
+        assertTrue(anfang.early!!.initial)
+        assertEquals(0.0, anfang.early!!.continuationUPerMin, 0.0)
+        assertEquals(schritt(konto(), 0).second.early!!.demandU, anfang.early!!.demandU, 0.0)
+        // Die Mahlzeit laeuft (BG steigt), nach Minute 90: ohne Fortsetzung keine Anforderung, mit ihr schon.
+        var s = konto()
+        for (m in 0..99) s = schritt(s, m, bg = 100.0 + m).first
+        assertFalse(s.frozen)
+        val (_, ohne) = schritt(s, 100, bg = 200.0)
+        assertEquals(0.0, ohne.early!!.demandU, 0.0)
+        assertEquals(0.0, ExpectationAccount.expectationShareU(ohne), 0.0)
+        val (_, laeuft) = mit(s, 100, 200.0)
+        assertTrue(laeuft.early!!.demandU > 0.0) { "keine Anforderung trotz laufender Mahlzeit" }
+        assertEquals(0.05, laeuft.early!!.continuationUPerMin, 0.0)
+        assertTrue(ExpectationAccount.expectationShareU(laeuft) > 0.0)
+        // Nach einem gemessenen Tief in dieser Mahlzeit nicht.
+        val (_, nachTief) = mit(s.copy(earlyAfterLow = true), 100, 200.0)
+        assertEquals(0.0, nachTief.early!!.demandU, 0.0)
+        assertEquals(0.0, nachTief.early!!.continuationUPerMin, 0.0)
+        // Nach dem Fenster der Vollmacht nicht.
+        var t = s
+        for (m in 100..119) t = schritt(t, m, bg = 200.0).first
+        val (_, danach) = mit(t, 120, 200.0)
+        assertTrue(danach.expired)
+        assertEquals(0.0, danach.early!!.demandU, 0.0)
+        assertEquals(0.0, danach.restEffU, 0.0)
+    }
+
     @Test
     fun `ohne Insulinmodell gibt es keinen Erwartungsanteil`() {
         val (_, e) = schritt(konto(), 0, early = null)

@@ -140,6 +140,23 @@ object EarlySupply {
     /** Eine weitere Portion im Zeitraumbuch: Zeitpunkt und Erwartungsanteil [U]. */
     data class Portion(val ts: Long, val amountU: Double)
 
+    /**
+     * SCHRITT 2 (Toni): die BEOBACHTETE FORTSETZUNG der laufenden Mahlzeit - die Stoerung r dieses Zyklus als Rate
+     * [rateUPerMin] (r / ISF), abklingend mit [tauMin] ab jetzt (dasselbe Abklingen wie der Antrieb der Bahn). Es gibt
+     * sie nur, solange die Mahlzeit laeuft (r ueber der Rampen-Unterkante).
+     */
+    data class Continuation(val rateUPerMin: Double, val tauMin: Double) {
+
+        /** Erwartete Stoerung [U] zwischen jetzt + [fromMin] und jetzt + [toMin]; ungueltig oder leer = 0. */
+        fun amountU(fromMin: Double, toMin: Double): Double {
+            if (!rateUPerMin.isFinite() || rateUPerMin <= 0.0 || !tauMin.isFinite() || tauMin <= 0.0) return 0.0
+            val von = max(0.0, fromMin)
+            if (!(toMin > von)) return 0.0
+            val u = rateUPerMin * tauMin * (exp(-von / tauMin) - exp(-toMin / tauMin))
+            return if (u.isFinite()) max(0.0, u) else 0.0
+        }
+    }
+
     /** Die Skala, mit der Guard und Schwanz die Mahlzeit sehen: hoechstens die eingestellte Kurve, nie mehr. */
     fun guardScale(scaleEff: Double): Double = if (scaleEff.isFinite()) min(1.0, max(0.0, scaleEff)) else 0.0
 
@@ -384,17 +401,31 @@ object EarlySupply {
      * [existingActionU] liefert die erwartete Wirkung des bereits gegebenen UND ausstehenden Insulins zwischen jetzt
      * und jetzt + tau [U]; davon zaehlt der Anteil `freeIobU / iobU` (der Rest gehoert zum Zielabstand). Weniger als
      * 30 min bis zum Ende: 0 - dann gibt es nichts mehr rechtzeitig abzudecken.
+     *
+     * SCHRITT 2 (Toni): mit einer [continuation] (die Mahlzeit laeuft noch) traegt JENSEITS der Kurve - Deckungspunkte
+     * nach `min(Vorschau, Ende)` - die beobachtete Fortsetzung `R_T(tau) = rho * tau_d * (e^(-u0/tau_d) - e^(-tau/tau_d))`,
+     * u0 = Abstand bis zum Kurvenende, tau bis [ExpectationAccount.CURVE_END_MIN]. Sie ist schon Beobachtung und wird
+     * nicht skaliert; innerhalb der Kurve bleibt der Kurvenanteil, je Deckungspunkt zaehlt genau einer der beiden. So
+     * endet die Anforderung nicht mehr bei Minute 90, solange die Mahlzeit weiterlaeuft - und faellt mit ihr. Ohne
+     * Fortsetzung ist die Rechnung die bisherige.
      */
     fun demandU(
         curve: ExpectationAccount.Curve, horizonMin: Int, ageMin: Double, scaleEff: Double,
         iobU: Double, freeIobU: Double, existingActionU: (Double) -> Double, action: (Double) -> Double,
+        continuation: Continuation? = null,
     ): Double {
         val anteilFrei = if (iobU > EPS) min(1.0, max(0.0, freeIobU / iobU)) else 0.0
         val fa = curve.at(ageMin)
-        val x = deckung(ageMin, horizonMin).maxOfOrNull { t ->
+        val fortsetzung = continuation?.takeIf { it.amountU(0.0, ExpectationAccount.CURVE_END_MIN.toDouble()) > EPS }
+        val kurvenEnde = min(horizonMin.toDouble(), ExpectationAccount.CURVE_END_MIN.toDouble())
+        val u0 = max(0.0, kurvenEnde - ageMin)
+        val punkte = if (fortsetzung == null) deckung(ageMin, horizonMin)
+        else (MIN_COVER_MIN..ExpectationAccount.CURVE_END_MIN step STEP_MIN).toList()
+        val x = punkte.maxOfOrNull { t ->
             val c = action(t.toDouble())
             if (c <= EPS) return@maxOfOrNull 0.0
-            val erwartet = scaleEff * (curve.at(ageMin + t) - fa)
+            val erwartet = if (fortsetzung == null || ageMin + t <= kurvenEnde) scaleEff * (curve.at(ageMin + t) - fa)
+            else fortsetzung.amountU(u0, t.toDouble())
             val vorhanden = anteilFrei * max(0.0, existingActionU(t.toDouble()))
             (erwartet - vorhanden) / c
         } ?: 0.0

@@ -192,6 +192,54 @@ class EarlySupplyTest {
     }
 
     @Test
+    fun `die beobachtete Fortsetzung - Rate mal Abklingen zwischen zwei Zeitpunkten, nie negativ`() {
+        val f = EarlySupply.Continuation(0.05, 60.0)
+        assertEquals(0.05 * 60.0 * (1.0 - kotlin.math.exp(-1.0)), f.amountU(0.0, 60.0), 1e-12)
+        assertEquals(0.05 * 60.0 * (kotlin.math.exp(-0.5) - kotlin.math.exp(-2.0)), f.amountU(30.0, 120.0), 1e-12)
+        assertEquals(0.0, f.amountU(60.0, 30.0), 0.0)
+        assertEquals(0.0, EarlySupply.Continuation(-0.05, 60.0).amountU(0.0, 60.0), 0.0)
+        assertEquals(0.0, EarlySupply.Continuation(Double.NaN, 60.0).amountU(0.0, 60.0), 0.0)
+        assertEquals(0.0, EarlySupply.Continuation(0.05, 0.0).amountU(0.0, 60.0), 0.0)
+    }
+
+    /** Schritt 2 (Toni): solange die Mahlzeit laeuft, endet die Anforderung nicht bei Minute 90. */
+    @Test
+    fun `laeuft die Mahlzeit, endet die Anforderung nicht bei Minute 90 - sie folgt der Beobachtung`() {
+        val f = EarlySupply.Continuation(0.05, 60.0)
+        // Ohne Fortsetzung: ab Minute 90 gibt es nichts mehr rechtzeitig abzudecken.
+        assertEquals(0.0, EarlySupply.demandU(kurve, 120, 100.0, 1.0, 0.0, 0.0, { 0.0 }, wirkung), 0.0)
+        // Mit: jenseits der Kurve (ab Minute 120) die Fortsetzung, gedeckt ab 30 min, Vorschau bis 120 min.
+        val erwartet = (30..120 step 5).maxOf { t -> f.amountU(20.0, t.toDouble()) / wirkung(t.toDouble()) }
+        assertEquals(erwartet, EarlySupply.demandU(kurve, 120, 100.0, 1.0, 0.0, 0.0, { 0.0 }, wirkung, f), 1e-9)
+        // Nach dem Kurvenende traegt sie allein, ab jetzt.
+        val spaet = (30..120 step 5).maxOf { t -> f.amountU(0.0, t.toDouble()) / wirkung(t.toDouble()) }
+        assertEquals(spaet, EarlySupply.demandU(kurve, 120, 150.0, 1.0, 0.0, 0.0, { 0.0 }, wirkung, f), 1e-9)
+        // Freies vorhandenes Insulin zaehlt wie bisher.
+        val vorhanden: (Double) -> Double = { t -> 1.0 * wirkung(t) }
+        assertTrue(EarlySupply.demandU(kurve, 120, 150.0, 1.0, 1.0, 1.0, vorhanden, wirkung, f) < spaet - 1e-9)
+        // Faellt die Fortsetzung weg (die Mahlzeit ist vorbei), faellt die Anforderung mit.
+        assertEquals(
+            0.0, EarlySupply.demandU(kurve, 120, 150.0, 1.0, 0.0, 0.0, { 0.0 }, wirkung, EarlySupply.Continuation(0.0, 60.0)), 0.0,
+        )
+    }
+
+    @Test
+    fun `innerhalb der Kurve bleibt der Kurvenanteil - ohne Fortsetzung wie bisher`() {
+        val f = EarlySupply.Continuation(0.05, 60.0)
+        for (a in listOf(0.0, 12.5, 37.0, 60.0, 85.0, 89.9)) {
+            val ohne = EarlySupply.demandU(kurve, 120, a, 1.0, 0.0, 0.0, { 0.0 }, wirkung)
+            assertEquals(ohne, EarlySupply.demandU(kurve, 120, a, 1.0, 0.0, 0.0, { 0.0 }, wirkung, null), 0.0)
+            // Mit Fortsetzung nie weniger: die Kurvenpunkte bleiben, dazu kommen Punkte jenseits der Kurve.
+            assertTrue(EarlySupply.demandU(kurve, 120, a, 1.0, 0.0, 0.0, { 0.0 }, wirkung, f) >= ohne)
+        }
+        // Am Druck reicht keine Deckung ueber das Kurvenende hinaus - dieselbe Anforderung.
+        assertEquals(
+            EarlySupply.demandU(kurve, 120, 0.0, 1.0, 0.0, 0.0, { 0.0 }, wirkung),
+            EarlySupply.demandU(kurve, 120, 0.0, 1.0, 0.0, 0.0, { 0.0 }, wirkung, f), 0.0,
+        )
+    }
+
+    @Test
     fun `Einstellungen ausserhalb der Grenzen schalten die fruehe Versorgung aus`() {
         assertNotNull(EarlySupply.Settings.of(1.0, 0.5, 8.0, 0.5, 1.5, 4.0, 10))
         assertNull(EarlySupply.Settings.of(2.5, 0.5, 8.0, 0.5, 1.5, 4.0, 10))

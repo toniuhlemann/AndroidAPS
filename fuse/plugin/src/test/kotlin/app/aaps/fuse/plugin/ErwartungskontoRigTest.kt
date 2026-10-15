@@ -1140,6 +1140,13 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             .all { it.o.erwartungskonto!!.zyklus!!.eval.status == "LOCKED_BY_LOW" })
         // Gegenprobe: die Strecke gibt die Freigabe zurueck - ohne die Regel floessen wieder Portionen.
         assertTrue(danach.any { it.o.erwartungskonto!!.zyklus!!.eval.released }) { "keine Wiederfreigabe - Probe zeigt nichts" }
+        // Schritt 2 gilt nach dem Tief nicht: keine laufende Mahlzeit, keine Fortsetzung - auch wenn r ueber der Rampe liegt.
+        val spaeter = danach.filter { it.minute > tief!!.minute }
+        assertTrue(spaeter.any { (it.o.signal?.rSigned ?: 0.0) >= FuseDoubleKey.RiseRampLowR.defaultValue }) {
+            "Probe zeigt nichts: nach dem Tief kein r ueber der Rampe"
+        }
+        assertTrue(spaeter.none { it.o.erwartungskonto!!.zyklus!!.mahlzeitLaeuft }) { "Schritt 2 nach einem Tief" }
+        assertTrue(spaeter.all { (it.frueh()?.continuationUPerMin ?: 0.0) == 0.0 }) { "Fortsetzung nach einem Tief" }
     }
 
     /** Leichtes Fallen am Druck, weit ueber der Grenze: unter der Kanalkonstante, aber langsamer als die Fallgrenze. */
@@ -1159,8 +1166,8 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     /**
      * Toni: der Blutzucker ist praktisch nie flach - zu Beginn der Mahlzeit ist ein kleines negatives Delta kein Grund zu
      * warten. Die Anfangsportion pausiert deshalb nur bei Fallen ueber die (gepinnte) Fallgrenze. Danach, mit Insulin an
-     * Bord, stoppt schon leichtes Fallen die weiteren Portionen (kein Stacking); v1 bleibt bei der Kanalkonstante.
-     * Synthetische Fallgrenze.
+     * Bord, stoppt schon leichtes Fallen die weiteren Portionen (kein Stacking), solange die Mahlzeit nicht laeuft -
+     * hier liegt die Rampen-Unterkante ueber r (laeuft sie, s. Schritt 2). Synthetische Fallgrenze.
      */
     @Test
     fun `leichtes Fallen haelt die Anfangsportion nicht auf, danach und bei deutlichem Fallen bleibt es streng`(@TempDir dir: File) {
@@ -1169,6 +1176,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         fun v2(f: Fuse20Folgen.Folge, name: String) = fruehLauf(f, File(dir, name)) {
             fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true, skalaTief = skalaTief)
             whenever(preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin)).thenReturn(fallGrenze)
+            rampeUeberR()
         }
         fun fruehe(z: List<Zyklus>) = z.filter { it.minute in 0..5 && it.o.erwartungskonto?.zyklus != null }
         fun anfangMinute(z: List<Zyklus>) = z.firstOrNull { it.frueh()?.initial == true && it.dErw() > 0.0 }?.minute ?: Int.MAX_VALUE
@@ -1288,6 +1296,12 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         markerMin = 0,
     )
 
+    /** Rampen-Unterkante ueber jedem r der Proben: die Mahlzeit gilt nie als laufend (Schritt 2 greift nicht). */
+    private fun rampeUeberR() {
+        whenever(preferences.get(FuseDoubleKey.RiseRampLowR)).thenReturn(FuseDoubleKey.RiseRampLowR.max)
+        whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(FuseDoubleKey.RiseRampLowR.max + 1.0)
+    }
+
     private fun bolusVorDemDruck(m: Int, menge: Double) {
         if (m == -60) boliSetzen(
             boluses + BS(
@@ -1301,14 +1315,16 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
      * Toni ("auch das Druecken des Markers ist meine Entscheidung"; "die erste Dosis ist die wichtigste und die
      * muss frueh kommen"): ein ALTER Abwaertsriegel - die Gefahr ist vorbei, die Hysterese wartet auf +0,20 mg/dl/min -
      * haelt die Anfangsportion nicht mehr auf, auch nicht ueber die Strecke. Sie fliesst am Druck. Die weiteren
-     * Portionen haelt derselbe Riegel wie bisher. Synthetische Werte.
+     * Portionen haelt derselbe Riegel wie bisher, solange die Mahlzeit nicht laeuft - hier liegt die Rampen-Unterkante
+     * ueber r (laeuft sie, s. Schritt 2 unten). Synthetische Werte.
      */
     @Test
-    fun `ein alter Abwaertsriegel haelt die Anfangsportion nicht auf, die weiteren Portionen schon`(@TempDir dir: File) {
+    fun `ein alter Abwaertsriegel haelt die Anfangsportion nicht auf, die weiteren Portionen ohne laufende Mahlzeit schon`(@TempDir dir: File) {
         val zyklen = fruehLauf(fAlterRiegel, dir, vorZyklus = { bolusVorDemDruck(it, 3.0) }) {
             fruehKonfiguration(g1 = true, g2 = true, anteil = 0.5)
             whenever(preferences.get(FuseIntKey.ExpectationStabilityMin)).thenReturn(5)
             whenever(preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin)).thenReturn(1.0)
+            rampeUeberR()
         }
         pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
         val start = zyklen.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }
@@ -1325,6 +1341,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         // Danach, solange der Riegel steht: keine weitere Portion.
         val danach = zyklen.filter { it.minute > anfang.minute && it.o.descentLatchActive && it.o.erwartungskonto?.zyklus != null }
         assertTrue(danach.isNotEmpty()) { "Probe zeigt nichts: nach der Anfangsportion kein Riegel mehr" }
+        assertTrue(danach.none { it.o.erwartungskonto!!.zyklus!!.mahlzeitLaeuft }) { "Mahlzeit gilt trotz Rampe ueber r als laufend" }
         assertTrue(danach.all { "LATCH" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) { "Riegel bremst nach der Anfangsportion nicht" }
         assertEquals(0.0, danach.sumOf { it.dErw() }, 0.0)
     }
@@ -1350,9 +1367,128 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         val anfang = zyklen.first { it.frueh()?.initial == true && it.dErw() > 0.0 }
         assertTrue(anfang.minute <= start.minute + 1) { "Anfangsportion erst in Minute ${anfang.minute}" }
         assertTrue((anfang.o.smbActuatedU ?: 0.0) > 0.0) { "Anfangsportion vom Endriegel genullt" }
-        // Weitere Portionen haelt das Risiko wie bisher.
+        // Weitere Portionen haelt das Risiko wie bisher - auch wenn die Mahlzeit laeuft (Schritt 2, Stapelschutz).
         val danach = zyklen.filter { it.minute > anfang.minute && it.o.descentRiskActive && it.o.erwartungskonto?.zyklus != null }
         assertEquals(0.0, danach.sumOf { it.dErw() }, 0.0)
+        val imLauf = danach.filter { it.o.erwartungskonto!!.zyklus!!.mahlzeitLaeuft }
+        assertTrue(imLauf.isNotEmpty()) { "Probe zeigt nichts: das Risiko faellt in keinen Zyklus mit laufender Mahlzeit" }
+        assertTrue(imLauf.all { "DESCENT_RISK" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) { "aktuelles Risiko haelt nicht" }
+    }
+
+    /** Ein alter Riegel ueber lange Zeit: steiler Fall vor dem Druck, danach flach, waehrend das Insulin wirkt - r steigt. */
+    private val fLaufRiegel = Fuse20Folgen.Folge(
+        "LAUF_RIEGEL", 1_701_511_200_000L, -90, 180,
+        listOf(-90 to 160.0, -40 to 150.0, -15 to 105.0, -10 to 98.0, -5 to 96.0, 0 to 95.0, 10 to 96.0,
+            30 to 97.0, 50 to 99.0, 70 to 120.0, 100 to 190.0, 180 to 150.0),
+        markerMin = 0,
+    )
+
+    /**
+     * SCHRITT 2 (Toni): laeuft die Mahlzeit - r ueber der Rampen-Unterkante -, haelt der ALTE Abwaertsriegel (Gefahr
+     * vorbei, die Hysterese laeuft) auch die weiteren Portionen nicht mehr auf, weder als Pause noch am Endriegel.
+     * Gegenprobe: dieselbe Folge mit der Rampen-Unterkante ueber r - die Mahlzeit gilt nicht als laufend, der Riegel
+     * haelt wie bisher. Synthetische Werte.
+     */
+    @Test
+    fun `laeuft die Mahlzeit, haelt der alte Riegel auch die weiteren Portionen nicht auf - Gegenprobe ohne`(@TempDir dir: File) {
+        fun lauf(name: String, ohneLauf: Boolean) = fruehLauf(fLaufRiegel, File(dir, name), vorZyklus = { bolusVorDemDruck(it, 3.0) }) {
+            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true, anteil = 0.5)
+            whenever(preferences.get(FuseIntKey.ExpectationStabilityMin)).thenReturn(5)
+            whenever(preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin)).thenReturn(1.0)
+            if (ohneLauf) rampeUeberR()
+        }
+        fun alterRiegel(z: Zyklus) = z.o.descentLatchReason == "WAITING_RATE" || z.o.descentLatchReason == "WAITING_RAW"
+        val mit = lauf("mit", ohneLauf = false)
+        pruefeMechanik(mit, 0.5, 1.0, 2.0)
+        val weitere = mit.filter { it.frueh()?.initial == false && alterRiegel(it) && it.o.erwartungskonto?.zyklus != null }
+        assertTrue(weitere.size >= 10) { "Probe zeigt nichts: kaum weitere Portionen unter altem Riegel (${weitere.size})" }
+        assertTrue(weitere.all { it.o.erwartungskonto!!.zyklus!!.mahlzeitLaeuft }) {
+            "Mahlzeit gilt nicht als laufend: " + weitere.filterNot { it.o.erwartungskonto!!.zyklus!!.mahlzeitLaeuft }
+                .joinToString { "${it.minute}:r=${it.o.signal?.rSigned}" }
+        }
+        assertTrue(weitere.none { "LATCH" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) { "alter Riegel pausiert trotz laufender Mahlzeit" }
+        val vorbei = weitere.filter { it.dErw() > 0.0 }
+        assertTrue(vorbei.isNotEmpty()) { "keine weitere Portion am alten Riegel vorbei" }
+        assertTrue(vorbei.all { (it.o.smbActuatedU ?: 0.0) > 0.0 && it.o.erwartungskonto!!.fruehAmRiegelVorbeiU > 0.0 }) {
+            "weitere Portion vom Endriegel genullt: " + vorbei.joinToString { "${it.minute}:${it.o.smbActuatedU}" }
+        }
+
+        val ohne = lauf("ohne", ohneLauf = true)
+        pruefeMechanik(ohne, 0.5, 1.0, 2.0)
+        val gehalten = ohne.filter { it.frueh()?.initial == false && it.o.descentLatchActive && it.o.erwartungskonto?.zyklus != null }
+        assertTrue(gehalten.isNotEmpty()) { "Probe zeigt nichts: ohne laufende Mahlzeit kein Riegel nach dem Anfang" }
+        assertTrue(gehalten.none { it.o.erwartungskonto!!.zyklus!!.mahlzeitLaeuft })
+        assertTrue(gehalten.all { "LATCH" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) { "Riegel haelt ohne laufende Mahlzeit nicht" }
+        assertEquals(0.0, gehalten.sumOf { it.dErw() }, 0.0)
+        assertTrue(gehalten.all { it.o.erwartungskonto!!.fruehAmRiegelVorbeiU == 0.0 })
+    }
+
+    /** Stetiger Anstieg, danach leichtes Fallen, waehrend die Mahlzeit noch laeuft (r hoch, das Insulin wirkt). */
+    private val fLaufFallend = Fuse20Folgen.Folge(
+        "LAUF_FALLEND", 1_701_597_600_000L, -90, 180,
+        listOf(-90 to 150.0, 0 to 150.0, 10 to 160.0, 30 to 190.0, 50 to 200.0, 70 to 194.0, 90 to 188.0,
+            120 to 180.0, 180 to 140.0),
+        markerMin = 0,
+    )
+
+    /**
+     * SCHRITT 2 (Toni): laeuft die Mahlzeit, pausiert leichtes Fallen die weiteren Portionen erst ab der eingestellten
+     * Fallgrenze, nicht schon ab der Kanalkonstante. Gegenprobe ohne laufende Mahlzeit: dieselbe Folge pausiert wie
+     * bisher. Synthetische Fallgrenze.
+     */
+    @Test
+    fun `laeuft die Mahlzeit, pausiert leichtes Fallen die weiteren Portionen erst ab der Fallgrenze - Gegenprobe ohne`(@TempDir dir: File) {
+        val fallGrenze = 1.0
+        fun lauf(name: String, ohneLauf: Boolean) = fruehLauf(fLaufFallend, File(dir, name)) {
+            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true, anteil = 0.5)
+            whenever(preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin)).thenReturn(fallGrenze)
+            if (ohneLauf) rampeUeberR()
+        }
+        fun leichtFallend(z: Zyklus) =
+            z.o.signal?.ukfRatePerMin?.let { it < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN && it > -fallGrenze } == true
+        val mit = lauf("mit", ohneLauf = false)
+        pruefeMechanik(mit, 0.5, 1.0, 2.0)
+        val fallend = mit.filter { it.frueh()?.initial == false && leichtFallend(it) && it.o.erwartungskonto?.zyklus != null }
+        assertTrue(fallend.size >= 10) { "Probe zeigt nichts: kaum leichtes Fallen nach dem Anfang (${fallend.size})" }
+        assertTrue(fallend.all { it.o.erwartungskonto!!.zyklus!!.mahlzeitLaeuft }) { "Mahlzeit gilt nicht als laufend" }
+        assertTrue(fallend.none { "FALLING" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) {
+            "leichtes Fallen pausiert trotz laufender Mahlzeit"
+        }
+        assertTrue(fallend.any { it.dErw() > 0.0 }) { "keine weitere Portion im leichten Fallen - Probe zeigt nichts" }
+
+        val ohne = lauf("ohne", ohneLauf = true)
+        pruefeMechanik(ohne, 0.5, 1.0, 2.0)
+        val fallendOhne = ohne.filter { it.frueh()?.initial == false && leichtFallend(it) && it.o.erwartungskonto?.zyklus != null }
+        assertTrue(fallendOhne.isNotEmpty()) { "Probe zeigt nichts: ohne laufende Mahlzeit kein leichtes Fallen" }
+        assertTrue(fallendOhne.all { "FALLING" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) { "leichtes Fallen pausiert nicht" }
+        assertEquals(0.0, fallendOhne.sumOf { it.dErw() }, 0.0)
+    }
+
+    /**
+     * SCHRITT 2 (Toni): die Anforderung des Kontos endet nicht mehr bei Minute 90, solange die Mahlzeit laeuft - die
+     * beobachtete Fortsetzung traegt sie; das Budget deckelt. Gegenprobe ohne laufende Mahlzeit: dort bleibt sie 0.
+     */
+    @Test
+    fun `nach Minute 90 fordert das Konto weiter, solange die Mahlzeit laeuft - Gegenprobe ohne`(@TempDir dir: File) {
+        fun lauf(name: String, ohneLauf: Boolean) = fruehLauf(fSpaet, File(dir, name)) {
+            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
+            if (ohneLauf) rampeUeberR()
+        }
+        fun spaet(z: List<Zyklus>) = z.filter { it.minute > 90 && it.o.erwartungskonto?.zyklus?.eval?.expired == false }
+        val mit = lauf("mit", ohneLauf = false)
+        pruefeMechanik(mit, 0.5, 1.0, 2.0)
+        val laeuft = spaet(mit).filter { it.o.erwartungskonto!!.zyklus!!.mahlzeitLaeuft }
+        assertTrue(laeuft.size >= 10) { "Probe zeigt nichts: nach Minute 90 kaum laufende Mahlzeit (${laeuft.size})" }
+        assertTrue(laeuft.all { (it.frueh()?.continuationUPerMin ?: 0.0) > 0.0 }) { "Fortsetzung zaehlt nicht" }
+        assertTrue(laeuft.any { (it.frueh()?.demandU ?: 0.0) > 0.0 }) { "nach Minute 90 keine Anforderung trotz laufender Mahlzeit" }
+
+        val ohne = lauf("ohne", ohneLauf = true)
+        pruefeMechanik(ohne, 0.5, 1.0, 2.0)
+        val nicht = spaet(ohne).filter { !it.o.erwartungskonto!!.zyklus!!.mahlzeitLaeuft }
+        assertTrue(nicht.isNotEmpty()) { "Probe zeigt nichts: ohne laufende Mahlzeit kein Zyklus nach Minute 90" }
+        assertTrue(nicht.all { it.frueh()?.demandU == 0.0 && it.frueh()?.continuationUPerMin == 0.0 }) {
+            "ohne laufende Mahlzeit Anforderung nach Minute 90: " + nicht.joinToString { "${it.minute}:${it.frueh()?.demandU}" }
+        }
     }
 
     /** Zucker am Druck knapp unter der Stabilitaetsgrenze, ohne gemessenes Tief. */
@@ -1537,8 +1673,9 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
     /**
      * A (Toni): Anfangsgabe, Bedarfsrechnung und Pruefung muessen zusammen einen Versorgungsweg ergeben, auch nach Ende
-     * des Vorgriffs. Steigt der Zucker erst, wenn die Kontoanforderung per Konstruktion 0 ist, traegt im Kontofenster der
-     * Normalbedarf - gebucht als normal, ohne Budget.
+     * des Vorgriffs. Steigt der Zucker erst nach dem Deckungsfenster der Kurve (Minute 90), traegt im Kontofenster der
+     * Normalbedarf - gebucht als normal, ohne Budget. (Seit Schritt 2 fordert das Konto dort weiter, solange die Mahlzeit
+     * laeuft; hier ist sein Budget dann verbraucht.)
      */
     @Test
     fun `nach dem Vorgriff traegt im Kontofenster der Normalbedarf, ohne Budget zu verbrauchen`(@TempDir dir: File) {
@@ -1559,8 +1696,8 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             assertEquals(0.0, split.dErwU, 1e-9) { "Minute ${z.minute}: Normalmenge verbraucht Budget" }
             assertEquals(0.0, split.violationU, 1e-9)
         }
-        // Mindestens eine davon, wo das Konto selbst nichts mehr forderte - genau die Luecke, die A schliesst.
-        assertTrue(normal.any { it.frueh()?.demandU == 0.0 }) { "keine Normalmenge nach dem Ende der Kurve" }
+        // Mindestens eine davon nach dem Deckungsfenster der Kurve - genau die Luecke, die A schliesst.
+        assertTrue(normal.any { it.minute > 90 }) { "keine Normalmenge nach dem Ende der Kurve" }
     }
 
     /** Budget und Anfangsanteil gelten ab dem Druck fest - eine Aenderung der Einstellung wirkt erst am naechsten Marker. */

@@ -402,6 +402,11 @@ object ExpectationAccount {
         val confirmedAfterLowTs: Long = 0L,
         /** v2: die Geraetegroessen der fruehen Versorgung; `null` = in diesem Zyklus keine. */
         val early: EarlyInputs? = null,
+        /**
+         * Schritt 2 (Toni): die beobachtete Fortsetzung der laufenden Mahlzeit ([EarlySupply.demandU]); `null` = die
+         * Mahlzeit laeuft nicht. Sie zaehlt nur fuer weitere Portionen und nie nach einem gemessenen Tief.
+         */
+        val continuation: EarlySupply.Continuation? = null,
     )
 
     /** v2: was die fruehe Versorgung in diesem Zyklus rechnet (Export und Lieferweg). */
@@ -416,6 +421,8 @@ object ExpectationAccount {
         val periodLeftU: Double,
         /** G3/G4: die bestaetigte Erwartung, die Guard und Schwanz anrechnen (0..1, [EarlySupply.confirmedGuardScale]). */
         val guardScale: Double = 0.0,
+        /** Schritt 2: die Rate der beobachteten Fortsetzung, die in [demandU] gezaehlt hat [U/min]; 0 = keine. */
+        val continuationUPerMin: Double = 0.0,
     )
 
     data class Evaluation(
@@ -534,14 +541,16 @@ object ExpectationAccount {
         val scaleEff = if (curve == null) 0.0
         else EarlySupply.effectiveScale(s.phi0, inputs.ageMin, s.disturbanceU, s.disturbanceValid, curve)
         val e = inputs.early
+        val anfang = !s.initialDone
+        // Schritt 2 (Toni): die beobachtete Fortsetzung zaehlt nur fuer weitere Portionen und nie nach einem Tief.
+        val fortsetzung = inputs.continuation?.takeIf { !anfang && !s.earlyAfterLow }
         // Nach einem Tief rechnet die Anforderung ALLES vorhandene Insulin an, nicht nur das freie (Toni).
         val x = if (expired || curve == null || e == null) 0.0 else EarlySupply.demandU(
             curve, s.horizonMin, inputs.ageMin, scaleEff, e.iobU, if (s.earlyAfterLow) e.iobU else e.freeIobU,
-            e.existingActionU, e.unitAction,
+            e.existingActionU, e.unitAction, fortsetzung,
         )
         val rMess = (inputs.bgMgdl - inputs.targetMgdl) / inputs.isfMgdlPerU - inputs.iobTotalU
         val mess = if (rMess.isFinite()) max(0.0, rMess) else 0.0
-        val anfang = !s.initialDone
         val restEff = when {
             expired || inputs.paused || !s.released || s.frozen || e == null || pins.withdrawn || s.earlyLowLocked -> 0.0
             anfang -> min(s.restU, pins.initialShare * s.a0U)
@@ -569,6 +578,8 @@ object ExpectationAccount {
                 demandU = x, scaleEff = scaleEff, initial = anfang, periodLeftU = zeitraumRestU,
                 guardScale = if (curve == null || expired || s.earlyAfterLow) 0.0
                 else EarlySupply.confirmedGuardScale(s.phi0, inputs.ageMin, s.disturbanceU, s.disturbanceValid, curve),
+                continuationUPerMin = if (expired || curve == null || e == null) 0.0
+                else fortsetzung?.rateUPerMin?.takeIf { it.isFinite() && it > 0.0 } ?: 0.0,
             ),
         )
     }

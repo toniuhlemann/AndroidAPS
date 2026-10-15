@@ -1683,6 +1683,7 @@ class FuseCycleRunner(
             // der Freigabe als bestaetigte Mahlzeit. v1 bleibt unveraendert.
             if (step?.safetyReasons?.isNotEmpty() == true) {
                 ekStabilSeit = null
+                ekFolgeStabilSeit = null
                 episodes.expectation?.takeIf { it.released || it.early != null }?.let { ekRuecknahmeOffenFuerAuth = it.authId }
             }
             // Codex 22.08.: ein Abbruchzyklus ist fuer den Liveness-Kanal
@@ -3166,6 +3167,14 @@ class FuseCycleRunner(
             // (SAFETY LOW) oder das Null-Tor MEASURED_LOW.
             gemessenesTief = step.safetyReasons.isNotEmpty() ||
                 lowThreatResult.verdict == LowThreatGate.Verdict.MEASURED_LOW,
+            // SCHRITT 2 (Toni): die Mahlzeit laeuft - r (dasselbe wie in F.DRV und an der Ratio-Rampe) liegt ueber der
+            // Rampen-Unterkante. Daraus auch die beobachtete Fortsetzung fuer den Kontobedarf (r / ISF, Abklingen der Bahn).
+            mahlzeitLaeuft = signal.rSigned?.let { it.isFinite() && it > 0.0 && it >= cfg.riseRampLowR } == true,
+            riegelHistorisch = MeasuredDescentGate.causeOf(descentLatch.blocksPositive, descentLatch.reason) ==
+                MeasuredDescentGate.Cause.HISTORICAL_LATCH,
+            fortsetzung = signal.rSigned
+                ?.takeIf { it.isFinite() && it > 0.0 && it >= cfg.riseRampLowR && state.isfMgdlPerU > 0.0 }
+                ?.let { app.aaps.fuse.core.controller.EarlySupply.Continuation(it / state.isfMgdlPerU, cfg.driveTauMin.toDouble()) },
         )
         ekZyklusThisCycle = ekZyklus
         val baseDecision = FuseController.decide(
@@ -3826,7 +3835,11 @@ class FuseCycleRunner(
         // wie ein aktuelles Abwaertsrisiko - fuer sie ersetzt das die fruehere Regel "niemals umgehbar". Aufgehalten
         // hat sie das Konto vorher nur bei gemessenem Tief, technischem Grund und Fallen ueber der eingestellten
         // Fallgrenze. Am Riegel bleiben ein gemessenes Tief und ein Signalfehler hart (MEASURED_LOW, OTHER). Hoechstens
-        // die Menge der Anfangsportion; jede weitere Portion und der Normalpfad gehen wie bisher durch den Riegel.
+        // die Menge der Anfangsportion; der Normalpfad geht wie bisher durch den Riegel.
+        //
+        // SCHRITT 2 (Toni): solange die Mahlzeit laeuft, passiert auch eine WEITERE Portion des Kontos den ALTEN Riegel
+        // (Gefahr vorbei, Hysterese laeuft) - hoechstens ihre Menge. Fuer sie bleiben ein aktuelles Abwaertsrisiko, ein
+        // gemessenes Tief und ein Signalfehler hart. Nach einem gemessenen Tief der Mahlzeit gilt das nicht (s. Konto).
         val riegelUrsacheVorher = MeasuredDescentGate.causeOf(descentLatch.blocksPositive, descentLatch.reason)
         val anfangGrantU = bodenGrant
             ?.takeIf { fruehAnfang && it.source == app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION }
@@ -3834,9 +3847,21 @@ class FuseCycleRunner(
         val anfangAmRiegelVorbei = anfangGrantU > 0.0 && vorRiegel.smbU > 0.0 &&
             (riegelUrsacheVorher == MeasuredDescentGate.Cause.HISTORICAL_LATCH ||
                 riegelUrsacheVorher == MeasuredDescentGate.Cause.CURRENT_DESCENT_RISK)
-        val normalNachRiegel =
-            if (anfangAmRiegelVorbei) vorRiegel.copy(smbU = kotlin.math.min(vorRiegel.smbU, anfangGrantU))
-            else MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
+        val folgeGrantU = bodenGrant
+            ?.takeIf {
+                !fruehAnfang && fruehZyklus?.mahlzeitLaeuft == true &&
+                    it.source == app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION
+            }
+            ?.amountU ?: 0.0
+        val folgeAmRiegelVorbei = !anfangAmRiegelVorbei && folgeGrantU > 0.0 && vorRiegel.smbU > 0.0 &&
+            riegelUrsacheVorher == MeasuredDescentGate.Cause.HISTORICAL_LATCH
+        val normalNachRiegel = when {
+            anfangAmRiegelVorbei -> vorRiegel.copy(smbU = kotlin.math.min(vorRiegel.smbU, anfangGrantU))
+            folgeAmRiegelVorbei -> vorRiegel.copy(smbU = kotlin.math.min(vorRiegel.smbU, folgeGrantU))
+            else -> MeasuredDescentGate.apply(vorRiegel, descentLatch.blocksPositive)
+        }
+        // Fuer den Trail: was die Portion des Kontos am Riegel vorbei bekommen hat [U]; 0 = keine Ausnahme.
+        val fruehAmRiegelVorbeiU = if (anfangAmRiegelVorbei || folgeAmRiegelVorbei) normalNachRiegel.smbU else 0.0
 
         // DER SCHWANZBERICHT GILT FUER DIE TATSAECHLICHE ENDMENGE.
         // `vorRiegel` traegt den Bericht zur ungeriegelten Menge; bleibt er
@@ -5323,6 +5348,7 @@ class FuseCycleRunner(
                 fruehBremseUntenMitErwartungMgdl = restraintMitErwartung?.minLowerBgPriorFree,
                 fruehSchwanzMitErwartungU = tailMitErwartung?.takeIf { it.usable }?.headroomU,
                 fruehSchwanzKappeU = fruehSchwanzKappeU.takeIf { fruehGilt },
+                fruehAmRiegelVorbeiU = fruehAmRiegelVorbeiU,
             ),
             // Fixvertrag 30.08.: das typisierte Zyklus-IOB fuer
             // APSResult.iobData / DeviceStatus openaps.iob.
@@ -5717,6 +5743,13 @@ class FuseCycleRunner(
         val bestaetigtNachTiefTs: Long = 0L,
         /** E-034 v2: G1..G4, die jetzt gelten; `null` = Konto v1. */
         val fruehSchalter: app.aaps.fuse.core.controller.EarlySupply.Switches? = null,
+        /**
+         * Schritt 2: fuer die weiteren Portionen galt in DIESEM Zyklus "die Mahlzeit laeuft" - Fallgrenze statt
+         * Kanalkonstante, der alte Riegel haelt nicht auf, die beobachtete Fortsetzung zaehlt im Bedarf.
+         */
+        val mahlzeitLaeuft: Boolean = false,
+        /** Schritt 2: die Strecke der weiteren Portionen (ohne den alten Riegel) ist erfuellt. */
+        val stabilFolge: Boolean = false,
     )
 
     /** E-034: alles, was der Trail-Block des Kontos braucht - ein Zyklus. */
@@ -5767,6 +5800,8 @@ class FuseCycleRunner(
         val fruehBremseUntenMitErwartungMgdl: Double? = null,
         val fruehSchwanzMitErwartungU: Double? = null,
         val fruehSchwanzKappeU: Double? = null,
+        /** Was die Portion des Kontos am Abwaertsriegel vorbei bekommen hat [U] (Anfang: Schritt 1, weitere: Schritt 2). */
+        val fruehAmRiegelVorbeiU: Double = 0.0,
     )
 
     /** E-034: was dieser Zyklus im Konto gebucht hat. */
@@ -5859,6 +5894,18 @@ class FuseCycleRunner(
          * Minuten vor dem Druck).
          */
         tiefImReboundFenster: Boolean = false,
+        /**
+         * SCHRITT 2 (Toni): die Mahlzeit LAEUFT - die beobachtete Stoerung r (dieselbe wie in F.DRV und an der
+         * Ratio-Rampe) liegt ueber der Rampen-Unterkante. Dann gilt fuer die WEITEREN Portionen: Fallen erst ab der
+         * eingestellten Fallgrenze, und der alte Abwaertsriegel ([riegelHistorisch]) haelt sie nicht auf - weder als
+         * Pause noch ueber die Freigabe. Ein aktuelles Abwaertsrisiko, das Tieftor, gemessene Sperren und technische
+         * Gruende halten weiter auf. Nach einem gemessenen Tief dieser Mahlzeit gilt das nicht.
+         */
+        mahlzeitLaeuft: Boolean = false,
+        /** Der Abwaertsriegel steht nur noch historisch: Gefahr vorbei, die Hysterese laeuft ([MeasuredDescentGate.Cause]). */
+        riegelHistorisch: Boolean = false,
+        /** Schritt 2: die beobachtete Fortsetzung der laufenden Mahlzeit fuer den Kontobedarf; `null` = keine. */
+        fortsetzung: app.aaps.fuse.core.controller.EarlySupply.Continuation? = null,
     ): ErwartungskontoZyklus? {
         val fruehEingaben by lazy(LazyThreadSafetyMode.NONE) { fruehEingabenVon() }
         // Die Strecke fragt, ob der Zucker STABIL ist: der Ueberdeckungsbefund ist eine Hochrechnung - ob der Zucker
@@ -5871,9 +5918,15 @@ class FuseCycleRunner(
         val dauerMin = laufend?.stabilityMin ?: cfg.expectationStabilityMin
         val fallGrenze = laufend?.stabilityFallMgdlPerMin ?: cfg.expectationStabilityFallMgdlPerMin
         val faelltFuerStrecke = !ukfRateMgdlPerMin.isFinite() || ukfRateMgdlPerMin < -fallGrenze
-        if (ekStabilLetzteTs > 0L && computeTs - ekStabilLetzteTs > ExpectationAccount.MAX_OBSERVATION_GAP_MIN * 60_000L)
+        if (ekStabilLetzteTs > 0L && computeTs - ekStabilLetzteTs > ExpectationAccount.MAX_OBSERVATION_GAP_MIN * 60_000L) {
             ekStabilSeit = null
+            ekFolgeStabilSeit = null
+        }
         ekStabilLetzteTs = computeTs
+        // Schritt 2: die Strecke der weiteren Portionen lebt nur in Zyklen, die sie pruefen - jeder andere (ausserhalb des
+        // Kontos, Kontextabweichung, ohne Modell) setzt sie zurueck.
+        val folgeSeitVorher = ekFolgeStabilSeit
+        ekFolgeStabilSeit = null
         ekStabilSeit = ExpectationAccount.Stability.since(
             ekStabilSeit, computeTs, bgMgdl, grenzeBg, falling = faelltFuerStrecke, measuredLock = gemesseneSperre,
         )
@@ -5943,15 +5996,33 @@ class FuseCycleRunner(
         // v2: Hauptschalter aus (jetzt oder schon einmal in dieser Episode) =
         // kein Erwartungsanteil mehr fuer diese Mahlzeit; der gemessene Anteil
         // laeuft weiter.
-        // Gemessene Sperren (Tief, Abwaertsrisiko, Safety, Riegel) bleiben hart. Nur solange die Anfangsportion offen ist,
-        // gilt fuers Fallen die Fallgrenze; nach ihr (oder nach einem Tief) wieder die strenge Kanalkonstante.
+        // Gemessene Sperren (Tief, Abwaertsrisiko, Safety, Riegel) bleiben hart. Solange die Anfangsportion offen ist,
+        // gilt fuers Fallen die Fallgrenze; nach ihr wieder die strenge Kanalkonstante - ausser die Mahlzeit laeuft
+        // (Schritt 2, unten). Nach einem Tief immer die Kanalkonstante.
         val anfangOffen = konto.early != null && !konto.initialDone &&
             computeTs - konto.authId < (app.aaps.fuse.core.controller.EarlySupply.INITIAL_WINDOW_MIN * 60_000.0).toLong()
-        val faelltFuerPause = if (anfangOffen) faelltFuerStrecke else faellt
+        // SCHRITT 2 (Toni): laeuft die Mahlzeit, gelten fuer die weiteren Portionen die eingestellte Fallgrenze statt der
+        // Kanalkonstante, und der alte Riegel haelt sie nicht auf. Nicht nach einem gemessenen Tief dieser Mahlzeit.
+        val folgeImLauf = konto.early != null && !anfangOffen && mahlzeitLaeuft && !konto.earlyAfterLow
+        val faelltFuerPause = if (anfangOffen || folgeImLauf) faelltFuerStrecke else faellt
         // Ebenso die Pause (Toni): die offene Anfangsportion halten nur gemessene Sperren auf (Tief, Tieftor
         // MEASURED_LOW) - weder der alte Riegel noch ein vorhergesagtes Abwaertsrisiko noch der Ueberdeckungsbefund. Das
-        // Fallen prueft FALLING mit der Fallgrenze, dazu die technischen Gruende. Nach ihr gelten alle Sperren wie bisher.
-        val sperrenFuerPause = if (anfangOffen) sperrenAnfang else sperren
+        // Fallen prueft FALLING mit der Fallgrenze, dazu die technischen Gruende. Nach ihr gelten alle Sperren wie bisher;
+        // bei laufender Mahlzeit ohne den alten Riegel.
+        val sperrenFuerPause = when {
+            anfangOffen -> sperrenAnfang
+            folgeImLauf && riegelHistorisch -> sperren.filter { it != "LATCH" }
+            else -> sperren
+        }
+        // Die Freigabe der weiteren Portionen bei laufender Mahlzeit: eine eigene Strecke mit derselben Dauer - ueber der
+        // Stabilitaetsgrenze, kein gemessenes Tief, kein Fallen ueber der Fallgrenze, keine haltende Sperre. Nur der alte
+        // Riegel setzt sie nicht zurueck; sonst hielte er die weiteren Portionen ueber die Strecke doch auf. Sie lebt nur im
+        // Speicher: nach einem Neustart beginnt sie neu wie die Strecke selbst (Codex-Befund P0).
+        ekFolgeStabilSeit = if (!folgeImLauf) null else ExpectationAccount.Stability.since(
+            folgeSeitVorher, computeTs, bgMgdl, grenzeBg, falling = faelltFuerStrecke,
+            measuredLock = gemessenesTief || sperrenFuerPause.isNotEmpty(),
+        )
+        val stabilFolge = folgeImLauf && ExpectationAccount.Stability.stable(ekFolgeStabilSeit, computeTs, dauerMin)
         val pausenGruende = sperrenFuerPause + listOfNotNull("FALLING".takeIf { faelltFuerPause }) + technisch +
             listOfNotNull("EARLY_SUPPLY_OFF".takeIf { konto.early?.let { it.withdrawn || !cfg.earlySupplyEnabled } == true })
         val pausiert = pausenGruende.isNotEmpty()
@@ -5983,12 +6054,13 @@ class FuseCycleRunner(
                 iobTotalU = iobTotalU,
                 activityUPerMin = activityUPerMin,
                 paused = pausiert,
-                stableNow = stabil || (anfangOffen && stabilAnfang),
+                stableNow = stabil || (anfangOffen && stabilAnfang) || stabilFolge,
                 measuredLow = ruecknahmeGrund != null,
                 // v2: nur ein GEMESSENES Tief sperrt die fruehe Versorgung - der Neustart nimmt nur die Freigabe.
                 lowLocksEarlySupply = tiefGrund != null,
                 confirmedAfterLowTs = bestaetigtNachTief,
                 early = if (konto.early != null) fruehEingaben else null,
+                continuation = fortsetzung.takeIf { folgeImLauf },
             ),
         )
         if (neu.released) ekFreigabeBestaetigtFuerAuth = neu.authId
@@ -6014,6 +6086,8 @@ class FuseCycleRunner(
             bestaetigtNachTiefTs = bestaetigtNachTief,
             // G1..G4: festgehalten UND bisher nie abgeschaltet (s. oben).
             fruehSchalter = gefuehrt.early?.switches,
+            mahlzeitLaeuft = folgeImLauf,
+            stabilFolge = stabilFolge,
         )
     }
 
@@ -6984,6 +7058,10 @@ class FuseCycleRunner(
      *  Speicher - nach einem Neustart beginnt sie neu (konservativ: ein
      *  Marker gleich danach gilt als "nach Tief"). */
     private var ekStabilSeit: Long? = null
+
+    /** Schritt 2: Beginn der Strecke der weiteren Portionen bei laufender Mahlzeit (ohne den alten Riegel) oder null;
+     *  nur im Speicher - nach einem Neustart beginnt sie neu wie [ekStabilSeit]. */
+    private var ekFolgeStabilSeit: Long? = null
 
     /** E-034 (Codex-Befund P0): die Freigabe dieser Autorisierung ist IN DIESEM
      *  Prozess bestaetigt (stabiler Start beim Buchen oder erfuellte Strecke).
