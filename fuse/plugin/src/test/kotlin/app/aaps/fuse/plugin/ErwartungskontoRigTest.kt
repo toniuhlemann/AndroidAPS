@@ -1087,19 +1087,55 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         markerMin = 0,
     )
 
-    /** Bank N2, A1, Befund 3: ein Tief im Rebound-Fenster setzt die Startlage auf "nach Tief". */
+    /**
+     * Toni: die Skalierung "nach Tief" nur, wenn er BEIM DRUCK im Tief ist. Ein Tief davor - hier mitten im
+     * Rebound-Fenster - aendert an der Mahlzeit nichts: stabiler Start, Skalierer stabil, Anfangsportion beim Druck.
+     * (Frueher, Bank N2 A1 Befund 3, machte es den Start zu "nach Tief".)
+     */
     @Test
-    fun `ein Tief im Rebound-Fenster vor dem Druck gilt als Start nach Tief`(@TempDir dir: File) {
+    fun `ein Tief vor dem Druck macht den Start nicht zu nach Tief`(@TempDir dir: File) {
         val zyklen = fruehLauf(fTiefDavor, dir) {
             fruehKonfiguration(g1 = true, g2 = true, skalaTief = 0.0)
             whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(REBOUND_FENSTER_MIN)
         }
         val gebucht = zyklen.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }
         val k = gebucht.o.erwartungskonto!!.zyklus!!
+        assertTrue(gebucht.o.state?.reboundRestMin != null) { "Probe zeigt nichts: der Druck liegt nicht im Rebound-Fenster" }
         assertTrue(k.stabil) { "Probe zeigt nichts: die Strecke ist nicht erfuellt" }
+        assertTrue(k.state.startStable) { "das Tief vor dem Druck haelt den Start auf" }
+        assertEquals(1.0, k.state.phi0, 0.0)
+        assertTrue(k.state.a0U > 0.0) { "das Tief vor dem Druck kuerzt das Budget" }
+        assertTrue(zyklen.any { it.frueh()?.initial == true && it.dErw() > 0.0 }) { "keine Anfangsportion" }
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+    }
+
+    /** Das Tief laeuft am Druck noch (gemessen), der Zucker liegt aber schon ueber der Stabilitaetsgrenze. */
+    private val fTiefAmDruck = Fuse20Folgen.Folge(
+        "TIEF_AM_DRUCK", 1_701_684_000_000L, -90, 180,
+        listOf(-90 to 110.0, -20 to 90.0, -9 to 66.0, -6 to 70.0, -2 to 80.0, 0 to 84.0, 10 to 100.0, 60 to 190.0, 180 to 130.0),
+        markerMin = 0,
+    )
+
+    /** Toni: ist er beim Druck im Tief - hier ein gemessenes Tief knapp ueber der Grenze -, gilt der Skalierer nach Tief. */
+    @Test
+    fun `ein gemessenes Tief am Druck gilt als Start nach Tief, auch knapp ueber der Grenze`(@TempDir dir: File) {
+        val skalaTief = 0.5
+        val zyklen = fruehLauf(fTiefAmDruck, dir) {
+            fruehKonfiguration(g1 = true, g2 = true, skalaTief = skalaTief)
+            whenever(preferences.get(FuseDoubleKey.ExpectationStabilityBgMgdl)).thenReturn(GRENZE_AM_TIEF_MGDL)
+        }
+        val gebucht = zyklen.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }
+        val k = gebucht.o.erwartungskonto!!.zyklus!!
+        assertTrue((gebucht.o.signal?.q1 ?: 0.0) > GRENZE_AM_TIEF_MGDL) {
+            "Probe zeigt nichts: der Zucker liegt am Druck (Minute ${gebucht.minute}, q1 ${gebucht.o.signal?.q1}) unter der Grenze"
+        }
+        assertTrue(gebucht.o.step?.safetyReasons?.isNotEmpty() == true) {
+            "Probe zeigt nichts: am Druck (Minute ${gebucht.minute}, q1 ${gebucht.o.signal?.q1}) ist kein Tief gemessen"
+        }
         assertFalse(k.state.startStable)
-        assertEquals(0.0, k.state.a0U, 0.0)
-        assertEquals(0.0, zyklen.sumOf { it.dErw() }, 0.0)
+        assertEquals(skalaTief, k.state.phi0, 0.0)
+        assertTrue(zyklen.none { it.frueh()?.initial == true && it.dErw() > 0.0 }) { "Anfangsportion trotz Tief am Druck" }
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
     }
 
     /** Leichtes Abdriften vor dem Druck (unter einem halben mg/dl je Minute), BG weit ueber der Grenze. */
@@ -1799,6 +1835,8 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
         /** Synthetische Rebound-Dauer der Probe [min]: das Tief reicht ueber das Ende der Sonderrechte. */
         const val REBOUND_FENSTER_MIN = 90
+        /** Synthetische Stabilitaetsgrenze der Probe TIEF_AM_DRUCK: die Tief-Schwelle des Codes. */
+        const val GRENZE_AM_TIEF_MGDL = app.aaps.fuse.core.controller.FuseController.REBOUND_LOW_MGDL
 
         /** Unter der Kerngrenze: die Konfiguration scheitert, der Zyklus bricht NACH dem Observer-Schritt ab. */
         const val UNGUELTIGE_REBOUND_DAUER = 10

@@ -331,9 +331,9 @@ object ExpectationAccount {
      * Versorgung bucht der Runner hier mit [EarlySupply.Settings.NEUTRAL] und [EarlySupply.Switches.NONE] - Budget 0.
      *
      * ZWEI GETRENNTE FRAGEN (Toni): [startStable] ist die Freigabe am Marker (Strecke erfuellt - sonst wartet die
-     * Anfangsportion); [afterLow] waehlt den Skalierer. "Nach Tief" ist nur ein Start unter der Stabilitaetsgrenze
-     * oder nach einem gemessenen Tief im Rebound-Fenster - ein Fallen bei hohem Zucker hat mit Tief nichts zu tun und
-     * verzoegert nur die Anfangsportion.
+     * Anfangsportion); [afterLow] waehlt den Skalierer. "Nach Tief" ist nur ein Start IM Tief - der Zucker am Druck
+     * unter der Stabilitaetsgrenze oder ein gemessenes Tief (Toni). Ein Tief VOR dem Druck zaehlt nicht, und ein Fallen
+     * hat mit Tief nichts zu tun - es verzoegert nur die Anfangsportion.
      */
     fun armEarly(
         authId: Long,

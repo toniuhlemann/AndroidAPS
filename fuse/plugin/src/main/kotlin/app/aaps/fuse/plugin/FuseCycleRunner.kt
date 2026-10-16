@@ -3126,7 +3126,6 @@ class FuseCycleRunner(
             ekGilt = ekGilt, vorschau = ekVorschau, dosingCtx = dosingCtx, cfg = cfg, episodes = episodes,
             computeTs = computeTs,
             nurErwartung = markerNurErwartung,
-            tiefImReboundFenster = reboundRaw,
             // E-034 v2: die Geraetegroessen der fruehen Versorgung - aus DEMSELBEN
             // Einheitskern und denselben IOB-Arrays wie Bahn und Kandidatensuche.
             fruehEingabenVon = {
@@ -5915,13 +5914,6 @@ class FuseCycleRunner(
          */
         fruehEingabenVon: () -> ExpectationAccount.EarlyInputs? = { null },
         /**
-         * v2: ein gemessenes Tief liegt noch im Rebound-Fenster. Dann gilt der
-         * Start als "nach Tief", auch wenn die Stabilitaetsstrecke schon
-         * erfuellt ist (Bank N2, A1: die Strecke allein sah nur die letzten
-         * Minuten vor dem Druck).
-         */
-        tiefImReboundFenster: Boolean = false,
-        /**
          * SCHRITT 2 (Toni): die Mahlzeit LAEUFT - die beobachtete Stoerung r (dieselbe wie in F.DRV) liegt ueber der
          * Schwelle "Mahlzeit laeuft ab r" (0 = die Rampen-Unterkante). Dann gilt fuer die WEITEREN Portionen: Fallen erst ab der
          * eingestellten Fallgrenze, und der alte Abwaertsriegel ([riegelHistorisch]) haelt sie nicht auf - weder als
@@ -6000,14 +5992,16 @@ class FuseCycleRunner(
                     params = params,
                     settings = frueh,
                     switches = schalter,
-                    startStable = (stabil || stabilAnfang) && !tiefImReboundFenster,
+                    startStable = stabil || stabilAnfang,
                     nowTs = computeTs,
                     bgMgdl = bgMgdl,
                     isfMgdlPerU = isfMgdlPerU,
                     unitAction = wirkung,
-                    // Toni: "nach Tief" nur unter der Stabilitaetsgrenze oder nach einem gemessenen Tief im
-                    // Rebound-Fenster. Das Delta ueber der Grenze aendert das Budget nicht (nur den Zeitpunkt).
-                    afterLow = !(bgMgdl > grenzeBg) || tiefImReboundFenster,
+                    // Toni: "nach Tief" nur, wenn er BEIM DRUCK im Tief ist - der Zucker unter der Stabilitaetsgrenze
+                    // oder ein gemessenes Tief. Ein Tief VOR dem Druck zaehlt nicht (das Rebound-Fenster bremst die
+                    // Mahlzeit nie), und ein Fallen laesst nur die Anfangsportion warten. Das Delta ueber der Grenze
+                    // aendert das Budget nicht (nur den Zeitpunkt).
+                    afterLow = !(bgMgdl > grenzeBg) || gemessenesTief,
                 )
             } else ExpectationAccount.armWithoutExpectation(
                 authId = dosingCtx.authorizationId,
