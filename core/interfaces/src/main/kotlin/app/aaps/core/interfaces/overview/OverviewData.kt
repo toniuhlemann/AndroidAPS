@@ -146,6 +146,8 @@ interface OverviewData {
     var fuseExpectedDriveSeries: List<SeriesData>
     /** Guard-Abstand MIT der angekuendigten Mahlzeit (Pruefung der weiteren Portionen) - je Abschnitt eine Linie. */
     var fuseGuardWithMealSeries: List<SeriesData>
+    /** Schwanz-Spielraum MIT der angekuendigten Mahlzeit (G4) - je Abschnitt eine gestrichelte Linie. */
+    var fuseTailWithMealSeries: List<SeriesData>
     /** Zustand des Erwartungskontos als Streifen am oberen Rand des Guard-Untergraphen. */
     var fuseAccountStatusSeries: SeriesData
     var maxAcceIsfValueFound: Double

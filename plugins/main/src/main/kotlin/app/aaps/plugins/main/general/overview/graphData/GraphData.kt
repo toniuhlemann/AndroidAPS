@@ -230,6 +230,7 @@ class GraphData @Inject constructor(
         addSeries(overviewData.fuseGuardSeries as LineGraphSeries<ScaledDataPoint>)
         addSeries(overviewData.fuseTailSeries as LineGraphSeries<ScaledDataPoint>)
         overviewData.fuseGuardWithMealSeries.forEach { s -> (s as? LineGraphSeries<*>)?.let { addSeries(it) } }
+        overviewData.fuseTailWithMealSeries.forEach { s -> (s as? LineGraphSeries<*>)?.let { addSeries(it) } }
         addSeries(overviewData.fuseGuardMarkerSeries as LineGraphSeries<ScaledDataPoint>)
         (overviewData.fuseAccountStatusSeries as? PointsWithLabelGraphSeries<*>)?.let { addSeries(it) }
     }

@@ -139,6 +139,7 @@ class OverviewDataImpl @Inject constructor(
         fuseTailSeries = LineGraphSeries<ScaledDataPoint>()
         fuseExpectedDriveSeries = emptyList()
         fuseGuardWithMealSeries = emptyList()
+        fuseTailWithMealSeries = emptyList()
         fuseAccountStatusSeries = PointsWithLabelGraphSeries<DataPointWithLabelInterface>()
         iobThSeries = LineGraphSeries<ScaledDataPoint>()
     }
@@ -276,6 +277,7 @@ class OverviewDataImpl @Inject constructor(
     override var fuseTailSeries: SeriesData = LineGraphSeries<ScaledDataPoint>()
     override var fuseExpectedDriveSeries: List<SeriesData> = emptyList()
     override var fuseGuardWithMealSeries: List<SeriesData> = emptyList()
+    override var fuseTailWithMealSeries: List<SeriesData> = emptyList()
     override var fuseAccountStatusSeries: SeriesData = PointsWithLabelGraphSeries<DataPointWithLabelInterface>()
 
     override var maxIobValueFound = Double.MIN_VALUE

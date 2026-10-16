@@ -1555,6 +1555,21 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(laeuft.size >= 10) { "Probe zeigt nichts: nach Minute 90 kaum laufende Mahlzeit (${laeuft.size})" }
         assertTrue(laeuft.all { (it.frueh()?.continuationUPerMin ?: 0.0) > 0.0 }) { "Fortsetzung zaehlt nicht" }
         assertTrue(laeuft.any { (it.frueh()?.demandU ?: 0.0) > 0.0 }) { "nach Minute 90 keine Anforderung trotz laufender Mahlzeit" }
+        // Geraetebefund: kein Einbruch, wenn der letzte Deckungspunkt die Kurve verlaesst (vorher 0 bis Minute 94).
+        val gleichDanach = laeuft.filter { it.minute in 91..93 }
+        assertTrue(gleichDanach.isNotEmpty()) { "Probe zeigt nichts: kurz nach Minute 90 laeuft die Mahlzeit nicht" }
+        assertTrue(gleichDanach.any { (it.frueh()?.demandU ?: 0.0) > 0.0 }) {
+            "Anforderung bricht nach Minute 90 ein: " + gleichDanach.joinToString { "${it.minute}:${it.frueh()?.demandU}" }
+        }
+        // Guard und Schwanz rechnen die beobachtete Fortsetzung an: das Konto liefert nach Minute 90 weiter.
+        // Guard und Schwanz rechnen die beobachtete Fortsetzung an - jenseits des Kurvenendes, bestaetigt.
+        assertTrue(laeuft.filter { (it.frueh()?.guardScale ?: 0.0) > 0.0 }.all { (it.o.erwartungskonto?.fruehFortsetzungMgdl ?: 0.0) > 0.0 }) {
+            "Fortsetzung zaehlt in Guard und Schwanz nicht: " + laeuft.joinToString { "${it.minute}:${it.o.erwartungskonto?.fruehFortsetzungMgdl}" }
+        }
+        // Graph und Trail: der Schwanz mit Mahlzeit steht in diesen Zyklen bereit, wo es einen Schwanz gibt.
+        assertTrue(laeuft.filter { it.o.decision.tail != null }.all { it.o.erwartungskonto?.fruehSchwanzMitMahlzeit != null }) {
+            "Schwanz mit Mahlzeit fehlt"
+        }
 
         val ohne = lauf("ohne", ohneLauf = true)
         pruefeMechanik(ohne, 0.5, 1.0, 2.0)
@@ -1562,6 +1577,27 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(nicht.isNotEmpty()) { "Probe zeigt nichts: ohne laufende Mahlzeit kein Zyklus nach Minute 90" }
         assertTrue(nicht.all { it.frueh()?.demandU == 0.0 && it.frueh()?.continuationUPerMin == 0.0 }) {
             "ohne laufende Mahlzeit Anforderung nach Minute 90: " + nicht.joinToString { "${it.minute}:${it.frueh()?.demandU}" }
+        }
+        assertTrue(nicht.all { (it.o.erwartungskonto?.fruehFortsetzungMgdl ?: 0.0) == 0.0 }) { "Fortsetzung ohne laufende Mahlzeit" }
+
+        // Mit Budget fuer die zweite Haelfte (synthetischer Skalierer): die laufende Mahlzeit bekommt nach Minute 90 weiter
+        // Portionen - Guard und Schwanz lassen sie durch.
+        val gross = fruehLauf(fSpaet, File(dir, "gross")) {
+            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true, budgetU = app.aaps.fuse.core.controller.EarlySupply.MAX_BUDGET_U)
+            whenever(preferences.get(FuseDoubleKey.EarlySupplyScaleStable)).thenReturn(app.aaps.fuse.core.controller.EarlySupply.MAX_SCALE)
+        }
+        pruefeMechanik(gross, 0.5, 1.0, 2.0)
+        val grossSpaet = spaet(gross).filter { it.o.erwartungskonto!!.zyklus!!.mahlzeitLaeuft }
+        assertTrue(grossSpaet.isNotEmpty()) { "Probe zeigt nichts: mit grossem Budget laeuft nach Minute 90 keine Mahlzeit" }
+        assertTrue((grossSpaet.first().o.erwartungskonto?.zyklus?.eval?.restEffU ?: 0.0) > 0.0) {
+            "Probe zeigt nichts: auch das grosse Budget ist vor Minute 90 aufgebraucht"
+        }
+        assertTrue(grossSpaet.sumOf { it.dErw() } > 0.0) {
+            "nach Minute 90 keine Portion trotz Budget: " + grossSpaet.take(12).joinToString(" | ") { z ->
+                val e = z.o.erwartungskonto!!
+                "${z.minute}: X=${z.frueh()?.demandU} rest=${e.zyklus?.eval?.restEffU} gS=${z.frueh()?.guardScale} " +
+                    "schwanzE=${e.fruehSchwanzMitErwartungU} p=${e.zyklus?.pausenGruende} bind=${z.o.decision.bindingLimit}"
+            }
         }
     }
 

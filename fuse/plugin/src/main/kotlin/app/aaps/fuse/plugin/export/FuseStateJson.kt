@@ -2471,7 +2471,13 @@ object FuseStateJson {
                     .put("latchPassedU", fin(x.fruehAmRiegelVorbeiU))
                     // Graph: erwartete Mahlzeitwirkung und die Untergrenze mit Mahlzeit in jedem Zyklus (dosierneutral).
                     .put("expectedDriveMgdlPerMin", fin(e.early?.expectedDriveMgdlPerMin ?: 0.0))
-                    .put("guardLowerWithMealMgdl", fin(x.fruehUntenMitMahlzeitMgdl)))
+                    .put("guardLowerWithMealMgdl", fin(x.fruehUntenMitMahlzeitMgdl))
+                    // Graph: der Schwanz MIT Mahlzeit in denselben Zyklen (dosierneutral), Felder wie im Schwanz-Block.
+                    .put("tailWithMealHeadroomU", fin(x.fruehSchwanzMitMahlzeit?.headroomU))
+                    .put("tailWithMealIsfMgdlPerU", fin(x.fruehSchwanzMitMahlzeit?.isfTailMgdlPerU))
+                    .put("tailWithMealInvalidReason", x.fruehSchwanzMitMahlzeit?.invalidReason ?: JSONObject.NULL)
+                    // Was die beobachtete Fortsetzung der laufenden Mahlzeit dabei am Horizont beitraegt.
+                    .put("continuationRiseMgdl", fin(x.fruehFortsetzungMgdl)))
             }
         }
         val b = x.buchung

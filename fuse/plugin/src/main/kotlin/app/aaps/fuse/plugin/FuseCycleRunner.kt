@@ -3173,9 +3173,7 @@ class FuseCycleRunner(
             mahlzeitLaeuft = signal.rSigned?.let { it.isFinite() && it > 0.0 && it >= cfg.mahlzeitLaeuftAbR } == true,
             riegelHistorisch = MeasuredDescentGate.causeOf(descentLatch.blocksPositive, descentLatch.reason) ==
                 MeasuredDescentGate.Cause.HISTORICAL_LATCH,
-            fortsetzung = signal.rSigned
-                ?.takeIf { it.isFinite() && it > 0.0 && it >= cfg.mahlzeitLaeuftAbR && state.isfMgdlPerU > 0.0 }
-                ?.let { app.aaps.fuse.core.controller.EarlySupply.Continuation(it / state.isfMgdlPerU, cfg.driveTauMin.toDouble()) },
+            fortsetzung = ekFortsetzung(signal.rSigned, state.isfMgdlPerU, cfg),
         )
         ekZyklusThisCycle = ekZyklus
         val baseDecision = FuseController.decide(
@@ -3433,30 +3431,64 @@ class FuseCycleRunner(
         val fruehSkala = fruehZyklus?.eval?.early?.guardScale ?: 0.0
         val fruehIsf = fruehZyklus?.state?.isfAtMarkerMgdlPerU?.takeIf { it.isFinite() && it > 0.0 } ?: state.isfMgdlPerU
         val fruehHorizontMin = fruehZyklus?.state?.horizonMin ?: ExpectationAccount.MAX_HORIZON_MIN
+        // SCHRITT 2 (Toni): laeuft die Mahlzeit, rechnen Guard und Schwanz jenseits des Kurvenendes dieselbe beobachtete
+        // Fortsetzung an wie der Kontobedarf - sonst fordert das Konto Insulin, das die Pruefungen nie durchlassen
+        // (Geraetebefund: zweite Welle einer Mahlzeit, Schwanz mit Erwartung negativ, waehrend die Mahlzeit sichtbar lief).
+        // Nur bei laufender Mahlzeit (also nie nach einem Tief dieser Mahlzeit) und erst bestaetigt (s. Kern).
+        val fruehFortsetzung = fruehZyklus?.takeIf { it.mahlzeitLaeuft }?.let { ekFortsetzung(signal.rSigned, fruehIsf, cfg) }
         val predictionMitErwartung = if (fruehKurve == null || fruehHebung?.guardLift != true) null
-        else app.aaps.fuse.core.controller.EarlySupply.withExpectation(prediction, fruehAlterAmAnkerMin, fruehKurve, fruehHorizontMin, fruehSkala, fruehIsf)
+        else app.aaps.fuse.core.controller.EarlySupply.withExpectation(
+            prediction, fruehAlterAmAnkerMin, fruehKurve, fruehHorizontMin, fruehSkala, fruehIsf, fruehFortsetzung,
+        )
         val restraintMitErwartung = if (predictionMitErwartung == null) null
-        else restraint?.let { app.aaps.fuse.core.controller.EarlySupply.withExpectation(it, fruehAlterAmAnkerMin, fruehKurve!!, fruehHorizontMin, fruehSkala, fruehIsf) }
+        else restraint?.let {
+            app.aaps.fuse.core.controller.EarlySupply.withExpectation(
+                it, fruehAlterAmAnkerMin, fruehKurve!!, fruehHorizontMin, fruehSkala, fruehIsf, fruehFortsetzung,
+            )
+        }
         val tailBaseMitErwartung = if (fruehKurve == null || fruehHebung?.tailLift != true) null
         else tailBase.copy(
             lowerBgAtH = app.aaps.fuse.core.controller.EarlySupply.tailLowerWithExpectation(
                 tailBase.lowerBgAtH, prediction, fruehAlterAmAnkerMin, fruehKurve, fruehHorizontMin, fruehSkala, fruehIsf,
+                fruehFortsetzung,
             ),
         )
         val tailMitErwartung = if (tail == null) null else tailBaseMitErwartung?.let { TailLiability.evaluate(it) }
         // NUR FUER GRAPH UND TRAIL (dosierneutral): die Untergrenze MIT der angekuendigten Mahlzeit in JEDEM Zyklus der
         // weiteren Portionen - auch in der Pause. Dieselbe Rechnung wie die Pruefung G3 oben; sonst saehe man sie nur,
         // wenn gerade eine Portion geprueft wurde.
-        val fruehUntenMitMahlzeitMgdl: Double? = ekZyklus
-            ?.takeIf { z -> z.eval.early?.initial == false && !z.eval.expired }
-            ?.let { z ->
-                val k = ExpectationAccount.Curve.of(z.state.curveValues) ?: return@let null
-                val isfZ = z.state.isfAtMarkerMgdlPerU.takeIf { it.isFinite() && it > 0.0 } ?: state.isfMgdlPerU
-                app.aaps.fuse.core.controller.EarlySupply.withExpectation(
-                    prediction, (prediction.predictionAnchorTs - z.state.authId) / 60_000.0, k, z.state.horizonMin,
-                    z.eval.early?.guardScale ?: 0.0, isfZ,
-                ).minLowerBgPriorFree
-            }
+        val fruehMitMahlzeitZ = ekZyklus?.takeIf { z -> z.eval.early?.initial == false && !z.eval.expired }
+        val zKurve = fruehMitMahlzeitZ?.let { ExpectationAccount.Curve.of(it.state.curveValues) }
+        val zIsf = fruehMitMahlzeitZ?.state?.isfAtMarkerMgdlPerU?.takeIf { it.isFinite() && it > 0.0 } ?: state.isfMgdlPerU
+        val zAlterMin = fruehMitMahlzeitZ?.let { (prediction.predictionAnchorTs - it.state.authId) / 60_000.0 } ?: 0.0
+        val zSkala = fruehMitMahlzeitZ?.eval?.early?.guardScale ?: 0.0
+        val zFortsetzung = fruehMitMahlzeitZ?.takeIf { it.mahlzeitLaeuft }?.let { ekFortsetzung(signal.rSigned, zIsf, cfg) }
+        val fruehUntenMitMahlzeitMgdl: Double? = if (fruehMitMahlzeitZ == null || zKurve == null) null
+        else app.aaps.fuse.core.controller.EarlySupply.withExpectation(
+            prediction, zAlterMin, zKurve, fruehMitMahlzeitZ.state.horizonMin, zSkala, zIsf, zFortsetzung,
+        ).minLowerBgPriorFree
+        // Toni: die Bremse, die eine laufende Mahlzeit tatsaechlich haelt, ist oft der Schwanz MIT Mahlzeit - er gehoert
+        // als eigene Linie in den Graphen. Dieselbe Rechnung wie G4 oben, nur fuer die Anzeige.
+        val fruehSchwanzMitMahlzeit: TailLiability.Report? = if (tail == null || fruehMitMahlzeitZ == null || zKurve == null) null
+        else TailLiability.evaluate(
+            tailBase.copy(
+                lowerBgAtH = app.aaps.fuse.core.controller.EarlySupply.tailLowerWithExpectation(
+                    tailBase.lowerBgAtH, prediction, zAlterMin, zKurve, fruehMitMahlzeitZ.state.horizonMin, zSkala, zIsf,
+                    zFortsetzung,
+                ),
+            ),
+        )
+        // Trail: was die beobachtete Fortsetzung am Horizont der Bahn zur erwarteten Mahlzeit beitraegt [mg/dl] - 0 ohne
+        // laufende Mahlzeit oder vor der Bestaetigung. Dosierneutral.
+        val fruehFortsetzungMgdl: Double? = if (fruehMitMahlzeitZ == null || zKurve == null) null else {
+            val bis = prediction.points.lastOrNull()?.offsetMin?.toDouble()
+            if (bis == null || zFortsetzung == null) 0.0
+            else app.aaps.fuse.core.controller.EarlySupply.expectedRiseMgdl(
+                zKurve, fruehMitMahlzeitZ.state.horizonMin, zAlterMin, bis, zSkala, zIsf, zFortsetzung,
+            ) - app.aaps.fuse.core.controller.EarlySupply.expectedRiseMgdl(
+                zKurve, fruehMitMahlzeitZ.state.horizonMin, zAlterMin, bis, zSkala, zIsf,
+            )
+        }
         val fruehSchwanzKappeU: Double? = when {
             // G2: die Markerautorisierung hebt den Schwanz der Anfangsportion.
             fruehAnfang && fruehHebung?.tailLift == true -> null
@@ -5364,6 +5396,8 @@ class FuseCycleRunner(
                 fruehSchwanzKappeU = fruehSchwanzKappeU.takeIf { fruehGilt },
                 fruehAmRiegelVorbeiU = fruehAmRiegelVorbeiU,
                 fruehUntenMitMahlzeitMgdl = fruehUntenMitMahlzeitMgdl,
+                fruehSchwanzMitMahlzeit = fruehSchwanzMitMahlzeit,
+                fruehFortsetzungMgdl = fruehFortsetzungMgdl,
                 mahlzeitLaeuftAbR = cfg.mahlzeitLaeuftAbR,
                 folgeStabilSeitTs = ekFolgeStabilSeit,
             ),
@@ -5824,6 +5858,10 @@ class FuseCycleRunner(
          * auch in der Pause; `null` = nicht gerechnet. Dosierneutral.
          */
         val fruehUntenMitMahlzeitMgdl: Double? = null,
+        /** Graph und Trail: der Schwanz MIT Mahlzeit in denselben Zyklen; `null` = nicht gerechnet. Dosierneutral. */
+        val fruehSchwanzMitMahlzeit: TailLiability.Report? = null,
+        /** Trail: Beitrag der beobachteten Fortsetzung am Horizont der Bahn [mg/dl]; 0 = keiner, `null` = nicht gerechnet. */
+        val fruehFortsetzungMgdl: Double? = null,
         /** Schritt 2: die in diesem Zyklus geltende Schwelle "Mahlzeit laeuft ab r" [mg/dl/min]. */
         val mahlzeitLaeuftAbR: Double? = null,
         /** Anzeige: Beginn der Strecke der weiteren Portionen bei laufender Mahlzeit [ms]; `null` = keine. */
@@ -6117,6 +6155,15 @@ class FuseCycleRunner(
      * fruehen Versorgung die eingestellten, "Nur Marker" ohne Budget, ohne (oder mit ungueltiger) frueher Versorgung
      * die neutralen (Konsolidierung 2.0: statt des Kontos v1).
      */
+    /**
+     * SCHRITT 2 (Toni): die beobachtete Fortsetzung der laufenden Mahlzeit - r ueber der Schwelle "Mahlzeit laeuft ab r",
+     * als Rate r / [isfMgdlPerU], abklingend wie der Antrieb der Bahn. EIN Helfer fuer Kontobedarf, Guard und Schwanz;
+     * `null` = die Mahlzeit laeuft nicht (oder nicht rechenbar).
+     */
+    private fun ekFortsetzung(rSigned: Double?, isfMgdlPerU: Double, cfg: Config): app.aaps.fuse.core.controller.EarlySupply.Continuation? =
+        rSigned?.takeIf { it.isFinite() && it > 0.0 && it >= cfg.mahlzeitLaeuftAbR && isfMgdlPerU.isFinite() && isfMgdlPerU > 0.0 }
+            ?.let { app.aaps.fuse.core.controller.EarlySupply.Continuation(it / isfMgdlPerU, cfg.driveTauMin.toDouble()) }
+
     private fun ekFruehEinstellungen(cfg: Config, nurErwartung: Boolean): app.aaps.fuse.core.controller.EarlySupply.Settings =
         cfg.earlySupplySettings?.let { s -> if (nurErwartung && cfg.earlySupplyEnabled) s else s.copy(budgetMaxU = 0.0) }
             ?: app.aaps.fuse.core.controller.EarlySupply.Settings.NEUTRAL

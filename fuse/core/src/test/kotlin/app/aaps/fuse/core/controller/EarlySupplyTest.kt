@@ -208,8 +208,10 @@ class EarlySupplyTest {
         val f = EarlySupply.Continuation(0.05, 60.0)
         // Ohne Fortsetzung: ab Minute 90 gibt es nichts mehr rechtzeitig abzudecken.
         assertEquals(0.0, EarlySupply.demandU(kurve, 120, 100.0, 1.0, 0.0, 0.0, { 0.0 }, wirkung), 0.0)
-        // Mit: jenseits der Kurve (ab Minute 120) die Fortsetzung, gedeckt ab 30 min, Vorschau bis 120 min.
-        val erwartet = (30..120 step 5).maxOf { t -> f.amountU(20.0, t.toDouble()) / wirkung(t.toDouble()) }
+        // Mit: jenseits der Kurve der Rest der Kurve bis zu ihrem Ende plus die Fortsetzung danach (ab Minute 120),
+        // gedeckt ab 30 min, Vorschau bis 120 min.
+        val rest = kurve.at(120.0) - kurve.at(100.0)
+        val erwartet = (30..120 step 5).maxOf { t -> (rest + f.amountU(20.0, t.toDouble())) / wirkung(t.toDouble()) }
         assertEquals(erwartet, EarlySupply.demandU(kurve, 120, 100.0, 1.0, 0.0, 0.0, { 0.0 }, wirkung, f), 1e-9)
         // Nach dem Kurvenende traegt sie allein, ab jetzt.
         val spaet = (30..120 step 5).maxOf { t -> f.amountU(0.0, t.toDouble()) / wirkung(t.toDouble()) }
@@ -220,6 +222,87 @@ class EarlySupplyTest {
         // Faellt die Fortsetzung weg (die Mahlzeit ist vorbei), faellt die Anforderung mit.
         assertEquals(
             0.0, EarlySupply.demandU(kurve, 120, 150.0, 1.0, 0.0, 0.0, { 0.0 }, wirkung, EarlySupply.Continuation(0.0, 60.0)), 0.0,
+        )
+    }
+
+    /**
+     * Geraetebefund: laeuft die Mahlzeit, darf die Anforderung nicht einbrechen, wenn der letzte Deckungspunkt die
+     * Kurve verlaesst (Minute 90) - jenseits des Kurvenendes traegt der Rest der Kurve weiter, dazu die Fortsetzung.
+     */
+    @Test
+    fun `bei Minute 90 bricht die Anforderung einer laufenden Mahlzeit nicht ein`() {
+        val f = EarlySupply.Continuation(0.05, 60.0)
+        val werte = listOf(85.0, 89.0, 90.0, 90.5, 91.0, 92.0, 95.0).map { a ->
+            a to EarlySupply.demandU(kurve, 120, a, 1.0, 0.0, 0.0, { 0.0 }, wirkung, f)
+        }
+        for ((a, x) in werte.zipWithNext()) {
+            assertTrue(x.second >= 0.85 * a.second) { "Einbruch zwischen Minute ${a.first} (${a.second}) und ${x.first} (${x.second})" }
+        }
+        // Mit Skalierer: der Rest der Kurve skaliert wie innerhalb, die Fortsetzung nicht.
+        val halb = EarlySupply.demandU(kurve, 120, 91.0, 0.5, 0.0, 0.0, { 0.0 }, wirkung, f)
+        val voll = EarlySupply.demandU(kurve, 120, 91.0, 1.0, 0.0, 0.0, { 0.0 }, wirkung, f)
+        assertTrue(halb < voll && halb > 0.0)
+    }
+
+    /** Guard und Schwanz rechnen jenseits des Kurvenendes dieselbe Fortsetzung an wie der Bedarf - nur bestaetigt. */
+    @Test
+    fun `Guard und Schwanz rechnen die beobachtete Fortsetzung jenseits der Kurve an`() {
+        val f = EarlySupply.Continuation(0.05, 60.0)
+        val isf = 50.0
+        // Innerhalb der Kurve unveraendert.
+        assertEquals(
+            EarlySupply.expectedRiseMgdl(kurve, 120, 60.0, 30.0, 1.0, isf),
+            EarlySupply.expectedRiseMgdl(kurve, 120, 60.0, 30.0, 1.0, isf, f), 0.0,
+        )
+        // Jenseits: der Rest der Kurve plus die Fortsetzung ab dem Kurvenende.
+        val ohne = EarlySupply.expectedRiseMgdl(kurve, 120, 100.0, 60.0, 1.0, isf)
+        assertEquals(ohne + f.amountU(20.0, 60.0) * isf, EarlySupply.expectedRiseMgdl(kurve, 120, 100.0, 60.0, 1.0, isf, f), 1e-9)
+        // Hoechstens 120 min nach jetzt - wie im Bedarf.
+        assertEquals(
+            ohne + f.amountU(20.0, 120.0) * isf, EarlySupply.expectedRiseMgdl(kurve, 120, 100.0, 300.0, 1.0, isf, f), 1e-9,
+        )
+        // Vor der Bestaetigung (Skala 0) zaehlt auch die Fortsetzung nicht.
+        assertEquals(0.0, EarlySupply.expectedRiseMgdl(kurve, 120, 100.0, 60.0, 0.0, isf, f), 0.0)
+        // Die Fortsetzung zaehlt nicht mit der Skala - sie ist schon Beobachtung.
+        assertEquals(
+            0.5 * (kurve.at(120.0) - kurve.at(100.0)) * isf + f.amountU(20.0, 60.0) * isf,
+            EarlySupply.expectedRiseMgdl(kurve, 120, 100.0, 60.0, 0.5, isf, f), 1e-9,
+        )
+    }
+
+    @Test
+    fun `die Bahn und die Schwanzkante mit Erwartung tragen die Fortsetzung jenseits der Kurve`() {
+        val anker = 1_700_000_000_000L
+        val punkte = (1..120).map { i ->
+            app.aaps.fuse.core.predictor.TrajectoryPoint(
+                offsetMin = i, tsMs = anker + i * 60_000L, meanBg = 120.0 - 0.5 * i, lowerBg = 120.0 - 0.7 * i,
+                bgiRate = -0.5, driveMean = 0.0, driveLower = -0.2, lowerBgPriorFree = 120.0 - 0.7 * i,
+            )
+        }
+        val bahn = app.aaps.fuse.core.predictor.PredictorResult(
+            points = punkte, predictionAnchorTs = anker, bgAtAnchor = 120.0,
+            minMeanBg = punkte.last().meanBg, minLowerBg = punkte.last().lowerBg, timeToMinLowerMin = 120,
+            bgAtHorizonMean = punkte.last().meanBg, bgAtHorizonLower = punkte.last().lowerBg,
+            lineageKind = "VIRTUAL", trajectoryContentHash = "h",
+            iobArraySpanMin = 240.0, iobArrayGridMin = 1.0, modelTailBeyondArrayMin = 0.0, inputSkewMs = 0L,
+            minLowerBgPriorFree = punkte.last().lowerBg, bgAtHorizonLowerPriorFree = punkte.last().lowerBg,
+        )
+        val f = EarlySupply.Continuation(0.05, 60.0)
+        // Markeralter 100: die Kurve endet 20 min nach dem Anker, danach traegt die Fortsetzung.
+        val ohne = EarlySupply.withExpectation(bahn, 100.0, kurve, 120, 1.0, 50.0)
+        val mit = EarlySupply.withExpectation(bahn, 100.0, kurve, 120, 1.0, 50.0, f)
+        for ((a, b) in ohne.points.zip(mit.points)) {
+            val zusatz = f.amountU(20.0, a.offsetMin.toDouble()) * 50.0
+            assertEquals(a.safetyLowerBg + zusatz, b.safetyLowerBg, 1e-9)
+        }
+        assertEquals(
+            mit.points.last().safetyLowerBg,
+            EarlySupply.tailLowerWithExpectation(bahn.bgAtHorizonSafetyLower, bahn, 100.0, kurve, 120, 1.0, 50.0, f), 1e-9,
+        )
+        // Ohne Fortsetzung: bitgleich zur bisherigen Rechnung.
+        assertEquals(
+            ohne.points.last().safetyLowerBg,
+            EarlySupply.tailLowerWithExpectation(bahn.bgAtHorizonSafetyLower, bahn, 100.0, kurve, 120, 1.0, 50.0, null), 0.0,
         )
     }
 

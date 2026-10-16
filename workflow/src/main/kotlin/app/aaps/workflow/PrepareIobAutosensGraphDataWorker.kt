@@ -335,6 +335,13 @@ class PrepareIobAutosensGraphDataWorker(
                 },
                 2f, rh.gac(ctx, app.aaps.core.ui.R.attr.uamColor),
             )
+            // Toni: der Schwanz MIT Mahlzeit - dieselbe Farbe wie der Guard mit Mahlzeit, gestrichelt wie der Schwanz.
+            data.overviewData.fuseTailWithMealSeries = linien(
+                abschnitte({ it.tailWithMealMarginMgdl }, data.overviewData.fuseGuardScale) {
+                    data.overviewData.maxFuseGuardValueFound = max(data.overviewData.maxFuseGuardValueFound, abs(it))
+                },
+                2f, rh.gac(ctx, app.aaps.core.ui.R.attr.uamColor), gestrichelt = true,
+            )
 
             // Der Kontozustand als Streifen: aufeinanderfolgende Zyklen mit gleichem Zustand bilden einen Abschnitt.
             fun zustandsFarbe(z: app.aaps.core.interfaces.overview.FuseOverviewSource.AccountStatus): Int = when (z) {

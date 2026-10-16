@@ -606,6 +606,14 @@ class FusePlugin @Inject constructor(
                                 ?.takeIf { ekGilt && it.isFinite() },
                             guardWithMealMarginMgdl = ekFrueh?.optDouble("guardLowerWithMealMgdl", Double.NaN)
                                 ?.takeIf { it.isFinite() }?.let { FuseGraphMargin.guardMarginMgdl(it, gf) },
+                            tailWithMealMarginMgdl = ekFrueh?.let { e ->
+                                FuseGraphMargin.tailMarginMgdl(
+                                    headroomU = e.optDouble("tailWithMealHeadroomU", Double.NaN).takeIf { it.isFinite() },
+                                    isfTailMgdlPerU = e.optDouble("tailWithMealIsfMgdlPerU", Double.NaN),
+                                    invalidReason = if (e.isNull("tailWithMealInvalidReason")) null
+                                    else e.optString("tailWithMealInvalidReason", "").takeIf { r -> r.isNotEmpty() },
+                                )
+                            },
                             accountStatus = ekJ?.let { FuseGraphMargin.accountStatus(ekGilt, ekRueckfall, ekStatus) },
                         )
                     )
@@ -1537,6 +1545,9 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                                 ?.zyklus?.eval?.early?.expectedDriveMgdlPerMin?.takeIf { it.isFinite() },
                             guardWithMealMarginMgdl = o.erwartungskonto?.fruehUntenMitMahlzeitMgdl
                                 ?.let { FuseGraphMargin.guardMarginMgdl(it, o.policy?.guardFloorMgdl ?: 70.0) },
+                            tailWithMealMarginMgdl = o.erwartungskonto?.fruehSchwanzMitMahlzeit?.let { t ->
+                                FuseGraphMargin.tailMarginMgdl(t.headroomU, t.isfTailMgdlPerU, t.invalidReason)
+                            },
                             accountStatus = o.erwartungskonto?.let {
                                 FuseGraphMargin.accountStatus(it.gilt, it.rueckfall, it.zyklus?.eval?.status)
                             },

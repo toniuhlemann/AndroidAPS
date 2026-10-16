@@ -42,6 +42,12 @@ interface FuseOverviewSource {
          * Portionen (G3) -, wie der Guard-Abstand geklippt; `null` = in diesem Zyklus keine.
          */
         val guardWithMealMarginMgdl: Double? = null,
+        /**
+         * Der Schwanz-Spielraum MIT der angekuendigten Mahlzeit [mg/dl] (G4, samt beobachteter Fortsetzung), wie
+         * [tailMarginMgdl] umgerechnet und geklippt; `null` = in diesem Zyklus keiner. Oft die Bremse einer laufenden
+         * Mahlzeit - ohne die Linie saehe man nur den Guard mit Mahlzeit offen.
+         */
+        val tailWithMealMarginMgdl: Double? = null,
         /** Zustand des Erwartungskontos fuer den Statusstreifen; `null` = kein Konto in diesem Zyklus. */
         val accountStatus: AccountStatus? = null,
     )

@@ -195,16 +195,24 @@ object EarlySupply {
     /**
      * Erwarteter Anstieg [mg/dl] durch die angekuendigte Mahlzeit zwischen Markeralter [ageMin] und
      * [ageMin] + [offsetMin], hoechstens bis zum Ende der Vorschau. Nie negativ; nicht berechenbar = 0.
+     *
+     * SCHRITT 2 (Toni): mit einer [continuation] (die Mahlzeit laeuft) kommt JENSEITS des Kurvenendes dieselbe
+     * beobachtete Fortsetzung hinzu wie im Kontobedarf ([demandU]) - ab dem Kurvenende, hoechstens
+     * [ExpectationAccount.CURVE_END_MIN] nach jetzt, unskaliert (sie ist schon Beobachtung). Ohne sie fordert das
+     * Konto Insulin fuer eine laufende Mahlzeit, das Guard und Schwanz nie durchlassen. Nur solange die Mahlzeit
+     * bestaetigt ist ([scaleGuard] > 0): vor der Bestaetigung zaehlt auch die Fortsetzung nicht.
      */
     fun expectedRiseMgdl(
         curve: ExpectationAccount.Curve, horizonMin: Int, ageMin: Double, offsetMin: Double,
-        scaleGuard: Double, isfMgdlPerU: Double,
+        scaleGuard: Double, isfMgdlPerU: Double, continuation: Continuation? = null,
     ): Double {
         if (!ageMin.isFinite() || !offsetMin.isFinite() || !isfMgdlPerU.isFinite() || isfMgdlPerU <= 0.0) return 0.0
         val ende = min(horizonMin.toDouble(), ExpectationAccount.CURVE_END_MIN.toDouble())
         val von = min(max(0.0, ageMin), ende)
         val bis = min(max(0.0, ageMin + offsetMin), ende)
-        val r = scaleGuard * max(0.0, curve.at(bis) - curve.at(von)) * isfMgdlPerU
+        val fortsetzung = if (continuation == null || !(scaleGuard > 0.0)) 0.0
+        else continuation.amountU(max(0.0, ende - ageMin), min(offsetMin, ExpectationAccount.CURVE_END_MIN.toDouble()))
+        val r = (scaleGuard * max(0.0, curve.at(bis) - curve.at(von)) + fortsetzung) * isfMgdlPerU
         return if (r.isFinite()) max(0.0, r) else 0.0
     }
 
@@ -239,11 +247,11 @@ object EarlySupply {
      */
     fun withExpectation(
         prediction: PredictorResult, ageAtAnchorMin: Double, curve: ExpectationAccount.Curve, horizonMin: Int,
-        scaleGuard: Double, isfMgdlPerU: Double,
+        scaleGuard: Double, isfMgdlPerU: Double, continuation: Continuation? = null,
     ): PredictorResult {
         val io = insulinOnly(prediction)
         val punkte = prediction.points.mapIndexed { i, p ->
-            val e = expectedRiseMgdl(curve, horizonMin, ageAtAnchorMin, p.offsetMin.toDouble(), scaleGuard, isfMgdlPerU)
+            val e = expectedRiseMgdl(curve, horizonMin, ageAtAnchorMin, p.offsetMin.toDouble(), scaleGuard, isfMgdlPerU, continuation)
             val sicher = liftedEdge(p.safetyLowerBg, io[i], e)
             val unten = max(p.lowerBg, sicher)
             p.copy(meanBg = max(p.meanBg, unten), lowerBg = unten, lowerBgPriorFree = sicher)
@@ -273,15 +281,19 @@ object EarlySupply {
 
     /**
      * G4: DIE SCHWANZKANTE AM HORIZONT MIT ERWARTUNG - dieselbe Regel wie [withExpectation] fuer den einen Wert, den
-     * der Schwanz liest. Nach dem Ende der Kurve rechnet der Schwanz keine Mahlzeit mehr (konservativ).
+     * der Schwanz liest. Nach dem Ende der Kurve rechnet der Schwanz keine angekuendigte Mahlzeit mehr (konservativ) -
+     * nur, solange sie laeuft, ihre beobachtete Fortsetzung ([expectedRiseMgdl]).
      */
     fun tailLowerWithExpectation(
         lowerAtHorizonMgdl: Double, prediction: PredictorResult, ageAtAnchorMin: Double,
         curve: ExpectationAccount.Curve, horizonMin: Int, scaleGuard: Double, isfMgdlPerU: Double,
+        continuation: Continuation? = null,
     ): Double {
         val letzter = prediction.points.lastOrNull() ?: return lowerAtHorizonMgdl
         val io = insulinOnly(prediction).last()
-        val e = expectedRiseMgdl(curve, horizonMin, ageAtAnchorMin, letzter.offsetMin.toDouble(), scaleGuard, isfMgdlPerU)
+        val e = expectedRiseMgdl(
+            curve, horizonMin, ageAtAnchorMin, letzter.offsetMin.toDouble(), scaleGuard, isfMgdlPerU, continuation,
+        )
         return liftedEdge(lowerAtHorizonMgdl, io, e)
     }
 
@@ -416,11 +428,13 @@ object EarlySupply {
      * 30 min bis zum Ende: 0 - dann gibt es nichts mehr rechtzeitig abzudecken.
      *
      * SCHRITT 2 (Toni): mit einer [continuation] (die Mahlzeit laeuft noch) traegt JENSEITS der Kurve - Deckungspunkte
-     * nach `min(Vorschau, Ende)` - die beobachtete Fortsetzung `R_T(tau) = rho * tau_d * (e^(-u0/tau_d) - e^(-tau/tau_d))`,
-     * u0 = Abstand bis zum Kurvenende, tau bis [ExpectationAccount.CURVE_END_MIN]. Sie ist schon Beobachtung und wird
-     * nicht skaliert; innerhalb der Kurve bleibt der Kurvenanteil, je Deckungspunkt zaehlt genau einer der beiden. So
-     * endet die Anforderung nicht mehr bei Minute 90, solange die Mahlzeit weiterlaeuft - und faellt mit ihr. Ohne
-     * Fortsetzung ist die Rechnung die bisherige.
+     * nach `min(Vorschau, Ende)` - der Rest der Kurve bis zu ihrem Ende PLUS die beobachtete Fortsetzung danach,
+     * `R_T(tau) = rho * tau_d * (e^(-u0/tau_d) - e^(-tau/tau_d))`, u0 = Abstand bis zum Kurvenende, tau bis
+     * [ExpectationAccount.CURVE_END_MIN]. Die Fortsetzung ist schon Beobachtung und wird nicht skaliert; innerhalb der
+     * Kurve bleibt der Kurvenanteil. Am Kurvenende gehen beide stetig ineinander ueber - zaehlte jenseits nur die
+     * Fortsetzung, braeche die Anforderung ein, sobald der letzte Deckungspunkt die Kurve verlaesst (bei Minute 90,
+     * Geraetebefund: von ihrem Hoechstwert auf 0, obwohl die Mahlzeit lief). So endet die Anforderung nicht bei
+     * Minute 90, solange die Mahlzeit weiterlaeuft - und faellt mit ihr. Ohne Fortsetzung ist die Rechnung die bisherige.
      */
     fun demandU(
         curve: ExpectationAccount.Curve, horizonMin: Int, ageMin: Double, scaleEff: Double,
@@ -438,7 +452,7 @@ object EarlySupply {
             val c = action(t.toDouble())
             if (c <= EPS) return@maxOfOrNull 0.0
             val erwartet = if (fortsetzung == null || ageMin + t <= kurvenEnde) scaleEff * (curve.at(ageMin + t) - fa)
-            else fortsetzung.amountU(u0, t.toDouble())
+            else scaleEff * max(0.0, curve.at(kurvenEnde) - fa) + fortsetzung.amountU(u0, t.toDouble())
             val vorhanden = anteilFrei * max(0.0, existingActionU(t.toDouble()))
             (erwartet - vorhanden) / c
         } ?: 0.0
