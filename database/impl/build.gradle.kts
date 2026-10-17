@@ -40,6 +40,8 @@ dependencies {
     api(libs.com.google.dagger.android.support)
 
     androidTestImplementation(libs.androidx.room.testing)
+    // The way back from the v4 port (DowngradeFromPort37Test): real SQLite on the JVM. 2.6.2 = the androidx.sqlite of Room 2.8.4.
+    testImplementation("androidx.sqlite:sqlite-bundled-jvm:2.6.2")
 
     ksp(libs.com.google.dagger.compiler)
     ksp(libs.androidx.room.compiler)
