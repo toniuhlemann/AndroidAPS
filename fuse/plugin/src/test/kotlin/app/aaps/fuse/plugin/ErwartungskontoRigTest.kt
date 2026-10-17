@@ -1728,7 +1728,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     }
 
     @Test
-    fun `das spaete Abwaertsrisiko sperrt jede Portion der fruehen Versorgung`(@TempDir dir: File) {
+    fun `das spaete Abwaertsrisiko sperrt jede weitere Portion der fruehen Versorgung`(@TempDir dir: File) {
         val zyklen = fruehLauf(fFall, dir) {
             fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
             whenever(preferences.get(FuseBooleanKey.DeferredPrimeEnabled)).thenReturn(true)
@@ -1740,6 +1740,54 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             assertEquals(0.0, z.dErw(), 0.0, "Minute ${z.minute}: d_erw trotz Sperre")
             assertEquals(0.0, z.o.erwartungskonto!!.fruehBodenU, 0.0, "Minute ${z.minute}: Boden trotz Sperre")
         }
+    }
+
+    /**
+     * Leichtes Fallen am Druck mit Bolus-IOB: das LANGE Abwaertsrisiko des Marker-Aufschubs (Horizont 60) greift, das
+     * kurze nicht; die Mahlzeit steigt erst spaeter. Synthetische Werte.
+     */
+    private val fFallAmDruck = Fuse20Folgen.Folge(
+        "FALL_AM_DRUCK", 1_701_511_200_000L, -90, 180,
+        listOf(-90 to 150.0, -20 to 128.0, -10 to 122.0, 0 to 110.0, 8 to 101.0, 15 to 100.0, 30 to 118.0, 60 to 170.0,
+            120 to 190.0, 180 to 140.0),
+        markerMin = 0,
+    )
+
+    /**
+     * Toni (Anfangsportion = bewusstes Risiko wie ein Pen-Bolus): auch das lange Abwaertsrisiko des Marker-Aufschubs haelt
+     * die Anfangsportion nicht auf. Geraetebefund: beim Druck bereit, am Ende der Kette als expectationDescentRisk
+     * gestrichen, solange der Zucker leicht fiel. Weitere Portionen behalten den Schnitt. Synthetische Werte.
+     */
+    @Test
+    fun `das lange Abwaertsrisiko des Marker-Aufschubs haelt die Anfangsportion nicht auf`(@TempDir dir: File) {
+        val zyklen = fruehLauf(fFallAmDruck, dir, vorZyklus = { bolusVorDemDruck(it, 2.0) }) {
+            fruehKonfiguration(g1 = true, g2 = true, anteil = 0.5)
+            whenever(preferences.get(FuseBooleanKey.DeferredPrimeEnabled)).thenReturn(true)
+            whenever(preferences.get(FuseIntKey.ExpectationStabilityMin)).thenReturn(0)
+            whenever(preferences.get(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin)).thenReturn(2.0)
+        }
+        pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+        val start = zyklen.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }
+        val rate = requireNotNull(start.o.signal?.ukfRatePerMin)
+        assertTrue(rate < 0.0 && rate > -2.0) { "Probe zeigt nichts: Trend $rate nicht leicht fallend" }
+        assertTrue(start.o.step?.safetyReasons?.isEmpty() == true) { "Probe zeigt nichts: gemessenes Tief am Druck" }
+        val anfang = zyklen.first { it.frueh()?.initial == true && it.dErw() > 0.0 }
+        assertTrue(anfang.minute <= start.minute + 1) { "Anfangsportion erst in Minute ${anfang.minute}" }
+        assertTrue((anfang.o.smbActuatedU ?: 0.0) > 0.0) { "Anfangsportion vom Schnitt des Aufschubs genullt" }
+        // Die Probe zeigt nur etwas, wenn der Schnitt an der Anfangsportion gegriffen haette.
+        assertTrue("initialPastDescentRisk" in anfang.o.decision.bindingLimit) {
+            "Probe zeigt nichts: kein langes Abwaertsrisiko an der Anfangsportion (bind=${anfang.o.decision.bindingLimit})"
+        }
+        assertTrue(zyklen.none { it.frueh()?.initial == true && it.o.decision.bindingLimit == "expectationDescentRisk" }) {
+            "eine Anfangsportion wurde als expectationDescentRisk gestrichen"
+        }
+        // Weitere Portionen unter demselben Risiko: keine (Pause DESCENT_RISK_MARKER oder Schnitt).
+        val danach = zyklen.filter {
+            it.minute > anfang.minute && it.frueh()?.initial == false &&
+                "DESCENT_RISK_MARKER" in (it.o.erwartungskonto?.zyklus?.pausenGruende ?: emptyList())
+        }
+        assertTrue(danach.isNotEmpty()) { "Probe zeigt nichts: das lange Risiko faellt in keine weitere Portion" }
+        assertEquals(0.0, danach.sumOf { it.dErw() }, 0.0)
     }
 
     /**

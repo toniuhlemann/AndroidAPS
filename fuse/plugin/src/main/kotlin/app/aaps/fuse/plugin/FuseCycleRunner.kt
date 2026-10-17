@@ -4133,7 +4133,14 @@ class FuseCycleRunner(
         )
         // Die in DIESEM Zyklus gekappte markerfinanzierte Menge (Trail `withheldU`).
         var deferredWithheldU = 0.0
-        val nachAufschub = if (deferredPinnedActive && risk60?.active == true && nachRiegel.smbU > 0.0) {
+        // Toni (Anfangsportion = bewusstes Risiko wie ein Pen-Bolus): die offene ANFANGSPORTION des Kontos wartet nur bei
+        // gemessenem Tief, technischem Grund und Fallen ueber der Fallgrenze - nicht auf ein Abwaertsrisiko, auch nicht auf
+        // das lange des Marker-Aufschubs. Pause und Abwaertsriegel liessen sie schon durch; dieser Schnitt am Ende der
+        // Kette nahm sie trotzdem weg (Geraetebefund: beim Druck bereit, als expectationDescentRisk gestrichen, solange
+        // der Zucker leicht fiel). Weitere Portionen behalten den Schnitt.
+        val anfangVorbeiAmAufschub = fruehAnfang &&
+            nachRiegel.grant?.source == app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION
+        val nachAufschub = if (deferredPinnedActive && risk60?.active == true && nachRiegel.smbU > 0.0 && !anfangVorbeiAmAufschub) {
             // Der markerfinanzierte Anteil ist alles OBERHALB der reinen
             // Basis - und auch die Basis nur, wenn ihr Guard nicht selbst
             // vom Marker gehoben wurde (dann ist sie nicht "rein").
@@ -4165,7 +4172,10 @@ class FuseCycleRunner(
                     unsafeSituation = true,
                 )
             }
-        } else nachRiegel
+        } else if (anfangVorbeiAmAufschub && deferredPinnedActive && risk60?.active == true && nachRiegel.smbU > 0.0)
+            // Trail: die Anfangsportion ging am Schnitt vorbei - sonst saehe man nicht, dass er gegriffen haette.
+            nachRiegel.copy(bindingLimit = nachRiegel.bindingLimit + "|initialPastDescentRisk")
+        else nachRiegel
         // ---- DER LIVENESS-KANAL (Bauvertrag Toni + Codex 22.08.) ---------
         //
         // NACH dem Aufschub, VOR der Publikation - dieselbe Stelle wie die
