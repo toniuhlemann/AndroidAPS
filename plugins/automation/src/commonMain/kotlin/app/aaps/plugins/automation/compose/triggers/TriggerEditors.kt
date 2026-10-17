@@ -52,7 +52,12 @@ import app.aaps.plugins.automation.triggers.TriggerRecurringTime
 import app.aaps.plugins.automation.triggers.TriggerReservoirLevel
 import app.aaps.plugins.automation.triggers.TriggerSensorAge
 import app.aaps.plugins.automation.triggers.TriggerStepsCount
+import app.aaps.plugins.automation.triggers.TriggerAutoIsfLeaseActive
 import app.aaps.plugins.automation.triggers.TriggerAutomationState
+import app.aaps.plugins.automation.triggers.TriggerBgRaw
+import app.aaps.plugins.automation.triggers.TriggerBolusCoverage
+import app.aaps.plugins.automation.triggers.TriggerCoverage
+import app.aaps.plugins.automation.triggers.TriggerSmbDeliveryRatio
 import app.aaps.plugins.automation.triggers.TriggerBgAcceWeight
 import app.aaps.plugins.automation.triggers.TriggerIobTH
 import app.aaps.plugins.automation.triggers.TriggerTempTarget
@@ -101,6 +106,11 @@ fun TriggerEditor(
             is TriggerIobTH              -> TriggerIobTHEditor(trigger, onChange, tick)
             is TriggerBgAcceWeight       -> TriggerBgAcceWeightEditor(trigger, onChange, tick)
             is TriggerAutomationState    -> TriggerAutomationStateEditor(trigger, onChange, tick)
+            is TriggerSmbDeliveryRatio   -> TriggerSmbDeliveryRatioEditor(trigger, onChange, tick)
+            is TriggerCoverage           -> TriggerCoverageEditor(trigger, onChange, tick)
+            is TriggerBolusCoverage      -> TriggerBolusCoverageEditor(trigger, onChange, tick)
+            is TriggerAutoIsfLeaseActive -> TriggerAutoIsfLeaseActiveEditor(trigger, onChange)
+            is TriggerBgRaw              -> TriggerBgRawEditor(trigger, onChange, tick)
             is TriggerTime               -> TriggerTimeEditor(trigger, onChange)
             is TriggerRecurringTime      -> TriggerRecurringTimeEditor(trigger, onChange)
             is TriggerTimeRange          -> TriggerTimeRangeEditor(trigger, onChange)

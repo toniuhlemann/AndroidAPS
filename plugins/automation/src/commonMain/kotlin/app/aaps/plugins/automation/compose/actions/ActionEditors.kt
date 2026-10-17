@@ -30,6 +30,9 @@ import app.aaps.plugins.automation.actions.ActionSendSMS
 import app.aaps.plugins.automation.actions.ActionSettingsExport
 import app.aaps.plugins.automation.actions.ActionSmoothingChange
 import app.aaps.plugins.automation.actions.ActionSetAcceWeight
+import app.aaps.plugins.automation.actions.ActionSetDuraWeight
+import app.aaps.plugins.automation.actions.ActionSetPpWeight
+import app.aaps.plugins.automation.actions.ActionSetSmbDeliveryRatio
 import app.aaps.plugins.automation.actions.ActionSetAutomationState
 import app.aaps.plugins.automation.actions.ActionSetIobTH
 import app.aaps.plugins.automation.actions.ActionStartTempTarget
@@ -82,6 +85,9 @@ fun ActionEditor(
             is ActionSetAcceWeight        -> ActionSetAcceWeightEditor(action, tick, onChange)
             is ActionSetIobTH             -> ActionSetIobTHEditor(action, tick, onChange)
             is ActionSetAutomationState   -> ActionSetAutomationStateEditor(action, tick, onChange)
+            is ActionSetPpWeight          -> ActionSetPpWeightEditor(action, tick, onChange)
+            is ActionSetDuraWeight        -> ActionSetDuraWeightEditor(action, tick, onChange)
+            is ActionSetSmbDeliveryRatio  -> ActionSetSmbDeliveryRatioEditor(action, tick, onChange)
             else                          -> Text(action::class.simpleName.orEmpty())
         }
     }

@@ -2,7 +2,6 @@ package app.aaps.plugins.automation.triggers
 
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.navigation.ElementType
-import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.utils.lenientInt
 import app.aaps.core.utils.lenientStringOrNull
@@ -30,7 +29,9 @@ class TriggerIobTH(deps: TriggerDeps) : Trigger(deps) {
     }
 
     override suspend fun shouldRun(): Boolean {
-        val actualPercent = deps.preferences.get(IntKey.ApsAutoIsfIobThPercent)
+        // Fork: the same truth as the APS path - the EFFECTIVE value from the provider, never a second
+        // direct preference read (a channel lease can lie over the base preference).
+        val actualPercent = deps.effectiveAutoIsfSettingsProvider.snapshot().iobThPercentEffective
         if (comparator.value.check(actualPercent, iobTHpercent)) {
             aapsLogger.debug(LTag.AUTOMATION, "set iob_threshold_percent ready for execution: " + friendlyDescription())
             return true

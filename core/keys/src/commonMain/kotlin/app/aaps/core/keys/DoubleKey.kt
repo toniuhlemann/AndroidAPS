@@ -332,7 +332,8 @@ enum class DoubleKey(
     ApsAutoIsfSmbDeliveryRatioMax(
         key = "openapsama_smb_delivery_ratio_max",
         defaultValue = 0.5,
-        min = 0.5,
+        // Fork: from 0.1 like the fixed ratio and the min (was 0.5), so the variable curve can stay low.
+        min = 0.1,
         max = 1.0,
         title = KeysStrings.pref_title_smb_delivery_ratio_max,
         summary = KeysStrings.openapsama_smb_delivery_ratio_max_summary,

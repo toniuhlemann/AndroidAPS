@@ -1,5 +1,6 @@
 package app.aaps.plugins.automation
 
+import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.interfaces.automation.AutomationStateInterface
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.pump.PumpEnactResult
@@ -11,15 +12,25 @@ import app.aaps.core.utils.lenientString
 import app.aaps.plugins.automation.actions.ActionAutoisfDisable
 import app.aaps.plugins.automation.actions.ActionAutoisfEnable
 import app.aaps.plugins.automation.actions.ActionFactory
+import app.aaps.plugins.automation.actions.ActionResetProfilePercent
 import app.aaps.plugins.automation.actions.ActionSetAcceWeight
 import app.aaps.plugins.automation.actions.ActionSetAutomationState
+import app.aaps.plugins.automation.actions.ActionSetDuraWeight
 import app.aaps.plugins.automation.actions.ActionSetIobTH
+import app.aaps.plugins.automation.actions.ActionSetPpWeight
+import app.aaps.plugins.automation.actions.ActionSetSmbDeliveryRatio
 import app.aaps.plugins.automation.elements.Comparator
+import app.aaps.plugins.automation.elements.ComparatorExists
+import app.aaps.plugins.automation.triggers.TriggerAutoIsfLeaseActive
 import app.aaps.plugins.automation.triggers.TriggerAutomationState
 import app.aaps.plugins.automation.triggers.TriggerBgAcceWeight
+import app.aaps.plugins.automation.triggers.TriggerBgRaw
+import app.aaps.plugins.automation.triggers.TriggerBolusCoverage
+import app.aaps.plugins.automation.triggers.TriggerCoverage
 import app.aaps.plugins.automation.triggers.TriggerDeps
 import app.aaps.plugins.automation.triggers.TriggerFactory
 import app.aaps.plugins.automation.triggers.TriggerIobTH
+import app.aaps.plugins.automation.triggers.TriggerSmbDeliveryRatio
 import app.aaps.shared.tests.TestBase
 import app.aaps.shared.tests.generatedTextResolver
 import com.google.common.truth.Truth.assertThat
@@ -52,7 +63,7 @@ class AutoIsfAutomationJsonTest : TestBase() {
     private val triggerDeps: TriggerDeps by lazy {
         TriggerDeps(
             aapsLogger, mock(), rh, profileFunction, mock(), preferences, mock(), mock(), mock(), mock(), mock(), dateUtil,
-            automationState
+            automationState, mock()
         )
     }
 
@@ -64,12 +75,14 @@ class AutoIsfAutomationJsonTest : TestBase() {
         ActionFactory(
             triggerDeps, aapsLogger, rh, pumpEnactResultProvider, mock(), dateUtil, mock(), mock(), mock(),
             profileFunction, mock(), mock(), mock(), mock(), mock(), preferences, mock(), mock(), mock(), mock(),
-            mock(), mock(), mock(), mock(), automationState
+            mock(), mock(), mock(), mock(), automationState, mock()
         )
     }
 
     @BeforeEach fun prepare() {
         whenever(automationState.hasStateValues(STATE)).thenReturn(true)
+        // InputBg asks for the units when it is built (TriggerBgRaw)
+        whenever(profileFunction.getUnits()).thenReturn(GlucoseUnit.MGDL)
     }
 
     private fun json(s: String): JsonObject = Json.parseToJsonElement(s).jsonObject
@@ -158,8 +171,69 @@ class AutoIsfAutomationJsonTest : TestBase() {
         // The "choose" lists are where a user finds them. A type that is missing there cannot be added.
         val actions = actionFactory.allActions().map { it::class.simpleName }
         assertThat(actions).containsAtLeast(
-            "ActionAutoisfEnable", "ActionAutoisfDisable", "ActionSetAcceWeight", "ActionSetIobTH", "ActionSetAutomationState"
+            "ActionAutoisfEnable", "ActionAutoisfDisable", "ActionSetAcceWeight", "ActionSetIobTH", "ActionSetAutomationState",
+            "ActionSetPpWeight", "ActionSetDuraWeight", "ActionSetSmbDeliveryRatio", "ActionResetProfilePercent"
         )
+    }
+
+    // ---- Toni's fork elements (IOB-Action viewer), in the 3.4 fork form ----
+
+    @Test fun forkWeightAndRatioActionsReadFullClassNames() {
+        val pp = actionFactory.instantiate(json("{\"type\":\"app.aaps.plugins.automation.actions.ActionSetPpWeight\",\"data\":{\"weight\":0.07}}"))
+        val dura = actionFactory.instantiate(json("{\"type\":\"app.aaps.plugins.automation.actions.ActionSetDuraWeight\",\"data\":{\"weight\":1.3}}"))
+        val ratio = actionFactory.instantiate(json("{\"type\":\"app.aaps.plugins.automation.actions.ActionSetSmbDeliveryRatio\",\"data\":{\"ratio\":0.45}}"))
+
+        assertIs<ActionSetPpWeight>(pp)
+        assertThat(pp.newWeight).isEqualTo(0.07)
+        assertIs<ActionSetDuraWeight>(dura)
+        assertThat(dura.newWeight).isEqualTo(1.3)
+        assertIs<ActionSetSmbDeliveryRatio>(ratio)
+        assertThat(ratio.newRatio).isEqualTo(0.45)
+        assertThat((json(ratio.toJSON())["data"] as JsonObject).lenientDouble("ratio")).isEqualTo(0.45)
+    }
+
+    @Test fun smbRatioOutsideTheRangeIsClampedOnRead() {
+        val ratio = actionFactory.instantiate(json("{\"type\":\"ActionSetSmbDeliveryRatio\",\"data\":{\"ratio\":0.05}}"))
+        val trigger = triggerFactory.instantiate(json("{\"type\":\"TriggerSmbDeliveryRatio\",\"data\":{\"ratio\":1.5,\"comparator\":\"IS_GREATER\"}}"))
+
+        assertThat((ratio as ActionSetSmbDeliveryRatio).newRatio).isEqualTo(ActionSetSmbDeliveryRatio.MIN)
+        assertThat((trigger as TriggerSmbDeliveryRatio).ratio).isEqualTo(ActionSetSmbDeliveryRatio.MAX)
+    }
+
+    @Test fun resetProfilePercentLoads() {
+        assertIs<ActionResetProfilePercent>(actionFactory.instantiate(json("{\"type\":\"ActionResetProfilePercent\",\"data\":{}}")))
+    }
+
+    @Test fun forkTriggersRead34Form() {
+        val ratio = triggerFactory.instantiate(json("{\"type\":\"TriggerSmbDeliveryRatio\",\"data\":{\"ratio\":0.45,\"comparator\":\"IS_GREATER\"}}"))
+        // org.json wrote whole numbers as integers
+        val coverage = triggerFactory.instantiate(json("{\"type\":\"TriggerCoverage\",\"data\":{\"coverage\":125,\"comparator\":\"IS_LESSER\"}}"))
+        val bolusCoverage = triggerFactory.instantiate(json("{\"type\":\"TriggerBolusCoverage\",\"data\":{\"coverage\":90,\"comparator\":\"IS_EQUAL_OR_GREATER\"}}"))
+        val lease = triggerFactory.instantiate(json("{\"type\":\"TriggerAutoIsfLeaseActive\",\"data\":{\"comparator\":\"NOT_EXISTS\"}}"))
+        val rawBg = triggerFactory.instantiate(json("{\"type\":\"TriggerBgRaw\",\"data\":{\"bg\":123,\"comparator\":\"IS_LESSER\",\"units\":\"mg/dl\"}}"))
+
+        assertIs<TriggerSmbDeliveryRatio>(ratio)
+        assertThat(ratio.ratio).isEqualTo(0.45)
+        assertThat(ratio.comparator.value).isEqualTo(Comparator.Compare.IS_GREATER)
+        assertIs<TriggerCoverage>(coverage)
+        assertThat(coverage.coverage).isEqualTo(125.0)
+        assertThat(coverage.comparator.value).isEqualTo(Comparator.Compare.IS_LESSER)
+        assertIs<TriggerBolusCoverage>(bolusCoverage)
+        assertThat(bolusCoverage.coverage).isEqualTo(90.0)
+        assertIs<TriggerAutoIsfLeaseActive>(lease)
+        assertThat(lease.comparator.value).isEqualTo(ComparatorExists.Compare.NOT_EXISTS)
+        assertIs<TriggerBgRaw>(rawBg)
+        assertThat(rawBg.bg.value).isEqualTo(123.0)
+        assertThat(rawBg.bg.units).isEqualTo(GlucoseUnit.MGDL)
+        assertThat(rawBg.comparator.value).isEqualTo(Comparator.Compare.IS_LESSER)
+    }
+
+    @Test fun forkTriggersWriteThe34KeysBack() {
+        val coverage = triggerFactory.instantiate(json("{\"type\":\"TriggerCoverage\",\"data\":{\"coverage\":125,\"comparator\":\"IS_LESSER\"}}"))
+        val data = coverage.dataJSON()
+
+        assertThat(data.lenientDouble("coverage")).isEqualTo(125.0)
+        assertThat(data.lenientString("comparator")).isEqualTo("IS_LESSER")
     }
 
     companion object {

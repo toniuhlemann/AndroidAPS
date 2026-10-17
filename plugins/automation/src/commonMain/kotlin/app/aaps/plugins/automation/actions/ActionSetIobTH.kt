@@ -2,6 +2,8 @@ package app.aaps.plugins.automation.actions
 
 import app.aaps.core.data.ue.Sources
 import app.aaps.core.data.ue.ValueWithUnit
+import app.aaps.core.interfaces.aps.AutoIsfCapability
+import app.aaps.core.interfaces.aps.AutoIsfValueLeaseInvalidator
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.UserEntryLogger
 import app.aaps.core.interfaces.navigation.ElementType
@@ -21,7 +23,8 @@ class ActionSetIobTH(
     rh: TextResolver,
     pumpEnactResultProvider: () -> PumpEnactResult,
     private val preferences: Preferences,
-    private val uel: UserEntryLogger
+    private val uel: UserEntryLogger,
+    private val leaseInvalidator: AutoIsfValueLeaseInvalidator
 ) : Action(aapsLogger, rh, pumpEnactResultProvider) {
 
     /** 10 .. 100 %, step 5, as the number picker of 3.4. */
@@ -32,6 +35,11 @@ class ActionSetIobTH(
     override fun elementType() = ElementType.AAPS
 
     override suspend fun doAction(): PumpEnactResult {
+        // Fork (capability matrix A1): a therapeutic writer ends a local channel lease SYNCHRONOUSLY
+        // BEFORE the base write, so protection wins before the next APS snapshot. false = fail-closed:
+        // no write, no success entry.
+        if (!leaseInvalidator.invalidateBeforeExternalWrite(AutoIsfCapability.IOBTH, "ActionSetIobTH"))
+            return pumpEnactResultProvider().success(false).comment(AutomationStrings.iobth_lease_invalidation_failed)
         val current = preferences.get(IntKey.ApsAutoIsfIobThPercent)
         return if (current != newIobTH) {
             uel.log(

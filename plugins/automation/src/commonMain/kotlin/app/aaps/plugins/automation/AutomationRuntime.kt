@@ -71,7 +71,12 @@ import app.aaps.plugins.automation.triggers.TriggerRecurringTime
 import app.aaps.plugins.automation.triggers.TriggerReservoirLevel
 import app.aaps.plugins.automation.triggers.TriggerSensorAge
 import app.aaps.plugins.automation.triggers.TriggerStepsCount
+import app.aaps.plugins.automation.triggers.TriggerAutoIsfLeaseActive
 import app.aaps.plugins.automation.triggers.TriggerAutomationState
+import app.aaps.plugins.automation.triggers.TriggerBgRaw
+import app.aaps.plugins.automation.triggers.TriggerBolusCoverage
+import app.aaps.plugins.automation.triggers.TriggerCoverage
+import app.aaps.plugins.automation.triggers.TriggerSmbDeliveryRatio
 import app.aaps.plugins.automation.triggers.TriggerBgAcceWeight
 import app.aaps.plugins.automation.triggers.TriggerIobTH
 import app.aaps.plugins.automation.triggers.TriggerTempTarget
@@ -735,7 +740,12 @@ class AutomationRuntime(
             actionFactory.actionAutoisfDisable(),
             actionFactory.actionSetAcceWeight(),
             actionFactory.actionSetIobTH(),
-            actionFactory.actionSetAutomationState()
+            actionFactory.actionSetAutomationState(),
+            // Fork (IOB-Action viewer)
+            actionFactory.actionSetPpWeight(),
+            actionFactory.actionSetDuraWeight(),
+            actionFactory.actionSetSmbDeliveryRatio(),
+            actionFactory.actionResetProfilePercent()
         )
         // Autotune is only offered in engineering builds, as before.
         if (config.isEngineeringMode() && config.isDev())
@@ -771,7 +781,13 @@ class AutomationRuntime(
             // autoISF 3.2.x (Tobias/ga-zelle)
             TriggerIobTH(triggerDeps),
             TriggerBgAcceWeight(triggerDeps),
-            TriggerAutomationState(triggerDeps)
+            TriggerAutomationState(triggerDeps),
+            // Fork (IOB-Action viewer)
+            TriggerSmbDeliveryRatio(triggerDeps),
+            TriggerCoverage(triggerDeps),
+            TriggerBolusCoverage(triggerDeps),
+            TriggerAutoIsfLeaseActive(triggerDeps),
+            TriggerBgRaw(triggerDeps)
         )
 
         val pump = activePlugin.activePump

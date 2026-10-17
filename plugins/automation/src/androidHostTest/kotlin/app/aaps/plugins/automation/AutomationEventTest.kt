@@ -38,7 +38,7 @@ class AutomationEventTest : TestBase() {
     // Real factories over mocks: fromJSON has to rebuild actions and triggers for the clone assertions.
     private val triggerDeps: app.aaps.plugins.automation.triggers.TriggerDeps by lazy {
         app.aaps.plugins.automation.triggers.TriggerDeps(
-            aapsLogger, mock(), rh, profileFunction, mock(), preferences, mock(), mock(), mock(), mock(), mock(), dateUtil, mock()
+            aapsLogger, mock(), rh, profileFunction, mock(), preferences, mock(), mock(), mock(), mock(), mock(), dateUtil, mock(), mock()
         )
     }
 
@@ -50,7 +50,7 @@ class AutomationEventTest : TestBase() {
         ActionFactory(
             triggerDeps, aapsLogger, rh, pumpEnactResultProvider, mock(), dateUtil, mock(), mock(), mock(),
             profileFunction, mock(), mock(), mock(), mock(), mock(), preferences, mock(), mock(), mock(), mock(),
-            mock(), mock(), mock(), mock(), mock()
+            mock(), mock(), mock(), mock(), mock(), mock()
         )
     }
 

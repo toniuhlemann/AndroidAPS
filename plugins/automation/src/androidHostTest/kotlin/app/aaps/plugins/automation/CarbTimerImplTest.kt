@@ -45,7 +45,7 @@ class CarbTimerImplTest : TestBase() {
     private val triggerDeps: TriggerDeps by lazy {
         TriggerDeps(
             aapsLogger, rxBus, rh, profileFunction, mock(), preferences, mock(), mock(),
-            activePlugin, mock(), mock(), dateUtil, mock()
+            activePlugin, mock(), mock(), dateUtil, mock(), mock()
         )
     }
     private val rh = generatedTextResolver("automation" to AutomationStringsValues::textOf)

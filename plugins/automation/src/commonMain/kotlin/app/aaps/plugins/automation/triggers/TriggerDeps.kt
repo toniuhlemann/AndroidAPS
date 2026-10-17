@@ -1,5 +1,6 @@
 package app.aaps.plugins.automation.triggers
 
+import app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider
 import app.aaps.core.interfaces.automation.AutomationStateInterface
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.iob.GlucoseStatusProvider
@@ -42,5 +43,7 @@ class TriggerDeps(
     val glucoseStatusProvider: GlucoseStatusProvider,
     val dateUtil: DateUtil,
     // autoISF 3.2.x automation states (TriggerAutomationState)
-    val automationState: AutomationStateInterface
+    val automationState: AutomationStateInterface,
+    // Fork (IOB-Action viewer): the effective autoISF settings (TriggerIobTH, TriggerAutoIsfLeaseActive)
+    val effectiveAutoIsfSettingsProvider: EffectiveAutoIsfSettingsProvider
 )

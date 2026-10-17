@@ -75,6 +75,12 @@ class TriggerFactory(
         TriggerIobTH::class.simpleName              -> TriggerIobTH(deps)
         TriggerBgAcceWeight::class.simpleName       -> TriggerBgAcceWeight(deps)
         TriggerAutomationState::class.simpleName    -> TriggerAutomationState(deps)
+        // Fork (IOB-Action viewer)
+        TriggerSmbDeliveryRatio::class.simpleName   -> TriggerSmbDeliveryRatio(deps)
+        TriggerCoverage::class.simpleName           -> TriggerCoverage(deps)
+        TriggerBolusCoverage::class.simpleName      -> TriggerBolusCoverage(deps)
+        TriggerAutoIsfLeaseActive::class.simpleName -> TriggerAutoIsfLeaseActive(deps)
+        TriggerBgRaw::class.simpleName              -> TriggerBgRaw(deps)
 
         else                                        -> null
     }

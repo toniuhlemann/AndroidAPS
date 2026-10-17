@@ -194,4 +194,24 @@
     <string name="check_state_description" comment="%1$s = state name, %2$s = state value">Check automation state %1$s=%2$s</string>
     <string name="state_name_label">State name</string>
     <string name="state_value_label">State value</string>
+    <!-- Fork (IOB-Action viewer) automation -->
+    <string name="automate_set_pp_weight" comment="%1$.2f = new pp weight, e.g. 0.05">Set pp_ISF_weight to %1$.2f</string>
+    <string name="automate_set_dura_weight" comment="%1$.2f = new dura weight, e.g. 1.50">Set dura_ISF_weight to %1$.2f</string>
+    <string name="autoisf_pp_weight">PP weight</string>
+    <string name="autoisf_dura_weight">Dura weight</string>
+    <string name="autoisf_smb_delivery_ratio">SMB delivery ratio (fixed)</string>
+    <string name="automate_set_smb_delivery_ratio" comment="%1$.2f = new ratio, e.g. 0.50">Set smb_delivery_ratio (fixed) to %1$.2f</string>
+    <string name="smbdeliveryratiocompared" comment="%1$s = comparator text, %2$.2f = ratio">SMB delivery ratio (fixed) %1$s %2$.2f</string>
+    <string name="autoisf_iobth_lease">Local iobTH lease</string>
+    <string name="iobth_lease_invalidation_failed">iobTH write blocked: local lease invalidation failed</string>
+    <string name="iobthleasecompared" comment="%1$s = exists / does not exist">Local iobTH lease %1$s</string>
+    <string name="autoisf_coverage">Insulin coverage</string>
+    <string name="coveragecompared" comment="%1$s = comparator text, %2$.0f = percent">Insulin coverage %1$s %2$.0f%%</string>
+    <string name="autoisf_bolus_coverage">Bolus coverage</string>
+    <string name="boluscoveragecompared" comment="%1$s = comparator text, %2$.0f = percent">Bolus coverage %1$s %2$.0f%%</string>
+    <string name="autoisf_raw_bg">Raw glucose</string>
+    <string name="rawbgcomparedmgdl" comment="%1$s = comparator text, %2$.0f = glucose, %3$s = unit">Raw glucose %1$s %2$.0f %3$s</string>
+    <string name="rawbgcomparedmmol" comment="%1$s = comparator text, %2$.1f = glucose, %3$s = unit">Raw glucose %1$s %2$.1f %3$s</string>
+    <string name="rawbgisnotavailable">Raw glucose is not available</string>
+    <string name="automate_reset_profile_percent" formatted="false">Reset profile percent to 100% (permanent)</string>
 </resources>

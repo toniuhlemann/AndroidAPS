@@ -2,6 +2,8 @@ package app.aaps.plugins.automation.actions
 
 import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.interfaces.alerts.ReminderScheduler
+import app.aaps.core.interfaces.aps.AutoIsfValueLeaseInvalidator
+import app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider
 import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.automation.AutomationStateInterface
 import app.aaps.core.interfaces.autotune.Autotune
@@ -42,6 +44,8 @@ ActionsTestBase : TestBaseWithProfile() {
     @Mock lateinit var configBuilder: ConfigBuilder
     @Mock lateinit var uel: UserEntryLogger
     @Mock lateinit var automationState: AutomationStateInterface
+    @Mock lateinit var effectiveAutoIsfSettingsProvider: EffectiveAutoIsfSettingsProvider
+    @Mock lateinit var leaseInvalidator: AutoIsfValueLeaseInvalidator
 
     /**
      * Real English for every name and description an action renders, so the expected text is what the
@@ -57,7 +61,7 @@ ActionsTestBase : TestBaseWithProfile() {
     val triggerDeps: app.aaps.plugins.automation.triggers.TriggerDeps by lazy {
         app.aaps.plugins.automation.triggers.TriggerDeps(
             aapsLogger, rxBus, text, profileFunction, profileUtil, preferences, mock(), persistenceLayer,
-            activePlugin, mock(), glucoseStatusProvider, dateUtil, automationState
+            activePlugin, mock(), glucoseStatusProvider, dateUtil, automationState, effectiveAutoIsfSettingsProvider
         )
     }
 
@@ -66,7 +70,7 @@ ActionsTestBase : TestBaseWithProfile() {
             triggerDeps, aapsLogger, text, { pumpEnactResultProvider() }, rxBus, dateUtil, mock<ReminderScheduler>(),
             config, persistenceLayer, profileFunction, profileRepository, profileUtil, glucoseStatusProvider,
             notificationManager, activePlugin, preferences, sceneApi, sceneIconResolver, smsCommunicator,
-            autotunePlugin, importExportPrefs, exportPasswordDataStore, configBuilder, uel, automationState
+            autotunePlugin, importExportPrefs, exportPasswordDataStore, configBuilder, uel, automationState, leaseInvalidator
         )
     }
 

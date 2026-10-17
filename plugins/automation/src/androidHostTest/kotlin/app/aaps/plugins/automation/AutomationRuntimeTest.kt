@@ -47,7 +47,7 @@ class AutomationRuntimeTest : TestBaseWithProfile() {
     private val triggerDeps: TriggerDeps by lazy {
         TriggerDeps(
             aapsLogger, rxBus, text, profileFunction, profileUtil, preferences, mock(), mock(),
-            activePlugin, iobCobCalculator, smbGlucoseStatusProvider, dateUtil, mock()
+            activePlugin, iobCobCalculator, smbGlucoseStatusProvider, dateUtil, mock(), mock()
         )
     }
     @Mock lateinit var constraintChecker: ConstraintsChecker

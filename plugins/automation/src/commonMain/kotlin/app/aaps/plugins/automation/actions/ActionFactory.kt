@@ -1,6 +1,7 @@
 package app.aaps.plugins.automation.actions
 
 import app.aaps.core.interfaces.alerts.ReminderScheduler
+import app.aaps.core.interfaces.aps.AutoIsfValueLeaseInvalidator
 import app.aaps.core.interfaces.automation.AutomationStateInterface
 import app.aaps.core.interfaces.autotune.Autotune
 import app.aaps.core.interfaces.configuration.Config
@@ -65,7 +66,9 @@ class ActionFactory(
     private val configBuilder: ConfigBuilder,
     // autoISF 3.2.x actions
     private val uel: UserEntryLogger,
-    private val automationState: AutomationStateInterface
+    private val automationState: AutomationStateInterface,
+    // Fork (IOB-Action viewer)
+    private val leaseInvalidator: AutoIsfValueLeaseInvalidator
 ) {
 
     /** A new, empty instance of every action type, for the "choose an action" list. */
@@ -74,7 +77,8 @@ class ActionFactory(
         actionNotification(), actionProfileSwitch(), actionProfileSwitchPercent(), actionRunAutotune(),
         actionRunScene(), actionSendSMS(), actionSettingsExport(), actionSMBChange(), actionSmoothingChange(),
         actionStartTempTarget(), actionStopProcessing(), actionStopTempTarget(),
-        actionAutoisfEnable(), actionAutoisfDisable(), actionSetAcceWeight(), actionSetIobTH(), actionSetAutomationState()
+        actionAutoisfEnable(), actionAutoisfDisable(), actionSetAcceWeight(), actionSetIobTH(), actionSetAutomationState(),
+        actionSetPpWeight(), actionSetDuraWeight(), actionSetSmbDeliveryRatio(), actionResetProfilePercent()
     )
 
     fun actionAlarm() = ActionAlarm(aapsLogger, rh, pumpEnactResultProvider, rxBus, dateUtil, reminderScheduler, config)
@@ -105,8 +109,14 @@ class ActionFactory(
     fun actionAutoisfEnable() = ActionAutoisfEnable(aapsLogger, rh, pumpEnactResultProvider, preferences, uel)
     fun actionAutoisfDisable() = ActionAutoisfDisable(aapsLogger, rh, pumpEnactResultProvider, preferences, uel)
     fun actionSetAcceWeight() = ActionSetAcceWeight(aapsLogger, rh, pumpEnactResultProvider, preferences, uel)
-    fun actionSetIobTH() = ActionSetIobTH(aapsLogger, rh, pumpEnactResultProvider, preferences, uel)
+    fun actionSetIobTH() = ActionSetIobTH(aapsLogger, rh, pumpEnactResultProvider, preferences, uel, leaseInvalidator)
     fun actionSetAutomationState() = ActionSetAutomationState(aapsLogger, rh, pumpEnactResultProvider, automationState)
+
+    // Fork (IOB-Action viewer)
+    fun actionSetPpWeight() = ActionSetPpWeight(aapsLogger, rh, pumpEnactResultProvider, preferences, uel)
+    fun actionSetDuraWeight() = ActionSetDuraWeight(aapsLogger, rh, pumpEnactResultProvider, preferences, uel)
+    fun actionSetSmbDeliveryRatio() = ActionSetSmbDeliveryRatio(aapsLogger, rh, pumpEnactResultProvider, preferences, uel)
+    fun actionResetProfilePercent() = ActionResetProfilePercent(aapsLogger, rh, pumpEnactResultProvider, profileFunction)
 
     /**
      * A new, empty action of the given type. The name may be plain or fully qualified, because that is
@@ -136,6 +146,10 @@ class ActionFactory(
             ActionSetAcceWeight::class.simpleName        -> actionSetAcceWeight()
             ActionSetIobTH::class.simpleName             -> actionSetIobTH()
             ActionSetAutomationState::class.simpleName   -> actionSetAutomationState()
+            ActionSetPpWeight::class.simpleName          -> actionSetPpWeight()
+            ActionSetDuraWeight::class.simpleName        -> actionSetDuraWeight()
+            ActionSetSmbDeliveryRatio::class.simpleName  -> actionSetSmbDeliveryRatio()
+            ActionResetProfilePercent::class.simpleName  -> actionResetProfilePercent()
             else                                             -> null
         }
 
