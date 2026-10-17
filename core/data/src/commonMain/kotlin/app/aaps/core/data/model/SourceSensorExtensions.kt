@@ -36,4 +36,8 @@ private val FLAT_BG_CHECK_SENSORS = setOf(
     SourceSensor.AIDEX,
     SourceSensor.AIDEX_X,
     SourceSensor.UNKNOWN,
+    // Fork 0050: Libre 2 and 3 can freeze on one value like Libre 1, and a Libre 3 read by Juggluco
+    // arrives as LIBRE_2. Without them the stuck sensor safeguard was dead for these sensors.
+    SourceSensor.LIBRE_2,
+    SourceSensor.LIBRE_3,
 )

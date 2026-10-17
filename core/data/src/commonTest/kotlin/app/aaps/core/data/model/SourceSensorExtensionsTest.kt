@@ -114,12 +114,19 @@ class SourceSensorExtensionsTest {
     fun `named native sources do not need the flat check`() {
         assertFalse(SourceSensor.DEXCOM_G6.needsFlatBgCheck())
         assertFalse(SourceSensor.DEXCOM_UNKNOWN.needsFlatBgCheck())
-        assertFalse(SourceSensor.LIBRE_2.needsFlatBgCheck())
         assertFalse(SourceSensor.MEDTRUM_UNKNOWN.needsFlatBgCheck())
         assertFalse(SourceSensor.GLUPRO.needsFlatBgCheck())
         assertFalse(SourceSensor.SIBIONIC_GS1.needsFlatBgCheck())
         assertFalse(SourceSensor.SIBIONIC_GS3.needsFlatBgCheck())
         assertFalse(SourceSensor.ACCU_CHEK.needsFlatBgCheck())
         assertFalse(SourceSensor.CARESENS_AIR.needsFlatBgCheck())
+    }
+
+    @Test
+    fun `fork - libre 2 and 3 get the flat check`() {
+        // Fork 0050: they can freeze on one value like Libre 1, and Juggluco sends a Libre 3 as LIBRE_2.
+        assertTrue(SourceSensor.LIBRE_2.needsFlatBgCheck())
+        assertTrue(SourceSensor.LIBRE_3.needsFlatBgCheck())
+        assertTrue(SourceSensor.fromString("Libre2 Native").needsFlatBgCheck())
     }
 }

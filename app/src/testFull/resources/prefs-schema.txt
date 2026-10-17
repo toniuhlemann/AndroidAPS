@@ -215,6 +215,8 @@ fsl_exp1_factor|DoubleKey|true
 fsl_last_raw|DoubleNonKey|false
 fsl_last_smooth|DoubleNonKey|false
 fsl_last_time_raw|LongNonKey|false
+fsl_ukf_q1_enabled|BooleanKey|true
+fsl_ukf_q1_status|StringNonKey|false
 g8_bolusspeed|DiaconnIntKey|true
 garmin_aaps_key|GarminStringKey|true
 google_drive_folder_id|StringNonKey|true

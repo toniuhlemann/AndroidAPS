@@ -70,6 +70,9 @@ enum class StringNonKey(
     // autoISF 3.2.x automation states (Tobias/ga-zelle). Same stored names as the automation-state plugin of 3.4.
     AutomationCurrentStates(key = "automation_state_service", defaultValue = "{}"),
     AutomationStateValues(key = "automation_state_values", defaultValue = "{}"),
+    // Fork: the last Q1 filter status as JSON - written by the xDrip source, read by the state export,
+    // so the viewer SEES which filter made the loop value. Device runtime state -> not exportable.
+    FslUkfQ1Status(key = "fsl_ukf_q1_status", defaultValue = "", exportable = false),
     QuickLaunchActions(key = "quick_launch_actions", defaultValue = "[{\"type\":\"wizard\"},{\"type\":\"quick_launch_config\"}]"),
     InsulinConfiguration("insulin_configuration", "{}", sync = SyncSpec(SyncChannel.Cold, SyncDirection.Bidirectional)),
     ComposeGraphConfig("compose_graphconfig", ""),

@@ -226,6 +226,24 @@ class NsIncomingDataProcessorTest : TestBaseWithProfile() {
         verify(storeDataForDb).addToBoluses(argThat { iCfg == InsulinType.OREF_RAPID_ACTING.iCfg })
     }
 
+    // Fork: an implausible insulin field from Nightscout would act through the whole DIA in every IOB
+    // calculation, so it is dropped before it reaches the database.
+    @Test
+    fun `fork - a bolus with implausible insulin is ignored`() {
+        listOf(-1.0, 0.0, Double.NaN, Double.POSITIVE_INFINITY, 60.5).forEach { insulin ->
+            processor.processTreatments(listOf<NSTreatment>(bolusWithoutICfg().copy(insulin = insulin)), doFullSync = false)
+        }
+
+        verify(storeDataForDb, never()).addToBoluses(any())
+    }
+
+    @Test
+    fun `fork - a bolus at the plausibility limit is kept`() {
+        processor.processTreatments(listOf<NSTreatment>(bolusWithoutICfg().copy(insulin = 60.0)), doFullSync = false)
+
+        verify(storeDataForDb).addToBoluses(argThat { amount == 60.0 })
+    }
+
     private fun bolusWithoutICfg() = NSBolus(
         identifier = "legacy_bolus", date = now - T.mins(20).msecs(), insulin = 2.5, utcOffset = null, isValid = true,
         eventType = EventType.CORRECTION_BOLUS, notes = null, pumpId = null, endId = null, pumpType = null,

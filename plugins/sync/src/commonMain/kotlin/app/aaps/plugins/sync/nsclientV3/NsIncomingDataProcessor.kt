@@ -59,6 +59,9 @@ import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
 import kotlinx.serialization.json.JsonObject
 
+/** Fork: a bolus from Nightscout above this is not plausible and is ignored (see the NSBolus branch). */
+private const val NS_BOLUS_MAX_U = 60.0
+
 @SingleIn(AppScope::class)
 @Inject
 class NsIncomingDataProcessor(
@@ -159,8 +162,16 @@ class NsIncomingDataProcessor(
 
                 when (treatment) {
                     is NSBolus                  ->
-                        if (preferences.get(BooleanKey.NsClientAcceptInsulin) || config.AAPSCLIENT || doFullSync)
+                        if (preferences.get(BooleanKey.NsClientAcceptInsulin) || config.AAPSCLIENT || doFullSync) {
+                            // Fork: temp targets are validated below, boluses were not. A broken insulin field
+                            // (negative, NaN, absurdly large) would act through the whole DIA in every IOB
+                            // calculation and blind the headroom gates.
+                            if (!treatment.insulin.isFinite() || treatment.insulin <= 0.0 || treatment.insulin > NS_BOLUS_MAX_U) {
+                                aapsLogger.debug(LTag.NSCLIENT, "Ignored Bolus with implausible insulin=${treatment.insulin} $treatment")
+                                continue
+                            }
                             storeDataForDb.addToBoluses(treatment.toBolus(fallbackICfg()))
+                        }
 
                     is NSCarbs                  ->
                         if (preferences.get(BooleanKey.NsClientAcceptCarbs) || config.AAPSCLIENT || doFullSync)

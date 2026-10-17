@@ -33,6 +33,7 @@ import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.DoubleNonKey
 import app.aaps.core.keys.IntNonKey
 import app.aaps.core.keys.LongNonKey
+import app.aaps.core.keys.StringNonKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.objects.workflow.LoggingWorker
@@ -211,6 +212,58 @@ class XdripSourcePlugin(
                 calibrationMsg += ",\"calibrationStart\":${preferences.get(LongNonKey.FslCalibrationStart)},\"calibrationIgnore\":${preferences.get(BooleanKey.FslCalibrationEnd)}"
                 calibrationMsg += "}"
                 aapsLogger.debug(LTag.BGSOURCE, calibrationMsg)
+                // Fork (Toni's smoothing): the causal 1-min UKF "Q1" replaces the EMA as the LOOP value.
+                // Its input is the calibrated series BEFORE the EMA (= stored GV.raw + the current
+                // extraBgEstimate) - never GV.value and never the uncalibrated sensor value. The EMA above
+                // keeps running warm, so the switch is an instant rollback; any error falls back silently
+                // to the EMA (the value stays `smooth`). GV.raw itself stays the unsmoothed value.
+                if (preferences.get(BooleanKey.FslUkfQ1Enabled)) {
+                    val ema = smooth
+                    try {
+                        // Reset bounds: after a sensor change, and after a calibration (the stored raw
+                        // points still carry the OLD slope/offset), Q1 must not filter two measuring regimes
+                        // as one series. The viewer reference model bounds the window the same way.
+                        val sensorStart = maxOf(
+                            getSensorStartTime(bundle) ?: 0L,
+                            persistenceLayer.getLastTherapyRecordUpToNow(TE.Type.SENSOR_CHANGE)?.timestamp ?: 0L,
+                        )
+                        val calibrationStart = preferences.get(LongNonKey.FslCalibrationStart).takeIf { it > 0L } ?: 0L
+                        val resetBoundary = maxOf(sensorStart, calibrationStart)
+                        val windowStart = thisTimeRaw - UkfQ1.WINDOW_SAMPLES * 60_000L
+                        val from = maxOf(windowStart, resetBoundary)
+                        val history = persistenceLayer
+                            .getBgReadingsDataFromTimeToTime(from, thisTimeRaw - 1, true)
+                            .mapNotNull { gv -> gv.raw?.takeIf { it > 39.0 }?.let { UkfQ1.Point(gv.timestamp, it) } }
+                        // A STATE, not an event: which bound limits the window holds for as long as it does.
+                        val boundedBy = when {
+                            from == windowStart             -> "window"
+                            sensorStart >= calibrationStart -> "sensorChange"
+                            else                            -> "calibrationStart"
+                        }
+                        val q1 = UkfQ1.leadingEdge(history + UkfQ1.Point(thisTimeRaw, extraBgEstimate))
+                        if (q1 != null) smooth = q1.glucose
+                        val status = "{\"applied\":${q1 != null},\"ts\":$thisTimeRaw," +
+                            "\"loopValue\":$smooth,\"ema\":$ema," +
+                            (q1?.let {
+                                "\"q1\":${it.glucose},\"rate\":${it.ratePerMin}," +
+                                    "\"learnedR\":${it.learnedR},\"outlier\":${it.outlier},"
+                            } ?: "\"fallback\":\"emaKept\",") +
+                            "\"inputCount\":${history.size + 1},\"boundedBy\":\"$boundedBy\"," +
+                            "\"windowFromTs\":$from}"
+                        aapsLogger.debug(LTag.BGSOURCE, "UkfQ1 json: $status")
+                        // The same status into the preferences, so the state export can pass it on and the
+                        // viewer shows a silent fallback to the EMA without anyone reading the log.
+                        preferences.put(StringNonKey.FslUkfQ1Status, status)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        smooth = ema
+                        val status = "{\"applied\":false,\"ts\":$thisTimeRaw," +
+                            "\"loopValue\":$smooth,\"ema\":$smooth,\"fallback\":\"error\"}"
+                        aapsLogger.error(LTag.BGSOURCE, "UkfQ1 json: $status", e)
+                        preferences.put(StringNonKey.FslUkfQ1Status, status)
+                    }
+                }
             }
             glucoseValues += GV(
                 timestamp = thisTimeRaw,

@@ -230,6 +230,8 @@ enum class BooleanKey(
     // One-shot switches: the user sets them, the plugin resets them. Local only, not synced.
     FslCalibrationTrigger("calibration_stops_SMB", false, KeysStrings.pref_title_calibration_stops_smb, KeysStrings.pref_summary_calibration_stops_smb, defaultedBySM = true),
     FslCalibrationEnd("calibration_end", false, KeysStrings.pref_title_calibration_enable_smb, KeysStrings.pref_summary_calibration_enable_smb, defaultedBySM = true),
+    // Fork: the causal 1-min UKF (Q1) as the loop value instead of the EMA (Libre without raw value).
+    FslUkfQ1Enabled("fsl_ukf_q1_enabled", false, KeysStrings.pref_title_fsl_ukf_q1, KeysStrings.pref_summary_fsl_ukf_q1, defaultedBySM = true),
 
     MaintenanceEnableFabric("enable_fabric2", true, KeysStrings.pref_title_maintenance_enable_fabric, defaultedBySM = true, hideParentScreenIfHidden = true),
 

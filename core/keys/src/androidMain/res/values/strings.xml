@@ -439,6 +439,8 @@
     <string name="pref_summary_calibration_stops_smb">Trigger this once before changing calibration settings</string>
     <string name="pref_title_calibration_enable_smb">Re-enable SMB and AutoISF weights earlier anyway</string>
     <string name="pref_summary_calibration_enable_smb">Activate this when suppressing is no longer required because calibration transition was smooth</string>
+    <string name="pref_title_fsl_ukf_q1">Use causal 1-min UKF (Q1) instead of EMA</string>
+    <string name="pref_summary_fsl_ukf_q1">Replaces the EMA loop value with the causal 1-minute UKF leading edge. The EMA keeps running warm, so switching off takes effect on the NEXT value - but the stored history keeps the Q1 values already written, so deltas and fits see a mixed series for a while afterwards. A Q1 failure falls back to the EMA value and is logged as applied=false. The Q1 window restarts at every sensor change and calibration start.</string>
     <string name="pref_title_fsl_cal_offset">Offset of Libre calibration versus finger like in xDrip</string>
     <string name="pref_summary_fsl_cal_offset">OFFSET value as in calibration formula\nLibre_calibrated = OFFSET + slope * Libre_raw</string>
     <string name="pref_title_fsl_cal_slope">Slope of Libre calibration versus finger like in xDrip</string>

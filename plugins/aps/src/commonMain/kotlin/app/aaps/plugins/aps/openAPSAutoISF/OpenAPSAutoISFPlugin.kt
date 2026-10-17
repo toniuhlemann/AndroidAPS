@@ -62,6 +62,7 @@ import app.aaps.core.keys.DoubleNonKey
 import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.IntNonKey
 import app.aaps.core.keys.LongNonKey
+import app.aaps.core.keys.StringNonKey
 import app.aaps.core.keys.UnitDoubleKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.TextRef.Companion.withArgs
@@ -87,6 +88,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlin.math.abs
@@ -803,6 +805,11 @@ open class OpenAPSAutoISFPlugin(
                     // off. Made visible, so it is clear WHY the loop doses more carefully after a restart.
                     putOpt("slopeFromMinDeviation", mealData.slopeFromMinDeviation.finiteOrNull())
                 })
+                // Which filter made the loop value, so the viewer sees it without the log. Passed through as
+                // written; without the key no Q1 cycle has run.
+                notCancelled {
+                    preferences.get(StringNonKey.FslUkfQ1Status).takeIf { it.isNotBlank() }?.let { Json.parseToJsonElement(it) as? JsonObject }
+                }?.let { put("filter", it) }
                 activeTt?.let { tt ->
                     put("tt", buildJsonObject {
                         putOpt("target", tt.lowTarget)
@@ -1559,7 +1566,8 @@ open class OpenAPSAutoISFPlugin(
                     BooleanKey.FslCalibrationEnd,
                     DoubleKey.FslCalOffset,
                     DoubleKey.FslCalSlope,
-                    DoubleKey.FslSmoothAlpha
+                    DoubleKey.FslSmoothAlpha,
+                    BooleanKey.FslUkfQ1Enabled
                 )
             )
         ),
