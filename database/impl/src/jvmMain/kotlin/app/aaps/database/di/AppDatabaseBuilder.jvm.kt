@@ -62,6 +62,7 @@ class JvmAppDatabaseBuilder {
                 override fun onOpen(connection: SQLiteConnection) {
                     super.onOpen(connection)
                     createCustomIndexes(connection)
+                    createValueLeaseGuards(connection) // fork, see ForkDatabaseMigration
                 }
             })
             .fallbackToDestructiveMigration(false)

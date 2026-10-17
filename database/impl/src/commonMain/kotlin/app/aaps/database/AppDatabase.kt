@@ -17,6 +17,7 @@ import app.aaps.database.daos.ExtendedBolusDao
 import app.aaps.database.daos.FoodDao
 import app.aaps.database.daos.GlucoseValueDao
 import app.aaps.database.daos.HeartRateDao
+import app.aaps.database.daos.LocalCommandDao
 import app.aaps.database.daos.PreferenceChangeDao
 import app.aaps.database.daos.ProfileSwitchDao
 import app.aaps.database.daos.RunningModeDao
@@ -116,6 +117,8 @@ internal abstract class AppDatabase : RoomDatabase(), AppDatabaseDaos {
     abstract override val calibrationEntryDao: CalibrationEntryDao
 
     abstract override val autoIsfValuesDao: AutoIsfValuesDao
+
+    abstract override val localCommandDao: LocalCommandDao
 }
 
 // Room supplies the actual per target. It must be `expect`, because the generated initialiser is

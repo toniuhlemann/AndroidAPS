@@ -11,6 +11,28 @@ import app.aaps.database.entities.TABLE_LOCAL_COMMAND_OWNERSHIP
 import app.aaps.database.entities.TABLE_LOCAL_COMMAND_VALUE_LEASE
 import app.aaps.database.entities.TABLE_TOTAL_DAILY_DOSES
 
+/**
+ * The two guards of the value lease table: `activeSlot` may only be NULL (ended) or 1 (active).
+ *
+ * The unique index (capability, activeSlot) allows only ONE active lease per capability only as long
+ * as no other value than 1 is used for "active" - a second active row with 2 would pass the index.
+ * These triggers make that mistake impossible. Room cannot declare a trigger and does not check
+ * them in its schema check, so every builder creates them when the database is opened, next to the
+ * custom indexes, the same way for a new database and after a migration (as in the fork).
+ */
+internal fun createValueLeaseGuards(connection: SQLiteConnection) {
+    connection.execSQL(
+        "CREATE TRIGGER IF NOT EXISTS `lcvl_activeSlot_insert_guard` BEFORE INSERT ON `$TABLE_LOCAL_COMMAND_VALUE_LEASE` " +
+            "WHEN NEW.activeSlot IS NOT NULL AND NEW.activeSlot != 1 " +
+            "BEGIN SELECT RAISE(ABORT, 'activeSlot must be NULL or 1'); END"
+    )
+    connection.execSQL(
+        "CREATE TRIGGER IF NOT EXISTS `lcvl_activeSlot_update_guard` BEFORE UPDATE ON `$TABLE_LOCAL_COMMAND_VALUE_LEASE` " +
+            "WHEN NEW.activeSlot IS NOT NULL AND NEW.activeSlot != 1 " +
+            "BEGIN SELECT RAISE(ABORT, 'activeSlot must be NULL or 1'); END"
+    )
+}
+
 /*
  * Fork database: upstream 36 plus the fork tables (autoIsfValues and the three local command tables).
  *

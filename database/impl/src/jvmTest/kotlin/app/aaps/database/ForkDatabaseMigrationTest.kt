@@ -6,6 +6,7 @@ import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import androidx.sqlite.execSQL
 import app.aaps.database.di.createCustomIndexes
+import app.aaps.database.di.createValueLeaseGuards
 import app.aaps.database.di.databaseMigrations
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
@@ -67,6 +68,9 @@ class ForkDatabaseMigrationTest {
             assertThat(strings(c, "SELECT reasonKey FROM localCommandOwnership")).containsExactly("PEAK_STOP")
             assertThat(strings(c, "SELECT capability FROM localCommandValueLease")).containsExactly("IOBTH")
             assertThat(longs(c, "SELECT COUNT(*) FROM calibrationEntries")).containsExactly(0L)
+            // The activeSlot guards of the lease table are back after the migration, as in the fork.
+            assertThat(strings(c, "SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name"))
+                .containsExactly("lcvl_activeSlot_insert_guard", "lcvl_activeSlot_update_guard").inOrder()
         }
     }
 
@@ -147,6 +151,7 @@ class ForkDatabaseMigrationTest {
                 override fun onOpen(connection: SQLiteConnection) {
                     super.onOpen(connection)
                     createCustomIndexes(connection)
+                    createValueLeaseGuards(connection)
                 }
             })
             .fallbackToDestructiveMigration(false)

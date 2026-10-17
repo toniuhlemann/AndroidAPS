@@ -5,7 +5,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
- * LocalCommandChannel — Persistenz (Spec v1.2 B1/B2, R5-Pilot-Bau, 21.07.2026).
+ * LocalCommandChannel — Persistenz (Spec v1.2 B1/B2, R5-Pilot-Bau).
  * BEIDE Tabellen leben bewusst in DERSELBEN AppDatabase wie TemporaryTarget (R2-B1:
  * Atomizitaet von Ownership-Pruefung, TT-Mutation und Outcome ist nur innerhalb EINER
  * Room-Transaktion moeglich). Lokal-only: KEIN TraceableDBEntry, kein NS-Sync, keine

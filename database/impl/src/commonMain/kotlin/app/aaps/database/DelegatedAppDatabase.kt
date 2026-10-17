@@ -11,6 +11,7 @@ import app.aaps.database.daos.ExtendedBolusDao
 import app.aaps.database.daos.FoodDao
 import app.aaps.database.daos.GlucoseValueDao
 import app.aaps.database.daos.HeartRateDao
+import app.aaps.database.daos.LocalCommandDao
 import app.aaps.database.daos.PreferenceChangeDao
 import app.aaps.database.daos.ProfileSwitchDao
 import app.aaps.database.daos.RunningModeDao
@@ -70,4 +71,8 @@ internal class DelegatedAppDatabase(val changes: MutableList<DBEntry>, private v
     val stepsCountDao: StepsCountDao = DelegatedStepsCountDao(changes, database.stepsCountDao)
     val autoIsfValuesDao: AutoIsfValuesDao = DelegatedAutoIsfValuesDao(changes, database.autoIsfValuesDao)
     val calibrationEntryDao: CalibrationEntryDao = DelegatedCalibrationEntryDao(changes, database.calibrationEntryDao)
+
+    // Fork, LocalCommandChannel: local only, NO NS sync -> on purpose without a delegated wrapper
+    // (its rows are no DBEntry changes for the observers).
+    val localCommandDao: LocalCommandDao = database.localCommandDao
 }

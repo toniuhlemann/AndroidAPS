@@ -12,6 +12,7 @@ import app.aaps.database.daos.ExtendedBolusDao
 import app.aaps.database.daos.FoodDao
 import app.aaps.database.daos.GlucoseValueDao
 import app.aaps.database.daos.HeartRateDao
+import app.aaps.database.daos.LocalCommandDao
 import app.aaps.database.daos.PreferenceChangeDao
 import app.aaps.database.daos.ProfileSwitchDao
 import app.aaps.database.daos.RunningModeDao
@@ -54,4 +55,6 @@ internal interface AppDatabaseDaos {
     val stepsCountDao: StepsCountDao
     val calibrationEntryDao: CalibrationEntryDao
     val autoIsfValuesDao: AutoIsfValuesDao
+    // Fork: the local command channel of the IOB-Action viewer
+    val localCommandDao: LocalCommandDao
 }

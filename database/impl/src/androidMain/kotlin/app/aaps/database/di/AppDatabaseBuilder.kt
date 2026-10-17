@@ -32,6 +32,7 @@ open class AppDatabaseBuilder {
                 override fun onOpen(connection: SQLiteConnection) {
                     super.onOpen(connection)
                     createCustomIndexes(connection)
+                    createValueLeaseGuards(connection) // fork, see ForkDatabaseMigration
                 }
             })
             .fallbackToDestructiveMigration(false)
@@ -53,6 +54,7 @@ open class AppDatabaseBuilder {
                 override fun onOpen(connection: SQLiteConnection) {
                     super.onOpen(connection)
                     createCustomIndexes(connection)
+                    createValueLeaseGuards(connection) // fork, see ForkDatabaseMigration
                 }
             })
             .fallbackToDestructiveMigration(false)
