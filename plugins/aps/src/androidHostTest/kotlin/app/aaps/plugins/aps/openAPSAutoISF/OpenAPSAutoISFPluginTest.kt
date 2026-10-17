@@ -17,6 +17,7 @@ import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.LongNonKey
 import app.aaps.core.keys.UnitDoubleKey
+import app.aaps.plugins.aps.iobaction.ValueOverlayReader
 import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
@@ -147,6 +148,43 @@ class OpenAPSAutoISFPluginTest : TestBaseWithProfile() {
         assertThat(openAPSAutoISFPlugin.interpolate(100.0)).isEqualTo(0.0)
         assertThat(openAPSAutoISFPlugin.interpolate(130.0)).isEqualTo(0.25)
         assertThat(openAPSAutoISFPlugin.interpolate(230.0)).isEqualTo(0.7)
+    }
+
+    // Fork (capability matrix A1): the value overlays of a run. The fork kept the run snapshot in a
+    // ThreadLocal; here it is passed as a value, and without it (any caller outside a run) the base counts.
+    private fun leaseSnapshot(ratio: Double? = null, weights: Map<String, Double> = emptyMap()) =
+        EffectiveAutoIsfSettingsProvider.Snapshot(
+            100, 100, AutoIsfOverrideState.NONE, null, null, null,
+            smbRatioEffective = ratio,
+            smbRatioState = if (ratio != null) AutoIsfOverrideState.ACTIVE else AutoIsfOverrideState.NONE,
+            weightOverrides = weights,
+            weightsState = if (weights.isEmpty()) AutoIsfOverrideState.NONE else AutoIsfOverrideState.ACTIVE,
+        )
+
+    @Test
+    fun `fork - the fixed SMB ratio comes from the run overlay and from the base outside a run`() {
+        whenever(preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatio)).thenReturn(0.55)
+        whenever(preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatioMin)).thenReturn(0.4)
+        whenever(preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatioMax)).thenReturn(0.6)
+        // bg range 0: the fixed ratio decides
+        whenever(preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatioBgRange)).thenReturn(0.0)
+
+        assertThat(openAPSAutoISFPlugin.determine_varSMBratio(180, 90.0, "enforced")).isEqualTo(0.55)
+        assertThat(openAPSAutoISFPlugin.determine_varSMBratio(180, 90.0, "enforced", leaseSnapshot(ratio = 0.3))).isEqualTo(0.3)
+        // a run without a ratio lease uses the base
+        assertThat(openAPSAutoISFPlugin.determine_varSMBratio(180, 90.0, "enforced", leaseSnapshot())).isEqualTo(0.55)
+    }
+
+    @Test
+    fun `fork - the range weights come from the run overlay and from the base outside a run`() {
+        whenever(preferences.get(DoubleKey.ApsAutoIsfLowBgWeight)).thenReturn(10.0)
+        whenever(preferences.get(DoubleKey.ApsAutoIsfHighBgWeight)).thenReturn(1.0)
+        val lease = leaseSnapshot(weights = mapOf(ValueOverlayReader.F_HIGH to 2.0, ValueOverlayReader.F_LOW to 5.0))
+
+        assertThat(openAPSAutoISFPlugin.interpolate(130.0, lease)).isEqualTo(0.5)   // 0.25 * 2
+        assertThat(openAPSAutoISFPlugin.interpolate(45.0, lease)).isEqualTo(-2.5)   // -0.5 * 5
+        assertThat(openAPSAutoISFPlugin.interpolate(130.0)).isEqualTo(0.25)
+        assertThat(openAPSAutoISFPlugin.interpolate(45.0)).isEqualTo(-5.0)
     }
 
     @Test

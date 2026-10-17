@@ -78,6 +78,7 @@ import app.aaps.core.utils.MidnightUtils
 import app.aaps.plugins.aps.ApsStrings
 import app.aaps.plugins.aps.events.EventOpenAPSUpdateGui
 import app.aaps.plugins.aps.events.EventResetOpenAPSGui
+import app.aaps.plugins.aps.iobaction.ValueOverlayReader
 import app.aaps.plugins.aps.keys.ApsIntentKey
 import app.aaps.plugins.aps.openAPSSMB.PhoneMovementDetector
 import app.aaps.plugins.aps.openAPSSMB.StepService
@@ -162,13 +163,31 @@ open class OpenAPSAutoISFPlugin(
     val autoIsfWeights; get() = preferences.get(BooleanKey.ApsUseAutoIsfWeights)
     private val autoISF_max; get() = preferences.get(DoubleKey.ApsAutoIsfMax)
     private val autoISF_min; get() = preferences.get(DoubleKey.ApsAutoIsfMin)
-    private val bgAccel_ISF_weight; get() = preferences.get(DoubleKey.ApsAutoIsfBgAccelWeight)
-    private val bgBrake_ISF_weight; get() = preferences.get(DoubleKey.ApsAutoIsfBgBrakeWeight)
-    private val pp_ISF_weight; get() = preferences.get(DoubleKey.ApsAutoIsfPpWeight)
-    private val lower_ISFrange_weight; get() = preferences.get(DoubleKey.ApsAutoIsfLowBgWeight)
-    private val higher_ISFrange_weight; get() = preferences.get(DoubleKey.ApsAutoIsfHighBgWeight)
-    private val dura_ISF_weight; get() = preferences.get(DoubleKey.ApsAutoIsfDuraWeight)
-    private val smb_delivery_ratio; get() = preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatio)
+
+    /*
+     * Fork (capability matrix A1, value leases): the autoISF weights and the fixed SMB delivery ratio
+     * are read through the overlay of THIS run, the base preference stays untouched.
+     *
+     * The fork kept the run snapshot in a ThreadLocal, for two reasons: a lease that ends in the
+     * middle of a run must not let one run calculate with two values, and callers OUTSIDE a run must
+     * see the base - calculateVariableIsf() serves overview, NS upload, widgets and automations, and
+     * its result goes into autoIsfCache, which feeds COB and deviations for up to a day. A lease value
+     * there would outlive the lease. invoke() is suspend here and can change threads, so a
+     * ThreadLocal would be silently wrong. Instead the snapshot is passed as a value: invoke() takes
+     * ONE snapshot and hands it on, every other caller passes null and gets the base.
+     */
+    private fun weight(overlay: EffectiveAutoIsfSettingsProvider.Snapshot?, field: String, key: DoubleKey): Double =
+        ValueOverlayReader.weight(overlay, field, preferences.get(key))
+
+    private fun bgAccelIsfWeight(o: EffectiveAutoIsfSettingsProvider.Snapshot?) = weight(o, ValueOverlayReader.F_ACCE, DoubleKey.ApsAutoIsfBgAccelWeight)
+    private fun bgBrakeIsfWeight(o: EffectiveAutoIsfSettingsProvider.Snapshot?) = weight(o, ValueOverlayReader.F_BRAKE, DoubleKey.ApsAutoIsfBgBrakeWeight)
+    private fun ppIsfWeight(o: EffectiveAutoIsfSettingsProvider.Snapshot?) = weight(o, ValueOverlayReader.F_PP, DoubleKey.ApsAutoIsfPpWeight)
+    private fun lowerIsfRangeWeight(o: EffectiveAutoIsfSettingsProvider.Snapshot?) = weight(o, ValueOverlayReader.F_LOW, DoubleKey.ApsAutoIsfLowBgWeight)
+    private fun higherIsfRangeWeight(o: EffectiveAutoIsfSettingsProvider.Snapshot?) = weight(o, ValueOverlayReader.F_HIGH, DoubleKey.ApsAutoIsfHighBgWeight)
+    private fun duraIsfWeight(o: EffectiveAutoIsfSettingsProvider.Snapshot?) = weight(o, ValueOverlayReader.F_DURA, DoubleKey.ApsAutoIsfDuraWeight)
+    private fun smbDeliveryRatio(o: EffectiveAutoIsfSettingsProvider.Snapshot?) =
+        ValueOverlayReader.ratio(o, preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatio))
+
     private val smb_delivery_ratio_min; get() = preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatioMin)
     private val smb_delivery_ratio_max; get() = preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatioMax)
     private val smb_delivery_ratio_bg_range
@@ -395,7 +414,7 @@ open class OpenAPSAutoISFPlugin(
         preferences.put(BooleanNonKey.ActivityMonitorStepsActive, stepActivityDetected)
         preferences.put(BooleanNonKey.ActivityMonitorStepsInactive, stepInactivityDetected)
         if (autoIsfMode) {
-            variableSensitivity = autoISF(profile)
+            variableSensitivity = autoISF(profile, overlay = autoIsfSettingsSnapshot)
         }
         val lastAppStart = preferences.get(LongNonKey.AppStart)
         val elapsedTimeSinceLastStart = (dateUtil.now() - lastAppStart).milliseconds.inWholeMinutes
@@ -456,13 +475,13 @@ open class OpenAPSAutoISFPlugin(
             enable_autoISF = autoIsfWeights,
             autoISF_max = autoISF_max,
             autoISF_min = autoISF_min,
-            bgAccel_ISF_weight = bgAccel_ISF_weight,
-            bgBrake_ISF_weight = bgBrake_ISF_weight,
-            pp_ISF_weight = pp_ISF_weight,
-            lower_ISFrange_weight = lower_ISFrange_weight,
-            higher_ISFrange_weight = higher_ISFrange_weight,
-            dura_ISF_weight = dura_ISF_weight,
-            smb_delivery_ratio = smb_delivery_ratio,
+            bgAccel_ISF_weight = bgAccelIsfWeight(autoIsfSettingsSnapshot),
+            bgBrake_ISF_weight = bgBrakeIsfWeight(autoIsfSettingsSnapshot),
+            pp_ISF_weight = ppIsfWeight(autoIsfSettingsSnapshot),
+            lower_ISFrange_weight = lowerIsfRangeWeight(autoIsfSettingsSnapshot),
+            higher_ISFrange_weight = higherIsfRangeWeight(autoIsfSettingsSnapshot),
+            dura_ISF_weight = duraIsfWeight(autoIsfSettingsSnapshot),
+            smb_delivery_ratio = smbDeliveryRatio(autoIsfSettingsSnapshot),
             smb_delivery_ratio_min = smb_delivery_ratio_min,
             smb_delivery_ratio_max = smb_delivery_ratio_max,
             smb_delivery_ratio_bg_range = preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatioBgRange),   //smb_delivery_ratio_bg_range was always in mg/dL
@@ -531,7 +550,7 @@ open class OpenAPSAutoISFPlugin(
         val loopSmbDecision = loop_smb(microBolusAllowed, oapsProfile, gateIob, use_iobTH, iobTHvirtual / iobTHtolerance * 100.0)
         val loopWantedSmb = loopSmbDecision.mode
         val flatBGsDetected = bgQualityCheck.state == BgQualityCheck.State.FLAT
-        val smbRatio = determine_varSMBratio(glucoseStatus.glucose.toInt(), target_bg, loopWantedSmb)
+        val smbRatio = determine_varSMBratio(glucoseStatus.glucose.toInt(), target_bg, loopWantedSmb, autoIsfSettingsSnapshot)
 
         // Fork 0041/0048: the COVERAGE line in the AUTO-ISF console - the insulin coverage the coverage
         // automations gate on. Raw bg (leads the smoothed value at turns), PROFILE target/ISF/IC (not the
@@ -682,7 +701,7 @@ open class OpenAPSAutoISFPlugin(
                 putOpt("apsGlucoseTs", glucoseStatus.date.takeIf { it > 0L })
                 put("smb", buildJsonObject {
                     putOpt("ratio", smbRatio)                       // effective SMB delivery ratio of this cycle
-                    putOpt("ratio_fixed", smb_delivery_ratio)
+                    putOpt("ratio_fixed", smbDeliveryRatio(snapshot))
                     putOpt("ratio_min", smb_delivery_ratio_min)
                     putOpt("ratio_max", smb_delivery_ratio_max)
                     putOpt("ratio_bg_range", smb_delivery_ratio_bg_range)
@@ -760,10 +779,10 @@ open class OpenAPSAutoISFPlugin(
                     putOpt("name_remaining", profileNameRemaining)
                     putOpt("enable_autoISF", autoIsfWeights)
                     putOpt("current_basal", oapsProfile.current_basal)
-                    putOpt("bgAccel_ISF_weight", bgAccel_ISF_weight)
-                    putOpt("pp_ISF_weight", pp_ISF_weight)
-                    putOpt("bgBrake_ISF_weight", bgBrake_ISF_weight)
-                    putOpt("dura_ISF_weight", dura_ISF_weight)
+                    putOpt("bgAccel_ISF_weight", bgAccelIsfWeight(snapshot))
+                    putOpt("pp_ISF_weight", ppIsfWeight(snapshot))
+                    putOpt("bgBrake_ISF_weight", bgBrakeIsfWeight(snapshot))
+                    putOpt("dura_ISF_weight", duraIsfWeight(snapshot))
                 })
                 put("iob", buildJsonObject {
                     val net = headerIob?.iob ?: iobData.iob
@@ -1004,7 +1023,12 @@ open class OpenAPSAutoISFPlugin(
 
     // Fork 0044: callers outside the loop pass their own list, so the live console only gets the
     // loop's own factor block. The returned value is the same either way.
-    suspend fun autoISF(profile: Profile, console: MutableList<String> = consoleError): Double {
+    // Fork (A1): [overlay] is the snapshot of the APS run, null outside a run (base weights).
+    suspend fun autoISF(profile: Profile, console: MutableList<String> = consoleError, overlay: EffectiveAutoIsfSettingsProvider.Snapshot? = null): Double {
+        val bgAccel_ISF_weight = bgAccelIsfWeight(overlay)
+        val bgBrake_ISF_weight = bgBrakeIsfWeight(overlay)
+        val pp_ISF_weight = ppIsfWeight(overlay)
+        val dura_ISF_weight = duraIsfWeight(overlay)
         val sens = profile.getProfileIsfMgdl()
         val glucose_status = glucoseStatusCalculatorAutoIsf.getGlucoseStatusData(allowOldData = false)
 
@@ -1138,7 +1162,7 @@ open class OpenAPSAutoISFPlugin(
         }
         autoIsfValues.acceIsf = acce_ISF
 
-        val bg_ISF = 1 + interpolate(100 - bg_off)
+        val bg_ISF = 1 + interpolate(100 - bg_off, overlay)
         console.add("bg_ISF adaptation is ${round(bg_ISF, 2)}")
         autoIsfValues.bgIsf = bg_ISF
         var liftISF: Double
@@ -1244,7 +1268,8 @@ open class OpenAPSAutoISFPlugin(
         return round(sens / sensitivityRatio, 1)     // nothing changed
     }
 
-    fun interpolate(xdata: Double): Double {   // interpolate ISF behaviour based on polygons defining nonlinear functions defined by value pairs for ...
+    // Fork (A1): [overlay] as in autoISF - the range weights of the run, null = base.
+    fun interpolate(xdata: Double, overlay: EffectiveAutoIsfSettingsProvider.Snapshot? = null): Double {   // interpolate ISF behaviour based on polygons defining nonlinear functions defined by value pairs for ...
         //  ...             <----------------------  glucose  ---------------------->
         val polyX = arrayOf(50.0, 60.0, 80.0, 90.0, 100.0, 110.0, 150.0, 180.0, 200.0)
         val polyY = arrayOf(-0.5, -0.5, -0.3, -0.2, 0.0, 0.0, 0.5, 0.7, 0.7)
@@ -1303,9 +1328,9 @@ open class OpenAPSAutoISFPlugin(
             }
         }
         newVal = if (xdata > 100) {
-            newVal * higher_ISFrange_weight
+            newVal * higherIsfRangeWeight(overlay)
         } else {
-            newVal * lower_ISFrange_weight
+            newVal * lowerIsfRangeWeight(overlay)
         }
         return newVal
     }
@@ -1452,8 +1477,9 @@ open class OpenAPSAutoISFPlugin(
         return LoopSmbDecision("AAPS", "even-odd-off")                     // leave it to standard AAPS
     }
 
-    fun determine_varSMBratio(bg: Int, target_bg: Double, loop_wanted_smb: String): Double {   // let SMB delivery ratio increase from min to max depending on how much bg exceeds target
-        val fix_SMB: Double = smb_delivery_ratio
+    // Fork (A1): [overlay] is the snapshot of the APS run, null outside a run (base ratio).
+    fun determine_varSMBratio(bg: Int, target_bg: Double, loop_wanted_smb: String, overlay: EffectiveAutoIsfSettingsProvider.Snapshot? = null): Double {   // let SMB delivery ratio increase from min to max depending on how much bg exceeds target
+        val fix_SMB: Double = smbDeliveryRatio(overlay)
         val lower_SMB = min(smb_delivery_ratio_min, smb_delivery_ratio_max)
         val higher_SMB = max(smb_delivery_ratio_min, smb_delivery_ratio_max)
         val higher_bg = target_bg + smb_delivery_ratio_bg_range
