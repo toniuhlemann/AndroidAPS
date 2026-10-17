@@ -1,5 +1,6 @@
 package app.aaps.plugins.automation.triggers
 
+import app.aaps.core.interfaces.automation.AutomationStateInterface
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.iob.GlucoseStatusProvider
 import app.aaps.core.interfaces.iob.IobCobCalculator
@@ -39,5 +40,7 @@ class TriggerDeps(
     val activePlugin: ActivePlugin,
     val iobCobCalculator: IobCobCalculator,
     val glucoseStatusProvider: GlucoseStatusProvider,
-    val dateUtil: DateUtil
+    val dateUtil: DateUtil,
+    // autoISF 3.2.x automation states (TriggerAutomationState)
+    val automationState: AutomationStateInterface
 )

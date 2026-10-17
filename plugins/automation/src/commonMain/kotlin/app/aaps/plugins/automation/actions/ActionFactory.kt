@@ -1,12 +1,14 @@
 package app.aaps.plugins.automation.actions
 
 import app.aaps.core.interfaces.alerts.ReminderScheduler
+import app.aaps.core.interfaces.automation.AutomationStateInterface
 import app.aaps.core.interfaces.autotune.Autotune
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.configuration.ConfigBuilder
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.iob.GlucoseStatusProvider
 import app.aaps.core.interfaces.logging.AAPSLogger
+import app.aaps.core.interfaces.logging.UserEntryLogger
 import app.aaps.core.interfaces.maintenance.ImportExportPrefs
 import app.aaps.core.interfaces.notifications.NotificationManager
 import app.aaps.core.interfaces.plugin.ActivePlugin
@@ -60,7 +62,10 @@ class ActionFactory(
     private val autotunePlugin: Autotune,
     private val importExportPrefs: ImportExportPrefs,
     private val exportPasswordDataStore: ExportPasswordDataStore,
-    private val configBuilder: ConfigBuilder
+    private val configBuilder: ConfigBuilder,
+    // autoISF 3.2.x actions
+    private val uel: UserEntryLogger,
+    private val automationState: AutomationStateInterface
 ) {
 
     /** A new, empty instance of every action type, for the "choose an action" list. */
@@ -68,7 +73,8 @@ class ActionFactory(
         actionAlarm(), actionCarePortalEvent(), actionDisableScene(), actionEnableScene(),
         actionNotification(), actionProfileSwitch(), actionProfileSwitchPercent(), actionRunAutotune(),
         actionRunScene(), actionSendSMS(), actionSettingsExport(), actionSMBChange(), actionSmoothingChange(),
-        actionStartTempTarget(), actionStopProcessing(), actionStopTempTarget()
+        actionStartTempTarget(), actionStopProcessing(), actionStopTempTarget(),
+        actionAutoisfEnable(), actionAutoisfDisable(), actionSetAcceWeight(), actionSetIobTH(), actionSetAutomationState()
     )
 
     fun actionAlarm() = ActionAlarm(aapsLogger, rh, pumpEnactResultProvider, rxBus, dateUtil, reminderScheduler, config)
@@ -95,6 +101,13 @@ class ActionFactory(
     fun actionStopProcessing() = ActionStopProcessing(aapsLogger, rh, pumpEnactResultProvider)
     fun actionStopTempTarget() = ActionStopTempTarget(aapsLogger, rh, pumpEnactResultProvider, persistenceLayer, dateUtil)
 
+    // autoISF 3.2.x (Tobias/ga-zelle)
+    fun actionAutoisfEnable() = ActionAutoisfEnable(aapsLogger, rh, pumpEnactResultProvider, preferences, uel)
+    fun actionAutoisfDisable() = ActionAutoisfDisable(aapsLogger, rh, pumpEnactResultProvider, preferences, uel)
+    fun actionSetAcceWeight() = ActionSetAcceWeight(aapsLogger, rh, pumpEnactResultProvider, preferences, uel)
+    fun actionSetIobTH() = ActionSetIobTH(aapsLogger, rh, pumpEnactResultProvider, preferences, uel)
+    fun actionSetAutomationState() = ActionSetAutomationState(aapsLogger, rh, pumpEnactResultProvider, automationState)
+
     /**
      * A new, empty action of the given type. The name may be plain or fully qualified, because that is
      * how it is written in stored automations. Returns null on an unknown type.
@@ -118,6 +131,11 @@ class ActionFactory(
             ActionStartTempTarget::class.simpleName      -> actionStartTempTarget()
             ActionStopProcessing::class.simpleName       -> actionStopProcessing()
             ActionStopTempTarget::class.simpleName       -> actionStopTempTarget()
+            ActionAutoisfEnable::class.simpleName        -> actionAutoisfEnable()
+            ActionAutoisfDisable::class.simpleName       -> actionAutoisfDisable()
+            ActionSetAcceWeight::class.simpleName        -> actionSetAcceWeight()
+            ActionSetIobTH::class.simpleName             -> actionSetIobTH()
+            ActionSetAutomationState::class.simpleName   -> actionSetAutomationState()
             else                                             -> null
         }
 

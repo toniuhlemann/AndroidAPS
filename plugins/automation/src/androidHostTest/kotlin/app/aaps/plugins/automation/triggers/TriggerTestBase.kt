@@ -2,6 +2,7 @@ package app.aaps.plugins.automation.triggers
 
 import app.aaps.core.data.pump.defs.PumpDescription
 import app.aaps.core.interfaces.aps.AutosensDataStore
+import app.aaps.core.interfaces.automation.AutomationStateInterface
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.pump.PumpInsulin
 import app.aaps.core.interfaces.pump.PumpWithConcentration
@@ -27,6 +28,7 @@ open class TriggerTestBase : TestBaseWithProfile() {
     @Mock lateinit var sceneApi: SceneAutomationApi
     @Mock lateinit var persistenceLayer: PersistenceLayer
     @Mock lateinit var pumpPluginWithConcentration: PumpWithConcentration
+    @Mock lateinit var automationState: AutomationStateInterface
     val pumpDescription = PumpDescription()
 
     /**
@@ -54,7 +56,7 @@ open class TriggerTestBase : TestBaseWithProfile() {
     val triggerDeps: TriggerDeps by lazy {
         TriggerDeps(
             aapsLogger, rxBus, text, profileFunction, profileUtil, preferences, lastKnownLocation,
-            persistenceLayer, activePlugin, iobCobCalculator, smbGlucoseStatusProvider, dateUtil
+            persistenceLayer, activePlugin, iobCobCalculator, smbGlucoseStatusProvider, dateUtil, automationState
         )
     }
 

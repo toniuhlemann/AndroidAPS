@@ -39,7 +39,7 @@ class BolusTimerImplTest : TestBase() {
     private val triggerDeps: TriggerDeps by lazy {
         TriggerDeps(
             aapsLogger, rxBus, rh, profileFunction, mock(), preferences, mock(), mock(),
-            activePlugin, mock(), mock(), dateUtil
+            activePlugin, mock(), mock(), dateUtil, mock()
         )
     }
     private val rh = generatedTextResolver("automation" to AutomationStringsValues::textOf)

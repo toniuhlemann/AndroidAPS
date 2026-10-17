@@ -173,4 +173,25 @@
     <string name="permission_location_description">Needed for location-based automation triggers and WiFi network identification</string>
     <string name="permission_background_location_description">Needed for automation triggers to work when the app is in the background</string>
 
+    <!-- autoISF 3.2.x automation (Tobias/ga-zelle) -->
+    <string name="autoisf_alreadyenabled">AutoISF already enabled</string>
+    <string name="autoisf_enabled">AutoISF has been enabled</string>
+    <string name="autoisf_alreadydisabled">AutoISF already disabled</string>
+    <string name="autoisf_disabled">AutoISF has been disabled</string>
+    <string name="weight_new">new value</string>
+    <string name="weight_old">as before</string>
+    <string name="automate_set_acce_weight" comment="%1$.2f = new bgAccel weight, e.g. 0.05">Set bgAccel_ISF_weight to %1$.2f</string>
+    <string name="automate_set_iobTH_percent" comment="%1$d = new iobTH percent, e.g. 80">Set iobTH to %1$d%%</string>
+    <string name="autoisf_acce_weight">BgAccel weight</string>
+    <string name="autoisf_iobTH_percent">iobTH percent</string>
+    <string name="acceweightcompared" comment="%1$s = comparator text, %2$s = weight">acce weight %1$s %2$s</string>
+    <string name="iobTHpercentcompared" comment="%1$s = comparator text, %2$s = percent">iobTH percent %1$s %2$s</string>
+    <string name="disableautoisf">Disable glucose ISF weights(autoISF)</string>
+    <string name="enableautoisf">Enable glucose ISF weights(autoISF)</string>
+    <string name="set_state">Set automation state</string>
+    <string name="set_state_description" comment="%1$s = state name, %2$s = state value">Set automation state %1$s=%2$s</string>
+    <string name="check_state_name">Check automation state</string>
+    <string name="check_state_description" comment="%1$s = state name, %2$s = state value">Check automation state %1$s=%2$s</string>
+    <string name="state_name_label">State name</string>
+    <string name="state_value_label">State value</string>
 </resources>

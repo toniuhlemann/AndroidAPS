@@ -71,6 +71,9 @@ import app.aaps.plugins.automation.triggers.TriggerRecurringTime
 import app.aaps.plugins.automation.triggers.TriggerReservoirLevel
 import app.aaps.plugins.automation.triggers.TriggerSensorAge
 import app.aaps.plugins.automation.triggers.TriggerStepsCount
+import app.aaps.plugins.automation.triggers.TriggerAutomationState
+import app.aaps.plugins.automation.triggers.TriggerBgAcceWeight
+import app.aaps.plugins.automation.triggers.TriggerIobTH
 import app.aaps.plugins.automation.triggers.TriggerTempTarget
 import app.aaps.plugins.automation.triggers.TriggerTempTargetValue
 import app.aaps.plugins.automation.triggers.TriggerTime
@@ -726,7 +729,13 @@ class AutomationRuntime(
             actionFactory.actionSmoothingChange(),
             actionFactory.actionRunScene(),
             actionFactory.actionEnableScene(),
-            actionFactory.actionDisableScene()
+            actionFactory.actionDisableScene(),
+            // autoISF 3.2.x (Tobias/ga-zelle)
+            actionFactory.actionAutoisfEnable(),
+            actionFactory.actionAutoisfDisable(),
+            actionFactory.actionSetAcceWeight(),
+            actionFactory.actionSetIobTH(),
+            actionFactory.actionSetAutomationState()
         )
         // Autotune is only offered in engineering builds, as before.
         if (config.isEngineeringMode() && config.isDev())
@@ -758,7 +767,11 @@ class AutomationRuntime(
             TriggerSensorAge(triggerDeps),
             TriggerCannulaAge(triggerDeps),
             TriggerReservoirLevel(triggerDeps),
-            TriggerStepsCount(triggerDeps)
+            TriggerStepsCount(triggerDeps),
+            // autoISF 3.2.x (Tobias/ga-zelle)
+            TriggerIobTH(triggerDeps),
+            TriggerBgAcceWeight(triggerDeps),
+            TriggerAutomationState(triggerDeps)
         )
 
         val pump = activePlugin.activePump

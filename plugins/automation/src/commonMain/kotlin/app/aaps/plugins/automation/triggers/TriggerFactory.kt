@@ -71,6 +71,10 @@ class TriggerFactory(
         TriggerTimeRange::class.simpleName          -> TriggerTimeRange(deps)
         TriggerWifiSsid::class.simpleName           -> triggerWifiSsid()
         TriggerStepsCount::class.simpleName         -> TriggerStepsCount(deps)
+        // autoISF 3.2.x (Tobias/ga-zelle)
+        TriggerIobTH::class.simpleName              -> TriggerIobTH(deps)
+        TriggerBgAcceWeight::class.simpleName       -> TriggerBgAcceWeight(deps)
+        TriggerAutomationState::class.simpleName    -> TriggerAutomationState(deps)
 
         else                                        -> null
     }

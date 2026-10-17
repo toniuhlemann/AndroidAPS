@@ -29,14 +29,14 @@ class AutomationStateHolderTest : TestBase() {
     private val rh = generatedTextResolver("automation" to AutomationStringsValues::textOf)
 
     private val triggerDeps: TriggerDeps by lazy {
-        TriggerDeps(aapsLogger, mock(), rh, profileFunction, mock(), preferences, mock(), mock(), mock(), mock(), mock(), dateUtil)
+        TriggerDeps(aapsLogger, mock(), rh, profileFunction, mock(), preferences, mock(), mock(), mock(), mock(), mock(), dateUtil, mock())
     }
 
     private val eventFactory: AutomationEventFactory by lazy {
         val actionFactory = ActionFactory(
             triggerDeps, aapsLogger, rh, pumpEnactResultProvider, mock(), dateUtil, mock(), mock(), mock(),
             profileFunction, mock(), mock(), mock(), mock(), mock(), preferences, mock(), mock(), mock(), mock(),
-            mock(), mock(), mock()
+            mock(), mock(), mock(), mock(), mock()
         )
         AutomationEventFactory(aapsLogger, dateUtil, actionFactory, TriggerFactory(triggerDeps, mock(), mock(), mock()), triggerDeps)
     }

@@ -52,6 +52,9 @@ import app.aaps.plugins.automation.triggers.TriggerRecurringTime
 import app.aaps.plugins.automation.triggers.TriggerReservoirLevel
 import app.aaps.plugins.automation.triggers.TriggerSensorAge
 import app.aaps.plugins.automation.triggers.TriggerStepsCount
+import app.aaps.plugins.automation.triggers.TriggerAutomationState
+import app.aaps.plugins.automation.triggers.TriggerBgAcceWeight
+import app.aaps.plugins.automation.triggers.TriggerIobTH
 import app.aaps.plugins.automation.triggers.TriggerTempTarget
 import app.aaps.plugins.automation.triggers.TriggerTempTargetValue
 import app.aaps.plugins.automation.triggers.TriggerTime
@@ -95,6 +98,9 @@ fun TriggerEditor(
             is TriggerTempTarget         -> TriggerTempTargetEditor(trigger, onChange)
             is TriggerTempTargetValue    -> TriggerTempTargetValueEditor(trigger, onChange, tick)
             is TriggerStepsCount         -> TriggerStepsCountEditor(trigger, onChange, tick)
+            is TriggerIobTH              -> TriggerIobTHEditor(trigger, onChange, tick)
+            is TriggerBgAcceWeight       -> TriggerBgAcceWeightEditor(trigger, onChange, tick)
+            is TriggerAutomationState    -> TriggerAutomationStateEditor(trigger, onChange, tick)
             is TriggerTime               -> TriggerTimeEditor(trigger, onChange)
             is TriggerRecurringTime      -> TriggerRecurringTimeEditor(trigger, onChange)
             is TriggerTimeRange          -> TriggerTimeRangeEditor(trigger, onChange)

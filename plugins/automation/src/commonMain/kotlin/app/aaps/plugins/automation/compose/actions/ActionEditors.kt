@@ -29,6 +29,9 @@ import app.aaps.plugins.automation.actions.ActionSMBChange
 import app.aaps.plugins.automation.actions.ActionSendSMS
 import app.aaps.plugins.automation.actions.ActionSettingsExport
 import app.aaps.plugins.automation.actions.ActionSmoothingChange
+import app.aaps.plugins.automation.actions.ActionSetAcceWeight
+import app.aaps.plugins.automation.actions.ActionSetAutomationState
+import app.aaps.plugins.automation.actions.ActionSetIobTH
 import app.aaps.plugins.automation.actions.ActionStartTempTarget
 import app.aaps.plugins.automation.compose.elements.AutomationDropdown
 import app.aaps.plugins.automation.compose.elements.InputDropdownOnOffEditor
@@ -76,6 +79,9 @@ fun ActionEditor(
             is ActionRunScene             -> ActionRunSceneEditor(action, sceneOptions, tick, onChange)
             is ActionEnableScene          -> ActionEnableSceneEditor(action, sceneOptions, tick, onChange)
             is ActionDisableScene         -> ActionDisableSceneEditor(action, sceneOptions, tick, onChange)
+            is ActionSetAcceWeight        -> ActionSetAcceWeightEditor(action, tick, onChange)
+            is ActionSetIobTH             -> ActionSetIobTHEditor(action, tick, onChange)
+            is ActionSetAutomationState   -> ActionSetAutomationStateEditor(action, tick, onChange)
             else                          -> Text(action::class.simpleName.orEmpty())
         }
     }

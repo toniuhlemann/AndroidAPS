@@ -3,10 +3,12 @@ package app.aaps.plugins.automation.actions
 import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.interfaces.alerts.ReminderScheduler
 import app.aaps.core.interfaces.aps.Loop
+import app.aaps.core.interfaces.automation.AutomationStateInterface
 import app.aaps.core.interfaces.autotune.Autotune
 import app.aaps.core.interfaces.configuration.ConfigBuilder
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.iob.GlucoseStatusProvider
+import app.aaps.core.interfaces.logging.UserEntryLogger
 import app.aaps.core.interfaces.maintenance.ImportExportPrefs
 import app.aaps.core.interfaces.protection.ExportPasswordDataStore
 import app.aaps.core.interfaces.resources.TextResolver
@@ -38,6 +40,8 @@ ActionsTestBase : TestBaseWithProfile() {
     @Mock lateinit var importExportPrefs: ImportExportPrefs
     @Mock lateinit var exportPasswordDataStore: ExportPasswordDataStore
     @Mock lateinit var configBuilder: ConfigBuilder
+    @Mock lateinit var uel: UserEntryLogger
+    @Mock lateinit var automationState: AutomationStateInterface
 
     /**
      * Real English for every name and description an action renders, so the expected text is what the
@@ -53,7 +57,7 @@ ActionsTestBase : TestBaseWithProfile() {
     val triggerDeps: app.aaps.plugins.automation.triggers.TriggerDeps by lazy {
         app.aaps.plugins.automation.triggers.TriggerDeps(
             aapsLogger, rxBus, text, profileFunction, profileUtil, preferences, mock(), persistenceLayer,
-            activePlugin, mock(), glucoseStatusProvider, dateUtil
+            activePlugin, mock(), glucoseStatusProvider, dateUtil, automationState
         )
     }
 
@@ -62,7 +66,7 @@ ActionsTestBase : TestBaseWithProfile() {
             triggerDeps, aapsLogger, text, { pumpEnactResultProvider() }, rxBus, dateUtil, mock<ReminderScheduler>(),
             config, persistenceLayer, profileFunction, profileRepository, profileUtil, glucoseStatusProvider,
             notificationManager, activePlugin, preferences, sceneApi, sceneIconResolver, smsCommunicator,
-            autotunePlugin, importExportPrefs, exportPasswordDataStore, configBuilder
+            autotunePlugin, importExportPrefs, exportPasswordDataStore, configBuilder, uel, automationState
         )
     }
 
