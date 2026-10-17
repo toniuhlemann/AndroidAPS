@@ -166,9 +166,14 @@ class FuseFragment : DaggerFragment() {
             binding.fuseEarlyLowConfirm.text =
                 rh.gs(if (bestaetigt) R.string.fuse_early_low_confirm_waiting else R.string.fuse_early_low_confirm)
         }
+        // Konsolidierung 2.0: die Karte zeigt das Mahlzeitfenster des Kontos (Tonis Frist), nicht das 90-min-Markerfenster
+        // aus 1.x - sonst stand dort "abgelaufen", waehrend die Mahlzeit noch lief. Ohne Konto wie bisher.
+        val armedTs = fusePlugin.mealMarkerArmedTs()
+        val fensterEnde = fusePlugin.mahlzeitFensterEndeTs()
         val marker = FuseScreenModel.MarkerInfo(
-            armedTs = fusePlugin.mealMarkerArmedTs(),
-            windowMin = app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN,
+            armedTs = armedTs,
+            windowMin = if (fensterEnde > armedTs && armedTs > 0L) ((fensterEnde - armedTs) / 60_000L).toInt()
+            else app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN,
             envelopeU = fusePlugin.mealMarkerEnvelopeU(),
         )
         // Eigene Groesse neben Health: der Ledger kann die Abgabe ganz
@@ -218,8 +223,13 @@ class FuseFragment : DaggerFragment() {
             settings = FuseSettingsReport.build(fusePlugin.preferences),
         )
         val armed = fusePlugin.mealMarkerActive(now)
-        binding.fuseMealMarker.text =
-            if (armed) "◉ MAHLZEIT AKTIV" else getString(R.string.fuse_marker_m)
+        // Nach den ersten 90 min startet ein Druck eine NEUE Mahlzeit (neues Konto), auch wenn das Fenster der laufenden
+        // noch offen ist - der Knopf sagt das, statt wie ohne Mahlzeit auszusehen.
+        binding.fuseMealMarker.text = when {
+            armed -> "\u25C9 MAHLZEIT AKTIV"
+            fensterEnde > now -> getString(R.string.fuse_marker_new_meal)
+            else -> getString(R.string.fuse_marker_m)
+        }
     }
 
     private fun showDetailsState() {

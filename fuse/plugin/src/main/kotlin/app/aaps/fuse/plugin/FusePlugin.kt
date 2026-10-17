@@ -1218,10 +1218,15 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
      * E-034 v2 (Toni): die fruehe Versorgung der laufenden Mahlzeit ist durch ein gemessenes Tief gesperrt - und es
      * gibt ein Budget, das die Bestaetigung wieder freigeben koennte. Ein Konto mit Budget 0 ("Nur Marker", fruehe
      * Versorgung aus) liefert ohnehin keinen Erwartungsanteil; der Knopf haette dort nichts freizugeben.
+     *
+     * Im GANZEN Mahlzeitfenster des Kontos ([MahlzeitFenster]) - bisher nur im 90-min-Markerfenster aus 1.x: danach
+     * verschwand der Knopf, waehrend das Konto gesperrt blieb und das Fenster weiterlief (Geraetebefund).
      */
     fun fruehGesperrtNachTief(now: Long): Boolean =
-        mealMarkerActive(now) &&
-            ledgerAdapter.episodes.expectation?.let { it.early != null && it.earlyLowLocked && it.a0U > 0.0 } == true
+        MahlzeitFenster.gesperrtNachTief(ledgerAdapter.episodes.expectation, mealMarkerArmedTs(), now)
+
+    /** Ende des Mahlzeitfensters des laufenden Kontos [ms] (Tonis Frist); 0 = kein laufendes Konto zum gesetzten Marker. */
+    fun mahlzeitFensterEndeTs(): Long = MahlzeitFenster.endeTs(ledgerAdapter.episodes.expectation, mealMarkerArmedTs())
 
     /** Die Sperre ist schon bestaetigt (ab Sperrbeginn) - sie faellt, sobald das Tief vorbei und die Strecke erfuellt ist. */
     fun fruehNachTiefBestaetigt(): Boolean {
