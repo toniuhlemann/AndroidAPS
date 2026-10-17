@@ -97,7 +97,12 @@ class ConfigImpl(
     private val enabledOptionsCache = mutableMapOf<ExternalOptions, Boolean>()
 
     override fun isEngineeringModeOrRelease(): Boolean = if (!APS) true else isEngineeringMode() || !isDev()
-    override fun isEngineeringMode(): Boolean = isEnabled(ExternalOptions.ENGINEERING_MODE)
+
+    // Fork: engineering mode is always on, as in the fork (and in Tobias' autoISF builds) - no engineering_mode file
+    // needed. The fork's version name counts as a dev build (isDev), and without engineering mode SafetyPlugin would
+    // refuse the closed loop ("closed loop disabled on dev branch"), and Autotune and the engineering-only settings
+    // would stay hidden. ConfigImplEngineeringModeTest holds this. The separate autoISF unlock is not affected.
+    override fun isEngineeringMode(): Boolean = true
     override fun isDev(): Boolean = (VERSION.contains("-") || VERSION.matches(Regex(".*[a-zA-Z]+.*"))) && !VERSION.contains("-beta") && !VERSION.contains("-rc")
     // The override is read first and never cached. The instrumented tests change which options they
     // want between tests, so a cached answer from the first one would stick for the whole run. The file
