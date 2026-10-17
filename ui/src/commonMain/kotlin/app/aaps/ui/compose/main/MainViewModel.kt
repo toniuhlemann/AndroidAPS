@@ -966,24 +966,25 @@ class MainViewModel(
             val now = dateUtil.now()
             val eventId = source.fuseMarkerEreignis()
             val facts = source.fuseMarkerPrompt(now)
-            if (facts != null) {
-                _fuseMealPrompt.value = FuseMealPrompt(facts, eventId, now)
-                return@launch
-            }
-            // UNDO DEADLINE (Toni): the withdrawal is only noted and runs after the deadline - a slip in the middle of
-            // a meal would cost the whole authorization. NO fall back to toggling: without a running marker that
-            // would set a NEW one, without any question.
-            source.fuseMarkerRuecknahmeVormerken(now, eventId)?.let { due ->
-                val seconds = ((due - now + 999L) / 1_000L).toInt().coerceAtLeast(1)
-                _fuseMealWithdrawal.tryEmit(
-                    FuseMealWithdrawal(
-                        restMs = (due - now).coerceAtLeast(1_000L),
-                        message = rh.gs(CoreUiStrings.fuse_meal_withdraw_pending, seconds),
-                        undoLabel = rh.gs(CoreUiStrings.fuse_meal_withdraw_undo),
-                        undoneText = rh.gs(CoreUiStrings.fuse_meal_withdraw_undone),
-                        tooLateText = rh.gs(CoreUiStrings.fuse_meal_withdraw_too_late)
+            // The shape `if (facts == null) { withdrawal } else { question }` is read by MarkerRuecknahmeWaechterTest.
+            if (facts == null) {
+                // UNDO DEADLINE (Toni): the withdrawal is only noted and runs after the deadline - a slip in the middle
+                // of a meal would cost the whole authorization. NO fall back to toggling: without a running marker
+                // that would set a NEW one, without any question.
+                source.fuseMarkerRuecknahmeVormerken(now, eventId)?.let { due ->
+                    val seconds = ((due - now + 999L) / 1_000L).toInt().coerceAtLeast(1)
+                    _fuseMealWithdrawal.tryEmit(
+                        FuseMealWithdrawal(
+                            restMs = (due - now).coerceAtLeast(1_000L),
+                            message = rh.gs(CoreUiStrings.fuse_meal_withdraw_pending, seconds),
+                            undoLabel = rh.gs(CoreUiStrings.fuse_meal_withdraw_undo),
+                            undoneText = rh.gs(CoreUiStrings.fuse_meal_withdraw_undone),
+                            tooLateText = rh.gs(CoreUiStrings.fuse_meal_withdraw_too_late)
+                        )
                     )
-                )
+                }
+            } else {
+                _fuseMealPrompt.value = FuseMealPrompt(facts, eventId, now)
             }
             refreshQuickLaunch()
         }

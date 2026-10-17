@@ -201,6 +201,22 @@ class QuickLaunchConfigScreenTest {
         assertThat(offered).contains(QuickLaunchAction.BatteryChange)
     }
 
+    /**
+     * Fork (FUSE): the meal button has no element type, and every section filters by the element's category. It
+     * was in the offered list but in no section, so the user could not find it on the screen.
+     */
+    @Test
+    fun theFuseMealButtonIsOfferedOnScreenAndCanBeAdded() {
+        viewModels.labelOf = { if (it == QuickLaunchAction.FuseMeal) "Meal" else it.typeId }
+        viewModels.givenSelected(emptyList())
+
+        setScreen()
+        compose.onNode(hasScrollToNodeAction()).performScrollToNode(hasText("Meal"))
+        compose.onNodeWithContentDescription(addLabelFor("Meal")).performClick()
+
+        assertThat(storedActions()).containsExactly(QuickLaunchAction.FuseMeal, QuickLaunchAction.QuickLaunchConfig).inOrder()
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Adding and removing
     // ---------------------------------------------------------------------------------------------

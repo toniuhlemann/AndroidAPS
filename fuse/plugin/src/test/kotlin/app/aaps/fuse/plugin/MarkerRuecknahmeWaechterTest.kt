@@ -18,9 +18,10 @@ import java.io.File
  * 2. Der Zyklus holt eine faellige Vormerkung nach; sonst verschluckte ein
  *    Prozessende in der Frist eine gewollte Ruecknahme.
  *
- * v4: der FUSE-Reiter ist Compose ([FuseComposeContent]). Den Knopf der
- * Uebersicht gibt es in v4 noch nicht; sobald eine Datei ausserhalb von FUSE
- * `fuseMarkerToggle(` ruft, prueft dieser Waechter sie mit (siehe
+ * v4: der FUSE-Reiter ist Compose ([FuseComposeContent]). Der Knopf des
+ * Hauptbildschirms sitzt in der Schnellstartleiste (MainViewModel im Modul
+ * ui, Variable `facts` statt `fakten`); jede Datei ausserhalb von FUSE, die
+ * `fuseMarkerToggle(` ruft, prueft dieser Waechter mit (siehe
  * [weitere Knoepfe werden mitgeprueft]).
  *
  * Statisch wie [FusePluginLaufSperreWaechterTest]: ein Laufzeittest
@@ -49,10 +50,10 @@ class MarkerRuecknahmeWaechterTest {
         "fuse/plugin/src/main/kotlin/app/aaps/fuse/plugin/FuseComposeContent.kt",
     )
 
-    /** Der Ruecknahme-Zweig eines Knopfs: ab `if (fakten == null)` bis zum `else`, das die Rueckfrage zeigt. */
+    /** Der Ruecknahme-Zweig eines Knopfs: ab `if (fakten == null)` (englisch `facts`) bis zum `else`, das die Rueckfrage zeigt. */
     private fun ruecknahmeZweig(name: String, code: String): String {
-        val start = Regex("""if\s*\(\s*fakten\s*==\s*null\s*\)""").find(code)?.range?.first ?: -1
-        assertTrue(start >= 0) { "$name: Ruecknahme-Zweig (fakten == null) nicht gefunden - greift der Waechter?" }
+        val start = Regex("""if\s*\(\s*(?:fakten|facts)\s*==\s*null\s*\)""").find(code)?.range?.first ?: -1
+        assertTrue(start >= 0) { "$name: Ruecknahme-Zweig (fakten/facts == null) nicht gefunden - greift der Waechter?" }
         val ende = Regex("""}\s*else\b""").find(code, start)?.range?.first ?: -1
         assertTrue(ende > start) { "$name: kein else-Zweig nach dem Ruecknahme-Zweig" }
         return code.substring(start, ende)

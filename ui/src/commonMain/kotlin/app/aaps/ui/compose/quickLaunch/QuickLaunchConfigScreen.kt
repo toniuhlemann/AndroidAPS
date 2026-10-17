@@ -171,8 +171,10 @@ fun QuickLauchConfigScreen(
             }
 
             // ── Available: Treatment ── (whole section hidden when empty — e.g. all visibility-filtered on a client)
+            // Fork (FUSE): the meal button has no element type, so no category filter would take it - it is offered
+            // here, as the last entry of the section.
             val treatmentItems = state.availableStaticItems.filter {
-                it.action.elementType?.category in setOf(ElementCategory.TREATMENT, ElementCategory.CGM)
+                it.action is QuickLaunchAction.FuseMeal || it.action.elementType?.category in setOf(ElementCategory.TREATMENT, ElementCategory.CGM)
             }
             if (treatmentItems.isNotEmpty()) {
                 item(key = "divider_treatment") {
