@@ -13,12 +13,12 @@ import dev.zacsweers.metro.SingleIn
 import dev.zacsweers.metro.binding
 
 /**
- * The effective autoISF settings while this build has no local command channel.
+ * The effective autoISF settings on iOS, which has no local command channel (the channel is an
+ * Android service, see AutoIsfValueLeaseCoordinator in androidMain).
  *
  * Without the channel no lease can exist, so this is exactly the channel-off state of the fork:
  * effective == base, no lease is ever active, and invalidation before a write is the safe no-op
- * (true). The channel port replaces this binding with the lease coordinator, which implements the
- * same two interfaces.
+ * (true).
  */
 // Two interfaces from one object, so @ContributesBinding is repeated with an explicit bound type.
 @ContributesBinding(AppScope::class, binding = binding<EffectiveAutoIsfSettingsProvider>())
