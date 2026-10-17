@@ -106,6 +106,31 @@ interface FuseOverviewSource {
      */
     fun fuseMarkerOhneKonto(now: Long): Boolean = false
 
+    /**
+     * v4-Port: das Mahlzeitfenster des laufenden Kontos ist noch offen (FUSE 7656fc1cb9). Laeuft dabei kein Marker
+     * mehr - nach den ersten 90 min -, startet ein Druck eine NEUE Mahlzeit; der Knopf sagt das ("Neue Mahlzeit").
+     */
+    fun fuseMahlzeitFensterLaeuft(now: Long): Boolean = false
+
+    /**
+     * v4-Port (Toni): insulinReq des letzten FUSE-Zyklus fuer den Chip auf dem Hauptbildschirm - aus der
+     * Entscheidung selbst, nicht aus dem RT: der RT traegt ein nicht gerechnetes insulinReq als 0,0 ein.
+     * `null` = noch kein Zyklus in diesem Prozess.
+     */
+    fun fuseInsulinReq(): InsulinReq? = null
+
+    /** insulinReq eines Zyklus mit den Zeilen "Grenze" und "Block" aus dem Abschnitt "Menge" des FUSE-Reiters. */
+    data class InsulinReq(
+        /** Zeitpunkt der Entscheidung [ms]. */
+        val timestamp: Long,
+        /** [U]; `null` = in diesem Zyklus nicht gerechnet (angezeigt als "-", nie als 0). */
+        val units: Double?,
+        /** Die bindende Grenze, wie im Reiter. */
+        val grenze: String,
+        /** Der Block, wie im Reiter. */
+        val block: String,
+    )
+
     /** `null` = ohne Rueckfrage ausfuehren (Ruecknahme). */
     suspend fun fuseMarkerPrompt(now: Long): MarkerPromptFacts?
 

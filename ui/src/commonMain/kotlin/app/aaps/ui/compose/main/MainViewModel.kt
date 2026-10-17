@@ -28,6 +28,7 @@ import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.UserEntryLogger
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.overview.graph.OverviewDataCache
 import app.aaps.core.interfaces.overview.graph.ProfileDisplayData
 import app.aaps.core.interfaces.overview.graph.RunningModeDisplayData
@@ -93,9 +94,12 @@ import dev.zacsweers.metrox.viewmodel.ViewModelKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flow
@@ -205,6 +209,9 @@ class MainViewModel(
                 .map { item ->
                     if (!reachable && item.action is QuickLaunchAction.SceneAction) item.copy(enabled = false) else item
                 }
+                // (4) Fork (FUSE): the meal button shows its state, so it is resolved again on every tick - the marker
+                // ends after 90 min, and a noted withdrawal runs out, without any change of the saved toolbar.
+                .map { item -> if (item.action == QuickLaunchAction.FuseMeal) quickLaunchResolver.resolveItem(item.action) else item }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     /** Pending confirmation dialog (automation/TT preset actions) */
@@ -929,6 +936,80 @@ class MainViewModel(
 
     fun dismissActionConfirmation() {
         _actionConfirmation.update { null }
+    }
+
+    // ---- Fork (FUSE): the meal button on the toolbar (OverviewFragment.onFuseMealButton) ----------------------
+
+    /** The question of a meal button press, while it is on screen. [pressedAt] and [eventId] belong to the press. */
+    data class FuseMealPrompt(val facts: FuseOverviewSource.MarkerPromptFacts, val eventId: String, val pressedAt: Long)
+
+    /** A noted withdrawal: the snackbar with its undo button for [restMs] (until the deadline), and the texts for its outcome. */
+    data class FuseMealWithdrawal(val restMs: Long, val message: String, val undoLabel: String, val undoneText: String, val tooLateText: String)
+
+    private val _fuseMealPrompt = MutableStateFlow<FuseMealPrompt?>(null)
+    val fuseMealPrompt: StateFlow<FuseMealPrompt?> = _fuseMealPrompt.asStateFlow()
+
+    private val _fuseMealWithdrawal = MutableSharedFlow<FuseMealWithdrawal>(extraBufferCapacity = 1)
+    val fuseMealWithdrawal: SharedFlow<FuseMealWithdrawal> = _fuseMealWithdrawal.asSharedFlow()
+
+    /** The active APS, when it is FUSE - the same rule as the toolbar entry (see QuickLaunchResolver). */
+    private fun fuseSource(): FuseOverviewSource? = activePlugin.activeAPS as? FuseOverviewSource
+
+    /**
+     * The same flow as the button in the FUSE tab. FUSE decides whether to ask ([FuseOverviewSource.fuseMarkerPrompt]
+     * null = a running marker, the press withdraws it). The event id is issued when the question is SHOWN, not when
+     * it is confirmed: a late confirmation of an old question then carries the older order and has no effect.
+     */
+    fun onFuseMealButton() {
+        val source = fuseSource() ?: return
+        viewModelScope.launch {
+            val now = dateUtil.now()
+            val eventId = source.fuseMarkerEreignis()
+            val facts = source.fuseMarkerPrompt(now)
+            if (facts != null) {
+                _fuseMealPrompt.value = FuseMealPrompt(facts, eventId, now)
+                return@launch
+            }
+            // UNDO DEADLINE (Toni): the withdrawal is only noted and runs after the deadline - a slip in the middle of
+            // a meal would cost the whole authorization. NO fall back to toggling: without a running marker that
+            // would set a NEW one, without any question.
+            source.fuseMarkerRuecknahmeVormerken(now, eventId)?.let { due ->
+                val seconds = ((due - now + 999L) / 1_000L).toInt().coerceAtLeast(1)
+                _fuseMealWithdrawal.tryEmit(
+                    FuseMealWithdrawal(
+                        restMs = (due - now).coerceAtLeast(1_000L),
+                        message = rh.gs(CoreUiStrings.fuse_meal_withdraw_pending, seconds),
+                        undoLabel = rh.gs(CoreUiStrings.fuse_meal_withdraw_undo),
+                        undoneText = rh.gs(CoreUiStrings.fuse_meal_withdraw_undone),
+                        tooLateText = rh.gs(CoreUiStrings.fuse_meal_withdraw_too_late)
+                    )
+                )
+            }
+            refreshQuickLaunch()
+        }
+    }
+
+    /** One of the two answers: "Nur Erwartung" ([expectationOnly]) or "Nur Marker - 0 U". */
+    fun confirmFuseMeal(expectationOnly: Boolean) {
+        val prompt = _fuseMealPrompt.value ?: return
+        _fuseMealPrompt.value = null
+        val source = fuseSource() ?: return
+        viewModelScope.launch {
+            if (expectationOnly) source.fuseMarkerToggle(prompt.pressedAt, ereignisId = prompt.eventId, nurErwartung = true)
+            else source.fuseMarkerToggle(prompt.pressedAt, ohneVorschuss = true, ereignisId = prompt.eventId)
+            refreshQuickLaunch()
+        }
+    }
+
+    fun cancelFuseMeal() {
+        _fuseMealPrompt.value = null
+    }
+
+    /** Undo of the noted withdrawal. @return whether one was still open */
+    suspend fun undoFuseMealWithdrawal(): Boolean {
+        val undone = fuseSource()?.fuseMarkerRuecknahmeRueckgaengig(dateUtil.now()) == true
+        refreshQuickLaunch()
+        return undone
     }
 
     fun executeConfirmableAction(action: ConfirmableAction) = viewModelScope.launch {

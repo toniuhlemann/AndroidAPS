@@ -235,16 +235,4 @@
     <string name="fuse_ledger_vormerken">Vormerken</string>
 
     <!-- v4: Rueckfrage am Mahlzeiten-Knopf (im Fork in core/ui fuer Reiter und Uebersicht) -->
-    <string name="fuse_meal_confirm_title">Mahlzeit ankuendigen?</string>
-    <string name="fuse_meal_confirm_no_prime">Nur Marker · 0 U</string>
-    <string name="fuse_meal_confirm_expectation_only">Nur Erwartung</string>
-    <string name="fuse_meal_confirm_expectation_only_text" comment="%1$.2f=Obergrenze des Erwartungsbudgets in Einheiten">Erwartungskonto: bis %1$.2f U nach Erwartungskurve - am Anfang nur ein Teil, sobald der Zucker stabil ist; der Rest, wenn sich die Mahlzeit zeigt.</string>
-    <string name="fuse_meal_confirm_no_account">Das Erwartungskonto ist gerade nicht verfügbar (keine gültige Kurve, kein Profil oder Insulinmodell). Möglich ist nur „Nur Marker · 0 U“.</string>
-    <string name="fuse_meal_confirm_low">Zucker ist TIEF.</string>
-    <string name="fuse_meal_confirm_foreign" comment="%1$.2f=manueller Bolus der letzten Stunde in Einheiten">Achtung: %1$.2f U manueller Bolus in der letzten Stunde. Das Konto rechnet ihn als vorhandenes Insulin an, das Budget bleibt — beides zusammen wirkt.</string>
-    <string name="fuse_meal_confirm_episode" comment="%1$d=Minuten bis zum Ablauf">Evidenz-Fenster läuft in %1$d min ab — danach ohne Mahlzeiten-Kredit.</string>
-    <string name="fuse_meal_withdraw_pending" comment="%1$d=Sekunden bis zur Ruecknahme">Mahlzeiten-Marker wird in %1$d s zurückgenommen</string>
-    <string name="fuse_meal_withdraw_undo">Rückgängig</string>
-    <string name="fuse_meal_withdraw_undone">Rücknahme abgebrochen – der Marker läuft weiter</string>
-    <string name="fuse_meal_withdraw_too_late">Zu spät – der Marker ist bereits zurückgenommen</string>
 </resources>

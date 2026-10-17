@@ -1137,6 +1137,24 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
     override fun fuseMarkerOhneKonto(now: Long): Boolean =
         mealMarkerActive(now) && lastOutcome?.erwartungskonto?.rueckfall != null
 
+    // v4-Port: der Knopf auf dem Hauptbildschirm sagt "Neue Mahlzeit" wie der Reiter (s. MahlzeitFenster).
+    override fun fuseMahlzeitFensterLaeuft(now: Long): Boolean = mahlzeitFensterEndeTs() > now
+
+    /**
+     * v4-Port (Toni): der insulinReq-Chip auf dem Hauptbildschirm - dieselben Werte wie der Abschnitt "Menge" im
+     * Reiter (FuseScreenModel), aus dem LETZTEN Zyklus. Nicht aus dem RT: der traegt ein nicht gerechnetes
+     * insulinReq als 0,0 ein.
+     */
+    override fun fuseInsulinReq(): FuseOverviewSource.InsulinReq? = lastOutcome?.let { o ->
+        val d = o.decision
+        FuseOverviewSource.InsulinReq(
+            timestamp = o.computeTs,
+            units = d.insulinReqU,
+            grenze = d.bindingLimit + if (d.restraintBound) "  (gebremst)" else "",
+            block = d.block.name,
+        )
+    }
+
     /**
      * Die Zahlen fuer die Rueckfrage - aus dem LETZTEN Zyklus, nicht neu gerechnet. Ein zweiter Rechenweg fuer
      * dieselbe Groesse waere eine zweite Wahrheit, und der Dialog wuerde Zahlen zeigen, die der Regler so nie gesehen

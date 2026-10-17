@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import app.aaps.core.interfaces.navigation.ElementType
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.AapsTheme
+import app.aaps.core.ui.compose.fuse.FuseMealButtonState
 import app.aaps.core.ui.compose.icons.IcBolus
 import app.aaps.core.ui.compose.icons.IcCarbs
 import app.aaps.core.ui.compose.icons.IcTtActivity
@@ -51,7 +52,9 @@ data class ResolvedQuickLaunchItem(
     val label: String,
     val icon: ImageVector,
     val enabled: Boolean = true,
-    val description: String? = null
+    val description: String? = null,
+    /** Fork (FUSE): the state of the meal button, for its color; null for every other action. */
+    val fuseMealState: FuseMealButtonState? = null
 )
 
 /**
@@ -103,6 +106,16 @@ fun QuickLaunchToolbar(
 @Composable
 internal fun resolveItemColor(item: ResolvedQuickLaunchItem): androidx.compose.ui.graphics.Color {
     val action = item.action
+    // Fork (FUSE): the state must be readable at the button - "did I press already?" is the question that leads to a
+    // double press. A running marker in the warning color, without an account in the error color.
+    item.fuseMealState?.let { state ->
+        return when (state) {
+            FuseMealButtonState.ACTIVE            -> AapsTheme.generalColors.inProgress
+            FuseMealButtonState.ACTIVE_NO_ACCOUNT -> MaterialTheme.colorScheme.error
+            FuseMealButtonState.IDLE,
+            FuseMealButtonState.NEW_MEAL          -> ElementType.CARBS.color()
+        }
+    }
     if (action is QuickLaunchAction.QuickWizardAction) return when (item.icon) {
         IcBolus -> ElementType.INSULIN.color()
         IcCarbs -> ElementType.CARBS.color()

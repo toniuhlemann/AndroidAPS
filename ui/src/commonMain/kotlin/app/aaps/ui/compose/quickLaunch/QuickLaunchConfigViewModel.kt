@@ -80,7 +80,8 @@ class QuickLaunchConfigViewModel(
         // same ElementVisibility gate as search/Manage — e.g. MASTER_OR_PAIRED_CLIENT hides bolus/carbs/fill on
         // an unpaired client, so they can't be pinned to the toolbar there. isValid drops what the setup does
         // not support (fill on a patch pump, xDrip CGM without xDrip): the toolbar would remove it on save.
-        val availableStatic = QuickLaunchAction.staticActions
+        // Fork (FUSE): the meal button joins the static list when this build has FUSE (isValid).
+        val availableStatic = (QuickLaunchAction.staticActions + QuickLaunchAction.FuseMeal)
             .filter { actionKey(it) !in selectedSet }
             .filter { it.isVisibleInMode() }
             .filter { resolver.isValid(it) }

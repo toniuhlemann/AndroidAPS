@@ -228,6 +228,11 @@ fun ElementNavigator.handleQuickLaunchAction(action: QuickLaunchAction) {
             val index = activePlugin.getPluginsList().indexOfFirst { it::class.simpleName == action.className }
             if (index >= 0) navController.navigate(AppRoute.PluginContent.createRoute(index))
         }
+
+        // Fork (FUSE): no protection check, as on the fork's overview button and in the FUSE tab - it is pressed
+        // while eating. FUSE asks itself (the question names low, manual insulin and the evidence window), and a
+        // withdrawal has an undo deadline.
+        QuickLaunchAction.FuseMeal             -> mainViewModel.onFuseMealButton()
     }
 }
 

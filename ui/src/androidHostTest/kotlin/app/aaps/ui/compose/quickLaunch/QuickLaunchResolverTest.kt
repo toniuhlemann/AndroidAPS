@@ -7,9 +7,12 @@ import app.aaps.core.data.model.SceneEndAction
 import app.aaps.core.data.model.TT
 import app.aaps.core.data.model.TTPreset
 import app.aaps.core.data.time.T
+import app.aaps.core.interfaces.aps.APS
 import app.aaps.core.interfaces.automation.Automation
 import app.aaps.core.interfaces.navigation.ElementType
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.plugin.ActivePlugin
+import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.profile.ProfileRepository
 import app.aaps.core.interfaces.profile.ProfileUtil
 import app.aaps.core.interfaces.scenes.SceneStore
@@ -18,6 +21,7 @@ import app.aaps.core.keys.StringNonKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.objects.wizard.QuickWizard
 import app.aaps.core.objects.wizard.QuickWizardEntry
+import app.aaps.core.ui.compose.fuse.FuseMealButtonState
 import app.aaps.shared.tests.generatedTextResolver
 import app.aaps.ui.compose.navigation.ElementAvailability
 import com.google.common.truth.Truth.assertThat
@@ -25,6 +29,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.Mock
 import org.mockito.MockitoAnnotations
+import org.mockito.kotlin.any
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
 
@@ -160,5 +165,55 @@ internal class QuickLaunchResolverTest {
 
         assertThat(sut.isValid(QuickLaunchAction.Fill)).isFalse()
         assertThat(sut.isValid(QuickLaunchAction.BatteryChange)).isTrue()
+    }
+
+    // ---- Fork (FUSE): the meal button -------------------------------------------------------------------------
+
+    private fun fuseAps(armed: Boolean = false, noAccount: Boolean = false, windowOpen: Boolean = false): APS {
+        val fuse = mock<APS>(extraInterfaces = arrayOf(FuseOverviewSource::class))
+        val source = fuse as FuseOverviewSource
+        whenever(source.fuseMarkerArmed(any())).thenReturn(armed)
+        whenever(source.fuseMarkerOhneKonto(any())).thenReturn(noAccount)
+        whenever(source.fuseMahlzeitFensterLaeuft(any())).thenReturn(windowOpen)
+        return fuse
+    }
+
+    @Test
+    fun `fork - the FUSE meal button belongs to builds with FUSE only`() {
+        whenever(activePlugin.getPluginsList()).thenReturn(arrayListOf(mock<PluginBase>()))
+        assertThat(sut.isValid(QuickLaunchAction.FuseMeal)).isFalse()
+
+        whenever(activePlugin.getPluginsList()).thenReturn(arrayListOf(mock<PluginBase>(extraInterfaces = arrayOf(FuseOverviewSource::class))))
+        assertThat(sut.isValid(QuickLaunchAction.FuseMeal)).isTrue()
+    }
+
+    /** A button that presses on an inactive algorithm would look as if it did something (fork overview rule). */
+    @Test
+    fun `fork - the FUSE meal button shows only while FUSE is the active APS`() {
+        whenever(activePlugin.activeAPS).thenReturn(mock<APS>())
+        assertThat(sut.isShownNow(QuickLaunchAction.FuseMeal)).isFalse()
+
+        val fuse = fuseAps()
+        whenever(activePlugin.activeAPS).thenReturn(fuse)
+        assertThat(sut.isShownNow(QuickLaunchAction.FuseMeal)).isTrue()
+    }
+
+    @Test
+    fun `fork - the FUSE meal button says its state`() {
+        val cases = listOf(
+            fuseAps() to (FuseMealButtonState.IDLE to "Mahlzeit"),
+            fuseAps(armed = true) to (FuseMealButtonState.ACTIVE to "◉ Mahlzeit"),
+            fuseAps(armed = true, noAccount = true) to (FuseMealButtonState.ACTIVE_NO_ACCOUNT to "◉ Mahlzeit · ohne Konto"),
+            fuseAps(windowOpen = true) to (FuseMealButtonState.NEW_MEAL to "Neue Mahlzeit")
+        )
+        for ((aps, expected) in cases) {
+            val fuse = aps
+            whenever(activePlugin.activeAPS).thenReturn(fuse)
+
+            val item = sut.resolveItem(QuickLaunchAction.FuseMeal)
+
+            assertThat(item.fuseMealState).isEqualTo(expected.first)
+            assertThat(item.label).isEqualTo(expected.second)
+        }
     }
 }

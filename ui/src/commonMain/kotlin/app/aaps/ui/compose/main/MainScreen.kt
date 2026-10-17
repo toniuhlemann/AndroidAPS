@@ -21,6 +21,8 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -52,6 +54,7 @@ import app.aaps.core.ui.compose.LocalDateUtil
 import app.aaps.core.ui.compose.LocalSnackbarHostState
 import app.aaps.core.ui.compose.dialogs.OkCancelDialog
 import app.aaps.core.ui.compose.dialogs.ThreeButtonDialog
+import app.aaps.core.ui.compose.fuse.FuseMealPromptDialog
 import app.aaps.core.ui.compose.navigation.NavigationRequest
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
 import app.aaps.core.ui.compose.stringResource
@@ -79,6 +82,7 @@ import app.aaps.ui.search.SearchResults
 import app.aaps.ui.search.SearchUiState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 @Composable
 fun MainScreen(
@@ -553,6 +557,34 @@ fun MainScreen(
                 onConfirm = { mainViewModel.executeConfirmableAction(confirmation.onConfirmAction) },
                 onDismiss = { mainViewModel.dismissActionConfirmation() }
             )
+        }
+    }
+
+    // Fork (FUSE): the question of the meal button on the toolbar - the same dialog as in the FUSE tab.
+    val fuseMealPrompt by mainViewModel.fuseMealPrompt.collectAsStateWithLifecycle()
+    fuseMealPrompt?.let { prompt ->
+        FuseMealPromptDialog(
+            facts = prompt.facts,
+            onExpectationOnly = { mainViewModel.confirmFuseMeal(expectationOnly = true) },
+            onNoPrime = { mainViewModel.confirmFuseMeal(expectationOnly = false) },
+            onCancel = { mainViewModel.cancelFuseMeal() }
+        )
+    }
+    // Fork (FUSE): a noted withdrawal - "Rueckgaengig" until the deadline. The bar is only the display: the withdrawal
+    // runs out in FUSE also when it never shows or the screen changes.
+    LaunchedEffect(mainViewModel) {
+        mainViewModel.fuseMealWithdrawal.collect { withdrawal ->
+            val result = withTimeoutOrNull(withdrawal.restMs) {
+                snackbarHostState.showSnackbar(
+                    message = withdrawal.message,
+                    actionLabel = withdrawal.undoLabel,
+                    duration = SnackbarDuration.Indefinite
+                )
+            }
+            if (result == SnackbarResult.ActionPerformed) {
+                val undone = mainViewModel.undoFuseMealWithdrawal()
+                snackbarHostState.showSnackbar(if (undone) withdrawal.undoneText else withdrawal.tooLateText)
+            }
         }
     }
 

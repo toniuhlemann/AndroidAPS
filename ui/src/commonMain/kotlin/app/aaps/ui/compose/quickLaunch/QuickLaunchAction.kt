@@ -74,6 +74,17 @@ sealed class QuickLaunchAction {
         // No elementType — icon/color resolved at runtime via ViewModel
     }
 
+    /**
+     * Fork (FUSE): the meal button of the overview - announces a meal, or withdraws the running one with an undo
+     * deadline. Its label and color follow the state ([app.aaps.core.ui.compose.fuse.FuseMealButtonState]). Shown
+     * only while FUSE is the active APS: a button that presses on an inactive algorithm would look as if it did
+     * something.
+     */
+    data object FuseMeal : QuickLaunchAction() {
+
+        override val typeId = "fuse_meal"
+    }
+
     companion object {
 
         // Source-compatible aliases
@@ -128,6 +139,10 @@ sealed class QuickLaunchAction {
 
         /** Lookup static action by typeId */
         fun fromTypeId(typeId: String): QuickLaunchAction? = staticActions.find { it.typeId == typeId }
-            ?: if (typeId == QuickLaunchConfig.typeId) QuickLaunchConfig else null
+            ?: when (typeId) {
+                QuickLaunchConfig.typeId -> QuickLaunchConfig
+                FuseMeal.typeId          -> FuseMeal
+                else                     -> null
+            }
     }
 }

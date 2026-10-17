@@ -21,6 +21,7 @@ import app.aaps.core.ui.compose.navigation.NavigationRequest
 import app.aaps.core.ui.compose.stringResource
 import app.aaps.ui.compose.main.TempTargetChipState
 import app.aaps.ui.compose.overview.chips.CobUiState
+import app.aaps.ui.compose.overview.chips.InsulinReqUiState
 import app.aaps.ui.compose.overview.chips.IobCobChipsRow
 import app.aaps.ui.compose.overview.chips.IobUiState
 import app.aaps.ui.compose.overview.chips.ProfileChip
@@ -53,6 +54,9 @@ fun OverviewChipsColumn(
     onNavigate: (NavigationRequest) -> Unit,
     onTbrChipClick: () -> Unit,
     onIobChipClick: () -> Unit,
+    // Fork (Toni): insulinReq of the last loop run, the third chip beside IOB and COB.
+    insulinReqUiState: InsulinReqUiState = InsulinReqUiState(),
+    onInsulinReqChipClick: () -> Unit = {},
     // The command chips (running mode / profile / temp target) open mutating screens — their click is disabled on an
     // unpaired client (same MASTER_OR_PAIRED_CLIENT gate as nav/Manage), while the chip stays visible as status.
     commandsAllowed: Boolean = true,
@@ -128,7 +132,9 @@ fun OverviewChipsColumn(
         IobCobChipsRow(
             iobUiState = iobUiState,
             cobUiState = cobUiState,
-            onIobChipClick = onIobChipClick
+            onIobChipClick = onIobChipClick,
+            insulinReqUiState = insulinReqUiState,
+            onInsulinReqChipClick = onInsulinReqChipClick
         )
         SensitivityChipBlock(
             state = sensitivityUiState,

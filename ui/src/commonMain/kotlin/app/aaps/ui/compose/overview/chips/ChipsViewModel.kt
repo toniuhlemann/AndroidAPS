@@ -5,14 +5,18 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.aaps.core.interfaces.InterfacesStrings
 import app.aaps.core.interfaces.aps.Loop
+import app.aaps.core.interfaces.aps.RT
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.iob.IobCobCalculator
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.overview.SensitivityOverview
 import app.aaps.core.interfaces.overview.graph.OverviewDataCache
+import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.resources.TextResolver
 import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.rx.events.EventShowDialog
+import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.DecimalFormatter
 import app.aaps.core.objects.extensions.round
 import app.aaps.core.ui.CoreUiStrings
@@ -40,7 +44,9 @@ class ChipsViewModel(
     private val sensitivityOverview: SensitivityOverview,
     private val rh: TextResolver,
     private val decimalFormatter: DecimalFormatter,
-    private val rxBus: RxBus
+    private val rxBus: RxBus,
+    private val activePlugin: ActivePlugin,
+    private val dateUtil: DateUtil
 ) : ViewModel() {
 
     @AssistedFactory
@@ -122,6 +128,64 @@ class ChipsViewModel(
         )
     }
 
+    /**
+     * Fork (Toni): insulinReq of the last loop run. FUSE gives its own value ([FuseOverviewSource.fuseInsulinReq]):
+     * its RT carries a not calculated insulinReq as 0.0, which would read as "no insulin needed". Every other
+     * algorithm gives RT.insulinReq. Fresh after every loop run (the predictions are published right after it on the
+     * master), greyed out by the ticker once the run is old.
+     */
+    val insulinReqUiState: StateFlow<InsulinReqUiState> = combine(iobCobTicker, cache.predictionsFlow) { _, _ ->
+        buildInsulinReqUiState()
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = InsulinReqUiState()
+    )
+
+    internal fun buildInsulinReqUiState(): InsulinReqUiState {
+        // A client runs no loop: no own value to show.
+        if (!config.APS) return InsulinReqUiState()
+        val now = dateUtil.now()
+        val fuse = activePlugin.activeAPS as? FuseOverviewSource
+        if (fuse != null) {
+            val req = fuse.fuseInsulinReq() ?: return InsulinReqUiState(visible = true, text = chipText(null))
+            return InsulinReqUiState(
+                visible = true,
+                text = chipText(req.units),
+                stale = now - req.timestamp > INSULIN_REQ_STALE_MS,
+                details = listOf(
+                    rh.gs(CoreUiStrings.insulin_req_line, rh.gs(CoreUiStrings.insulin_req_title), valueText(req.units)),
+                    rh.gs(CoreUiStrings.insulin_req_line, rh.gs(CoreUiStrings.insulin_req_limit), req.grenze),
+                    rh.gs(CoreUiStrings.insulin_req_line, rh.gs(CoreUiStrings.insulin_req_block), req.block),
+                    rh.gs(CoreUiStrings.insulin_req_time, dateUtil.timeString(req.timestamp))
+                ).joinToString("\n")
+            )
+        }
+        val lastRun = loop.lastRun ?: return InsulinReqUiState(visible = true, text = chipText(null))
+        val units = (lastRun.request?.rawData() as? RT)?.insulinReq
+        return InsulinReqUiState(
+            visible = true,
+            text = chipText(units),
+            stale = now - lastRun.lastAPSRun > INSULIN_REQ_STALE_MS,
+            details = listOf(
+                rh.gs(CoreUiStrings.insulin_req_line, rh.gs(CoreUiStrings.insulin_req_title), valueText(units)),
+                rh.gs(CoreUiStrings.insulin_req_time, dateUtil.timeString(lastRun.lastAPSRun))
+            ).joinToString("\n")
+        )
+    }
+
+    private fun valueText(units: Double?): String =
+        units?.let { rh.gs(InterfacesStrings.format_insulin_units, it) } ?: rh.gs(CoreUiStrings.insulin_req_not_calculated)
+
+    private fun chipText(units: Double?): String =
+        rh.gs(CoreUiStrings.insulin_req_chip, units?.let { rh.gs(InterfacesStrings.format_insulin_units, it) } ?: NOT_CALCULATED)
+
+    fun showInsulinReqInfo() {
+        val state = buildInsulinReqUiState()
+        if (!state.visible) return
+        rxBus.send(EventShowDialog.Ok(title = rh.gs(CoreUiStrings.insulin_req_title), message = state.details))
+    }
+
     fun showIobInfo() {
         viewModelScope.launch {
             val bolusIob = iobCobCalculator.calculateIobFromBolus().round()
@@ -138,5 +202,14 @@ class ChipsViewModel(
                 )
             )
         }
+    }
+
+    companion object {
+
+        /** A loop run older than this is no longer the current one: the insulinReq chip is greyed out. */
+        const val INSULIN_REQ_STALE_MS = 10L * 60_000L
+
+        /** The chip's value when the run calculated none - a dash, never 0 (Toni). */
+        const val NOT_CALCULATED = "–"
     }
 }

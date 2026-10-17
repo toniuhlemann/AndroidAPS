@@ -37,6 +37,7 @@ import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.AapsSpacing
 import app.aaps.core.ui.compose.ComposablePluginContent
 import app.aaps.core.ui.compose.ToolbarConfig
+import app.aaps.core.ui.compose.fuse.FuseMealPromptDialog
 import app.aaps.core.ui.compose.stringResource
 import app.aaps.fuse.core.controller.MarkerRuecknahme
 import app.aaps.fuse.core.controller.OnsetChannel
@@ -159,16 +160,16 @@ private fun FuseScreen(plugin: FusePlugin, dateUtil: DateUtil, rxBus: RxBus, onS
             Card(modifier = Modifier.fillMaxWidth()) {
                 Row(modifier = Modifier.padding(AapsSpacing.medium), verticalAlignment = Alignment.CenterVertically) {
                     val restS = ((faellig - dateUtil.now()) / 1000L).coerceAtLeast(0L).toInt()
-                    Text(stringResource(TextRef.AndroidRes(R.string.fuse_meal_withdraw_pending), restS), modifier = Modifier.weight(1f))
+                    Text(stringResource(CoreUiStrings.fuse_meal_withdraw_pending, restS), modifier = Modifier.weight(1f))
                     TextButton(onClick = {
                         scope.launch {
                             val ok = plugin.markerRuecknahmeRueckgaengig(dateUtil.now(), quelle)
                             ruecknahmeFaellig = null
-                            meldung = if (ok) plugin.rh.gs(TextRef.AndroidRes(R.string.fuse_meal_withdraw_undone))
-                            else plugin.rh.gs(TextRef.AndroidRes(R.string.fuse_meal_withdraw_too_late))
+                            meldung = if (ok) plugin.rh.gs(CoreUiStrings.fuse_meal_withdraw_undone)
+                            else plugin.rh.gs(CoreUiStrings.fuse_meal_withdraw_too_late)
                             aktualisierung++
                         }
-                    }) { Text(stringResource(TextRef.AndroidRes(R.string.fuse_meal_withdraw_undo))) }
+                    }) { Text(stringResource(CoreUiStrings.fuse_meal_withdraw_undo)) }
                 }
             }
         }
@@ -214,23 +215,24 @@ private fun FuseScreen(plugin: FusePlugin, dateUtil: DateUtil, rxBus: RxBus, onS
     }
 
     rueckfrage?.let { (fakten, ereignis) ->
-        MarkerRueckfrage(
-            fakten = fakten,
-            onNurErwartung = {
+        // Derselbe Dialog wie am Knopf auf dem Hauptbildschirm (core:ui) - zwei Fassungen waeren zwei Sicherheitsniveaus.
+        FuseMealPromptDialog(
+            facts = fakten,
+            onExpectationOnly = {
                 rueckfrage = null
                 scope.launch {
                     plugin.toggleMealMarker(dateUtil.now(), ereignisId = ereignis, quelle = quelle.text, nurErwartung = true)
                     aktualisierung++
                 }
             },
-            onOhneVorschuss = {
+            onNoPrime = {
                 rueckfrage = null
                 scope.launch {
                     plugin.toggleMealMarker(dateUtil.now(), ohneVorschuss = true, ereignisId = ereignis, quelle = quelle.text)
                     aktualisierung++
                 }
             },
-            onAbbrechen = { rueckfrage = null },
+            onCancel = { rueckfrage = null },
         )
     }
     if (tiefBestaetigen) {
@@ -257,47 +259,3 @@ private fun FuseScreen(plugin: FusePlugin, dateUtil: DateUtil, rxBus: RxBus, onS
     }
 }
 
-/**
- * Die Rueckfrage am Mahlzeiten-Knopf (Fork: FuseMarkerDialog). Mit Konto: "Nur Erwartung" oder "Nur Marker - 0 U";
- * ohne Konto nur "Nur Marker - 0 U". Tief, manuelles Insulin und ablaufendes Evidenz-Fenster stehen dabei.
- * Eine Wahl wirkt genau einmal (Doppeltipp-Schutz wie im Fork).
- */
-@Composable
-private fun MarkerRueckfrage(
-    fakten: FuseOverviewSource.MarkerPromptFacts,
-    onNurErwartung: () -> Unit,
-    onOhneVorschuss: () -> Unit,
-    onAbbrechen: () -> Unit,
-) {
-    var gewaehlt by remember { mutableStateOf(false) }
-    val bisU = fakten.expectationOnlyMaxU
-    val text = buildString {
-        append(
-            if (bisU != null) stringResource(TextRef.AndroidRes(R.string.fuse_meal_confirm_expectation_only_text), bisU)
-            else stringResource(TextRef.AndroidRes(R.string.fuse_meal_confirm_no_account))
-        )
-        if (fakten.measuredLow) append("\n\n").append(stringResource(TextRef.AndroidRes(R.string.fuse_meal_confirm_low)))
-        fakten.foreignBolusU?.takeIf { it > 0.0 }?.let { append("\n\n").append(stringResource(TextRef.AndroidRes(R.string.fuse_meal_confirm_foreign), it)) }
-        fakten.episodeRestMin?.let { append("\n\n").append(stringResource(TextRef.AndroidRes(R.string.fuse_meal_confirm_episode), it)) }
-    }
-    fun einmal(aktion: () -> Unit) {
-        if (gewaehlt) return
-        gewaehlt = true
-        aktion()
-    }
-    AlertDialog(
-        onDismissRequest = { },
-        title = { Text(stringResource(TextRef.AndroidRes(R.string.fuse_meal_confirm_title))) },
-        text = { Text(text) },
-        confirmButton = {
-            if (bisU != null) TextButton(onClick = { einmal(onNurErwartung) }) { Text(stringResource(TextRef.AndroidRes(R.string.fuse_meal_confirm_expectation_only))) }
-            else TextButton(onClick = { einmal(onOhneVorschuss) }) { Text(stringResource(TextRef.AndroidRes(R.string.fuse_meal_confirm_no_prime))) }
-        },
-        dismissButton = {
-            Row {
-                if (bisU != null) TextButton(onClick = { einmal(onOhneVorschuss) }) { Text(stringResource(TextRef.AndroidRes(R.string.fuse_meal_confirm_no_prime))) }
-                TextButton(onClick = { einmal(onAbbrechen) }) { Text(stringResource(CoreUiStrings.cancel)) }
-            }
-        },
-    )
-}

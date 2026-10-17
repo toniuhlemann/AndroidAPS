@@ -7,6 +7,8 @@ import androidx.compose.ui.layout.SubcomposeLayout
 import app.aaps.core.ui.compose.AapsSpacing
 
 /**
+ * IOB, COB and - fork (Toni) - insulinReq of the last loop run, when [insulinReqUiState] is visible.
+ *
  * @see IobCobChipsRowPreview
  * @see IobCobChipsRowCarbsReqPreview
  */
@@ -15,20 +17,25 @@ fun IobCobChipsRow(
     iobUiState: IobUiState,
     cobUiState: CobUiState,
     onIobChipClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    insulinReqUiState: InsulinReqUiState = InsulinReqUiState(),
+    onInsulinReqChipClick: () -> Unit = {}
 ) {
     val spacingDp = AapsSpacing.small
+    val withReq = insulinReqUiState.visible
     SubcomposeLayout(
         modifier = modifier.fillMaxWidth()
     ) { constraints ->
         val spacingPx = spacingDp.roundToPx()
+        val gaps = if (withReq) 2 else 1
         val isWidthBounded = constraints.hasBoundedWidth
-        val availableWidth = if (isWidthBounded) (constraints.maxWidth - spacingPx).coerceAtLeast(0) else 0
+        val availableWidth = if (isWidthBounded) (constraints.maxWidth - gaps * spacingPx).coerceAtLeast(0) else 0
 
         // First pass: measure intrinsic widths with icons
         val withIcons = subcompose("withIcons") {
             IobChip(state = iobUiState, onClick = onIobChipClick, showIcon = true)
             CobChip(state = cobUiState, showIcon = true)
+            if (withReq) InsulinReqChip(state = insulinReqUiState, onClick = onInsulinReqChipClick)
         }
         val intrinsicsWithIcons = withIcons.map { it.maxIntrinsicWidth(constraints.maxHeight) }
         val totalWithIcons = intrinsicsWithIcons.sum()
@@ -45,6 +52,7 @@ fun IobCobChipsRow(
             subcompose("withoutIcons") {
                 IobChip(state = iobUiState, onClick = onIobChipClick, showIcon = false)
                 CobChip(state = cobUiState, showIcon = false)
+                if (withReq) InsulinReqChip(state = insulinReqUiState, onClick = onInsulinReqChipClick)
             }
         }
 
@@ -55,12 +63,15 @@ fun IobCobChipsRow(
         val placeables = if (isWidthBounded) {
             // IOB hugs its content but never grabs more than half the row when space is tight.
             val iobWidth = naturalWidths[0].coerceAtMost(availableWidth / 2)
+            // insulinReq hugs its short text too, within what IOB left.
+            val reqWidth = if (withReq) naturalWidths[2].coerceAtMost((availableWidth - iobWidth).coerceAtLeast(0) / 2) else 0
             // COB fills the rest of the row up to the edge so the chips span the full width;
             // its text marquee-scrolls when it can't fit (see CobChip).
-            val cobWidth = (availableWidth - iobWidth).coerceAtLeast(0)
-            listOf(
+            val cobWidth = (availableWidth - iobWidth - reqWidth).coerceAtLeast(0)
+            listOfNotNull(
                 measurables[0].measure(constraints.copy(minWidth = iobWidth, maxWidth = iobWidth)),
-                measurables[1].measure(constraints.copy(minWidth = cobWidth, maxWidth = cobWidth))
+                measurables[1].measure(constraints.copy(minWidth = cobWidth, maxWidth = cobWidth)),
+                if (withReq) measurables[2].measure(constraints.copy(minWidth = reqWidth, maxWidth = reqWidth)) else null
             )
         } else {
             measurables.mapIndexed { i, measurable ->

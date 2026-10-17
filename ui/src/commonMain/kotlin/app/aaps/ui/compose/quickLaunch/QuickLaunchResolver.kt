@@ -6,6 +6,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import app.aaps.core.data.model.TT
 import app.aaps.core.interfaces.InterfacesStrings
 import app.aaps.core.interfaces.automation.Automation
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.profile.ProfileRepository
@@ -19,8 +20,10 @@ import app.aaps.core.objects.wizard.QuickWizard
 import app.aaps.core.objects.wizard.QuickWizardMode
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.formatMinutesAsDuration
+import app.aaps.core.ui.compose.fuse.FuseMealButtonState
 import app.aaps.core.ui.compose.icons.IcBolus
 import app.aaps.core.ui.compose.icons.IcCarbs
+import app.aaps.core.ui.compose.icons.IcPluginFood
 import app.aaps.core.ui.compose.icons.IcTtActivity
 import app.aaps.core.ui.compose.icons.IcTtEatingSoon
 import app.aaps.core.ui.compose.icons.IcTtHypo
@@ -35,6 +38,7 @@ import app.aaps.ui.compose.tempTarget.toTTPresetsWithDisplayName
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
+import kotlin.time.Clock
 
 /**
  * Shared resolver for QuickLaunch actions — resolves actions to display items
@@ -66,9 +70,19 @@ class QuickLaunchResolver(
             label = resolveLabel(action),
             icon = icon,
             enabled = true,
-            description = resolveDescription(action)
+            description = resolveDescription(action),
+            fuseMealState = if (action is QuickLaunchAction.FuseMeal) fuseMealState() else null
         )
     }
+
+    /**
+     * Fork (FUSE): the source behind the meal button - the ACTIVE APS, when it is FUSE. Not injected: the binding
+     * exists only in builds with FUSE, and the active algorithm decides, not the existence of the plugin.
+     */
+    private fun fuseSource(): FuseOverviewSource? = activePlugin.activeAPS as? FuseOverviewSource
+
+    private fun fuseMealState(): FuseMealButtonState =
+        fuseSource()?.let { FuseMealButtonState.of(it, Clock.System.now().toEpochMilliseconds()) } ?: FuseMealButtonState.IDLE
 
     private fun resolveIcon(action: QuickLaunchAction): ImageVector = when (action) {
         is QuickLaunchAction.QuickWizardAction -> quickWizard.get(action.guid)?.let { entry ->
@@ -93,6 +107,8 @@ class QuickLaunchResolver(
         is QuickLaunchAction.SceneAction       -> sceneRepository.getScene(action.sceneId)
             ?.let { SceneIcons.fromKey(it.icon).icon }
             ?: action.elementType.icon()
+
+        QuickLaunchAction.FuseMeal             -> IcPluginFood
 
         else                                   -> action.elementType?.icon() ?: Icons.Default.Extension
     }
@@ -123,6 +139,10 @@ class QuickLaunchResolver(
             plugin != null && plugin.isEnabled(plugin.pluginDescription.mainType) && plugin.hasComposeContent()
         }
 
+        // Kept while this build has FUSE at all; whether FUSE is the active APS only hides it (isShownNow), so a
+        // change of the APS does not remove it from the saved toolbar.
+        QuickLaunchAction.FuseMeal             -> activePlugin.getPluginsList().any { it is FuseOverviewSource }
+
         else                                   -> action.elementType?.let { elementAvailability.isAvailable(it) } ?: true
     }
 
@@ -134,6 +154,7 @@ class QuickLaunchResolver(
      */
     fun isShownNow(action: QuickLaunchAction): Boolean = when (action) {
         is QuickLaunchAction.QuickWizardAction -> quickWizard.get(action.guid)?.isActive() == true
+        QuickLaunchAction.FuseMeal             -> fuseSource() != null
         else                                   -> true
     }
 
@@ -150,6 +171,15 @@ class QuickLaunchResolver(
         is QuickLaunchAction.ProfileAction     -> buildProfileLabel(action)
         is QuickLaunchAction.SceneAction       -> sceneRepository.getScene(action.sceneId)?.name ?: "?"
         is QuickLaunchAction.PluginAction      -> findPlugin(action.className)?.name ?: "?"
+
+        QuickLaunchAction.FuseMeal             -> rh.gs(
+            when (fuseMealState()) {
+                FuseMealButtonState.IDLE              -> CoreUiStrings.fuse_meal_label
+                FuseMealButtonState.ACTIVE            -> CoreUiStrings.fuse_meal_active_label
+                FuseMealButtonState.ACTIVE_NO_ACCOUNT -> CoreUiStrings.fuse_meal_no_account_label
+                FuseMealButtonState.NEW_MEAL          -> CoreUiStrings.fuse_meal_new_label
+            }
+        )
 
         else                                   -> {
             val label = action.elementType?.label()
@@ -202,6 +232,8 @@ class QuickLaunchResolver(
 
         is QuickLaunchAction.PluginAction      -> findPlugin(action.className)
             ?.pluginDescription?.description?.let { rh.gs(it) }
+
+        QuickLaunchAction.FuseMeal             -> rh.gs(CoreUiStrings.fuse_meal_description)
 
         else                                   -> {
             val desc = action.elementType?.description()

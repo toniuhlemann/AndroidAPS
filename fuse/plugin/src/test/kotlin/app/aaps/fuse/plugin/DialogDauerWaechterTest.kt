@@ -22,8 +22,8 @@ import java.io.File
  * und Robolectric ist fuer diese Frage bewusst nicht eingefuehrt worden. Die
  * Frage ist ohnehin keine Laufzeitfrage: STEHT EINE FESTE ZAHL IM TEXT?
  *
- * v4: die Texte der Rueckfrage liegen im FUSE-Modul (im Fork in core/ui, mit
- * Praefix `overview_`); der Mengensatz heisst `fuse_meal_confirm_expectation_only_text`.
+ * v4: die Texte der Rueckfrage liegen wieder in core/ui (strings_fuse.xml), EIN Dialog fuer den Knopf auf
+ * dem Hauptbildschirm und den im FUSE-Reiter; der Mengensatz heisst `fuse_meal_confirm_expectation_only_text`.
  */
 class DialogDauerWaechterTest {
 
@@ -34,8 +34,8 @@ class DialogDauerWaechterTest {
     }
 
     private fun uiStrings(): String = datei(
-        "src/main/res/values/strings.xml",
-        "fuse/plugin/src/main/res/values/strings.xml",
+        "../../core/ui/src/androidMain/res/values/strings_fuse.xml",
+        "core/ui/src/androidMain/res/values/strings_fuse.xml",
     ).readText()
 
     /**

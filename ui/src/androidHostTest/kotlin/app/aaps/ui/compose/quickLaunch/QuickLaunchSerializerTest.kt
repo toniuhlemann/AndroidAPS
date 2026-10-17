@@ -87,4 +87,12 @@ class QuickLaunchSerializerTest {
     fun `an empty array still yields the config entry`() {
         assertThat(QuickLaunchSerializer.fromJson("[]")).isEqualTo(listOf(QuickLaunchAction.QuickLaunchConfig))
     }
+
+    @Test
+    fun `fork - the FUSE meal button keeps its place through a round trip`() {
+        val json = QuickLaunchSerializer.toJson(listOf(QuickLaunchAction.FuseMeal, QuickLaunchAction.QuickLaunchConfig))
+
+        assertThat(json).contains("\"type\":\"fuse_meal\"")
+        assertThat(QuickLaunchSerializer.fromJson(json)).containsExactly(QuickLaunchAction.FuseMeal, QuickLaunchAction.QuickLaunchConfig).inOrder()
+    }
 }
