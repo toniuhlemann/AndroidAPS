@@ -125,6 +125,10 @@ class TranslatorImpl internal constructor(
         Action.SCENE_ACTIVATED                 -> rh.gs(CoreUiStrings.uel_scene_activated)
         Action.SCENE_DEACTIVATED               -> rh.gs(CoreUiStrings.uel_scene_deactivated)
         Action.REMOTE_CONFIG_CHANGED           -> rh.gs(CoreUiStrings.uel_remote_config_changed)
+        Action.AUTOISF_ENABLED                 -> rh.gs(CoreUiStrings.uel_autoisf_enabled)
+        Action.AUTOISF_DISABLED                -> rh.gs(CoreUiStrings.uel_autoisf_disabled)
+        Action.IOB_TH_SET                      -> rh.gs(CoreUiStrings.uel_iobth_set)
+        Action.ACCE_WEIGHT_SET                 -> rh.gs(CoreUiStrings.uel_acce_weight_set)
         Action.UNKNOWN                         -> rh.gs(CoreUiStrings.unknown)
     }
 

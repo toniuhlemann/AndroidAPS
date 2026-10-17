@@ -696,6 +696,11 @@
     <string name="uel_scene_activated">SCENE ACTIVATED</string>
     <string name="uel_scene_deactivated">SCENE DEACTIVATED</string>
     <string name="uel_remote_config_changed">REMOTE CONFIG CHANGED</string>
+    <!-- AutoISF (fork, autoISF 3.2.x) -->
+    <string name="uel_autoisf_enabled">AUTOISF ENABLED</string>
+    <string name="uel_autoisf_disabled">AUTOISF DISABLED</string>
+    <string name="uel_iobth_set">IOBTH SET</string>
+    <string name="uel_acce_weight_set">ACCE WEIGHT SET</string>
 
     <!-- HardLimits -->
     <string name="temp_target_low_target">Temporary target bottom value</string>

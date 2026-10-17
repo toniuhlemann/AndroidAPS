@@ -128,6 +128,10 @@ data class UserEntry(
         SCENE_ACTIVATED,
         SCENE_DEACTIVATED,
         REMOTE_CONFIG_CHANGED,
+        AUTOISF_ENABLED,
+        AUTOISF_DISABLED,
+        IOB_TH_SET,
+        ACCE_WEIGHT_SET,
         UNKNOWN
         ;
     }
