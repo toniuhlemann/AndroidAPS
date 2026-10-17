@@ -1,0 +1,162 @@
+package app.aaps.fuse.core.controller
+
+import kotlin.math.max
+import kotlin.math.min
+
+/**
+ * DER LIVENESS-KANAL (Bauvertrag Toni + Codex, 22.08. nachts).
+ *
+ * DER GEMESSENE ANLASS: ein Fruehstueck und ein Abendessen desselben Tages - dieselbe
+ * Signatur. Fruehe Versorgung ok, danach der Deadlock: die
+ * Mittelbahn meldet deutlichen Bedarf bei hohem BG und kraeftigem r, aber die
+ * KOHLENHYDRATFREIE Unterkante (bis ins Unphysiologische zertifiziert) und der
+ * DIA-Schwanz nullen bzw. rationieren jede Abgabe (Tail-Saegezahn: kleine Schritte
+ * je Zyklus, dann TAIL-Null). In allen Deadlock-Zyklen des Tages lag die
+ * zertifizierte Unterkante weit unter dem real eingetretenen
+ * 120-min-Minimum. Der Grossteil der Minuten ueber 180 war blockiert, und zwar mit
+ * ERKANNTEM Bedarf.
+ *
+ * DIE ARCHITEKTUR-ANTWORT (Tonis autoISF-Referenz): Sicherheit fuer diesen
+ * kleinen Zusatzkanal MENGENBASIERT statt bahnbasiert. Der Kanal macht den
+ * BEREITS ERKANNTEN Mittelbahn-Bedarf dosierbar, den Guard und Tail heute
+ * wegwerfen - er erfindet keinen eigenen Bedarf:
+ *
+ *     normalU = heutiger Pfad inklusive Guard und Tail (UNVERAENDERT)
+ *     liveU   = Mittelbahn-Kandidat vor Guard/Tail
+ *               -> smbRatio, maxSMB, EIGENER Kanaldeckel, globales iobTH,
+ *                  maxIOB, Transporthaftung, Pumpenraster
+ *     finalU  = max(normalU, liveU)   - NIEMALS Addition
+ *
+ * Guard- und Tail-Werte bleiben im Export sichtbar, bestimmen aber
+ * ausschliesslich den normalen Pfad: im Kanal ist der Tail WEDER Veto NOCH
+ * Mengenkappe - sonst reproduziert der Kanal exakt den Saegezahn.
+ *
+ * P0 (Codex): der Kanaldeckel ist eine EIGENE Grenze, NICHT das globale
+ * iobTH - das begrenzt auch Korrektur, Prime und Fundament, und eine
+ * globale Senkung wuerde ausgerechnet die fruehe Mahlzeitenversorgung
+ * aushungern. Der Deckel IST die Kontextgrenze des Dosierprofils
+ * (contextExposureLimit, CENTRAL-only seit v44) - der Kern bekommt ihn
+ * fertig als livenessCapU. Ist das globale iobTH niedriger, gewinnt
+ * selbstverstaendlich die strengere Grenze.
+ *
+ * ABSOLUT BLEIBEN (beide Pfade): gemessenes Fallen (30er-Risiko, gepinnter
+ * Marker-Horizont, Latch), gemessenes Tief, Rebound, Signalfehler,
+ * Ledger-Hold, Transport- und Pumpengates. Exit bei bestaetigter
+ * Abwaertswende (P2) und bei jeder manuellen Intervention; danach gilt eine
+ * RESTARTFESTE Wiederbewaffnungs-Sperre.
+ */
+object LivenessChannel {
+
+    /** Bestaetigte Rueckgaenge des schnellen Drives, ab denen der Kanal
+     *  aussteigt - dieselbe Persistenzzaehlung wie ADAPTIVE-DOWN P2. */
+    /** Zyklen in Folge, die die Druckbedingung erfuellen muessen. */
+    const val ARM_STREAK = 3
+
+    /** Untergrenze der "nicht fallenden Messbahn" [mg/dl/min]. */
+    const val UKF_FLOOR_MGDL_PER_MIN = -0.10
+
+    /** Druckbedingung der Aktivierung. Die BG-Schwelle ist KEINE Konstante
+     *  mehr, sondern `FuseDoubleKey.LivenessBgMinMgdl` (Toni 22.08.: hart
+     *  codierte 160 waeren eine unnoetige Sackgasse - der Replay soll
+     *  niedrigere Schwellen vergleichen koennen, ohne Architekturumbau). */
+    const val R_MIN_MGDL_PER_MIN = 1.0
+
+    /**
+     * BASIS-RATIO des Kanals (Toni 24.08., KORRIGIERT am selben Abend):
+     * BEIDE Profile skalieren ueber die R-Rampe - der Unterschied zwischen
+     * MEAL und CORRECTION ist AUSSCHLIESSLICH der ausgewaehlte Deckel
+     * (M-/K-Ratio-Deckel), den der Runner NACH der Basis anwendet
+     * (liveRatio = min(Basis, Deckel)).
+     *
+     * Die erste v26-Fassung liess CORRECTION fest auf der Korrektur-Ratio
+     * stehen; damit wurde ein K-Deckel 0,20 nur als Obergrenze einer
+     * festen 0,15 gelesen und konnte NIE skalieren. Tonis Vertrag: die
+     * Liveness-Basis kommt in beiden Profilen aus der Rampe, der K-Deckel
+     * ist die Skalierungsgrenze der Korrektur (z.B. maessiges r -> Basis
+     * unter dem Deckel; hohes r -> Basis darueber, der K-Deckel 0,20 kappt).
+     *
+     * `state.effectiveSmbRatio` bleibt trotzdem die FALSCHE Quelle: sie
+     * faellt ausserhalb des Normalpfad-Mahlzeitfensters auf die
+     * Korrektur-Ratio zurueck (der 0,15-Livefall bei Marker +115 min).
+     * Der normale Nicht-Liveness-Pfad behaelt genau dieses
+     * mealWindow-Gate; der Kanal rampt fensterunabhaengig. Unbrauchbares
+     * r geht in [FuseController.rampSmbRatio] fail-closed auf die
+     * Korrektur-Ratio.
+     */
+    fun baseRatio(
+        smbRatioCorrection: Double,
+        smbRatioRise: Double,
+        rSignedMgdlPerMin: Double?,
+        riseRampLowRPerMin: Double,
+        riseRampHighRPerMin: Double,
+    ): Double = FuseController.rampSmbRatio(
+        smbRatioCorrection = smbRatioCorrection,
+        smbRatioRise = smbRatioRise,
+        rSignedMgdlPerMin = rSignedMgdlPerMin,
+        riseRampLowRPerMin = riseRampLowRPerMin,
+        riseRampHighRPerMin = riseRampHighRPerMin,
+    )
+
+    /**
+     * Der Kandidat des Kanals: DERSELBE Bedarf, den der Regler rechnet
+     * ([FuseController]: `insulinReq = (releaseMean - target) / isf` - die
+     * IOB-Wirkung steckt bereits in der Bahn, KEIN zweites "- iob"),
+     * ratio- und maxSMB-gedeckelt. Kein Fantasiebedarf.
+     */
+    fun candidateU(
+        releaseMeanMgdl: Double,
+        targetMgdl: Double,
+        isfMgdlPerU: Double,
+        smbRatio: Double,
+        maxSmbU: Double,
+    ): Double {
+        if (!releaseMeanMgdl.isFinite() || !targetMgdl.isFinite()) return 0.0
+        if (!isfMgdlPerU.isFinite() || isfMgdlPerU <= 0.0) return 0.0
+        if (!smbRatio.isFinite() || smbRatio <= 0.0) return 0.0
+        if (!maxSmbU.isFinite() || maxSmbU <= 0.0) return 0.0
+        val reqU = (releaseMeanMgdl - targetMgdl) / isfMgdlPerU
+        if (reqU <= 0.0) return 0.0
+        return min(smbRatio * reqU, maxSmbU)
+    }
+
+    /** Ergebnis der Deckelrechnung: Rest und der Name der bindenden Grenze. */
+    data class Headroom(val headroomU: Double, val binding: String)
+
+    /**
+     * P0-Deckelvertrag: `min(globales iobTH, eigener Kanaldeckel, maxIOB)
+     * minus capIob minus Transporthaftung`. Die strengste Grenze gewinnt und
+     * wird BENANNT - der Export muss zeigen, wer gebunden hat.
+     */
+    fun headroomU(
+        globalIobThU: Double,
+        livenessCapU: Double,
+        maxIobU: Double,
+        capIobU: Double,
+        transportU: Double,
+    ): Headroom {
+        val grenzen = listOf(
+            "globalIobTh" to globalIobThU,
+            "livenessCap" to livenessCapU,
+            "maxIob" to maxIobU,
+        ).filter { it.second.isFinite() }
+        if (grenzen.isEmpty()) return Headroom(0.0, "invalid")
+        val (name, grenze) = grenzen.minByOrNull { it.second }!!
+        val belegt = (if (capIobU.isFinite()) max(0.0, capIobU) else return Headroom(0.0, "invalid")) +
+            (if (transportU.isFinite()) max(0.0, transportU) else return Headroom(0.0, "invalid"))
+        return Headroom(max(0.0, grenze - belegt), name)
+    }
+
+    /** Pumpenraster: reine QUANTISIERUNG nach unten, KEIN Carry - der Rest
+     *  verfaellt in diesem Zyklus (kein Nachhol-Burst, Vertrag). */
+    fun quantize(u: Double, stepU: Double): Double {
+        if (!u.isFinite() || !stepU.isFinite() || stepU <= 0.0 || u < stepU) return 0.0
+        return kotlin.math.floor(u / stepU + 1e-9) * stepU
+    }
+
+    /**
+     * finalU = max(normalU, liveU) - NIEMALS Addition. Der Beitrag des
+     * Kanals ist die Differenz; ist der Normalpfad wieder offen
+     * (normal >= live), liefert der Kanal automatisch nichts.
+     */
+    fun finalU(normalU: Double, liveU: Double): Double = max(normalU, liveU)
+}

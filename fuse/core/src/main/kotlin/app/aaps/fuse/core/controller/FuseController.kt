@@ -1,0 +1,1275 @@
+package app.aaps.fuse.core.controller
+
+import app.aaps.fuse.core.observer.Health
+import app.aaps.fuse.core.observer.Phase
+import app.aaps.fuse.core.predictor.PredictorResult
+import app.aaps.fuse.core.predictor.TrajectoryQuery
+import app.aaps.fuse.core.predictor.minSafetyLowerOf
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
+
+/**
+ * FUSE-Regelkern: Trajektorie hinein, Kanalentscheidung heraus.
+ *
+ * Kein zweiter IOB-Abzug: die Wirkung des vorhandenen Insulins steckt bereits
+ * in der Trajektorie (K2 v0.3 §0.1). Wer hier nochmal `- iob` rechnet, zieht
+ * denselben Bestand zweimal ab.
+ *
+ * Rein und deterministisch — die VirtualPump-Sperre sitzt bewusst NICHT hier,
+ * sondern im Android-Adapter, wo der tatsaechlich gewaehlte Pumpentyp bekannt
+ * ist. Ein reiner Kern kann eine Pumpe nicht pruefen und soll es nicht
+ * vortaeuschen.
+ */
+object FuseController {
+
+    /** Toleranz beim Abwaertsrunden auf Pumpenschritte. Gross genug gegen die
+     *  Binaerdarstellung von Zehnteln, klein genug, um nie einen zusaetzlichen
+     *  Schritt zu erfinden. */
+    private const val TICK_EPS = 1e-9
+
+    /**
+     * DIE R-RAMPE als GETEILTE reine Funktion (Toni 24.08.): Korrekturanteil
+     * -> Anstiegsanteil, linear zwischen unterer und oberer Rampenkante.
+     * ZWEI Aufrufer, EINE Mathematik: [State.effectiveSmbRatio] (Normalpfad,
+     * dort gated ueber Rebound- und Mahlzeit-Fenster) und der Liveness-Kanal
+     * ([LivenessChannel.baseRatio], dort gated ueber das gepinnte
+     * MEAL-Profil). Unbrauchbares r (null/NaN/Inf) oder eine ungueltige
+     * Rampe (high <= low) fallen fail-closed auf den Korrekturanteil - ohne
+     * Evidenz gibt es keinen Grund fuer mehr.
+     */
+    fun rampSmbRatio(
+        smbRatioCorrection: Double,
+        smbRatioRise: Double,
+        rSignedMgdlPerMin: Double?,
+        riseRampLowRPerMin: Double,
+        riseRampHighRPerMin: Double,
+    ): Double {
+        val r = rSignedMgdlPerMin ?: return smbRatioCorrection
+        if (!r.isFinite() || riseRampHighRPerMin <= riseRampLowRPerMin) return smbRatioCorrection
+        val f = ((r - riseRampLowRPerMin) / (riseRampHighRPerMin - riseRampLowRPerMin))
+            .coerceIn(0.0, 1.0)
+        return smbRatioCorrection + f * (smbRatioRise - smbRatioCorrection)
+    }
+
+    /**
+     * Bloecke, die eine UNSICHERE LAGE beschreiben - unabhaengig davon, was
+     * mit dem Basal geschieht (Toni 17.08.).
+     *
+     * Sie sind der Ersatz fuer das, was frueher [TbrAction.ZERO_TEMP] allein
+     * getragen hat, und tragen jetzt [Decision.unsafeSituation].
+     *
+     * NICHT dabei sind die MENGEN-Bloecke (NO_DEMAND, MAX_IOB_REACHED,
+     * IOB_TH_REACHED, CANDIDATE, BELOW_PUMP_INCREMENT, LEDGER_HOLD): sie
+     * sagen "nicht mehr noetig" oder "nicht lieferbar", nicht "gefaehrlich".
+     * PUMP_BUSY ebenfalls nicht - dort ist die Lage nicht unsicher, nur der
+     * Kanal belegt, und die Sperre kommt ohnehin ueber SmbBlockCause.
+     */
+    private val UNSAFE_BLOCKS = setOf(
+        Block.GUARD_FLOOR,
+        Block.TAIL,
+        Block.SAFETY_HOLD,
+        Block.MEASURED_DESCENT_RISK,
+        // Punkt 6: der Aufschub entsteht NUR aus einer gemessenen
+        // Abwaertslage - nachgelagerte Logik darf sie nicht als sicher lesen.
+        Block.MARKER_PRIME_DEFERRED,
+        Block.HEALTH_NOT_READY,
+        Block.HORIZON_MISSING,
+        Block.NO_INPUT,
+    )
+
+    /**
+     * REBOUND-FENSTER NACH TIEF (an einem Tag mehrfach gemessen): nach einem
+     * Tief liest der 18-min-Median die Erholungssteigung als grosse Stoerung
+     * (r stark positiv elf Minuten nach q1<75 -> eine erhebliche SMB-Menge in
+     * die zweite Senke). Die EINZIGE Information, die diese Lage von einem
+     * Mahlzeitenbeginn unterscheidet, ist das juengste Tief selbst. War q1 in
+     * den letzten [REBOUND_WINDOW_MIN] Minuten unter [REBOUND_LOW_MGDL],
+     * bleibt die Rampe auf dem Korrektur-Anteil gedeckelt - egal wie hoch r
+     * steigt. Beweisbar einseitig: der Deckel kann den Anteil nur senken.
+     * Konstanten PROVISORISCH (Tief-Schwelle nach Tonis Tief-Schutz-Konvention, Fenster
+     * an die 45-min-Gerueststaffel angelehnt); Preferences erst nach Messung.
+     */
+    const val REBOUND_LOW_MGDL = 75.0
+    const val REBOUND_WINDOW_MIN = 45
+
+    /**
+     * REBOUND v2 - TOTBAND (Vorfaelle #5/#6 in einer Nacht: deutliche Rebound-Dosen
+     * TROTZ Ratio-Deckel, Treiber war insulinReq aus der tau-60-Extrapolation
+     * der Erholungssteigung): Im Rebound-Fenster ist die Rueckkehr bis leicht
+     * UEBER das Ziel ERWUENSCHT - kein Bedarf, solange der Anker unter
+     * Ziel + [REBOUND_DEADBAND_MGDL] liegt. Haette in jener Nacht alle
+     * Rebound-Dosen genullt (BG lief aus dem Tief bis knapp unter Ziel + Totband).
+     */
+    const val REBOUND_DEADBAND_MGDL = 25.0
+
+    /** Kurzes tau im Rebound-Fenster [min]: Erholungssteigungen sterben in
+     *  ~15 min - tau 60 schreibt sie eine Stunde fort. */
+    const val REBOUND_TAU_MIN = 15
+
+    data class State(
+        val health: Health,
+        val safetyHold: Boolean,
+        val phase: Phase,
+        val netIobU: Double,
+        val bolusIobU: Double,
+        val basalIobU: Double,
+        val iobThU: Double,
+        val maxIobU: Double,
+        val targetMgdl: Double,
+        val isfMgdlPerU: Double,
+        /**
+         * Anteil im KORREKTURBETRIEB — kein bestaetigter Anstieg.
+         * Hier ist Zurueckhaltung richtig: was hier zuviel gegeben wird, faellt
+         * in eine Lage, in der ohnehin nichts drueckt.
+         */
+        val smbRatioCorrection: Double,
+        /**
+         * Anteil im ANSTIEGSBETRIEB — der Observer hat einen Anstieg bestaetigt.
+         *
+         * DAS ist die Unterscheidung, um die es bei FCL geht: frueh den
+         * Grossteil aufbauen, hinten heraus ruhiger. Bisher gab es EINEN
+         * Anteil fuer beide Faelle, und ein einzelner Wert kann das nicht
+         * leisten — er ist entweder fuer die Korrektur zu scharf oder fuer die
+         * Mahlzeit zu zaghaft.
+         *
+         * Und der Unterschied zu autoISF: dort musste eine TT gesetzt werden,
+         * damit die Gewichtsbruecke umschaltet. Hier erkennt der Observer es
+         * selbst.
+         */
+        val smbRatioRise: Double,
+        /**
+         * Die GEMESSENE Evidenz — dieselbe Groesse, aus der auch die Bahn
+         * entsteht. `null` heisst nicht berechenbar; dann gilt der
+         * Korrekturanteil, denn ohne Evidenz gibt es keinen Grund fuer mehr.
+         */
+        val rSignedMgdlPerMin: Double?,
+        /** Untere Kante der Rampe: bis hierher gilt der Korrekturanteil. */
+        val riseRampLowRPerMin: Double,
+        /** Obere Kante: ab hier gilt der volle Anstiegsanteil. */
+        val riseRampHighRPerMin: Double,
+        val pumpIncrementU: Double,
+        val maxSmbU: Double,
+        /**
+         * B2 (Bauauftrag 7.2): der kontextabhaengige Demand-Ratio-Cap des
+         * zentralen Dosierprofils — `effectiveDemandRatio = min(Basis, Cap)`.
+         * Er geht als EIGENER benannter Kandidat in die Kappenliste
+         * (`demandRatioCap`), damit die Basisrechnung (Rampe + Rebound- und
+         * Mahlzeit-Fenster) unveraendert bleibt und die bindende Grenze
+         * ehrlich benannt wird. Ein Cap ist keine feste Ratio: 1,0 heisst nur
+         * "kein zusaetzlicher Deckel", nie "volle Bedarfsabgabe".
+         * `null` laesst die Kappenliste unveraendert (Sonderpfade/Tests -
+         * der Runner setzt den Cap seit CENTRAL-only immer).
+         */
+        val contextDemandRatioCap: Double? = null,
+        val pumpBusy: Boolean,
+        /** q1 war in den letzten [REBOUND_WINDOW_MIN] min unter
+         *  [REBOUND_LOW_MGDL] - die Rampe bleibt auf dem Korrektur-Anteil. */
+        val reboundWindow: Boolean = false,
+        /**
+         * REST DES REBOUND-FENSTERS [min], `null` = unbekannt oder kein Fenster.
+         *
+         * Reine ANZEIGEGROESSE - sie geht in keine Entscheidung ein. Sie steht
+         * hier, weil der Regler sonst nur `reboundWindow` true/false nach aussen
+         * gibt und die Frage "wie lange noch?" am Geraet unbeantwortbar bleibt
+         * (Toni 16.08.: "totband restzeit waere auch so ein wert").
+         *
+         * WARUM DIE ZAHL HIER GERECHNET WIRD UND NICHT IM VIEWER: die Restzeit
+         * folgt aus `lastLowTs` und [REBOUND_WINDOW_MIN]. Beides im Viewer
+         * nachzubilden hiesse, eine Konstante des Reglers zu duplizieren und
+         * denselben Zustand aus zwei Quellen zu fuehren - genau die
+         * Fehlerklasse, die dieses Projekt schon einmal teuer bezahlt hat.
+         */
+        val reboundRestMin: Int? = null,
+        /** Wirksames Rebound-Totband [mg/dl] - Einstellung statt Konstante
+         *  (Toni 09.08.); [REBOUND_DEADBAND_MGDL] ist nur noch der Default. */
+        val reboundDeadbandMgdl: Double = REBOUND_DEADBAND_MGDL,
+        /** Anker liegt im konfigurierten NACHTFENSTER. */
+        val nightWindow: Boolean = false,
+        /** Totband der Nacht [mg/dl]; 0 = aus. Ein erklaerter Marker hebt es
+         *  auf, das Rebound-Totband dagegen nicht - s. NightWindow. */
+        val nightDeadbandMgdl: Double = 0.0,
+        /** Marker-Sonderrechte aktiv (hebt NUR das Nacht-Totband auf). */
+        val markerBoost: Boolean = false,
+        /**
+         * Zeitpunkt des Knopfdrucks, 0 = kein Marker. REINES MESSFELD - der
+         * Regler liest es nicht, und er darf es nicht: eine Entscheidung, die
+         * am Alter des Markers haengt, gehoert in die Fenster-Logik des
+         * Aufrufers, nicht hierher.
+         *
+         * Es steht trotzdem im State, weil ohne t0 die wichtigste Groesse im
+         * FCL nicht messbar ist: die LATENZ vom Druck bis zur ersten Freigabe.
+         */
+        val markerArmedTs: Long = 0L,
+        /** Episoden-Wahl "ohne Vorschuss" aus dem Marker-Dialog: die
+         *  Freigabe-Huelle und der Erklaerungs-Kredit dieser Episode sind 0. */
+        val markerNoPrime: Boolean = false,
+        /** Episoden-Wahl "nur Erwartung" (Toni): keine Direktdosis in
+         *  dieser Mahlzeit, die Huelle traegt das Erwartungskonto. */
+        val markerExpectationOnly: Boolean = false,
+        /** Rebound-Bedingung lag an, wurde aber durch einen aktiven Marker
+         *  entwaffnet (Gas-vor-Bremse NUR fuer erklaertes Wissen, 08.08.):
+         *  das Fenster schuetzt vor dem Jagen UNANGEKUENDIGTER Hypo-
+         *  Gegenesser; ein gedrueckter Marker ist die Ankuendigung. Reines
+         *  Mess-Flag - der Regler liest es nicht. */
+        val reboundSuppressedByMarker: Boolean = false,
+        /**
+         * MAHLZEIT-FENSTER (Fenster-Trio, 08.08.): offen durch Marker, offene
+         * Onset-Episode ODER kinematische Persistenz - mit 10-min-Gedaechtnis
+         * gegen Plateau-Flattern (ein reales Abendessen: echte langsame Mahlzeit
+         * war kinematisch schwach, der Marker-Zweig traegt sie). AUSSERHALB
+         * gilt der Korrektur-Anteil, egal wie hoch r steht - r kann positiv
+         * sein, waehrend BG faellt (insulinbereinigte Stoerung, GPT-Befund
+         * 07.08. bestaetigt: "BG faellt, r positiv -> hoehere Ratio" war semantisch
+         * falsch).
+         */
+        val mealWindow: Boolean = false,
+    ) {
+        init {
+            // Audit R95 F-P0-08: NaN im IOB-Snapshot schaltet beide
+            // Headroom-Gates still aus (NaN <= x ist false), korrupt
+            // negatives Bolus-IOB blaeht sie auf. Der State konstruiert im
+            // CoreInputGuard - ein Wurf hier ist ein benannter Abort, keine
+            // stille Fehlregelung. Grenzen bewusst grob: sie sollen KORRUPTE
+            // Werte fangen, nie physiologische (Basal-IOB ist bei Zero-Temps
+            // normal negativ; Bolus-IOB kann es nie sein).
+            require(netIobU.isFinite() && bolusIobU.isFinite() && basalIobU.isFinite()) {
+                "IOB nicht endlich: net=$netIobU bolus=$bolusIobU basal=$basalIobU"
+            }
+            require(bolusIobU >= -0.01) { "Bolus-IOB negativ: $bolusIobU (korrupte Behandlung?)" }
+            require(kotlin.math.abs(netIobU) <= 100.0 && bolusIobU <= 100.0 && kotlin.math.abs(basalIobU) <= 100.0) {
+                "IOB ausserhalb Plausibilitaet: net=$netIobU bolus=$bolusIobU basal=$basalIobU"
+            }
+            require(isfMgdlPerU.isFinite() && isfMgdlPerU > 0.0) { "ISF unplausibel: $isfMgdlPerU" }
+            // DER DIVISOR DER RASTERUNG, bisher ungeprueft, obwohl der Block
+            // ISF, Ziel, iobTH, maxIOB und alle drei IOB-Felder prueft. Bei 0.0
+            // liefert `floor(x/0)*0` NaN, `NaN < 0.0` ist false, das
+            // BELOW_PUMP_INCREMENT-Tor feuert nicht - und eine NaN-Dosis
+            // verliesse den Regler. Davor stand bisher nur der Runner.
+            require(pumpIncrementU.isFinite() && pumpIncrementU > 0.0) { "Pumpenschritt unplausibel: $pumpIncrementU" }
+            require(maxSmbU.isFinite() && maxSmbU >= 0.0) { "maxSMB unplausibel: $maxSmbU" }
+            require(targetMgdl.isFinite() && targetMgdl in 40.0..400.0) { "Ziel unplausibel: $targetMgdl" }
+            contextDemandRatioCap?.let {
+                require(it.isFinite() && it > 0.0 && it <= 1.0) { "contextDemandRatioCap unplausibel: $it" }
+            }
+            require(iobThU.isFinite() && iobThU >= 0.0 && maxIobU.isFinite() && maxIobU >= 0.0) {
+                "iobTH/maxIOB unplausibel: $iobThU/$maxIobU"
+            }
+        }
+
+        /** Bindungsgroesse fuer iobTH: zurueckgehaltenes Basal waehrend Zero-TBR
+         *  darf KEIN zusaetzliches SMB-Budget erzeugen (Fork-Praxis). */
+        val capIobU: Double get() = max(netIobU, bolusIobU)
+
+        /**
+         * Der Anteil, der in DIESER Lage gilt — STETIG an `r` gekoppelt, nicht
+         * an die Observer-Phase.
+         *
+         * WARUM NICHT AN DIE PHASE: die Phasenschwelle ist `thr = 0,50
+         * mg/dl/min` und erkennt "irgendetwas steigt", nicht "eine Mahlzeit
+         * laeuft". Ein echter Onset liegt bei 3-5 mg/dl/min. Der erste
+         * Geraetelauf hat das sofort gezeigt: ein flacher Verlauf im Zielbereich mit
+         * r knapp ueber der Schwelle stand als RISE_ACTIVE da und haette mit einem binaeren
+         * Schalter den vollen Mahlzeitenanteil bekommen. Eine Detektionsschwelle
+         * als Verstaerkungsschalter zweckzuentfremden behauptet eine
+         * Trennschaerfe, die sie nicht hat.
+         *
+         * Die Phase bleibt, wofuer sie gebaut ist: sie sagt, OB eine Episode
+         * laeuft. Wie STARK die Evidenz ist, steht in `r` — und die Verstaerkung
+         * soll damit wachsen, nicht springen.
+         *
+         * Kein Phasen-Gate obendrauf: nach dem Peak faellt `r` von selbst, die
+         * Rampe regelt das ohne zweite Regel.
+         */
+        val effectiveSmbRatio: Double
+            get() {
+                // Rebound-Deckel VOR der Rampe: die Erholung nach einem Tief
+                // ist keine Mahlzeit, egal was der Median glaubt.
+                if (reboundWindow) return smbRatioCorrection
+                // Fenster-Trio: volle Rampe nur im Mahlzeit-Fenster.
+                if (!mealWindow) return smbRatioCorrection
+                return rampSmbRatio(
+                    smbRatioCorrection = smbRatioCorrection,
+                    smbRatioRise = smbRatioRise,
+                    rSignedMgdlPerMin = rSignedMgdlPerMin,
+                    riseRampLowRPerMin = riseRampLowRPerMin,
+                    riseRampHighRPerMin = riseRampHighRPerMin,
+                )
+            }
+    }
+
+    data class Limits(
+        /** Untergrenze, die die pessimistische Bahn nicht unterschreiten darf. */
+        val guardFloorMgdl: Double = 70.0,
+        /** Horizont, auf dem der Bedarf abgelesen wird (Index in points). */
+        val releaseHorizonMin: Int = 30,
+    )
+
+    /**
+     * EPISODENZUSTAND, nicht Verstaerkungsschalter.
+     *
+     * Er wird BERICHTET (Schirm, Export), steuert aber nichts mehr: die
+     * Verstaerkung haengt an `r`, s. [State.effectiveSmbRatio]. Die
+     * Unterscheidung bleibt trotzdem wertvoll — sie sagt, ob der Observer eine
+     * Episode fuehrt, und das ist beim Auswerten etwas anderes als die Hoehe
+     * des Anstiegs.
+     *
+     * `CANDIDATE` zaehlt schon zum Anstieg, obwohl er noch nicht bestaetigt
+     * ist: die Schwelle ist ueberschritten, und genau die ersten Minuten sind
+     * die, in denen ein FCL vorn sein muss. Der Guard bleibt in beiden Faellen
+     * derselbe — es geht um die Verstaerkung, nicht um den Schutz.
+     *
+     * `TURN` liegt bewusst im Korrekturtopf: der Peak ist ueberschritten, das
+     * meiste bereits gegebene Insulin ist noch gar nicht angekommen.
+     */
+    enum class Context { CORRECTION, RISE }
+
+    fun contextOf(phase: Phase): Context = when (phase) {
+        Phase.CANDIDATE, Phase.RISE_ACTIVE, Phase.CARRY -> Context.RISE
+        Phase.REARMING, Phase.ARMED, Phase.TURN         -> Context.CORRECTION
+    }
+
+    enum class TbrAction {
+        KEEP_CURRENT,
+        CANCEL_TO_SCHEDULED,
+        ZERO_TEMP,
+        /**
+         * STUFENWEISE BASALRUECKKEHR aus einer verriegelten Schutz-Null:
+         * ein ANTEIL des Profilbasals statt gar nichts. Gesetzt wird sie
+         * ausschliesslich vom Runner (Zero-Latch-Uebersteuerung), nie von
+         * der Kandidatensuche - die Modellkette kennt diesen Zustand
+         * nicht.
+         *
+         * Die Rate ist immer KLEINER als das Profilbasal; es ist keine
+         * positive TBR.
+         */
+        PARTIAL_BASAL,
+        NO_NEW_POSITIVE,
+    }
+
+    /**
+     * Konkrete TBR-Antwort. AAPS setzt die TBR in JEDEM Zyklus VOR dem SMB — ein
+     * APS ohne Rate und Dauer liesse das Basal ungeregelt.
+     *
+     * [rateUPerH] ist ABSOLUT (nicht Prozent), [durationMin] die angeforderte
+     * Laufzeit. `null` heisst ausdruecklich "keine neue Anforderung, laufende
+     * TBR unberuehrt lassen" — nicht "Rate 0".
+     */
+    data class TbrRequest(val rateUPerH: Double, val durationMin: Int)
+
+    /** Uebersetzt die Kategorie in eine konkrete Anforderung.
+     *
+     *  Die Trennung ist Absicht: die Kategorie sagt, WAS gilt; erst hier kommen
+     *  Profilbasal und Pumpengrenzen dazu. So bleibt die Entscheidung testbar,
+     *  ohne dass jede Regel Pumpendetails kennen muss. */
+    fun tbrRequest(
+        action: TbrAction,
+        scheduledBasalUPerH: Double,
+        maxBasalUPerH: Double,
+        durationMin: Int = 30,
+    ): TbrRequest? = when (action) {
+        // Zero-Temp ist die einzige Rueckholmoeglichkeit des Loops. Sie wird
+        // ueber die volle Dauer gesetzt, nicht minutenweise erneuert.
+        TbrAction.ZERO_TEMP           -> TbrRequest(0.0, durationMin)
+        // Zurueck auf Profilbasal: als absolute Rate, damit eine laufende
+        // Abweichung sicher endet statt nur auszulaufen.
+        TbrAction.CANCEL_TO_SCHEDULED -> TbrRequest(scheduledBasalUPerH.coerceIn(0.0, maxBasalUPerH), durationMin)
+        // Nichts anfordern: eine bestehende TBR laeuft weiter. NICHT Rate 0.
+        TbrAction.KEEP_CURRENT        -> null
+        // Kein neues POSITIVES Temp — eine bereits laufende Absenkung darf
+        // bleiben, weil sie in die sichere Richtung wirkt.
+        TbrAction.NO_NEW_POSITIVE     -> null
+        // Die Teilstufe bildet ihre Rate NICHT hier: sie braucht den
+        // Pumpenschritt und die laufende TBR, die diese Funktion nicht
+        // kennt. Sie entsteht in TbrPolicy.partialBasal - und diese
+        // Funktion hat im Produktivpfad ohnehin keine Aufrufstelle.
+        TbrAction.PARTIAL_BASAL       -> null
+    }
+
+    enum class Block {
+        NONE, HEALTH_NOT_READY, SAFETY_HOLD, PUMP_BUSY, GUARD_FLOOR,
+        NO_DEMAND, IOB_TH_REACHED, MAX_IOB_REACHED, BELOW_PUMP_INCREMENT, HORIZON_MISSING,
+        /** Die Kandidatensuche hat den Vorschlag inhaltlich auf null gesetzt
+         *  (Guard risse MIT der Dosis, Band, Headroom) - s. CandidateGate. */
+        CANDIDATE,
+
+        /**
+         * GEMESSENES ABWAERTSRISIKO - der finale Riegel gegen neues
+         * positives Insulin (Toni 19.08.).
+         *
+         * Gesetzt am GEMEINSAMEN Endpunkt des Zyklus: nach Prime- und
+         * Fundament-Lift, nach `finalVerify` und `MarkerFloor`, vor der
+         * Publikation. Keine Autorisierung hebt ihn auf - auch der Marker
+         * nicht.
+         *
+         * ER SAGT NICHTS UEBER DIE TBR. Ob eine Zero-TBR noch nuetzt, ist
+         * eine andere Frage und bleibt beim Basalnutzen; bei aktivem Risiko
+         * und unwirksamer Null ist die richtige Antwort SMB 0 UND
+         * KEEP_CURRENT.
+         */
+        MEASURED_DESCENT_RISK,
+
+        /**
+         * B1 (Bauauftrag 5.1): die GEMEINSAME kontextabhaengige
+         * Expositionsgrenze ist erschoepft - CorrectionExposureLimit bzw.
+         * MealExposureLimit im min mit iobTH und maxIOB, gegen
+         * capIob + Transporthaftung.
+         *
+         * ABSOLUTE Mengengrenze der Klasse IOB_TH_REACHED/MAX_IOB_REACHED:
+         * keine Autorisierung hebt sie (MarkerAuthorization.liftsEarlySupply = false),
+         * sie ist KEIN Gefahrensignal (nicht in UNSAFE_BLOCKS, TbrAction
+         * NO_NEW_POSITIVE - Invariante 7: erzeugt nie eigenstaendig
+         * Zero-TBR) und sie BEENDET wie die beiden IOB-Grenzen eine
+         * stehende FUSE-Null (GUARD_CHAIN_PASSED, Tonis Entscheid 29.08.).
+         * Gesetzt NUR von der verbindlichen Endpruefung (ExposureGate) -
+         * nach ihr hebt keine Stufe mehr.
+         */
+        EXPOSURE_LIMIT,
+
+        /**
+         * MARKERAUTORISIERTES Insulin bei gemessenem, ueberdecktem Fall mit
+         * Boden im GEPINNTEN Prime-Horizont zurueckgehalten (Punkt 6,
+         * Toni 22.08.). Die Menge ist nicht weg: sie wandert als offener
+         * Aufschub in [DeferredPrime] und kommt nach bestaetigter Erholung
+         * schrittweise wieder - oder verfaellt sichtbar an der gepinnten
+         * Frist. Reine Korrekturen tragen diesen Block NIE; fuer sie gilt
+         * weiterhin [MEASURED_DESCENT_RISK] mit dem kurzen Horizont.
+         */
+        MARKER_PRIME_DEFERRED,
+
+        /**
+         * Der Commitment-Ledger meldet einen Vertragsbruch (holdActuation):
+         * der Regler weiss nicht mehr sicher, was draussen unterwegs ist -
+         * keine neue Dosis, bis repariert oder ausdruecklich quittiert ist.
+         * Gesetzt vom [LedgerHoldGate] NACH den autorisierten Hebungen, damit weder
+         * der Ratio-Pfad (bei Kernel-Ausfall) noch die Sofort-Freigabe am
+         * Kandidaten-Reject vorbeikommen.
+         */
+        LEDGER_HOLD,
+
+        /**
+         * Der SCHWANZ traegt nichts mehr: was am Haftungshorizont noch an Bord
+         * ist, schoepft das Budget der Bahn danach bereits aus.
+         *
+         * Heisst TAIL und nicht TAIL_FLOOR, weil v0.4 §268 den bindenden Grund
+         * so nennt (NEAR_TERM_GUARD | TAIL | TARGET_BAND | CAP). Ein zweiter
+         * Name fuer dieselbe Sache waere im Export nicht zuzuordnen.
+         */
+        TAIL,
+
+        /**
+         * Der Zyklus kam gar nicht bis zum Regler: kein Profil, kein Signal,
+         * eine ungueltige Eingabe.
+         *
+         * Bewusst NICHT als `HEALTH_NOT_READY` getarnt — das waere eine Aussage
+         * ueber den Observer, den es in diesem Fall noch gar nicht gesehen hat.
+         * Wer spaeter auswertet, muss "Regler sagt nein" von "Regler lief nicht"
+         * unterscheiden koennen.
+         */
+        NO_INPUT,
+    }
+
+    data class Decision(
+        val smbU: Double,
+        val tbr: TbrAction,
+        val block: Block,
+        /**
+         * Der gerechnete Bedarf [U] - `null` heisst NICHT GERECHNET.
+         *
+         * Auditbefund P1-4 (16.08.2026): hier stand ein nicht-nullbarer
+         * `Double`, und die Frueh-Ausstiege (NO_INPUT, none(), GUARD_FLOOR,
+         * TAIL) uebergaben ein hartkodiertes `0.0`. Der Bedarf wird aber erst
+         * NACH diesen Ausstiegen gerechnet - ein geblockter Zyklus war im
+         * Trail damit von echtem Nullbedarf nicht unterscheidbar.
+         *
+         * Das ist keine Kosmetik: der Fehler hat im Audit ZWEI unabhaengige
+         * Pruefer zu derselben falschen Aussage verleitet ("der Regler wies
+         * null Bedarf aus"), und bei der Plateau-Analyse am selben Tag noch
+         * einen dritten. Er verletzt die Projektregel "fehlende Daten heissen
+         * UNKNOWN, niemals 0" an genau der Stelle, an der man sie am
+         * dringendsten braucht - beim Deuten eines blockierten Zyklus.
+         */
+        val insulinReqU: Double?,
+        val predAtReleaseMgdl: Double?,
+        /**
+         * Die SICHERHEITSBAHN, gegen die der Guard entschieden hat: prior-frei
+         * und ueber Haupt- UND Bremsbahn minimiert (C7, Codex H2). Bewusst
+         * NICHT die prior-gehobene Anzeigebahn - eine Zahl, die guenstiger
+         * aussieht als das, was geprueft wurde, gehoert in keinen Export
+         * (gleiche Regel wie in [CandidateSearch]).
+         */
+        val minLowerMgdl: Double?,
+        val bindingLimit: String,
+        /** Schwanzhaftung, falls bewertet. `null` = Guard aus oder nicht
+         *  auswertbar. Traegt seinen eigenen Unvollstaendigkeitsvermerk. */
+        val tail: TailLiability.Report? = null,
+        /**
+         * Was der Schwanz-Guard die Freigabe GEKOSTET hat [U] — die Differenz
+         * zwischen der bindenden Grenze ohne und mit Schwanzterm.
+         *
+         * Reine Arithmetik INNERHALB des Zyklus, also messbar und kein
+         * Counterfactual: beide Zahlen entstehen aus derselben Momentaufnahme.
+         * Guard v0.3 §5 verlangt, dass der Onset-Verlust ueber H BEZIFFERT wird
+         * — genau das ist diese Zahl.
+         */
+        val tailCostU: Double = 0.0,
+        /** In welcher Lage entschieden wurde. Gehoert in den Export und auf den
+         *  Schirm: dieselbe Zahl bedeutet in RISE etwas anderes als in
+         *  CORRECTION. */
+        val context: Context? = null,
+        /**
+         * Hat die schnelle Bahn den GUARD gesenkt? (S0)
+         *
+         * Getrennt vom Bedarf gefuehrt, weil es zwei verschiedene Dinge sind:
+         * hier verschiebt die Bremse die Sicherheitsbahn und kann damit
+         * BLOCKIEREN, unten kuerzt sie die ANFORDERUNG. Bis S0 war beides ein
+         * Bit, und "gebremst" liess offen, welches von beiden passiert ist.
+         */
+        val restraintBoundGuard: Boolean = false,
+        /** Hat die schnelle Bahn den BEDARF gesenkt? (S0) — s.
+         *  [restraintBoundGuard]. */
+        val restraintBoundDemand: Boolean = false,
+        /**
+         * Das Minimum der HAUPTbahn allein [mg/dl] (S0).
+         *
+         * [minLowerMgdl] ist ueber beide Bahnen minimiert; ohne diese Zahl ist
+         * das AUSMASS der Bremswirkung nicht rekonstruierbar, nur ihr
+         * Vorhandensein. `null` = keine Bahn.
+         */
+        val minLowerMainMgdl: Double? = null,
+        /**
+         * Wie weit die Sicherheitsbahn unter den Guard-Boden faellt [mg/dl],
+         * sonst 0 (S0, Invariante I16).
+         *
+         * Der Guard ist ein reiner Schwellentest — eine Bahn bei 69 war im
+         * Export von einer bei -382 nicht zu unterscheiden. Diese Zahl und
+         * [timeToFloorMin] machen den Unterschied sichtbar. Sie ENTSCHEIDEN
+         * nichts.
+         */
+        val floorDeficitMgdl: Double = 0.0,
+        /** Nach wievielen Minuten die Sicherheitsbahn den Boden erstmals
+         *  unterschreitet; `null` = nie im Fenster (S0). */
+        val timeToFloorMin: Int? = null,
+        /**
+         * WANN das Minimum liegt, gegen das ENTSCHIEDEN wurde - ueber Haupt-
+         * UND Bremsbahn (S0, I16).
+         *
+         * Gegenstueck zu [minLowerMgdl]. Der Zeitindex der EINZELNEN Bahn
+         * (`PredictorResult.timeToMinSafetyLowerMin`) beschreibt einen anderen
+         * Zeitpunkt, sobald das Minimum aus der Bremsbahn stammt - live
+         * beobachtet: minLower klar unter dem Anker, aber Index 0. Beide Zahlen
+         * waren richtig, nebeneinander ergaben sie eine unmoegliche Bahn.
+         */
+        val timeToMinCombinedMin: Int? = null,
+        /**
+         * ALLE Mengengrenzen dieses Zyklus, nicht nur die bindende (S0, K2).
+         *
+         * `bindingLimit` nennt genau eine, und bei Gleichstand entscheidet die
+         * Listenreihenfolge. Im Standard ist das kein Randfall: mit
+         * `IobThPercent = 100` ist `iobThU == maxIobU` bitgenau, also sind
+         * `iobThHeadroom` und `maxIobHeadroom` IMMER gleich, und genannt wird
+         * immer der erste — iobTH. Wer spaeter fragt "war maxIOB mit aktiv?",
+         * kann das ohne diese Liste nicht beantworten.
+         *
+         * Leer, wenn der Zyklus die Mengenrechnung nie erreicht hat.
+         */
+        val caps: List<Cap> = emptyList(),
+        /**
+         * ZU WELCHER STUFE die Kappenliste gehoert (S0).
+         *
+         * Die Entscheidung wird nach dem Regler noch mehrfach umgeschrieben -
+         * CandidateGate, PrimeRelease, SubStep -, und dabei aenderten sich
+         * `smbU` und `bindingLimit`, waehrend `caps` aus der Basisstufe
+         * stehenblieb. Schlimmer noch: `CandidateSearch` fuehrt DIESELBEN
+         * NAMEN mit ledgerkorrigierten Werten. Ein Datensatz konnte damit
+         * eine gelieferte Menge zeigen, die GROESSER ist als die Kappe, die
+         * er als bindend markiert - genau der Widerspruch, gegen den die
+         * Liste ueberhaupt gebaut wurde.
+         *
+         * Leere Liste bei einer Stufe != [STAGE_BASE] heisst: die Grenzen
+         * dieser Stufe sind nicht aufzaehlbar. Das ist eine Aussage, kein
+         * Fehlen.
+         */
+        val capsStage: String = STAGE_BASE,
+        /** Gewuenschte Menge VOR der Pumpenschritt-Rasterung [U] (Toni 09.08.):
+         *  Eingang des Rest-Zaehlers gegen die Quantisierungs-Totzone. 0 heisst
+         *  "es gab keinen Wunsch", nicht "der Wunsch war klein". */
+        val desiredBeforeStepU: Double = 0.0,
+        /**
+         * DIE AUTORISIERTE MENGE MIT IHRER HERKUNFT - oder `null`.
+         *
+         * DER FRUEHERE TEXT WAR SACHLICH FALSCH (Toni 19.08.). Er sprach von
+         * einer Autorisierung "bei gemessenem Tief" - das war die Entscheidung
+         * vom 11.08. und ist seit dem 18.08. ausdruecklich HART: `SAFETY_HOLD`
+         * steht nicht mehr in [MarkerAuthorization], weil es den ROHEN
+         * Messwert traegt, keine Prognose. Der Marker ueberstimmt das MODELL,
+         * nicht die Wirklichkeit.
+         *
+         * Was er wirklich traegt: den Anteil dieser Menge, den eine
+         * ausdrueckliche Autorisierung deckt - aus dem Prime-Fenster (Phase A)
+         * oder aus der nachlaufenden Mindestversorgung (Phase B).
+         *
+         * TYPISIERTE HERKUNFT, und das ist der ganze Punkt. Der Translator
+         * muss eine autorisierte Menge von jeder anderen unterscheiden
+         * koennen, OHNE sie aus `bindingLimit` oder einem Grundtext zu raten -
+         * Texte sind fuer Menschen, an ihnen darf keine Insulinabgabe haengen.
+         *
+         * BETRAG UND QUELLE STEHEN GEMEINSAM, weil sie nur gemeinsam Sinn
+         * ergeben: eine Quelle ohne Menge ist ein Widerspruch, und getrennte
+         * Felder liessen genau den entstehen (s.
+         * [AuthorizedLift.AuthorizedGrant]).
+         *
+         * `null` heisst: nichts an dieser Menge ist autorisiert. Dann nullt
+         * jeder Mengen-Block sie vollstaendig, wie bisher.
+         */
+        val grant: AuthorizedLift.AuthorizedGrant? = null,
+
+        /**
+         * BESCHREIBT DIESER ZYKLUS EINE UNSICHERE LAGE? (Toni 17.08.)
+         *
+         * Getrennt von der Frage, was mit dem Basal geschieht - und genau das
+         * ist der Punkt. Bis zum 17.08. trug [TbrAction.ZERO_TEMP] beides
+         * zugleich: "die Lage ist unsicher" UND "deshalb wird genullt". Seit
+         * das Fundament auch in unsicherer Lage stehen bleibt
+         * ([LowThreatGate]), sind das zwei verschiedene Aussagen.
+         *
+         * WORAN ES HAENGT: die C8-Sperre ("kann FUSE die laufende Abgabe nicht
+         * stoppen, darf es nicht gleichzeitig zusaetzliches Insulin geben").
+         * Ohne dieses Feld gab ein Guard-Zyklus unter FAKE_EXTENDED wieder
+         * Insulin frei - im Verdrahtungstest gemessen: 0,1 U statt 0.
+         *
+         * WARUM EIN FELD UND NICHT `block in {...}`: der Block ist an der
+         * Stelle, an der die Frage gestellt wird (FuseTbrTranslator), laengst
+         * ueberschrieben - `finalVeto` setzt CANDIDATE, [MarkerFloor] setzt
+         * NONE. Der Guard-Grund ueberlebt dort nur als TEXT im
+         * `bindingLimit`, und an einem Grundtext darf keine Insulinabgabe
+         * haengen. Dieselbe Regel, aus der schon [markerAuthorizedU] eine
+         * typisierte Herkunft bekommen hat.
+         *
+         * FAIL-CLOSED ist hier `true`-lastig: gesetzt wird es an JEDEM
+         * Sicherheitsausgang (Health, SafetyHold, fehlende Bahn, Guard-Boden,
+         * Schwanz). Ein vergessener Ausgang meldet faelschlich "sicher" - das
+         * ist die gefaehrliche Richtung, deshalb setzt der Helfer `none()` es
+         * zentral statt jede Rueckgabe einzeln.
+         */
+        val unsafeSituation: Boolean = false,
+        /**
+         * Ob fuer diesen Zyklus die Basal-Grundregel der Mahlzeit wirksam ist
+         * (Toni 17.08.): Marker-Freigabe aktiv oder Evidenzphase
+         * ACTIVE/PENDING_SEAL, KEIN gemessenes Tief, KEIN nahes fallendes
+         * Tief, TBR-Achse kontrollierbar. Gesetzt von [BasalFloorGuard] im
+         * Runner - der Regler kennt die Episodenphase nicht.
+         *
+         * GETRAGEN WIRD DAMIT ZWEIERLEI: die Hebung einer modellbedingten
+         * Null in DIESEM Zyklus (steht dann schon in `tbr`), und die
+         * C7c-Freigabe im Translator, eine LAUFENDE Null aus einem
+         * Vorzyklus neben einem SMB zu beenden - sonst hielte das C7a-Veto
+         * sie, solange die Mahlzeit dosiert, was im Betrieb exakt passiert
+         * ist (Null lief die vollen 30 min, ein manueller Abbruch wurde
+         * im Folgezyklus ueberschrieben).
+         */
+        val basalFloorProtected: Boolean = false,
+        /**
+         * DER TYPISIERTE GRUND EINER KANDIDATEN-SPERRE ODER -KUERZUNG
+         * (Erwartungskonto, Vorregistrierung E-034) - oder `null`.
+         *
+         * Gesetzt von [CandidateGate] (Ablehnung der Suche, sonst der
+         * Kuerzungsgrund [CandidateSearch.Result.cutReason]) und von der
+         * Endpruefung im Runner. Er ueberlebt die spaeteren Stufen als Feld,
+         * weil autorisierte Anhebungen `bindingLimit` ueberschreiben. Die
+         * Hebung des Erwartungsanteils haengt ausschliesslich an diesem Feld,
+         * nie an einem Grundtext ([MarkerAuthorization.liftsEarlySupply];
+         * Konsolidierung 2.0: die v1-Tabelle ist entfallen).
+         * Nur im Speicher, nie persistiert.
+         */
+        val candidateReason: CandidateSearch.Reject? = null,
+        /**
+         * NORMALBEDARF IM KONTOFENSTER (Toni: Anfangsgabe, anschliessende Bedarfsrechnung und Sicherheitspruefung
+         * muessen zusammen einen funktionierenden Versorgungsweg ergeben - auch nach Ende des Vorgriffs). `true`, wenn
+         * im Mahlzeitkontext mit Konto die BASISMENGE aus dem Normalbedarf kam, weil er mehr trug als der Kontobedarf.
+         * Das Konto bucht eine solche Menge als normal, nicht gegen das Budget ([ExpectationAccount.book]); hebt eine
+         * spaetere Stufe die Menge an, entscheidet deren Quelle.
+         */
+        val normalDemandInAccountWindow: Boolean = false,
+    ) {
+
+        /**
+         * Der autorisierte Betrag - ABGELEITET aus [grant], nicht
+         * zweitgefuehrt.
+         *
+         * Er stand hier bis zum 18.08. als eigenes Feld neben der Quelle. Als
+         * Getter kann er der Quelle nicht mehr widersprechen: es gibt keinen
+         * Zustand "Betrag ohne Herkunft" und keinen "Herkunft ohne Betrag".
+         *
+         * 0 heisst: nichts an dieser Menge ist autorisiert.
+         */
+        val markerAuthorizedU: Double get() = grant?.amountU ?: 0.0
+
+        /** Die Herkunft - `null`, wenn nichts autorisiert ist. */
+        val authorizedSource: AuthorizedLift.Source? get() = grant?.source
+
+        /**
+         * Hat die schnelle Bahn ueberhaupt gebremst?
+         *
+         * ABGELEITET und nicht mitgefuehrt: so kann das Bit nicht behaupten,
+         * was die beiden Ursachen nicht hergeben. Fuer alle bisherigen Leser
+         * bedeutungsgleich zum frueheren Feld.
+         */
+        val restraintBound: Boolean get() = restraintBoundGuard || restraintBoundDemand
+    }
+
+    /**
+     * Eine Mengengrenze mit ihrem Wert (S0-Telemetrie, K2).
+     *
+     * [active] heisst "fuer die Dosis von der bindenden Grenze nicht zu
+     * unterscheiden", und das ist GLEICHE TICKZAHL - NICHT "innerhalb eines
+     * Pumpenschritts". Ein ganzer Schritt Abstand ist bereits eine andere
+     * lieferbare Menge. Die Regel steht in [capsOf] und nur dort; dieser
+     * Absatz hat sie einmal falsch wiederholt und die Korrektur nicht
+     * mitbekommen.
+     *
+     * KEINE Einstufung in hart/weich hier. Welche Grenze ein spaeteres
+     * Privileg erweitern darf, ist eine Regel des Privilegs — der Regler
+     * liefert die Tatsachen.
+     */
+    data class Cap(val name: String, val valueU: Double, val active: Boolean)
+
+    /**
+     * Die fail-closed Entscheidung fuer einen Zyklus, der den Regler nie
+     * erreicht hat.
+     *
+     * Sie steht hier und nicht im Adapter, damit es genau EINE Form von "FUSE
+     * hat nichts entschieden" gibt: keine Menge, nichts Positives mehr, und der
+     * Grund im Klartext. `NO_NEW_POSITIVE` und nicht `ZERO_TEMP`: eine fehlende
+     * Eingabe ist kein Sicherheitsbefund. Wer bei jedem Signalaussetzer 30
+     * Minuten Basal stoppt, hat eine eigene Fehldosis gebaut, nur mit
+     * umgekehrtem Vorzeichen.
+     */
+    fun noInput(reason: String): Decision =
+        Decision(0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_INPUT, null, null, null, reason)
+
+    /**
+     * DER STEMPEL, DEN KEIN RUECKGABEPFAD VERGESSEN KANN (Toni 17.08.).
+     *
+     * [Decision.basalFloorProtected] muss an JEDEM Ausgang stimmen - der
+     * Translator entscheidet daran, ob eine laufende Null neben einem SMB
+     * beendet werden darf (C7c). `decide` hat ein Dutzend Rueckgabepunkte;
+     * jeden einzeln zu stempeln waere ein Dutzend Gelegenheiten, es zu
+     * vergessen, und ein vergessener Stempel sieht aus wie eine bewusste
+     * Entscheidung ("die Null darf bleiben").
+     *
+     * Dieselbe Lehre wie bei der S0-Telemetrie eine Ebene tiefer: einmal
+     * zentral anhaengen statt achtmal von Hand.
+     */
+    fun decide(
+        state: State,
+        prediction: PredictorResult?,
+        limits: Limits = Limits(),
+        tail: TailLiability.Report? = null,
+        restraint: PredictorResult? = null,
+        evidenceCreditActive: Boolean,
+        /** S. [decideInner] - getrennt vom Nacht-Recht, weil nur dieses
+         *  eine markerbezogene Frist hat. */
+        evidenceMayOverrideRebound: Boolean,
+        lowThreat: LowThreatGate.Verdict,
+        onsetCapU: Double? = null,
+        /** S. [decideInner]. `null` = heutiger Bedarf, bitgleich. */
+        expectationDemandU: Double? = null,
+    ): Decision {
+        val d = decideInner(
+            state, prediction, limits, tail, restraint,
+            evidenceCreditActive, evidenceMayOverrideRebound, lowThreat, onsetCapU, expectationDemandU,
+        )
+        val geschuetzt = lowThreat == LowThreatGate.Verdict.NONE
+        return if (d.basalFloorProtected == geschuetzt) d else d.copy(basalFloorProtected = geschuetzt)
+    }
+
+    private fun decideInner(
+        state: State,
+        prediction: PredictorResult?,
+        limits: Limits = Limits(),
+        /** `null` = Schwanz-Guard aus. Vierter Parameter mit Default, damit
+         *  bestehende Aufrufe unveraendert bleiben. */
+        tail: TailLiability.Report? = null,
+        /**
+         * ZWEITE Bahn aus einer SCHNELLEN Rate — sie darf ausschliesslich
+         * BREMSEN.
+         *
+         * Warum eine reine Bremse und keine Ersetzung: `rSigned` ist der Median
+         * ueber 18 Minuten und haengt an jedem Wendepunkt rund sechs Minuten
+         * nach. An einem realen Tag gemessen, in BEIDE Richtungen:
+         *
+         *   Onset   roh deutlich steigend   r noch negativ         -> zu spaet dosiert
+         *   Wende   roh deutlich fallend    r noch stark positiv   -> zu lange dosiert
+         *
+         * Die Wende kostete eine erhebliche Menge in einer langen SMB-Serie, abgegeben bei
+         * deutlich FALLENDER Glukose.
+         *
+         * WARUM NUR BREMSEN, und nicht die naheliegende Asymmetrie: der erste
+         * Entwurf lautete "Guard nimmt das MAXIMUM beider Bahnen, damit die
+         * schnelle nur oeffnen kann". Das ist im ABSTIEG falsch — dort ist die
+         * schnelle Bahn die alarmierende, und `max` wirft sie weg. Welche Bahn
+         * "die sichere" ist, wechselt mit der Richtung; eine feste Asymmetrie
+         * kann das nicht abbilden.
+         *
+         * Das MINIMUM beider Bahnen ist dagegen richtungsunabhaengig richtig:
+         * ein Guard ist pessimistisch, und die pessimistischere zweier
+         * gleichzeitiger Schaetzungen zu nehmen ist genau das. Es kann keine
+         * Dosis erhoehen und keinen heute vorhandenen Block entfernen — der
+         * Eingriff ist damit beweisbar einseitig.
+         *
+         * WAS ES NICHT BEHEBT: den Onset. Dort ist die langsame Bahn die
+         * pessimistischere, gewinnt also, und FUSE bleibt zu zaghaft. Das ist
+         * ein Problem des ANTRIEBS, nicht der Kombination, und wird getrennt
+         * behandelt.
+         */
+        restraint: PredictorResult? = null,
+        /**
+         * Fliesst in diesem Zyklus Kredit aus dem versiegelten Evidenzbestand?
+         *
+         * Entwaffnet die Totbaender (s. [NightWindow.effectiveDeadbandMgdl]).
+         *
+         * OHNE DEFAULT, nach derselben Regel wie dort - und aus gemessenem
+         * Anlass: die erste Fassung trug `= false`, der einzige
+         * Produktionsaufrufer vergass den Anschluss, und der Default hielt
+         * die Totbaender kompilierfehlerfrei still scharf (Abschluss-Audit
+         * 15.08.: zahlreiche Kreditzyklen im 2-Tage-Trail geblockt, waehrend die
+         * Commit-Botschaft die Verdrahtung behauptete). Ein Kompilierfehler
+         * je Aufrufstelle ist billiger als genau dieser stille Ausfall.
+         */
+        evidenceCreditActive: Boolean,
+        /**
+         * DARF DIE EVIDENZ IN DIESEM ZYKLUS DAS REBOUND-TOTBAND
+         * ENTWAFFNEN? (Toni 19.08.)
+         *
+         * GETRENNT VON [evidenceCreditActive], weil das Rebound-Recht
+         * eine markerbezogene Frist hat und das NACHT-Recht nicht.
+         * Ein gemeinsames Signal haette die Befristung ungewollt auf
+         * die Nacht ausgedehnt.
+         *
+         * OHNE DEFAULT, aus demselben Grund wie oben.
+         */
+        evidenceMayOverrideRebound: Boolean,
+        /**
+         * DAS LOW-TOR - der einzige Weg zu einer Zero-TBR (Toni 17.08.).
+         *
+         * Ohne einen positiven Low-Nachweis bleibt das Profilbasal stehen,
+         * auch wenn Bahn, Schwanz oder Marker etwas anderes nahelegen. Der
+         * Guard sperrt dann die MENGE, nicht die Basisversorgung.
+         *
+         * OHNE DEFAULT, aus demselben Grund wie [evidenceCreditActive] eine
+         * Zeile darueber: ein `= Verdict.NONE` waere hier die gefaehrlichere
+         * Richtung - es wuerde jede vergessene Aufrufstelle still den
+         * Low-Schutz abschalten, und der Ausfall faellt erst am Menschen auf.
+         * Ein Kompilierfehler je Aufrufstelle ist billiger.
+         */
+        lowThreat: LowThreatGate.Verdict,
+        /** Rest der Onset-Haftungshuelle [U]. Nicht-null NUR, wenn der
+         *  OnsetChannel in diesem Zyklus die Mittelbahn gehoben hat - dann
+         *  kappt er die Menge, die auf seiner eigenen Hebung beruht. */
+        onsetCapU: Double? = null,
+        /**
+         * DER BEDARF AUS DEM ERWARTUNGSKONTO (Vorregistrierung E-034) [U] -
+         * die lieferbare Menge `min(max(0, R_roh), max(0, R_mess) + Rest)`.
+         *
+         * Nicht-null NUR im Mahlzeitkontext bei eingeschaltetem Konto. Dann
+         * tritt er NEBEN den Bedarf aus der Fortschreibung am Freigabehorizont:
+         * es gilt der Weg mit der groesseren Menge - der Kontoweg ohne
+         * Ratio-Kandidaten (je Zyklus hoechstens maxSMB), der Normalweg mit
+         * ihnen ([Decision.normalDemandInAccountWindow]). Zustand, Guard,
+         * Schwanz, Totbaender und die IOB-Grenzen bleiben unveraendert. Nicht
+         * berechenbar zaehlt als 0 (kein Kontobedarf), nie als Menge.
+         */
+        expectationDemandU: Double? = null,
+    ): Decision {
+        // Der Kontext gehoert an JEDEN Rueckgabepfad, nicht nur an den
+        // Erfolgsfall. Gerade beim Blockieren ist die Frage "war das die
+        // Mahlzeiten- oder die Korrekturlage" die erste, die man stellt.
+        val ctx = contextOf(state.phase)
+
+        // ZENTRAL statt an jeder Rueckgabe: `unsafeSituation` an einem
+        // Sicherheitsausgang zu VERGESSEN meldet faelschlich "sicher", und
+        // daran haengt die C8-Sperre. Ein Helfer kann das nicht vergessen.
+        fun none(block: Block, tbr: TbrAction = TbrAction.NO_NEW_POSITIVE) =
+            Decision(
+                0.0, tbr, block, null, null, null, block.name, context = ctx,
+                unsafeSituation = block in UNSAFE_BLOCKS,
+            )
+
+        // Reihenfolge ist Absicht: Zustand vor Zahlen. Eine Dosis aus einer
+        // Trajektorie, die gar nicht gelten darf, waere der teuerste Fehler.
+        if (state.health != Health.READY) return none(Block.HEALTH_NOT_READY)
+        if (state.safetyHold) return none(Block.SAFETY_HOLD, TbrAction.ZERO_TEMP)
+        if (state.pumpBusy) return none(Block.PUMP_BUSY, TbrAction.KEEP_CURRENT)
+        if (prediction == null) return none(Block.HORIZON_MISSING)
+
+        val release = prediction.points.firstOrNull { it.offsetMin == limits.releaseHorizonMin }
+            ?: return none(Block.HORIZON_MISSING)
+
+        // Die pessimistischere zweier gleichzeitiger Schaetzungen. `restraint`
+        // kann nur senken, nie anheben.
+        val restraintRelease = restraint?.points?.firstOrNull { it.offsetMin == limits.releaseHorizonMin }
+        //
+        // C7 / K2 Punkt 8 (Codex-Adjudication H2/H3): die SCHUTZ-Sicht ist die
+        // PRIOR-FREIE, ueber ALLE Bahnen minimierte - dieselbe Zahl, die
+        // CandidateSearch, PrimeRelease und die finale Wirkungspruefung
+        // benutzen (`minSafetyLowerOf`).
+        //
+        // Hier stand die PRIOR-GEHOBENE Bahn. Eine Dosis konnte sie zwar nicht
+        // mehr autorisieren - das finale Zeugnis ist prior-frei -, aber sie
+        // konnte einen SCHUETZENDEN ZERO_TEMP UNTERDRUECKEN: prior-frei war
+        // der Fall GUARD_FLOOR -> ZERO_TEMP, prior-gehoben lief er als
+        // CANDIDATE/KEEP_CURRENT aus, und die Bremswirkung des Basalstopps
+        // fiel ersatzlos weg. Ein Marker-Prior ist BEDARFS-Evidenz (H2) und
+        // darf Sicherheit nie vortaeuschen.
+        //
+        // Der BEDARF (releaseMean -> insulinReq) bleibt bewusst auf der
+        // Mittelbahn: dass der Prior Bedarf erzeugen darf, ist gewollt.
+        //
+        // Einseitig: die prior-freie Kante liegt nie UEBER der gehobenen, der
+        // Guard kann dadurch nur haeufiger greifen, nie seltener.
+        val minLower = minSafetyLowerOf(prediction, restraint)
+        val releaseMean = minOf(release.meanBg, restraintRelease?.meanBg ?: Double.MAX_VALUE)
+        // S0: die beiden Ursachen GETRENNT. "Gebremst" war bisher ein Bit ueber
+        // zwei verschiedene Wirkungen - die Bremse kann die Sicherheitsbahn
+        // senken (und damit blockieren) ODER den Bedarf kuerzen. Wer eine
+        // Zurueckhaltung nachvollziehen will, braucht die Unterscheidung.
+        val restraintGuard = restraint != null && minLower < prediction.minSafetyLowerBg
+        val restraintDemand = restraint != null && releaseMean < release.meanBg
+
+        // S0 (I16): WIE TIEF und WIE BALD unter dem Boden. Ueber DIESELBEN
+        // Bahnen wie der Guard - der Boden kommt aus den Limits, die Bahnen aus
+        // dem Zyklus, und die Zahlen entscheiden nichts.
+        val floorDeficit = TrajectoryQuery.floorDeficitOf(limits.guardFloorMgdl, prediction, restraint)
+        val timeToFloor = TrajectoryQuery.timeToFloorOf(limits.guardFloorMgdl, prediction, restraint)
+        val timeToMinCombined = TrajectoryQuery.timeToMinSafetyLowerOf(prediction, restraint)
+
+        // Alle Rueckgaben dieses Laufs teilen dieselbe S0-Telemetrie. Sie EINMAL
+        // anzuhaengen ist nicht Bequemlichkeit: acht Rueckgabestellen, die je
+        // fuenf Felder von Hand mitfuehren, sind acht Gelegenheiten, eines zu
+        // vergessen - und ein fehlendes Telemetriefeld sieht im Export aus wie
+        // ein Messwert (0 bzw. "nicht gebremst"), nicht wie eine Luecke.
+        fun Decision.tele(caps: List<Cap> = emptyList()) = copy(
+            restraintBoundGuard = restraintGuard,
+            restraintBoundDemand = restraintDemand,
+            minLowerMainMgdl = prediction.minSafetyLowerBg,
+            floorDeficitMgdl = floorDeficit,
+            timeToFloorMin = timeToFloor,
+            timeToMinCombinedMin = timeToMinCombined,
+            caps = caps,
+        )
+
+        // Guard: bewertet wird das MINIMUM der pessimistischen Bahn, nicht ihr
+        // Endwert — eine Bahn kann harmlos enden und zwischendurch tief gehen.
+        if (minLower < limits.guardFloorMgdl) {
+            return Decision(
+                0.0,
+                // DER GUARD SPERRT DIE MENGE, NICHT DAS FUNDAMENT (Toni 17.08.).
+                //
+                // Bis hierher stand an dieser Stelle bedingungslos ZERO_TEMP,
+                // und genau daraus entstand der gemessene Betriebszustand: an
+                // einem vollen Tag lief die Null in der Mehrzahl der Zyklen -
+                // die meiste Zeit ohne Grundversorgung, bei einem BG zwischen
+                // Tief und deutlichem Hoch. Eine langfristige, KOHLENHYDRATFREI gerechnete Bahn
+                // durfte die Basis vollstaendig entfernen; das Muster danach
+                // war immer dasselbe - Basal fehlt, BG hebt ab, FUSE laeuft
+                // mit SMBs hinterher.
+                //
+                // Der Schwanz-Guard zwoelf Zeilen weiter unten hat es von
+                // Anfang an richtig gemacht ("Die Kategorie ist
+                // NO_NEW_POSITIVE und ausdruecklich NICHT ZERO_TEMP ... ein
+                // blindes Zero-Temp bei sicherer Nahbahn waere eine eigene
+                // Fehldosis mit umgekehrtem Vorzeichen"). Diese Zeile zieht
+                // den Nahzonen-Guard nach.
+                //
+                // KEEP_CURRENT und nicht NO_NEW_POSITIVE: letzteres verhindert
+                // nur eine NEUE Null und liesse eine LAUFENDE bis zu 30 min
+                // stehen (TbrPolicy.noPositive behaelt eine nicht-positive TBR
+                // absichtlich). KEEP_CURRENT beendet sie - Tonis Auflage "eine
+                // bestehende, von FUSE gesetzte Zero-TBR muss sofort beendet
+                // werden, sobald das Low-Tor nicht mehr erfuellt ist". Fremde
+                // Absenkungen bleiben davon unberuehrt (C7b in TbrPolicy.keep).
+                //
+                // Die MENGE bleibt gesperrt: smbU ist 0, der Block heisst
+                // weiterhin GUARD_FLOOR. Nur die Basisversorgung laeuft weiter.
+                if (lowThreat == LowThreatGate.Verdict.NONE) TbrAction.KEEP_CURRENT else TbrAction.ZERO_TEMP,
+                Block.GUARD_FLOOR, null,
+                releaseMean, minLower,
+                "guardFloor=${limits.guardFloorMgdl}" +
+                    if (lowThreat != LowThreatGate.Verdict.NONE) "|${lowThreat.name}" else "",
+                context = ctx,
+                // Die Lage IST unsicher - nur das Fundament bleibt stehen.
+                // Daran haengt die C8-Sperre.
+                unsafeSituation = true,
+            ).tele()
+        }
+
+        // SCHWANZ-GUARD. Er sitzt NACH dem Nahzonen-Guard und VOR der
+        // Bedarfsrechnung: was der Schwanz nicht mehr traegt, ist kein
+        // Mengenproblem, sondern eine Haftungsgrenze.
+        //
+        // Die Kategorie ist NO_NEW_POSITIVE und ausdruecklich NICHT ZERO_TEMP.
+        // Zwei Gruende, beide aus der Sache: ein Zero-Temp kann die bereits
+        // gelieferte Wirkung, um die es hier geht, gar nicht zurueckholen — und
+        // ein blindes Zero-Temp bei sicherer Nahbahn waere eine eigene
+        // Fehldosis mit umgekehrtem Vorzeichen (s. NO_DEMAND weiter unten).
+        // Ein Schwanzbefund ist kein Sicherheitsbefund der Nahzone.
+        if (tail != null && tail.usable && tail.headroomU <= 0.0) {
+            return Decision(
+                0.0, TbrAction.NO_NEW_POSITIVE, Block.TAIL, null,
+                releaseMean, minLower, "tailHeadroom=${tail.headroomU}", tail, context = ctx,
+                // Auch der Schwanz beschreibt eine unsichere Lage - er hat das
+                // Basal nur nie angetastet (s. Begruendung oben). Fuer die
+                // C8-Sperre zaehlt der Befund, nicht die TBR-Kategorie.
+                unsafeSituation = true,
+            ).tele()
+        }
+
+        // Kein zweites "- iob": die IOB-Wirkung ist in predBG bereits enthalten.
+        val normalReq = (releaseMean - state.targetMgdl) / state.isfMgdlPerU
+        // E-034: im Mahlzeitkontext mit Konto kommt der Bedarf AUCH aus dem Konto (dort steht das IOB ausdruecklich in
+        // R_mess); nicht berechenbar zaehlt als 0. Der Normalbedarf bleibt daneben erhalten (Toni: frueh begrenzt
+        // vorleisten und die Mahlzeit anschliessend bedarfsgerecht weiter versorgen). Ersetzte der Kontobedarf ihn, kam
+        // nach dem Ende der Kurve oder bei statischem R_mess <= 0 trotz steigender Fortschreibung bis zum Fensterende
+        // nichts - mit Marker weniger als ohne.
+        val kontoReq = expectationDemandU?.let { if (it.isFinite()) it else 0.0 }
+        val insulinReq = if (kontoReq == null) normalReq else max(kontoReq, normalReq)
+
+        // REBOUND-TOTBAND (v2): Nach einem Tief ist die Erholung bis leicht
+        // ueber das Ziel das ZIEL der Traubenzucker-Aktion, keine Stoerung.
+        // Der Anker (nicht die Bahn) entscheidet - die Bahn ist im Rebound
+        // vom aufgeblaehten r verzerrt, genau deshalb existiert das Fenster.
+        // NACHT-TOTBAND (Toni 09.08.) laeuft ueber DENSELBEN Riegel: der
+        // groessere der beiden Gruende gilt, zwei Schutzgruende duerfen sich
+        // nie gegenseitig aufweichen. Gemessener Anlass: ein realer frueher
+        // Morgen - mehrere SMBs bei BG im Normalbereich, r um null, Bedarf allein aus
+        // negativem Basal-IOB.
+        val deadbandMgdl = NightWindow.effectiveDeadbandMgdl(
+            reboundWindow = state.reboundWindow,
+            reboundDeadbandMgdl = state.reboundDeadbandMgdl,
+            isNight = state.nightWindow,
+            nightDeadbandMgdl = state.nightDeadbandMgdl,
+            markerBoost = state.markerBoost,
+            reboundOverrideByEvidence = evidenceMayOverrideRebound,
+            nightOverrideByEvidence = evidenceCreditActive,
+        )
+        if (deadbandMgdl > 0.0 && prediction.bgAtAnchor < state.targetMgdl + deadbandMgdl) {
+            return Decision(
+                0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_DEMAND, insulinReq,
+                releaseMean, minLower,
+                if (state.reboundWindow && deadbandMgdl == state.reboundDeadbandMgdl) "reboundDeadband" else "nightDeadband",
+                tail, context = ctx,
+            ).tele()
+        }
+
+        if (insulinReq <= 0.0) {
+            // NO_NEW_POSITIVE und NICHT ZERO_TEMP. Die erste Fassung stand hier
+            // auf Zero-Temp und widersprach damit dem Vertrag, den [TbrPolicy]
+            // selbst aufschreibt: "Kein zusaetzlicher Bedarf heisst nicht, dass
+            // das Profilbasal 30 Minuten gestoppt gehoert. Ein blindes
+            // Zero-Temp bei sicherer Bahn ist eine eigene Fehldosis, nur mit
+            // umgekehrtem Vorzeichen." Die gefaehrliche Lage faengt der Guard
+            // oben ab, und der faengt sie ueber das MINIMUM der Bahn, nicht nur
+            // ueber den Freigabepunkt.
+            //
+            // Was dabei mit verschwindet, gehoert benannt: das alte Zero-Temp
+            // hat unbeabsichtigt das FEHLENDE Unsicherheitsband kompensiert
+            // (lower == mean, Alpha 1). Der Guard ist damit heute genau so
+            // empfindlich wie die Mittelbahn — nicht empfindlicher. Das ist ein
+            // Argument fuer das Band, nicht fuer ein pauschales Basal-Aus.
+            return Decision(
+                0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_DEMAND, insulinReq,
+                releaseMean, minLower, "insulinReq<=0", context = ctx,
+            ).tele()
+        }
+
+        // Tonis IOB-Referenz-Regel (08.08. abends): PROGNOSE rechnet mit net
+        // (die Bahn muss die Basal-Referenzbuchung kennen), DOSIER-Grenzen
+        // rechnen mit capIob = max(net, bolus) - stark negatives Basal-IOB
+        // ist keine physische Substanz und darf keinen SMB-Spielraum
+        // erzeugen. iobTH lief schon immer auf capIob; maxIOB zieht nach.
+        val maxIobHeadroom = state.maxIobU - state.capIobU
+        val fastHeadroom = state.iobThU - state.capIobU
+
+        // S0 (K2): DIE BEIDEN IOB-GRENZEN WERDEN ZUSAMMEN BERICHTET, auch wenn
+        // nur eine den Ausschlag gibt. Im Standard ist
+        // `iobThU = percent/100 * maxIobU` mit percent = 100, also sind beide
+        // Spielraeume BITGENAU gleich - "welche hat gebunden" ist dann keine
+        // Messung mehr, sondern die Reihenfolge einer Liste. Die
+        // Reihenfolge der beiden Tests unten ist trotzdem richtig herum
+        // (maxIOB zuerst) und bleibt unveraendert.
+        val iobCaps = capsOf(
+            state.pumpIncrementU,
+            "maxIobHeadroom" to maxIobHeadroom,
+            "iobThHeadroom" to fastHeadroom,
+        )
+
+        if (maxIobHeadroom <= 0.0) {
+            return Decision(
+                0.0, TbrAction.NO_NEW_POSITIVE, Block.MAX_IOB_REACHED, insulinReq,
+                releaseMean, minLower, "maxIOB=${state.maxIobU}", context = ctx,
+            ).tele(iobCaps)
+        }
+
+        // iobTH ist die Grenze zwischen schnellem und langsamem Kanal — NICHT
+        // der Gesamtdeckel. Oberhalb laeuft nur noch Basal weiter.
+        if (fastHeadroom <= 0.0) {
+            return Decision(
+                0.0, TbrAction.NO_NEW_POSITIVE, Block.IOB_TH_REACHED, insulinReq,
+                releaseMean, minLower, "iobTH=${state.iobThU}", context = ctx,
+            ).tele(iobCaps)
+        }
+
+        val normalCandidates = listOfNotNull(
+            "smbRatio" to normalReq * state.effectiveSmbRatio,
+            // B2 (Bauauftrag 7.2): effectiveDemandRatio = min(Basis, Kontext-
+            // Cap) — als EIGENER Kandidat, nicht als Aenderung der Basis. Das
+            // min der Liste IST die Formel, und bei echtem Griff traegt die
+            // Grenze ihren Namen (bei Gleichstand gewinnt weiterhin der erste
+            // Eintrag — der Cap wird nur benannt, wenn er real gekappt hat).
+            state.contextDemandRatioCap?.let { "demandRatioCap" to normalReq * it },
+            "iobThHeadroom" to fastHeadroom,
+            "maxIobHeadroom" to maxIobHeadroom,
+            "maxSmb" to state.maxSmbU,
+        )
+        // E-034: der Kontobedarf ist schon die lieferbare Menge - kein Ratio-Anteil darauf; der Schritt je Zyklus ist
+        // maxSMB. Im Kontofenster gilt der Weg mit der groesseren Menge, gezaehlt in Pumpenschritten; bei Gleichstand
+        // der Kontoweg - er traegt die Buchung des Kontos.
+        val kontoCandidates = kontoReq?.let {
+            listOf(
+                "expectationDemand" to it,
+                "iobThHeadroom" to fastHeadroom,
+                "maxIobHeadroom" to maxIobHeadroom,
+                "maxSmb" to state.maxSmbU,
+            )
+        }
+        val normalImKontofenster = kontoCandidates != null &&
+            ticksOf(normalCandidates.minOf { it.second }, state.pumpIncrementU) >
+            ticksOf(kontoCandidates.minOf { it.second }, state.pumpIncrementU)
+        val baseCandidates = if (kontoCandidates == null || normalImKontofenster) normalCandidates else kontoCandidates
+        // Der Bedarf des Wegs, der die Menge traegt (Export, Rest-Zaehler).
+        val gewaehlterReq = if (normalImKontofenster) normalReq else kontoReq ?: normalReq
+        // Die Onset-Huelle gehoert zu den Basis-Kandidaten: sie ist die Grenze
+        // des Kanals, der die Bahn gehoben hat - nicht Teil der Schwanzkosten.
+        val baseWithOnset =
+            if (onsetCapU != null) baseCandidates + ("onsetEnvelope" to onsetCapU)
+            else baseCandidates
+        val withoutTail = baseWithOnset.minOf { it.second }
+        val candidates =
+            if (tail != null && tail.usable) baseWithOnset + ("tailHeadroom" to tail.headroomU)
+            else baseWithOnset
+        val binding = candidates.minByOrNull { it.second }!!
+        val raw = binding.second
+        val tailCost = (withoutTail - raw).coerceAtLeast(0.0)
+        // S0 (K2): die VOLLSTAENDIGE Kappenliste, nicht nur die bindende.
+        // `minByOrNull` nennt bei Gleichstand die erste - und Gleichstand ist
+        // hier der Normalfall, nicht der Randfall.
+        val capList = capsOf(state.pumpIncrementU, *candidates.toTypedArray())
+
+        // AUSSCHLIESSLICH abwaerts runden: eine Freigabe darf durch Rundung nie
+        // groesser werden. Unter dem Pumpeninkrement gibt es keinen SMB — es
+        // wird NICHT auf die Mindestmenge aufgerundet.
+        //
+        // DAS EPSILON IST TRAGEND, nicht Kosmetik. Ohne es verliert `floor` an
+        // exakten Vielfachen einen GANZEN Pumpenschritt: 0,15 U sind als Double
+        // 0,1499999999999999944…, geteilt durch 0,05 ergibt das 2,9999999999…
+        // und floor macht daraus 2 — also 0,10 statt 0,15. Bei Dosen zwischen
+        // 0,05 und 0,30 U sind das 17 bis 100 % der Menge, systematisch nach
+        // unten. Gefunden hat es der Kontext-Test: erwartet 0,60, geliefert
+        // 0,55. `CandidateSearch` hatte dieselbe Stelle von Anfang an mit
+        // Epsilon.
+        // UEBER `ticksOf`, nicht als zweite Abschrift. Dessen KDoc begruendet,
+        // dass eine zweite Fassung dieser Rundung der eigentliche Hazard ist -
+        // und liess die zweite Fassung dann hier stehen. Jetzt gilt "die Kappen
+        // rastern wie die Dosis" per Konstruktion statt per Augenschein.
+        val deliverable = ticksOf(raw, state.pumpIncrementU) * state.pumpIncrementU
+        if (deliverable < state.pumpIncrementU) {
+            return Decision(
+                0.0, TbrAction.KEEP_CURRENT, Block.BELOW_PUMP_INCREMENT, gewaehlterReq,
+                releaseMean, minLower, binding.first, tail, tailCost, ctx,
+                desiredBeforeStepU = raw,
+                normalDemandInAccountWindow = normalImKontofenster,
+            ).tele(capList)
+        }
+
+        return Decision(
+            smbU = min(deliverable, raw),
+            desiredBeforeStepU = raw,
+            tbr = TbrAction.KEEP_CURRENT,
+            block = Block.NONE,
+            insulinReqU = gewaehlterReq,
+            predAtReleaseMgdl = releaseMean,
+            minLowerMgdl = minLower,
+            bindingLimit = binding.first,
+            tail = tail,
+            tailCostU = tailCost,
+            context = ctx,
+            normalDemandInAccountWindow = normalImKontofenster,
+        ).tele(capList)
+    }
+
+    /**
+     * Wieviele ganze Pumpenschritte in [u] passen - DIESELBE Rechnung, mit der
+     * die Freigabe unten gerastert wird (`floor(raw / inc + TICK_EPS)`).
+     *
+     * Sie steht als eigene Funktion da, weil eine zweite Fassung derselben
+     * Rundung genau an den exakten Vielfachen auseinanderliefe: 0,15 U sind als
+     * Double 0,1499999999999999944…, ohne Epsilon wird daraus ein Schritt
+     * weniger. Wer die Kappen anders rastert als die Dosis, stuft die Grenzen
+     * nach einer Arithmetik ein, die nicht entschieden hat.
+     */
+    internal fun ticksOf(u: Double, pumpIncrementU: Double): Long {
+        if (!u.isFinite() || !pumpIncrementU.isFinite() || pumpIncrementU <= 0.0) return Long.MIN_VALUE
+        return floor(u / pumpIncrementU + TICK_EPS).toLong()
+    }
+
+    /**
+     * Baut die Kappenliste und markiert, welche Grenzen die Menge
+     * TATSAECHLICH bestimmt haben (S0, K2).
+     *
+     * AKTIV HEISST: GLEICHE TICKZAHL wie die kleinste Kappe - nicht "innerhalb
+     * eines Pumpenschritts".
+     *
+     * Die erste Fassung prueft `v <= min + inc` und hat damit ihre eigene
+     * Begruendung verfehlt: bei 1,00 und 1,05 U mit 0,05er Schritt sind das
+     * 20 gegen 21 Ticks, also VERSCHIEDENE lieferbare Mengen - die zweite
+     * Kappe hat nichts begrenzt und wurde trotzdem als mitbindend gefuehrt.
+     * Gedacht war "ununterscheidbar fuer die Dosis"; das ist genau die
+     * Tickgleichheit und sonst nichts.
+     *
+     * Ohne brauchbaren Pumpenschritt bleibt nur die exakte Gleichheit - eine
+     * ehrliche Entartung statt einer erfundenen Toleranz.
+     */
+    internal fun capsOf(pumpIncrementU: Double, vararg caps: Pair<String, Double>): List<Cap> {
+        val min = caps.minOfOrNull { it.second } ?: return emptyList()
+        // NAN-RIEGEL. Er ist noetig, weil die beiden Reduktionen NICHT
+        // dieselbe sind: `minOfOrNull` faltet mit Math.min und PROPAGIERT
+        // NaN, waehrend der Dosispfad mit `minByOrNull` ueber die
+        // Totalordnung vergleicht und NaN ans ENDE sortiert. Mit einer
+        // NaN-Kappe waere die Markierung exakt INVERTIERT - die Kappe, die
+        // entschieden hat, stuende inaktiv da und die unbrauchbare aktiv.
+        // Lieber gar keine Markierung als eine falsche.
+        if (!min.isFinite()) return caps.map { Cap(it.first, it.second, false) }
+        val usable = pumpIncrementU.isFinite() && pumpIncrementU > 0.0
+        val minTicks = ticksOf(min, pumpIncrementU)
+        return caps.map { (name, v) ->
+            val active =
+                if (!v.isFinite()) false
+                // Bei erschoepftem Spielraum trennt die Tickzahl Groessen,
+                // die alle dasselbe bedeuten: nichts ist lieferbar.
+                else if (min <= 0.0) v <= 0.0
+                else if (usable) ticksOf(v, pumpIncrementU) == minTicks
+                else v == min
+            Cap(name, v, active)
+        }
+    }
+
+    /** Stufe, aus der eine Kappenliste stammt - s. [Decision.capsStage]. */
+    const val STAGE_BASE = "base"
+    const val STAGE_CANDIDATE = "candidate"
+    // Konsolidierung 2.0: STAGE_PRIME (Sofort-Freigabe) und STAGE_FOUNDATION (Mahlzeitenfundament) sind entfallen.
+    const val STAGE_SUBSTEP = "subStep"
+
+    /** Die Guard-Ausnahme des Erwartungsanteils (Vorregistrierung E-034). */
+    const val STAGE_EXPECTATION = "expectationAccount"
+}

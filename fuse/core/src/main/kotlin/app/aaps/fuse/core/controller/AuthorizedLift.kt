@@ -1,0 +1,265 @@
+package app.aaps.fuse.core.controller
+
+import kotlin.math.floor
+import kotlin.math.min
+
+/**
+ * DER LIFT EINER AUTORISIERTEN MENGE - der Erwartungsanteil der fruehen Versorgung (E-034 v2).
+ *
+ * Er hebt eine Basisentscheidung auf einen autorisierten BODEN an - hoechstens die lieferbare Kontomenge, nie
+ * darueber hinaus - unter denselben harten Mengenkappen wie jede andere Abgabe: maxIOB, iobTH, Transporthaftung,
+ * Kontext-Expositionsgrenze, Schwanzkappe und Pumpenraster. Was die Markerautorisierung dabei ueberstimmen darf,
+ * sagt [MarkerAuthorization.liftsEarlySupply].
+ *
+ * Konsolidierung 2.0: die Quellen Prime und Mahlzeitenfundament sind entfallen; es hebt nur noch der
+ * Erwartungsanteil.
+ *
+ * WO DIESE STUFE IM ZYKLUS SITZT:
+ *
+ *     Basisentscheidung
+ *  -> autorisierten Boden bis zum jeweiligen Soll anheben   <- HIER
+ *  -> gemeinsame harte Mengenkappen                         <- HIER
+ *  -> Modell-Veto
+ *  -> autorisierten Boden ggf. wiederherstellen             (finalVerify)
+ *  -> Ledger-/Publikations-/Pumpengate GENAU EINMAL         (Plugin)
+ *
+ * Die letzten beiden Stufen liegen bewusst NICHT hier: sie gehoeren dem
+ * Aufrufer, und sie laufen ueber die EINE finale Menge - nicht zweimal ueber
+ * zwei Teilmengen. Zwei Gate-Laeufe waeren ein zweiter Kanal, und der duerfte
+ * doppelt so viel wie erlaubt.
+ */
+object AuthorizedLift {
+
+    /**
+     * WOHER die autorisierte Menge stammt.
+     *
+     * TYPISIERT UND NICHT AUS DEM GRUNDTEXT GERATEN, aus demselben Grund wie
+     * bei [FuseController.Decision.markerAuthorizedU]: Texte sind fuer
+     * Menschen, an ihnen darf keine Insulinabgabe haengen. Ein Export, der
+     * beide Quellen als "primeRelease" fuehrt, macht im Replay nicht mehr
+     * unterscheidbar, welche Phase geliefert hat.
+     */
+    enum class Source {
+        // Konsolidierung 2.0: die Quellen der Sofort-Freigabe im Prime-Fenster (PRIME), der nachlaufenden
+        // Mindestversorgung des Mahlzeitenfundaments (FOUNDATION) und des Phase-A-Sofortanteils (MEAL_UPFRONT) sind
+        // entfallen.
+
+        /**
+         * DER ERWARTUNGSANTEIL (Vorregistrierung E-034): der Boden ist die
+         * lieferbare Kontomenge, die ueber dem Normalpfad liegende Menge ist
+         * d_erw. Die Schwanzkappe bindet AUCH mit Autorisierung.
+         *
+         * Nur mit [EarlyLift] (E-034 v2, fruehe Versorgung): es gilt
+         * [MarkerAuthorization.liftsEarlySupply]; die Einzeldosis begrenzt die
+         * Portion selbst ([remainingU] - Anfangsanteil bzw. maximale
+         * Portion), und die Schwanzkappe reicht der Aufrufer nach G2/G4
+         * herein. Konsolidierung 2.0: die v1-Guard-Ausnahme (ohne [EarlyLift],
+         * eigene Tabelle, maxSMB je Einzeldosis) ist entfallen - ohne
+         * [EarlyLift] hebt diese Quelle nichts.
+         */
+        EXPECTATION,
+    }
+
+    /**
+     * E-034 v2: die fuer DIESE Portion geltenden Hebungsschalter - G1/G2 bei
+     * der Anfangsportion, G3/G4 bei weiteren Portionen (s.
+     * [MarkerAuthorization.liftsEarlySupply]).
+     */
+    data class EarlyLift(val guardLift: Boolean, val tailLift: Boolean)
+
+    /**
+     * BETRAG UND QUELLE ALS EINE EINHEIT (Toni 18.08.).
+     *
+     * DER FEHLER, DEN DIESER TYP VERHINDERT. Vorher standen die beiden als
+     * getrennte Felder in der Entscheidung: `markerAuthorizedU` und
+     * `authorizedSource`. Der Lift setzte die Quelle AUCH dann, wenn der
+     * Betrag 0 war - es konnte also eine "Quelle FOUNDATION ohne autorisierte
+     * Menge" entstehen. Eine Herkunft ohne Menge ist keine Aussage, sondern
+     * ein Widerspruch, und ein Leser, der auf die Quelle prueft statt auf den
+     * Betrag, haette daraus eine Autorisierung gelesen, die es nicht gab.
+     *
+     * Zwei Felder, die nur gemeinsam Sinn ergeben, gehoeren in einen Typ.
+     * `null` heisst: KEINE Autorisierung - eindeutig, ohne zweite Lesart.
+     *
+     * Der Konstruktor ist privat: [of] ist die einzige Quelle, und sie gibt
+     * bei einem unbrauchbaren Betrag `null` zurueck statt eines halben
+     * Grants.
+     */
+    class AuthorizedGrant private constructor(
+        val amountU: Double,
+        val source: Source,
+    ) {
+
+        override fun equals(other: Any?): Boolean =
+            other is AuthorizedGrant && other.amountU == amountU && other.source == source
+
+        override fun hashCode(): Int = amountU.hashCode() * 31 + source.hashCode()
+
+        override fun toString(): String = "AuthorizedGrant($amountU, $source)"
+
+        companion object {
+
+            /**
+             * FAIL-CLOSED: nur ein endlicher, POSITIVER Betrag ergibt einen
+             * Grant. 0 oder NaN ergeben `null` - "keine Autorisierung", nicht
+             * "eine ueber nichts".
+             */
+            fun of(amountU: Double, source: Source): AuthorizedGrant? =
+                if (amountU.isFinite() && amountU > 0.0) AuthorizedGrant(amountU, source) else null
+        }
+    }
+
+    /** Was im `bindingLimit` steht, wenn dieser Lift gebunden hat. */
+    fun bindingLimitOf(source: Source): String = when (source) {
+        Source.EXPECTATION  -> "expectationAccount"
+    }
+
+    fun stageOf(source: Source): String = when (source) {
+        Source.EXPECTATION  -> FuseController.STAGE_EXPECTATION
+    }
+
+    /**
+     * Hebt [base] auf den autorisierten Boden [floorU] an - hoechstens.
+     *
+     * @param floorU das Soll dieses Zyklus: die lieferbare Kontomenge. NIE
+     *   mehr als das - der Lift ist ein Boden, kein Aufschlag.
+     * @param remainingU die Obergrenze der Einzeldosis: die Portion
+     *   (Anfangsanteil bzw. maximale Portion).
+     * @param authorized hat ein bewusster Markerdruck Insulin autorisiert?
+     * @param tailHeadroomU die Schwanzkappe der Portion - der Aufrufer reicht
+     *   sie nach G2/G4 herein (`null` = gehoben).
+     */
+    @Suppress("LongParameterList")
+    fun lift(
+        base: FuseController.Decision,
+        source: Source,
+        floorU: Double,
+        remainingU: Double,
+        state: FuseController.State,
+        authorized: Boolean,
+        tailHeadroomU: Double? = null,
+        transportCommitmentU: Double = 0.0,
+        /** B1: die kontextabhaengige Expositionsgrenze des Zyklus (MEAL
+         *  bzw. CORRECTION). Sie steht bereits in der GRANT-BILDUNG - ein
+         *  Grant entsteht nie oberhalb des Raums, MarkerFloor kann
+         *  konstruktiv nichts wiederherstellen, was die Endpruefung
+         *  reisst. null nur in Sonderpfaden ohne Kontext (Tests). */
+        contextExposureLimitU: Double? = null,
+        tickEps: Double,
+        /** E-034 v2: die Regeln der fruehen Versorgung; nur mit [Source.EXPECTATION]. */
+        early: EarlyLift? = null,
+    ): FuseController.Decision {
+        // ---- Eingaben pruefen, BEVOR gerechnet wird (Toni 18.08.) --------
+        //
+        // NICHT BERECHENBAR IST NICHT NULL - derselbe Vertrag wie im
+        // entfallenen Mahlzeitenfundament. Ein NaN im Restbudget oder in einer
+        // Kappe wuerde durch `min` durchschlagen und am Ende eine Menge
+        // ergeben, die auf einer Zahl beruht, die es nicht gibt. Ein
+        // negatives Restbudget kann kein Schreiber dieses Codes erzeugen -
+        // es waere Korruption.
+        //
+        // Jeder dieser Faelle gibt die Basisentscheidung UNVERAENDERT und
+        // OHNE Grant zurueck: der bestehende Pfad laeuft weiter wie ohne
+        // Lift.
+        if (!floorU.isFinite() || !remainingU.isFinite() || remainingU < 0.0) return base
+        if (tailHeadroomU != null && !tailHeadroomU.isFinite()) return base
+        if (!transportCommitmentU.isFinite() || transportCommitmentU < 0.0) return base
+        // capIobU ist die EINZIGE dieser Groessen, die der State-Konstruktor
+        // NICHT prueft. Die uebrigen wirft er selbst ab (isFinite und Bereich)
+        // - sie stehen hier als Verteidigung in der Tiefe, nicht weil dieser
+        // Zustand erreichbar waere.
+        if (!state.pumpIncrementU.isFinite() || state.pumpIncrementU <= 0.0) return base
+        if (!state.maxSmbU.isFinite() || !state.maxIobU.isFinite() ||
+            !state.iobThU.isFinite() || !state.capIobU.isFinite()
+        ) return base
+        if (!tickEps.isFinite() || tickEps < 0.0) return base
+
+        // Kein Soll, kein Lift. Das ist keine Sicherheitspruefung, sondern
+        // die Feststellung, dass es nichts zu heben gibt.
+        if (floorU <= 0.0) return base
+
+        // DIE POLITIK: die Tabelle der fruehen Versorgung (E-034). Konsolidierung 2.0: die v1-Guard-Ausnahme und
+        // die allgemeine Hebungstabelle der entfallenen Quellen (Prime, Fundament) sind entfallen - ohne
+        // Portionsregeln hebt der Erwartungsanteil nichts (geschlossen).
+        val frueh = early?.takeIf { source == Source.EXPECTATION }
+        val hebbar = frueh != null && MarkerAuthorization.liftsEarlySupply(
+            base.block, base.candidateReason, authorized, frueh.guardLift, frueh.tailLift,
+        )
+        if (!hebbar) return base
+
+        // ---- Die gemeinsamen harten Mengenkappen -------------------------
+        //
+        // Sie gelten UNVERAENDERT auch fuer eine autorisierte Menge: maxSMB
+        // begrenzt die Einzeldosis, iobTH und maxIOB den Bestand, die
+        // Transporthaftung das bereits unterwegs Befindliche. Keine
+        // Autorisierung hebt sie - sie sagen nichts ueber eine Prognose,
+        // sondern ueber eine Obergrenze.
+        //
+        // EINE AUSNAHME, quellengebunden: die Portion der fruehen Versorgung
+        // ([EarlyLift]) wird nicht von maxSMB zerteilt - ihre Obergrenze ist
+        // die Portion selbst (remainingU) und die Bestandsgrenzen. KEINE
+        // Erhoehung von maxSMB: Normal- und Livenesspfad behalten die
+        // Einzeldosisgrenze unveraendert. (Konsolidierung 2.0: ausser der
+        // Portion hebt hier nichts mehr - Sofortanteil, Prime und Fundament
+        // sind entfallen.)
+        val singleDoseCapU = remainingU
+        // A2: dieselbe gemeinsame Expositionssicht wie in der
+        // Kandidatensuche und im SubStep - identische Ausdrucksreihenfolge,
+        // bitgleiche Werte (s. ExposureView-KDoc).
+        val exposure = ExposureView.of(
+            iobThU = state.iobThU, maxIobU = state.maxIobU,
+            capIobU = state.capIobU, transportU = transportCommitmentU,
+        )
+        var caps = min(
+            singleDoseCapU,
+            min(exposure.maxIobHeadroomU, exposure.iobThHeadroomU),
+        )
+        // B1: dieselbe Belegungs-Semantik wie iobTH/maxIOB - die
+        // Kontextgrenze ist eine ABSOLUTE Mengengrenze und gilt auch fuer
+        // autorisierte Quellen (Bauauftrag 7.3).
+        contextExposureLimitU?.let {
+            caps = min(caps, it - state.capIobU - transportCommitmentU)
+        }
+        // Die Schwanzkappe bindet den Erwartungsanteil immer (TAIL hart fuer
+        // d_erw, E-034); die Kappe der Portion reicht der Aufrufer nach G2/G4
+        // herein.
+        tailHeadroomU?.let { caps = min(caps, it) }
+
+        val stepped = floor(min(floorU, caps) / state.pumpIncrementU + tickEps) * state.pumpIncrementU
+        // Der Grant entsteht NUR bei einem tragfaehigen Betrag - `of` gibt
+        // sonst null. Damit kann keine Quelle ohne Menge existieren.
+        //
+        // UND ER SCHRUMPFT NIE EINEN BESTEHENDEN (v28-Baubefund): laeuft der
+        // Prime-Lift auf einer Basis, die der Sofort-Lift bereits auf 3,0 U
+        // gehoben hat, ist sein eigener kleiner Boden (0,25/Zyklus) kein
+        // Gewinn - aber der alte Code kopierte trotzdem SEINEN Grant in die
+        // Entscheidung. Nach einem Modell-Veto stellte MarkerFloor dann nur
+        // noch die 0,25 wieder her, und die Sofortdosis war still zerhackt.
+        // Der Boden der Entscheidung ist der GROESSTE autorisierte Betrag.
+        val eigener =
+            if (authorized && stepped >= state.pumpIncrementU) AuthorizedGrant.of(stepped, source)
+            else null
+        val grant = when {
+            eigener == null -> base.grant
+            base.grant == null -> eigener
+            base.grant!!.amountU >= eigener.amountU -> base.grant
+            else -> eigener
+        }
+
+        // KEIN GEWINN: entweder reicht es nicht fuer einen Pumpenschritt, oder
+        // die Basis liegt ohnehin schon hoeher. Der zweite Fall ist die
+        // Mindestversorgung in Reinform - das Fundament legt NICHTS drauf,
+        // wenn der normale Pfad schon liefert.
+        if (stepped < state.pumpIncrementU || stepped <= base.smbU)
+            return if (grant !== base.grant) base.copy(grant = grant) else base
+
+        return base.copy(
+            smbU = stepped,
+            block = FuseController.Block.NONE,
+            bindingLimit = bindingLimitOf(source),
+            caps = emptyList(),
+            capsStage = stageOf(source),
+            grant = grant,
+        )
+    }
+}

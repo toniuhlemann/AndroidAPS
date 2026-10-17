@@ -1,0 +1,1509 @@
+package app.aaps.fuse.core.controller
+
+import app.aaps.fuse.core.controller.EvidenceStock
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
+
+/**
+ * DER ERWARTUNGS-LEDGER, erster Baustein des Sackgassenwaechters.
+ *
+ * Er misst und entscheidet nichts - deshalb pruefen diese Tests keine
+ * Dosierung, sondern die BEWEISFUEHRUNG: was zaehlt als Nachweis, dass die
+ * versprochene Senkung ausgeblieben ist, und was ausdruecklich nicht.
+ */
+class ExpectationLedgerTest {
+
+    private val t0 = 1_787_000_000_000L
+    private val H = 30
+    private val SEG = 1L
+    private val CFG = "cfg#1"
+    private val EPO = "epoche-A"
+    private fun st(seq: Long, epo: String = EPO) = InterventionStamp(epo, seq)
+    private val REV = st(100L)
+    private val KORR = ExpectationLedger.Classification(
+        ExpectationLedger.ExpectationContext.CORRECTION,
+        ExpectationLedger.ContextReason.PURE_CORRECTION,
+    )
+    private val MAHL = ExpectationLedger.Classification(
+        ExpectationLedger.ExpectationContext.MEAL,
+        ExpectationLedger.ContextReason.MARKER_ACTIVE,
+    )
+    private val KTX = ExpectationLedger.ExpectationContext.CORRECTION
+    private val KGRUND = ExpectationLedger.ContextReason.PURE_CORRECTION
+
+    private fun eintrag(
+        source: Long = t0,
+        seg: Long = SEG,
+        anchor: Double = 200.0,
+        mean: Double = 150.0,
+        rev: InterventionStamp = REV,
+        kontext: ExpectationLedger.Classification = KORR,
+    ) = ExpectationLedger.issue(
+        source, seg, anchor, mean, H, configGeneration = CFG, interventionStamp = rev,
+        classification = kontext,
+    )!!
+
+    private fun probe(
+        ts: Long,
+        mgdl: Double,
+        seg: Long = SEG,
+        healthy: Boolean = true,
+        rev: InterventionStamp = REV,
+        cfg: String = CFG,
+        ktx: ExpectationLedger.ExpectationContext = ExpectationLedger.ExpectationContext.CORRECTION,
+    ) = ExpectationLedger.Sample(ts, mgdl, seg, healthy, rev, cfg, ktx)
+
+    private fun rechne(
+        entries: List<ExpectationLedger.Entry>,
+        now: Long,
+        samples: List<ExpectationLedger.Sample>,
+        consumed: Set<ExpectationLedger.SampleId> = emptySet(),
+    ) = ExpectationLedger.settle(entries, now, samples, consumed)
+
+    // ---- Einreihen ------------------------------------------------------
+
+    /** NUR SENKUNGEN DER MITTELBAHN sind widerlegbar. */
+    @Test
+    fun `nur eine behauptete Senkung wird eingereiht`() {
+        assertTrue(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, H, CFG, REV, KORR) != null)
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 200.0, H, CFG, REV, KORR), "unveraendert")
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 240.0, H, CFG, REV, KORR), "ein Anstieg")
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 194.0, H, CFG, REV, KORR), "6 mg/dl sind Rauschen")
+    }
+
+    @Test
+    fun `unbrauchbare Eingaben werden nicht eingereiht`() {
+        assertNull(ExpectationLedger.issue(t0, SEG, null, 150.0, H, CFG, REV, KORR))
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, null, H, CFG, REV, KORR))
+        assertNull(ExpectationLedger.issue(t0, SEG, Double.NaN, 150.0, H, CFG, REV, KORR))
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, 0, CFG, REV, KORR), "ohne Horizont")
+    }
+
+    /** OHNE VERGLEICHBARKEITSKENNUNG KEIN EINTRAG. Eine Garantie, die man
+     *  weglassen darf, ist keine - sonst steht spaeter ein Ergebnis in der
+     *  Datei, das mit nichts vergleichbar ist. */
+    @Test
+    fun `ohne Konfigurationskennung wird nicht eingereiht`() {
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, H, "", REV, KORR))
+        assertNull(ExpectationLedger.issue(t0, SEG, 200.0, 150.0, H, "   ", REV, KORR))
+    }
+
+    /**
+     * DIE SICHERHEITSUNTERGRENZE IST KEIN VERSPRECHEN. Die Mittelbahn soll
+     * eintreten, die Untergrenze gerade NICHT. Sie faehrt als Kontext mit
+     * und geht in kein Urteil ein.
+     */
+    @Test
+    fun `die Sicherheitsuntergrenze faehrt als Kontext mit, nicht als Versprechen`() {
+        val e = ExpectationLedger.issue(
+            t0, SEG, 200.0, 150.0, H, CFG, REV, KORR,
+            safetyLowerPredictedMgdl = 40.0, lambda = 1.0, discountMgdl = -110.8, bgiMgdl = -127.7,
+        )!!
+        assertEquals(50.0, e.promisedDropMgdl, 1e-9, "das Versprechen ist die MITTELBAHN")
+        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 180.0)))
+        assertEquals(ExpectationLedger.Verdict.MISSED, out[0].verdict)
+        assertEquals(30.0, out[0].meanErrorMgdl!!, 1e-9, "gemessen gegen die Mittelbahn")
+        assertEquals(140.0, out[0].distanceFromSafetyLowerMgdl!!, 1e-9, "reine Diagnose")
+    }
+
+    // ---- Abrechnen: ZEITLICHE ZUORDNUNG ----------------------------------
+
+    @Test
+    fun `vor der Faelligkeit wird nichts abgerechnet`() {
+        val e = eintrag()
+        val (out, offen, _) = rechne(listOf(e), t0 + 10 * 60_000L, listOf(probe(t0 + 10 * 60_000L, 190.0)))
+        assertTrue(out.isEmpty())
+        assertEquals(listOf(e), offen)
+    }
+
+    @Test
+    fun `eine ausgebliebene Senkung wird als MISSED verbucht`() {
+        val e = eintrag()
+        val (out, offen, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0)))
+        assertEquals(ExpectationLedger.Verdict.MISSED, out[0].verdict)
+        assertEquals(55.0, out[0].meanErrorMgdl!!, 1e-9)
+        assertTrue(offen.isEmpty())
+    }
+
+    @Test
+    fun `eine eingetroffene Senkung wird als MET verbucht`() {
+        val e = eintrag()
+        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 148.0)))
+        assertEquals(ExpectationLedger.Verdict.MET, out[0].verdict)
+    }
+
+    @Test
+    fun `ein knappes Verfehlen gilt noch als eingetroffen`() {
+        val e = eintrag()
+        assertEquals(
+            ExpectationLedger.Verdict.MET,
+            rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 153.0))).outcomes[0].verdict,
+        )
+        assertEquals(
+            ExpectationLedger.Verdict.MISSED,
+            rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 158.0))).outcomes[0].verdict,
+        )
+    }
+
+    /** Nach einer Luecke darf kein spaeterer Wert rueckwirkend gelten. */
+    @Test
+    fun `nach einer Luecke wird kein spaeterer Wert rueckwirkend verwendet`() {
+        val e = listOf(eintrag(t0), eintrag(t0 + 5 * 60_000L), eintrag(t0 + 10 * 60_000L))
+        val spaet = probe(t0 + 60 * 60_000L, 205.0)
+        val (out, _, _) = rechne(e, t0 + 60 * 60_000L, listOf(spaet))
+        assertTrue(
+            out.all { it.verdict == ExpectationLedger.Verdict.UNVERIFIABLE },
+            "keine darf am spaeten Wert abgerechnet werden: ${out.map { it.verdict }}",
+        )
+    }
+
+    /**
+     * EIN MESSWERT WIRD HOECHSTENS EINMAL VERBRAUCHT (Tonis Befund).
+     *
+     * Bei 1-min-Prognosen und 150 s Toleranz kann derselbe Punkt fuer bis zu
+     * fuenf benachbarte Faelligkeiten der naechste Treffer sein - und wuerde
+     * fuenf voneinander unabhaengige Widerlegungen erzeugen, die es nicht
+     * gibt. Genau EINE darf ihn bekommen, die mit dem kleinsten Abstand.
+     */
+    @Test
+    fun `ein Messwert bedient hoechstens eine Faelligkeit`() {
+        // Drei Faelligkeiten im Minutenabstand, EIN Messwert bei der mittleren.
+        val a = eintrag(t0)
+        val b = eintrag(t0 + 60_000L)
+        val c = eintrag(t0 + 120_000L)
+        val einer = probe(b.dueTs, 205.0)
+        val (out, _, _) = rechne(listOf(a, b, c), c.dueTs, listOf(einer))
+        val bewertet = out.filter { it.actualMgdl != null }
+        assertEquals(1, bewertet.size, "nur EINE Faelligkeit darf den Wert bekommen")
+        assertEquals(b.dueTs, bewertet[0].entry.dueTs, "und zwar die naechstgelegene")
+        assertEquals(
+            2, out.count { it.verdict == ExpectationLedger.Verdict.UNVERIFIABLE },
+            "die beiden anderen bleiben unbewertet",
+        )
+    }
+
+    /** Ein Messwert aus einem ANDEREN Segment zaehlt nicht - ueber einen
+     *  Bruch hinweg ist er nicht vergleichbar. */
+    @Test
+    fun `ein Messwert aus fremdem Segment zaehlt nicht`() {
+        val e = eintrag(seg = 1L)
+        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0, seg = 2L)))
+        assertEquals(ExpectationLedger.Verdict.UNVERIFIABLE, out[0].verdict)
+    }
+
+    /**
+     * DIE GESUNDHEIT GEHOERT AN DEN MESSWERT, nicht an den
+     * Abrechnungszeitpunkt: geprueft wird ein historischer Punkt.
+     */
+    @Test
+    fun `ein ungesunder Messwert zaehlt nicht`() {
+        val e = eintrag()
+        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0, healthy = false)))
+        assertEquals(ExpectationLedger.Verdict.UNVERIFIABLE, out[0].verdict)
+        assertNull(out[0].meanErrorMgdl)
+    }
+
+    @Test
+    fun `die Zuordnung hat eine enge Toleranz`() {
+        val e = eintrag()
+        assertEquals(
+            ExpectationLedger.Verdict.MISSED,
+            rechne(listOf(e), e.dueTs + 5 * 60_000L, listOf(probe(e.dueTs + 60_000L, 205.0))).outcomes[0].verdict,
+            "eine Minute daneben ist zuordenbar",
+        )
+        assertEquals(
+            ExpectationLedger.Verdict.UNVERIFIABLE,
+            rechne(listOf(e), e.dueTs + 10 * 60_000L, listOf(probe(e.dueTs + 8 * 60_000L, 205.0))).outcomes[0].verdict,
+            "acht Minuten sind es nicht",
+        )
+    }
+
+    // ---- Eingriffe -------------------------------------------------------
+
+    /**
+     * EIN EINGRIFF MACHT DIE PROGNOSE UNVERGLEICHBAR (Tonis dritter Befund),
+     * und zwar in BEIDE Richtungen gefaehrlich: ein manueller Bolus koennte
+     * ein MET erzeugen und einen echten Nachweis loeschen; Kohlenhydrate
+     * koennten ein MISSED erzeugen und spaeter lambda lockern, obwohl das
+     * Modell recht hatte.
+     */
+    @Test
+    fun `ein Eingriff zwischen Ausgabe und Faelligkeit macht das Urteil ungueltig`() {
+        val e = eintrag(rev = st(100L))
+        // Der BG steht auf 205 - ohne Eingriff waere das ein klares MISSED.
+        val (missed, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0, rev = st(100L))))
+        assertEquals(ExpectationLedger.Verdict.MISSED, missed[0].verdict)
+
+        // Mit Eingriff: kein Urteil, obwohl die Zahlen dieselben sind.
+        val (eingriff, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0, rev = st(101L))))
+        assertEquals(ExpectationLedger.Verdict.INTERVENED, eingriff[0].verdict)
+        assertNull(eingriff[0].actualMgdl, "ein ungueltiges Urteil traegt keine Zahl")
+        assertTrue(!eingriff[0].isLambdaEvidence(MARGE))
+    }
+
+    /** Auch die andere Richtung: ein Eingriff darf kein MET erzeugen und
+     *  damit einen Nachweis loeschen. */
+    @Test
+    fun `ein Eingriff erzeugt auch kein MET`() {
+        val e = eintrag(rev = st(100L))
+        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 140.0, rev = st(101L))))
+        assertEquals(ExpectationLedger.Verdict.INTERVENED, out[0].verdict)
+    }
+
+    /**
+     * TONIS GEGENBEISPIEL, nachgerechnet und als Test festgehalten.
+     *
+     * Faelligkeiten 0 und 4, Messwerte 3 und 7, Toleranz 4. Der gierige
+     * Ansatz nimmt zuerst das kuerzeste Paar 4->3 (Abstand 1) und laesst
+     * damit die Faelligkeit 0 leer ausgehen - EINE Zuordnung statt zweier.
+     * Richtig ist 0->3 und 4->7.
+     *
+     * Ein verlorener Nachweis ist teurer als ein paar Sekunden Abstand.
+     */
+    @Test
+    fun `die Zuordnung maximiert die Anzahl, nicht die Naehe des ersten Paars`() {
+        // Zahlen innerhalb der echten Toleranz (150 s), Tonis Struktur:
+        //   Faelligkeiten 0 / 120 s, Messwerte 90 / 210 s
+        //   zulaessig: b-s1 (30 s), a-s1 (90 s), b-s2 (90 s)
+        //   gierig nimmt b-s1 zuerst -> a geht leer aus (a-s2 = 210 s > 150)
+        val a = eintrag(source = t0)                        // faellig t0+30 min
+        val b = eintrag(source = t0 + 120_000L)             // faellig +120 s
+        val s1 = probe(a.dueTs + 90_000L, 205.0)
+        val s2 = probe(a.dueTs + 210_000L, 205.0)
+        val (out, _, _) = rechne(listOf(a, b), b.dueTs + 10 * 60_000L, listOf(s1, s2))
+        val zugeordnet = out.filter { it.actualTs != null }
+        assertEquals(2, zugeordnet.size, "beide Faelligkeiten muessen einen Wert bekommen")
+        val nach = out.associateBy { it.entry.dueTs }
+        assertEquals(s1.ts, nach[a.dueTs]!!.actualTs, "die fruehere bekommt den frueheren Wert")
+        assertEquals(s2.ts, nach[b.dueTs]!!.actualTs, "die spaetere den spaeteren")
+    }
+
+    /**
+     * DER EINGRIFFSSTAND AM MESSWERT ENTSCHEIDET, nicht der heutige.
+     *
+     * Ein Eingriff NACH der Faelligkeit, aber vor einem verspaeteten
+     * `settle`, darf eine damals saubere Prognose nicht nachtraeglich
+     * entwerten - der erste Wurf verglich gegen die Gegenwart und tat genau
+     * das.
+     */
+    @Test
+    fun `ein Eingriff nach der Faelligkeit entwertet die Prognose nicht`() {
+        val e = eintrag(rev = st(100L))
+        // Der Messwert zur Faelligkeit traegt noch den alten Stand; erst
+        // danach wurde eingegriffen, und `settle` laeuft verspaetet.
+        val sauber = probe(e.dueTs, 205.0, rev = st(100L))
+        val (out, _, _) = rechne(listOf(e), e.dueTs + 30 * 60_000L, listOf(sauber))
+        assertEquals(
+            ExpectationLedger.Verdict.MISSED, out[0].verdict,
+            "zum Faelligkeitszeitpunkt war die Lage sauber - das Urteil gilt",
+        )
+    }
+
+    /** Auch ein Konfigurationswechsel wird am Messwert geprueft. */
+    @Test
+    fun `ein Konfigurationswechsel macht das Urteil ungueltig`() {
+        val e = eintrag()
+        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0, cfg = "cfg#2")))
+        assertEquals(ExpectationLedger.Verdict.INTERVENED, out[0].verdict)
+    }
+
+    // ---- Duplikate -------------------------------------------------------
+
+    /**
+     * DIESELBE PROGNOSE DARF NICHT ZWEIMAL IN DER LISTE STEHEN. Sie doppelt
+     * zu fuehren hiesse, denselben Nachweis zweimal zu zaehlen - und die
+     * frueher nach `dueTs` indizierte Zuordnung haette beiden denselben
+     * Messwert gegeben, obwohl er nur einmal als verbraucht galt.
+     */
+    @Test
+    fun `ein Duplikat wird beim Einreihen verworfen`() {
+        val e = eintrag()
+        val einmal = ExpectationLedger.add(emptyList(), e)
+        val zweimal = ExpectationLedger.add(einmal, eintrag())
+        assertEquals(1, zweimal.size, "dieselbe EntryId nur einmal")
+        // Ein Eintrag mit anderer Quelle ist ein anderer Eintrag.
+        val anders = ExpectationLedger.add(zweimal, eintrag(source = t0 + 60_000L))
+        assertEquals(2, anders.size)
+        assertEquals(zweimal, ExpectationLedger.add(zweimal, null), "null aendert nichts")
+    }
+
+    /**
+     * BEI NEUEM STAND WIRD ERSETZT, nicht behalten (Toni, P1).
+     *
+     * Die Kennung enthaelt bewusst weder Revision noch Konfiguration - sie
+     * soll ueber Neustarts stabil bleiben. Damit kollidieren nach einem
+     * Eingriff die alte und die neue Prognose. Die ALTE zu behalten hiesse,
+     * gegen eine ueberholte Ausgangsannahme zu pruefen; relevant ist die,
+     * die den neuen Stand kennt.
+     */
+    @Test
+    fun `bei neuem Eingriffsstand wird der Eintrag ersetzt`() {
+        val alt = eintrag(rev = st(100L))
+        val liste = ExpectationLedger.add(emptyList(), alt)
+        val neu = eintrag(rev = st(101L))
+        val ersetzt = ExpectationLedger.add(liste, neu)
+        assertEquals(1, ersetzt.size, "die Kennung ist dieselbe - kein zweiter Eintrag")
+        assertEquals(st(101L), ersetzt[0].interventionStamp, "aber der NEUE Stand muss gewinnen")
+        // Dasselbe fuer die Konfiguration.
+        val andereCfg = ExpectationLedger.issue(
+            t0, SEG, 200.0, 150.0, H, configGeneration = "cfg#2", interventionStamp = st(101L),
+            classification = KORR,
+        )!!
+        val ersetzt2 = ExpectationLedger.add(ersetzt, andereCfg)
+        assertEquals(1, ersetzt2.size)
+        assertEquals("cfg#2", ersetzt2[0].configGeneration)
+    }
+
+    /**
+     * UND AUCH BEI GEAENDERTER PROGNOSE (Tonis eigentlicher Punkt).
+     *
+     * Der erste Anlauf verglich nur Revision und Konfiguration. Aendert sich
+     * bei wiederholtem `sourceTs` die PROGNOSE selbst - Mittelbahn,
+     * Untergrenze, lambda -, blieb der alte Eintrag stehen, und der Nachweis
+     * liefe gegen eine ueberholte Behauptung.
+     */
+    @Test
+    fun `bei geaenderter Prognose wird der Eintrag ersetzt`() {
+        val alt = ExpectationLedger.issue(
+            t0, SEG, 200.0, 150.0, H, CFG, REV, KORR, safetyLowerPredictedMgdl = 40.0, lambda = 1.0,
+        )!!
+        val liste = ExpectationLedger.add(emptyList(), alt)
+
+        // Gleiche Kennung, gleicher Stand - nur die Mittelbahn ist eine andere.
+        val andereMittelbahn = ExpectationLedger.issue(
+            t0, SEG, 200.0, 120.0, H, CFG, REV, KORR, safetyLowerPredictedMgdl = 40.0, lambda = 1.0,
+        )!!
+        val r1 = ExpectationLedger.add(liste, andereMittelbahn)
+        assertEquals(1, r1.size)
+        assertEquals(120.0, r1[0].meanPredictedMgdl, 1e-9, "die neue Mittelbahn muss gewinnen")
+
+        // Dasselbe fuer lambda - die Groesse, um die es spaeter geht.
+        val anderesLambda = ExpectationLedger.issue(
+            t0, SEG, 200.0, 120.0, H, CFG, REV, KORR, safetyLowerPredictedMgdl = 40.0, lambda = 0.5,
+        )!!
+        val r2 = ExpectationLedger.add(r1, anderesLambda)
+        assertEquals(1, r2.size)
+        assertEquals(0.5, r2[0].lambda!!, 1e-9)
+
+        // Ein in JEDEM Feld gleicher Eintrag bleibt ein echtes Duplikat.
+        assertEquals(r2, ExpectationLedger.add(r2, anderesLambda))
+    }
+
+    /** Die Kennung ist stabil - sie haengt nur an Quelle, Faelligkeit und
+     *  Segment, nicht an einem Zaehler, der nach einem Neustart neu begaenne. */
+    @Test
+    fun `die Kennung ist stabil und unterscheidet gleiche Faelligkeiten`() {
+        assertEquals(eintrag().id, eintrag().id)
+        assertTrue(eintrag(seg = 1L).id != eintrag(seg = 2L).id, "anderes Segment, andere Kennung")
+        assertTrue(eintrag(source = t0).id != eintrag(source = t0 + 60_000L).id)
+    }
+
+    // ---- P0: Verbrauch ueber Aufrufgrenzen -------------------------------
+
+    /**
+     * EINE PROBE DARF AUCH IN SPAETEREN AUFRUFEN NICHT WIEDER GELTEN
+     * (Toni, P0).
+     *
+     * Der Verbrauch lebte nur innerhalb eines `settle`. Bei minuetlichen
+     * Zyklen und 150 s Toleranz bediente derselbe Messwert nacheinander bis
+     * zu fuenf Faelligkeiten - aus EINEM Punkt waere eine vier Minuten lange
+     * MISSED-Strecke geworden. Eine Persistenz haette diesen mehrfach
+     * gezaehlten Nachweis dauerhaft beglaubigt.
+     */
+    @Test
+    fun `eine verbrauchte Probe gilt auch im naechsten Aufruf nicht mehr`() {
+        val a = eintrag(source = t0)
+        val b = eintrag(source = t0 + 60_000L)
+        val einer = probe(a.dueTs, 205.0)
+
+        // Zyklus 1: a bekommt die Probe.
+        val z1 = rechne(listOf(a, b), a.dueTs, listOf(einer))
+        assertEquals(ExpectationLedger.Verdict.MISSED, z1.outcomes[0].verdict)
+        assertEquals(setOf(einer.id), z1.consumed, "der Verbrauch muss hinausgereicht werden")
+
+        // Zyklus 2: b ist faellig, dieselbe Probe liegt noch in Reichweite -
+        // darf aber nicht mehr zaehlen.
+        val z2 = rechne(z1.remaining, b.dueTs, listOf(einer), consumed = z1.consumed)
+        assertEquals(
+            ExpectationLedger.Verdict.UNVERIFIABLE, z2.outcomes[0].verdict,
+            "dieselbe Probe darf keine zweite Faelligkeit bedienen",
+        )
+
+        // Gegenprobe: OHNE den weitergereichten Verbrauch waere es ein MISSED
+        // gewesen - das ist genau der Fehler, um den es geht.
+        val ohne = rechne(z1.remaining, b.dueTs, listOf(einer))
+        assertEquals(ExpectationLedger.Verdict.MISSED, ohne.outcomes[0].verdict)
+    }
+
+    /** Der Verbrauch waechst nicht unbegrenzt: was aelter ist als die
+     *  aelteste offene Faelligkeit minus Toleranz, kann nichts mehr
+     *  zuordnen und faellt heraus. */
+    @Test
+    fun `der Verbrauch wird auf das Noetige beschnitten`() {
+        val alt = ExpectationLedger.SampleId(SEG, t0 - 60 * 60_000L)
+        val e = eintrag(source = t0 + 60 * 60_000L)   // faellig weit spaeter
+        val z = rechne(listOf(eintrag(source = t0), e), eintrag(source = t0).dueTs,
+                       listOf(probe(eintrag(source = t0).dueTs, 205.0)), consumed = setOf(alt))
+        assertTrue(alt !in z.consumed, "der uralte Verbrauch ist nicht mehr noetig")
+    }
+
+    /**
+     * IDENTISCHE DUPLIKATE FALLEN ZUSAMMEN, schon vor der Zuordnung
+     * (Toni, P0).
+     *
+     * Zwei gleiche Exportzeilen sind zwei Listenpositionen und koennten
+     * zwei Faelligkeiten bedienen. Dass `consumed` sie hinterher zu einer
+     * Kennung zusammenzieht, kommt zu spaet - der doppelte Nachweis waere
+     * dann schon entstanden.
+     */
+    @Test
+    fun `zwei identische Exportzeilen bedienen nur eine Faelligkeit`() {
+        val a = eintrag(source = t0)
+        val b = eintrag(source = t0 + 60_000L)
+        val doppelt = probe(a.dueTs, 205.0)
+        val (out, _, _) = rechne(listOf(a, b), b.dueTs, listOf(doppelt, doppelt))
+        assertEquals(
+            1, out.count { it.actualMgdl != null },
+            "dieselbe Zeile zweimal ist derselbe Messwert, nicht zwei",
+        )
+    }
+
+    /**
+     * WIDERSPRUECHLICHE Duplikate fallen RAUS, nicht auf einen davon
+     * zurueck. Welcher der richtige waere, ist nicht entscheidbar - und an
+     * einer Beweisgrundlage wird nicht geraten.
+     */
+    @Test
+    fun `widerspruechliche Duplikate machen den Zeitpunkt unbewertbar`() {
+        val e = eintrag()
+        val einer = probe(e.dueTs, 205.0)
+        val anderer = probe(e.dueTs, 140.0)   // gleiche Kennung, anderer Wert
+        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(einer, anderer))
+        assertEquals(
+            ExpectationLedger.Verdict.UNVERIFIABLE, out[0].verdict,
+            "bei Widerspruch wird nicht geraten",
+        )
+    }
+
+    /**
+     * DER WIDERSPRUCH MUSS SICHTBAR BLEIBEN, auch wenn eine der Zeilen
+     * unbrauchbar ist (Toni, P0).
+     *
+     * Wuerden Gesundheit und Endlichkeit VOR dem Vergleich gefiltert,
+     * verschwaende die ungesunde Zeile - und aus zwei einander
+     * widersprechenden Exportzeilen wuerde ein sauberes MISSED. Der Export
+     * behauptet aber zweierlei ueber denselben Zeitpunkt; das ist ein
+     * Integritaetsproblem und keine gueltige Messung.
+     */
+    @Test
+    fun `ein Widerspruch zaehlt auch dann, wenn eine Zeile unbrauchbar ist`() {
+        val e = eintrag()
+        for (gegenstueck in listOf(
+            probe(e.dueTs, 140.0, healthy = false),          // ungesund
+            probe(e.dueTs, Double.NaN),                       // nicht endlich
+            probe(e.dueTs, 140.0, rev = st(999L)),                // anderer Stand
+        )) {
+            val gesund = probe(e.dueTs, 205.0)
+            val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(gesund, gegenstueck))
+            assertEquals(
+                ExpectationLedger.Verdict.UNVERIFIABLE, out[0].verdict,
+                "widersprechende Zeilen duerfen kein Urteil tragen: $gegenstueck",
+            )
+        }
+    }
+
+    /** Die Gegenprobe: EINE gesunde Zeile allein bleibt verwertbar - der
+     *  Filter darf nicht pauschal alles verwerfen. */
+    @Test
+    fun `eine einzelne gesunde Zeile bleibt verwertbar`() {
+        val e = eintrag()
+        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0)))
+        assertEquals(ExpectationLedger.Verdict.MISSED, out[0].verdict)
+    }
+
+    /** Und zwei identische UNBRAUCHBARE Zeilen sind kein Widerspruch,
+     *  sondern schlicht unbrauchbar - kein Urteil, aber auch kein Alarm. */
+    @Test
+    fun `zwei identische unbrauchbare Zeilen ergeben schlicht kein Urteil`() {
+        val e = eintrag()
+        val kaputt = probe(e.dueTs, 205.0, healthy = false)
+        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(kaputt, kaputt))
+        assertEquals(ExpectationLedger.Verdict.UNVERIFIABLE, out[0].verdict)
+    }
+
+    /**
+     * EINE UNBRAUCHBARE MARGE IST KEIN FREIBRIEF. Negativ hiesse, dass sogar
+     * Werte UNTERHALB der damaligen Sicherheitsuntergrenze als Beleg fuer
+     * mehr Insulin durchgingen - die Umkehrung des Begriffs.
+     */
+    @Test
+    fun `eine unbrauchbare Marge ergibt nie lambda-Evidenz`() {
+        val treffer = ergebnis(t0, ExpectationLedger.Verdict.MISSED)
+        assertTrue(treffer.isLambdaEvidence(20.0), "eine brauchbare Marge greift")
+        for (schlecht in listOf(0.0, -1.0, -1000.0, Double.NaN, Double.NEGATIVE_INFINITY)) {
+            assertTrue(!treffer.isLambdaEvidence(schlecht), "Marge $schlecht")
+        }
+    }
+
+    // ---- Der lambda-Begriff ----------------------------------------------
+
+    /**
+     * NICHT JEDES MISSED IST EIN BELEG GEGEN LAMBDA (Toni, P1).
+     *
+     * Ein ausgebliebener Senkungsschritt allein widerlegt den Abschlag nicht -
+     * lag die reale Bahn knapp ueber der damaligen Untergrenze, hatte er
+     * moeglicherweise recht. Als Beleg taugt er nur mit deutlichem Abstand.
+     */
+    @Test
+    fun `nur ein MISSED mit Abstand zur Untergrenze ist lambda-Evidenz`() {
+        val e = ExpectationLedger.issue(
+            t0, SEG, 200.0, 150.0, H, CFG, REV, KORR, safetyLowerPredictedMgdl = 190.0,
+        )!!
+        // Gemessen 205: MISSED, aber nur 15 mg/dl ueber der Untergrenze.
+        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0)))
+        assertEquals(ExpectationLedger.Verdict.MISSED, out[0].verdict)
+        assertEquals(15.0, out[0].distanceFromSafetyLowerMgdl!!, 1e-9)
+        assertTrue(out[0].isLambdaEvidence(10.0), "10 mg/dl Marge: reicht")
+        assertTrue(!out[0].isLambdaEvidence(20.0), "20 mg/dl Marge: reicht nicht")
+    }
+
+    /** OHNE damalige Untergrenze ist nichts belegt - `null` heisst nicht
+     *  "war weit genug weg". */
+    @Test
+    fun `ohne Untergrenze gibt es keine lambda-Evidenz`() {
+        val e = eintrag()   // ohne safetyLowerPredictedMgdl
+        val (out, _, _) = rechne(listOf(e), e.dueTs, listOf(probe(e.dueTs, 205.0)))
+        assertEquals(ExpectationLedger.Verdict.MISSED, out[0].verdict)
+        assertTrue(!out[0].isLambdaEvidence(MARGE), "auch bei Marge 0 nicht")
+    }
+
+    /** MET und INTERVENED sind nie Evidenz, egal wie gross der Abstand. */
+    @Test
+    fun `nur MISSED kann ueberhaupt Evidenz sein`() {
+        for (v in listOf(
+            ExpectationLedger.Verdict.MET,
+            ExpectationLedger.Verdict.INTERVENED,
+            ExpectationLedger.Verdict.UNVERIFIABLE,
+        )) assertTrue(!ergebnis(t0, v).isLambdaEvidence(MARGE), "$v")
+        assertTrue(ergebnis(t0, ExpectationLedger.Verdict.MISSED).isLambdaEvidence(MARGE))
+    }
+
+    // ---- Die Strecke: BELEGTE Dauer --------------------------------------
+
+    /** MARGE: die Untergrenze liegt bei 40, der gemessene Wert bei 205 -
+     *  Abstand 165 mg/dl, also klar lambda-Evidenz. */
+    private val MARGE = 20.0
+
+    private fun ergebnis(due: Long, v: ExpectationLedger.Verdict, seg: Long = SEG) =
+        ExpectationLedger.Outcome(
+            ExpectationLedger.Entry(
+                due - H * 60_000L, due, seg, 200.0, 150.0, CFG, REV, KTX, KGRUND,
+                safetyLowerPredictedMgdl = 40.0,
+            ),
+            v,
+            if (v == ExpectationLedger.Verdict.MISSED || v == ExpectationLedger.Verdict.MET) due else null,
+            if (v == ExpectationLedger.Verdict.MISSED || v == ExpectationLedger.Verdict.MET) 205.0 else null,
+        )
+
+    /** Zehn Prognosen im Minutentakt sind neun Minuten Strecke, nicht "zehn
+     *  Widerlegungen". */
+    @Test
+    fun `gemessen wird die Dauer der Strecke, nicht die Anzahl`() {
+        val m = ExpectationLedger.Verdict.MISSED
+        val zehn = (0..9).map { ergebnis(t0 + it * 60_000L, m) }
+        assertEquals(9, ExpectationLedger.historicalLambdaStreakMin(zehn, SEG, MARGE))
+    }
+
+    /**
+     * UNBEOBACHTETE ZEIT IST KEIN BELEG (Tonis zweiter Befund) - und der
+     * Vorgaengertest schrieb genau das Gegenteil fest ("zehn Ereignisse ueber
+     * eine Stunde sind ein staerkerer Beleg").
+     *
+     * Zwei MISSED mit 58 Minuten Luecke dazwischen ergaben dort eine
+     * 60-Minuten-Strecke. Ohne belegte Zwischenzeit stimmt das nicht.
+     */
+    @Test
+    fun `eine Luecke zwischen zwei Ausbleibern bricht die Strecke`() {
+        val m = ExpectationLedger.Verdict.MISSED
+        val mitLuecke = listOf(ergebnis(t0, m), ergebnis(t0 + 58 * 60_000L, m))
+        assertEquals(
+            0, ExpectationLedger.historicalLambdaStreakMin(mitLuecke, SEG, MARGE),
+            "58 unbeobachtete Minuten sind keine 58 Minuten Nachweis",
+        )
+        // Dieselben zwei Punkte, aber lueckenlos belegt: das zaehlt.
+        val dicht = (0..58).map { ergebnis(t0 + it * 60_000L, m) }
+        assertEquals(58, ExpectationLedger.historicalLambdaStreakMin(dicht, SEG, MARGE))
+    }
+
+    /** Ein Eintreffen beendet die Strecke - der Nachweis beginnt von vorn. */
+    @Test
+    fun `ein Eintreffen beendet die Strecke`() {
+        val m = ExpectationLedger.Verdict.MISSED
+        val t = ExpectationLedger.Verdict.MET
+        val reihe = listOf(
+            ergebnis(t0, m), ergebnis(t0 + 60_000, m),
+            ergebnis(t0 + 120_000, t),
+            ergebnis(t0 + 180_000, m), ergebnis(t0 + 240_000, m),
+        )
+        assertEquals(1, ExpectationLedger.historicalLambdaStreakMin(reihe, SEG, MARGE), "nur die beiden juengsten")
+        assertEquals(0, ExpectationLedger.historicalLambdaStreakMin(listOf(ergebnis(t0, t)), SEG, MARGE))
+        assertEquals(0, ExpectationLedger.historicalLambdaStreakMin(emptyList(), SEG, MARGE))
+    }
+
+    /** Ein Segmentbruch beendet sie ebenfalls. */
+    @Test
+    fun `ein Segmentbruch beendet die Strecke`() {
+        val m = ExpectationLedger.Verdict.MISSED
+        val reihe = listOf(
+            ergebnis(t0, m, seg = 1L), ergebnis(t0 + 60_000, m, seg = 1L),
+            ergebnis(t0 + 120_000, m, seg = 2L), ergebnis(t0 + 180_000, m, seg = 2L),
+        )
+        assertEquals(1, ExpectationLedger.historicalLambdaStreakMin(reihe, currentSegmentId = 2L, minSafetyMarginMgdl = MARGE))
+        assertEquals(0, ExpectationLedger.historicalLambdaStreakMin(reihe, currentSegmentId = 3L, minSafetyMarginMgdl = MARGE))
+    }
+
+    /**
+     * UNVERIFIABLE UND INTERVENED BRECHEN JETZT EBENFALLS - konservativ.
+     * Beide bedeuten, dass der Nachweis an dieser Stelle nicht gefuehrt
+     * wurde, und ein nicht gefuehrter Nachweis darf keine Strecke
+     * ueberbruecken.
+     */
+    @Test
+    fun `nicht gefuehrte Nachweise brechen die Strecke`() {
+        val m = ExpectationLedger.Verdict.MISSED
+        for (luecke in listOf(ExpectationLedger.Verdict.UNVERIFIABLE, ExpectationLedger.Verdict.INTERVENED)) {
+            val reihe = listOf(ergebnis(t0, m), ergebnis(t0 + 60_000, luecke), ergebnis(t0 + 120_000, m))
+            assertEquals(
+                0, ExpectationLedger.historicalLambdaStreakMin(reihe, SEG, MARGE),
+                "$luecke darf nicht ueberbrueckt werden",
+            )
+        }
+    }
+
+    // ---- advance: die geschlossene Klammer -------------------------------
+
+    /**
+     * EINE BEREITS ABGERECHNETE PROGNOSE WIRD NICHT ERNEUT EINGEREIHT
+     * (Toni, P0 - zweite Haelfte).
+     *
+     * Die Restore-Pruefung faengt eine Datei ab, in der dieselbe Kennung
+     * offen UND abgerechnet steht. Sie kann aber nicht verhindern, dass zur
+     * LAUFZEIT eine schon abgerechnete Prognose noch einmal angeboten wird -
+     * etwa wenn der Aufrufer nach einem Wiederanlauf denselben Zyklus
+     * wiederholt. Dann liefe sie ein zweites Mal durch `settle` und
+     * erzeugte doppelte Evidenz aus einer einzigen Prognose.
+     */
+    @Test
+    fun `advance reiht eine bereits abgerechnete Prognose nicht erneut ein`() {
+        val e = eintrag()
+        // Zyklus 1: einreihen und abrechnen.
+        val nachEins = ExpectationLedger.advance(
+            ExpectationLedger.State.empty(), e.dueTs, e, listOf(probe(e.dueTs, 205.0)),
+        )
+        assertEquals(1, nachEins.outcomes.size, "abgerechnet")
+        assertTrue(nachEins.entries.isEmpty(), "und nicht mehr offen")
+
+        // Zyklus 2: DIESELBE Prognose wird noch einmal angeboten.
+        val nachZwei = ExpectationLedger.advance(
+            nachEins, e.dueTs + 60_000L, e, listOf(probe(e.dueTs + 60_000L, 205.0)),
+        )
+        assertTrue(
+            nachZwei.entries.none { it.id == e.id },
+            "sie darf nicht wieder offen werden",
+        )
+        assertEquals(
+            1, nachZwei.outcomes.count { it.entry.id == e.id },
+            "und genau EIN Ergebnis tragen, nicht zwei",
+        )
+    }
+
+    /** Die Gegenprobe: eine NEUE Prognose wird selbstverstaendlich
+     *  eingereiht - der Filter darf nicht alles blocken. */
+    @Test
+    fun `advance reiht eine neue Prognose ein`() {
+        val e = eintrag()
+        val nachEins = ExpectationLedger.advance(
+            ExpectationLedger.State.empty(), e.dueTs, e, listOf(probe(e.dueTs, 205.0)),
+        )
+        val neu = eintrag(source = t0 + 10 * 60_000L)
+        val nachZwei = ExpectationLedger.advance(nachEins, e.dueTs + 60_000L, neu, emptyList())
+        assertTrue(nachZwei.entries.any { it.id == neu.id }, "die neue muss offen sein")
+    }
+
+    // ---- Kontext: nur CORRECTION traegt lambda ---------------------------
+
+    /**
+     * TONIS PFLICHTTEST (18.08.): dieselbe MISSED-Folge, einmal als
+     * Korrektur und einmal als Mahlzeit.
+     *
+     * In einer Mahlzeitenepisode ist eine ausbleibende Senkung der
+     * NORMALFALL - Kohlenhydrate laufen gegen das Insulin. Solche Eintraege
+     * in die lambda-Strecke zu zaehlen hiesse, den Abschlag ausgerechnet
+     * dann zu lockern, wenn das Modell recht hatte.
+     */
+    @Test
+    fun `dieselbe Folge traegt lambda nur im Korrekturbetrieb`() {
+        fun folge(kontext: ExpectationLedger.Classification) = (0..9).map { i ->
+            val due = t0 + i * 60_000L
+            ExpectationLedger.Outcome(
+                ExpectationLedger.Entry(
+                    due - H * 60_000L, due, SEG, 200.0, 150.0, CFG, REV, kontext.context, kontext.reason,
+                    safetyLowerPredictedMgdl = 40.0,
+                ),
+                ExpectationLedger.Verdict.MISSED, due, 205.0,
+            )
+        }
+        assertEquals(
+            9, ExpectationLedger.historicalLambdaStreakMin(folge(KORR), SEG, MARGE),
+            "der Korrekturbetrieb traegt den Nachweis",
+        )
+        assertEquals(
+            0,
+            ExpectationLedger.historicalLambdaStreakMin(
+                folge(MAHL), SEG, MARGE,
+            ),
+            "dieselbe Folge als Mahlzeit traegt ihn NICHT",
+        )
+    }
+
+    /** Und einzeln: ein MEAL-Ergebnis ist nie lambda-Evidenz, egal wie gross
+     *  der Abstand zur Untergrenze ist. */
+    @Test
+    fun `ein Mahlzeiten-Ergebnis ist nie lambda-Evidenz`() {
+        val meal = ExpectationLedger.Outcome(
+            ExpectationLedger.Entry(
+                t0, t0 + H * 60_000L, SEG, 200.0, 150.0, CFG, REV,
+                ExpectationLedger.ExpectationContext.MEAL,
+                ExpectationLedger.ContextReason.MARKER_ACTIVE,
+                safetyLowerPredictedMgdl = 40.0,
+            ),
+            ExpectationLedger.Verdict.MISSED, t0 + H * 60_000L, 205.0,
+        )
+        assertEquals(ExpectationLedger.Verdict.MISSED, meal.verdict, "auswertbar bleibt es")
+        assertEquals(165.0, meal.distanceFromSafetyLowerMgdl!!, 1e-9, "und die Diagnose steht")
+        assertTrue(!meal.isLambdaEvidence(1.0), "aber kein Beleg gegen lambda")
+    }
+
+    /** Eine MEAL-Strecke unterbricht eine laufende CORRECTION-Strecke -
+     *  konservativ, wie jedes andere Nicht-Ereignis auch. */
+    @Test
+    fun `ein Mahlzeiten-Ergebnis unterbricht die Korrekturstrecke`() {
+        fun erg(due: Long, kontext: ExpectationLedger.Classification) =
+            ExpectationLedger.Outcome(
+                ExpectationLedger.Entry(
+                    due - H * 60_000L, due, SEG, 200.0, 150.0, CFG, REV, kontext.context, kontext.reason,
+                    safetyLowerPredictedMgdl = 40.0,
+                ),
+                ExpectationLedger.Verdict.MISSED, due, 205.0,
+            )
+        val reihe = listOf(
+            erg(t0, KORR),
+            erg(t0 + 60_000L, MAHL),
+            erg(t0 + 120_000L, KORR),
+        )
+        assertEquals(
+            0, ExpectationLedger.historicalLambdaStreakMin(reihe, SEG, MARGE),
+            "die Mahlzeit in der Mitte darf nicht ueberbrueckt werden",
+        )
+    }
+
+    // ---- Der Adapter: Phase schlaegt Episode ----------------------------
+
+    private fun lageMit(
+        episodeId: Long,
+        phase: EvidenceStock.Phase?,
+        marker: Boolean = false,
+        onset: Boolean = false,
+        fenster: Boolean = false,
+    ) = ExpectationLedger.situationOf(
+        mealMarkerActive = marker, evidenceEpisodeId = episodeId, evidencePhase = phase,
+        onsetActive = onset, mealWindow = fenster, reboundWindow = false,
+        signalHealthy = true, ledgerSealed = true,
+    )
+
+    /**
+     * DIE MAHLZEITENBASIS IST ORTHOGONAL (Tonis Nachforderung 25.08.
+     * abends) - und genau deshalb NICHT aus dem ContextReason
+     * erschliessbar: `classify` nennt nur den ERSTEN zutreffenden Grund,
+     * und Onset/Fenster stehen vor der Evidenz. Wer die Belegart aus dem
+     * Grund liest, haelt eine belegte Mahlzeit fuer blosse Kinematik.
+     */
+    @Test
+    fun `die Mahlzeitenbasis wird von Onset und Fenster nicht verdeckt`() {
+        // DER MASKIERUNGSFALL: aktive Evidenz UND Onset. Der Grund nennt
+        // Onset - die Basis muss trotzdem den Beleg zeigen.
+        val maskiert = lageMit(episodeId = 7L, phase = EvidenceStock.Phase.ACTIVE, onset = true)
+        val kl = ExpectationLedger.classify(maskiert)
+        assertEquals(ExpectationLedger.ContextReason.ONSET_ACTIVE, kl.reason, "der Grund ist priorisiert")
+        assertEquals(
+            ExpectationLedger.MealBasis.EVIDENCE_CONFIRMED, kl.mealBasis,
+            "die BASIS ist es nicht - hinter dem Onset steht gebuchte Evidenz",
+        )
+        // Dasselbe mit Mahlzeitenfenster.
+        val fensterMaske = lageMit(episodeId = 7L, phase = EvidenceStock.Phase.PENDING_SEAL, fenster = true)
+        assertEquals(ExpectationLedger.ContextReason.MEAL_WINDOW_OPEN, ExpectationLedger.classify(fensterMaske).reason)
+        assertEquals(
+            ExpectationLedger.MealBasis.EVIDENCE_CONFIRMED,
+            ExpectationLedger.classify(fensterMaske).mealBasis,
+        )
+        // Marker schlaegt alles - auch mit Evidenz und Kinematik daneben.
+        val mitMarker = lageMit(episodeId = 7L, phase = EvidenceStock.Phase.ACTIVE, marker = true, onset = true)
+        assertEquals(ExpectationLedger.MealBasis.MARKER_CONFIRMED, ExpectationLedger.classify(mitMarker).mealBasis)
+    }
+
+    @Test
+    fun `nur Kinematik ist ein Verdacht, kein Beleg`() {
+        // Onset bzw. Fenster OHNE Marker und ohne Evidenzbestand: die Lage
+        // ist MEAL, aber nur kinematisch - hier darf der Korrekturschutz
+        // arbeiten (die V-Erholung faellt genau hierher).
+        val nurOnset = lageMit(episodeId = 0L, phase = EvidenceStock.Phase.NONE, onset = true)
+        assertEquals(ExpectationLedger.ExpectationContext.MEAL, ExpectationLedger.classify(nurOnset).context)
+        assertEquals(ExpectationLedger.MealBasis.KINEMATIC_ONLY, ExpectationLedger.classify(nurOnset).mealBasis)
+        val nurFenster = lageMit(episodeId = 0L, phase = EvidenceStock.Phase.DORMANT, fenster = true)
+        assertEquals(ExpectationLedger.MealBasis.KINEMATIC_ONLY, ExpectationLedger.classify(nurFenster).mealBasis)
+        // DORMANT ohne Kinematik ist gar keine Basis.
+        val ruhig = lageMit(episodeId = 4711L, phase = EvidenceStock.Phase.DORMANT)
+        assertEquals(ExpectationLedger.MealBasis.NONE, ExpectationLedger.classify(ruhig).mealBasis)
+    }
+
+    @Test
+    fun `die Basis ueberlebt jeden Ausschluss`() {
+        // Auch eine EXCLUDED-Lage kann auf einem gedrueckten Marker sitzen -
+        // der Beleg verschwindet nicht, weil das Signal stoert.
+        val gestoert = ExpectationLedger.situationOf(
+            mealMarkerActive = true, evidenceEpisodeId = 1L, evidencePhase = EvidenceStock.Phase.ACTIVE,
+            onsetActive = false, mealWindow = false, reboundWindow = true,
+            signalHealthy = true, ledgerSealed = true,
+        )
+        val kl = ExpectationLedger.classify(gestoert)
+        assertEquals(ExpectationLedger.ExpectationContext.EXCLUDED, kl.context)
+        assertEquals(ExpectationLedger.ContextReason.REBOUND, kl.reason)
+        assertEquals(ExpectationLedger.MealBasis.MARKER_CONFIRMED, kl.mealBasis, "der Beleg bleibt sichtbar")
+        // Unbekannte Eingaben belegen NICHTS - fail-closed heisst hier
+        // "keine Basis", nicht "Mahlzeit".
+        val unbekannt = ExpectationLedger.situationOf(
+            mealMarkerActive = null, evidenceEpisodeId = 0L, evidencePhase = null,
+            onsetActive = null, mealWindow = null, reboundWindow = null,
+            signalHealthy = null, ledgerSealed = null,
+        )
+        assertEquals(ExpectationLedger.MealBasis.NONE, ExpectationLedger.classify(unbekannt).mealBasis)
+    }
+
+    /**
+     * DER WICHTIGSTE UEBERGANG DER GANZEN SPEZIFIKATION (Toni 18.08.):
+     * offene Episode + DORMANT ergibt CORRECTION.
+     *
+     * Er ist der Grund, warum die Ableitung ueberhaupt als eigene Funktion
+     * existiert: im Runner war sie eine Zuweisung, und eine Mutationsprobe
+     * zurueck auf `episodeId > 0` blieb dort gruen, weil das ruhige
+     * Testszenario beide Herleitungen nicht unterscheiden kann. HIER ist die
+     * Episoden-ID ausdruecklich gesetzt - eine Fehlableitung faellt damit
+     * sofort auf.
+     */
+    @Test
+    fun `eine offene Episode in DORMANT ergibt CORRECTION`() {
+        val lage = lageMit(episodeId = 4711L, phase = EvidenceStock.Phase.DORMANT)
+        assertEquals(
+            ExpectationLedger.Classification(
+                ExpectationLedger.ExpectationContext.CORRECTION,
+                ExpectationLedger.ContextReason.PURE_CORRECTION,
+            ),
+            ExpectationLedger.classify(lage),
+            "eine offene Episode sagt, dass eine Mahlzeit BEGANN - nicht, dass sie wirkt",
+        )
+        assertEquals(4711L, lage.episodeIdForDiagnostics, "sichtbar bleibt sie trotzdem")
+    }
+
+    /** Dasselbe fuer die uebrigen ruhigen Phasen - eine offene Episode aendert
+     *  an keiner davon etwas. */
+    @Test
+    fun `auch NONE und EXPIRED ergeben bei offener Episode CORRECTION`() {
+        for (phase in listOf(EvidenceStock.Phase.NONE, EvidenceStock.Phase.EXPIRED)) assertEquals(
+            ExpectationLedger.ExpectationContext.CORRECTION,
+            ExpectationLedger.classify(lageMit(4711L, phase)).context, "$phase",
+        )
+    }
+
+    /**
+     * DIE GEGENPROBE - ohne sie koennte der Test oben auch dadurch gruen sein,
+     * dass die Episode gar nichts mehr bewirkt.
+     */
+    @Test
+    fun `dieselbe offene Episode ergibt bei wirkender Evidenz MEAL`() {
+        for (phase in listOf(EvidenceStock.Phase.PENDING_SEAL, EvidenceStock.Phase.ACTIVE)) assertEquals(
+            ExpectationLedger.ExpectationContext.MEAL,
+            ExpectationLedger.classify(lageMit(4711L, phase)).context, "$phase",
+        )
+    }
+
+    /** Und ohne Episode aendert sich an der Phasenregel nichts - die ID ist
+     *  in KEINER Richtung beteiligt. */
+    @Test
+    fun `die Episoden-ID aendert das Urteil in keiner Richtung`() {
+        for (phase in EvidenceStock.Phase.entries) assertEquals(
+            ExpectationLedger.classify(lageMit(0L, phase)),
+            ExpectationLedger.classify(lageMit(9_999L, phase)),
+            "$phase",
+        )
+    }
+
+    /** DORMANT + Marker bleibt Mahlzeit - die Phase ist nicht das einzige
+     *  Mahlzeitensignal. */
+    @Test
+    fun `DORMANT mit Marker, Onset oder Fenster bleibt MEAL`() {
+        val d = EvidenceStock.Phase.DORMANT
+        assertEquals(
+            ExpectationLedger.ContextReason.MARKER_ACTIVE,
+            ExpectationLedger.classify(lageMit(4711L, d, marker = true)).reason,
+        )
+        assertEquals(
+            ExpectationLedger.ContextReason.ONSET_ACTIVE,
+            ExpectationLedger.classify(lageMit(4711L, d, onset = true)).reason,
+        )
+        assertEquals(
+            ExpectationLedger.ContextReason.MEAL_WINDOW_OPEN,
+            ExpectationLedger.classify(lageMit(4711L, d, fenster = true)).reason,
+        )
+    }
+
+    // ---- Die AKTUELLE lambda-Strecke ------------------------------------
+
+    /** Eine Folge belegter Ausbleiber im Minutenraster, alle unter [stamp]. */
+    private fun folge(anzahl: Int, bisTs: Long, stamp: InterventionStamp = REV) =
+        (0 until anzahl).map { i ->
+            val due = bisTs - i * 60_000L
+            ExpectationLedger.Outcome(
+                ExpectationLedger.Entry(
+                    due - H * 60_000L, due, SEG, 200.0, 150.0, CFG, stamp, KTX, KGRUND,
+                    safetyLowerPredictedMgdl = 40.0,
+                ),
+                ExpectationLedger.Verdict.MISSED, due, 205.0,
+            )
+        }
+
+    private fun aktuell(
+        outcomes: List<ExpectationLedger.Outcome>,
+        nowTs: Long,
+        stamp: InterventionStamp = REV,
+        cfg: String = CFG,
+        lage: ExpectationLedger.Classification = KORR,
+        gapTs: Long = 0L,
+    ) = ExpectationLedger.currentLambdaEvidence(outcomes, nowTs, stamp, cfg, SEG, lage, MARGE, gapTs)
+
+    @Test
+    fun `eine frische lueckenlose Strecke zaehlt`() {
+        val bis = t0 + 100 * 60_000L
+        val e = aktuell(folge(10, bis), bis + 60_000L)
+        assertTrue(e.eligible)
+        assertEquals(9, e.minutes, "zehn Ereignisse spannen neun Minuten")
+        assertEquals(bis, e.freshThroughTs)
+        assertNull(e.denialReason)
+    }
+
+    /**
+     * TONIS ERSTER PFLICHTFALL: 9-min-Strecke, danach 25 min nichts.
+     *
+     * Die Strecke war einmal belegt - aber seither ist eine halbe Stunde
+     * unbeobachtet vergangen. Sie jetzt als Nachweis zu lesen hiesse, eine
+     * Aussage ueber eine Zeit zu treffen, in der niemand hingesehen hat.
+     */
+    @Test
+    fun `nach 25 Minuten ohne Ergebnis ist die aktuelle Strecke null`() {
+        val bis = t0 + 100 * 60_000L
+        val e = aktuell(folge(10, bis), bis + 25 * 60_000L)
+        assertEquals(0, e.minutes)
+        assertFalse(e.eligible)
+        assertEquals(ExpectationLedger.Denial.STALE, e.denialReason)
+        assertEquals(bis, e.freshThroughTs, "wann sie ENDETE, bleibt sichtbar")
+    }
+
+    /**
+     * TONIS ZWEITER PFLICHTFALL: 9-min-Strecke, danach neuer Stamp.
+     *
+     * Der haeufigste Fall im Betrieb - jeder SMB, jede echte TBR-Aenderung.
+     * Ausdruecklich kein Fehler: in einer veraenderten Insulinlage laesst sich
+     * die Wirkung der alten Prognose nicht mehr isoliert beweisen.
+     */
+    @Test
+    fun `ein neuer Stamp setzt die aktuelle Strecke sofort auf null`() {
+        val bis = t0 + 100 * 60_000L
+        val nachEingriff = InterventionStamp.next(
+            REV, InterventionStamp.Published(smbU = 0.3, tbrChanged = false),
+        )
+        val e = aktuell(folge(10, bis), bis + 60_000L, stamp = nachEingriff)
+        assertEquals(0, e.minutes)
+        assertFalse(e.eligible)
+        assertEquals(ExpectationLedger.Denial.INTERVENED_SINCE, e.denialReason)
+    }
+
+    /**
+     * TONIS DRITTER PFLICHTFALL: danach waechst eine frische Folge unter dem
+     * neuen Stamp wieder.
+     *
+     * Ohne diesen Test koennte die Sperre auch dauerhaft sein - und ein
+     * Nachweis, der nach dem ersten Eingriff nie wiederkommt, waere wertlos.
+     */
+    @Test
+    fun `unter dem neuen Stamp waechst die Strecke wieder`() {
+        val bis = t0 + 100 * 60_000L
+        val neuerStamp = InterventionStamp.next(
+            REV, InterventionStamp.Published(smbU = 0.3, tbrChanged = false),
+        )
+        val gemischt = folge(10, bis) + folge(5, bis + 10 * 60_000L, stamp = neuerStamp)
+        val e = aktuell(gemischt, bis + 11 * 60_000L, stamp = neuerStamp)
+        assertTrue(e.eligible, "die neue Folge traegt: $e")
+        assertEquals(4, e.minutes, "nur die fuenf NEUEN Ereignisse")
+    }
+
+    /**
+     * TONIS VIERTER PFLICHTFALL: der historische Export behaelt die alten
+     * neun Minuten.
+     *
+     * Die beiden Zahlen sind verschieden und muessen es sein. Deshalb heisst
+     * die alte Funktion jetzt `historicalLambdaStreakMin` - der Name allein
+     * verhindert, dass jemand sie als aktuellen Dosiernachweis liest.
+     */
+    @Test
+    fun `die historische Strecke bleibt erhalten, wenn die aktuelle null ist`() {
+        val bis = t0 + 100 * 60_000L
+        val outcomes = folge(10, bis)
+        assertEquals(0, aktuell(outcomes, bis + 25 * 60_000L).minutes, "aktuell: nichts")
+        assertEquals(
+            9, ExpectationLedger.historicalLambdaStreakMin(outcomes, SEG, MARGE),
+            "historisch: die neun Minuten von damals",
+        )
+    }
+
+    /**
+     * DIE LAGE JETZT ZAEHLT MIT (Toni 18.08.).
+     *
+     * Die Strecke darf bis zu fuenf Minuten alt sein. In dieser Zeit kann ein
+     * Marker gesetzt worden sein - dann ist die Korrekturstrecke zwar frisch,
+     * die Lage aber keine Korrektur mehr. Ohne diesen Riegel gaelte sie
+     * weiter, und der Nachweis waere formal sauber und inhaltlich falsch.
+     */
+    @Test
+    fun `eine inzwischen andere Lage macht die frische Strecke unzulaessig`() {
+        val bis = t0 + 100 * 60_000L
+        val e = aktuell(folge(10, bis), bis + 60_000L, lage = MAHL)
+        assertFalse(e.eligible, "Marker laeuft jetzt")
+        assertEquals(ExpectationLedger.Denial.CONTEXT_NOT_CORRECTION, e.denialReason)
+        assertEquals(
+            ExpectationLedger.ContextReason.MARKER_ACTIVE, e.currentContextReason,
+            "und WELCHE Lage es ist, steht im Ergebnis",
+        )
+        assertEquals(0, e.minutes)
+    }
+
+    /** Auch eine ausgeschlossene Lage - Rebound, Signalstoerung,
+     *  unversiegelbarer Ledger - sperrt die frische Strecke. */
+    @Test
+    fun `auch eine ausgeschlossene Lage sperrt die frische Strecke`() {
+        val bis = t0 + 100 * 60_000L
+        for (grund in listOf(
+            ExpectationLedger.ContextReason.REBOUND,
+            ExpectationLedger.ContextReason.SIGNAL_UNHEALTHY,
+            ExpectationLedger.ContextReason.LEDGER_UNSEALED,
+            ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+        )) {
+            val e = aktuell(
+                folge(10, bis), bis + 60_000L,
+                lage = ExpectationLedger.Classification(
+                    ExpectationLedger.ExpectationContext.EXCLUDED, grund,
+                ),
+            )
+            assertFalse(e.eligible, "$grund")
+            assertEquals(grund, e.currentContextReason)
+        }
+    }
+
+    /** Und die HISTORISCHE Strecke bleibt davon unberuehrt - sie sagt aus,
+     *  was damals belegt war, nicht was jetzt gilt. */
+    @Test
+    fun `die Lage jetzt aendert die historische Strecke nicht`() {
+        val bis = t0 + 100 * 60_000L
+        val outcomes = folge(10, bis)
+        assertFalse(aktuell(outcomes, bis + 60_000L, lage = MAHL).eligible)
+        assertEquals(9, ExpectationLedger.historicalLambdaStreakMin(outcomes, SEG, MARGE))
+    }
+
+    /** Eine andere Konfigurationsgeneration bricht ebenso - mit eigenem
+     *  Grund, damit der Export die Ursachen trennen kann. */
+    @Test
+    fun `eine geaenderte Konfiguration bricht die aktuelle Strecke`() {
+        val bis = t0 + 100 * 60_000L
+        val e = aktuell(folge(10, bis), bis + 60_000L, cfg = "cfg#2")
+        assertFalse(e.eligible)
+        assertEquals(ExpectationLedger.Denial.CONFIG_CHANGED, e.denialReason)
+    }
+
+    /** Ein unbrauchbarer Kopfstand liefert nie einen Nachweis - fail-closed,
+     *  und mit eigenem Grund statt stiller Null. */
+    @Test
+    fun `ein ungueltiger Kopfstand ergibt keinen Nachweis`() {
+        val bis = t0 + 100 * 60_000L
+        val e = ExpectationLedger.currentLambdaEvidence(
+            folge(10, bis), bis + 60_000L, InterventionStamp("", 5L), CFG, SEG, KORR, MARGE, 0L,
+        )
+        assertFalse(e.eligible)
+        assertEquals(ExpectationLedger.Denial.STAMP_INVALID, e.denialReason)
+        assertNull(e.freshThroughTs)
+    }
+
+    /** Eine Luecke MITTEN in der Strecke kuerzt sie auf den frischen Teil. */
+    @Test
+    fun `eine Luecke kuerzt die Strecke auf den frischen Teil`() {
+        val bis = t0 + 100 * 60_000L
+        // Drei frische, dann 20 Minuten Luecke, dann aeltere.
+        val mitLuecke = folge(3, bis) + folge(5, bis - 22 * 60_000L)
+        val e = aktuell(mitLuecke, bis + 60_000L)
+        assertTrue(e.eligible)
+        assertEquals(2, e.minutes, "nur die drei nach der Luecke")
+    }
+
+    /**
+     * EINE UNBEOBACHTETE MINUTE BRICHT DIE STRECKE (Toni 18.08., P0-2).
+     *
+     * Sie faellt der Abstandspruefung NICHT auf: eine fehlende Minute laesst
+     * zwischen zwei Ergebnissen zwei Minuten Abstand, erlaubt sind fuenf. Ohne
+     * eigene Marke liefe die Strecke ueber eine Minute weiter, die niemand
+     * gesehen hat.
+     */
+    @Test
+    fun `eine Beobachtungsluecke schneidet die Strecke ab`() {
+        val bis = t0 + 100 * 60_000L
+        // Ohne Marke traegt die volle Strecke.
+        assertEquals(9, aktuell(folge(10, bis), bis + 60_000L).minutes)
+        // Mit einer Marke bleibt nur, was DANACH AUSGESTELLT wurde.
+        //
+        // Gerechnet: die Eintraege liegen bei dueTs = bis - i Minuten und
+        // wurden H = 30 min davor ausgestellt. Eine Marke bei bis - 35 min
+        // faellt damit in das Beobachtungsfenster der Eintraege i >= 5 und
+        // schneidet sie ab; i = 0..4 bleiben, das sind vier Minuten Spanne.
+        //
+        // Die Marke wirkt auf den AUSSTELLUNGSzeitpunkt, nicht auf die
+        // Faelligkeit - eine Erwartung, deren Fenster die unbeobachtete Minute
+        // enthaelt, ist genauso wertlos wie eine, die ganz davor lag.
+        val marke = bis - 35 * 60_000L
+        val e = aktuell(folge(10, bis), bis + 60_000L, gapTs = marke)
+        assertEquals(4, e.minutes, "nur die Eintraege, deren Fenster GANZ nach der Luecke liegt")
+        assertTrue(e.eligible, "der frische Teil bleibt zulaessig: $e")
+
+        // Und eine Marke INNERHALB des juengsten Fensters nimmt auch den:
+        assertFalse(
+            aktuell(folge(10, bis), bis + 60_000L, gapTs = bis - 10 * 60_000L).eligible,
+            "die Luecke liegt im Fenster JEDES Eintrags",
+        )
+    }
+
+    /** Liegt die Luecke hinter der ganzen Strecke, bleibt gar nichts. */
+    @Test
+    fun `eine Luecke nach der ganzen Strecke macht sie unzulaessig`() {
+        val bis = t0 + 100 * 60_000L
+        val e = aktuell(folge(10, bis), bis + 60_000L, gapTs = bis + 30_000L)
+        assertFalse(e.eligible)
+        assertEquals(ExpectationLedger.Denial.OBSERVATION_GAP, e.denialReason)
+    }
+
+    // ---- Die Interventionsrevision beim Wiederherstellen ----------------
+
+    private fun eintragMitStempel(stamp: InterventionStamp) = ExpectationLedger.Entry(
+        t0, t0 + H * 60_000L, SEG, 200.0, 150.0, CFG, stamp, KTX, KGRUND,
+        safetyLowerPredictedMgdl = 40.0,
+    )
+
+    /**
+     * KEINE BEHAUPTUNG AUS DER ZUKUNFT - im KERN geprueft, nicht nur im Codec.
+     *
+     * Der Codec faengt den Fall heute frueher ab. Das ist kein Ersatz: restore
+     * hat mehr als einen Aufrufer (der Store kappt darueber, der Runner wird
+     * folgen), und ein Riegel, der nur an einer Aufrufstelle sitzt, schuetzt
+     * nur diese eine.
+     */
+    @Test
+    fun `ein Eintrag ueber dem Interventionsstand macht den Zustand ungueltig`() {
+        val r = ExpectationLedger.restore(
+            listOf(eintragMitStempel(st(50L))), emptySet(), emptyList(), kopfstand = st(49L),
+        )
+        assertTrue(r is ExpectationLedger.Restored.Invalid, "$r")
+    }
+
+    @Test
+    fun `auch ein Ergebnis ueber dem Interventionsstand macht den Zustand ungueltig`() {
+        val erg = ExpectationLedger.Outcome(
+            eintragMitStempel(st(50L)), ExpectationLedger.Verdict.MISSED, t0 + H * 60_000L, 205.0,
+        )
+        val r = ExpectationLedger.restore(emptyList(), emptySet(), listOf(erg), kopfstand = st(49L))
+        assertTrue(r is ExpectationLedger.Restored.Invalid, "$r")
+    }
+
+    @Test
+    fun `gleichstand ist zulaessig - der Eintrag stammt aus genau diesem Stand`() {
+        val r = ExpectationLedger.restore(
+            listOf(eintragMitStempel(st(50L))), emptySet(), emptyList(), kopfstand = st(50L),
+        )
+        assertTrue(r is ExpectationLedger.Restored.Valid, "$r")
+    }
+
+    @Test
+    fun `eine negative Interventionsrevision macht den Zustand ungueltig`() {
+        val r = ExpectationLedger.restore(emptyList(), emptySet(), emptyList(), kopfstand = InterventionStamp("", 0L))
+        assertTrue(r is ExpectationLedger.Restored.Invalid, "$r")
+    }
+
+    /**
+     * DER EPOCHENWECHSEL ALLEIN MACHT INTERVENED - bei IDENTISCHER Sequenz.
+     *
+     * Das ist der Fall, fuer den die ganze Bauform da ist (Toni 18.08.). Nach
+     * Reparatur, Quarantaene oder Rollback beginnt die Sequenz neu und
+     * durchlaeuft ihre alten Werte ein zweites Mal. Wuerde nur sie verglichen,
+     * traefe ein Eintrag der Stand 5 auf einen Messwert Stand 5 aus einem
+     * ANDEREN Lauf - und aus einer Strecke mit Insulin entstuende
+     * lambda-Evidenz.
+     */
+    @Test
+    fun `gleiche Sequenz aus anderer Epoche wird INTERVENED`() {
+        val e = eintrag(rev = st(5L, "vor-reparatur"))
+        val erg = rechne(
+            listOf(e), e.dueTs + 1000L,
+            listOf(probe(e.dueTs, 205.0, rev = st(5L, "nach-reparatur"))),
+        )
+        assertEquals(
+            ExpectationLedger.Verdict.INTERVENED, erg.outcomes.single().verdict,
+            "dieselbe Zahl aus einem anderen Lauf ist kein Beleg",
+        )
+    }
+
+    /** Und die Gegenprobe: dieselbe Epoche, dieselbe Sequenz - dann zaehlt
+     *  die Messung wirklich. Ohne sie koennte der Test oben auch dadurch
+     *  gruen sein, dass NIE etwas abgerechnet wird. */
+    @Test
+    fun `gleiche Epoche und Sequenz wird abgerechnet`() {
+        val e = eintrag(rev = st(5L, "lauf-A"))
+        val erg = rechne(
+            listOf(e), e.dueTs + 1000L,
+            listOf(probe(e.dueTs, 205.0, rev = st(5L, "lauf-A"))),
+        )
+        assertEquals(ExpectationLedger.Verdict.MISSED, erg.outcomes.single().verdict)
+    }
+
+    /**
+     * EINTRAEGE EINER FREMDEN EPOCHE WERDEN NICHT VERWORFEN.
+     *
+     * Der erste Wurf des Riegels hat die ganze Generation fuer ungueltig
+     * erklaert, sobald ein Eintrag ueber dem Kopfstand lag. Nach einer
+     * Reparatur waere das JEDER Eintrag - und mit ihnen faellt der
+     * `consumed`-Bestand, also die Zusicherung, dass kein Messwert zweimal
+     * abgerechnet wird. Da fremde Epochen ohnehin INTERVENED ergeben, ist das
+     * Verwerfen reiner Verlust.
+     */
+    @Test
+    fun `Eintraege einer fremden Epoche ueberleben das Wiederherstellen`() {
+        val alt = eintragMitStempel(st(9_999L, "alte-epoche"))
+        val r = ExpectationLedger.restore(
+            listOf(alt), setOf(ExpectationLedger.SampleId(SEG, t0)), emptyList(),
+            kopfstand = st(0L, "frische-epoche"),
+        )
+        assertTrue(r is ExpectationLedger.Restored.Valid, "$r")
+        val zustand = (r as ExpectationLedger.Restored.Valid).state
+        assertEquals(1, zustand.entries.size, "der Eintrag bleibt")
+        assertEquals(1, zustand.consumed.size, "und der Verbrauchsbestand mit ihm")
+    }
+
+    // ---- Der Klassifikator: drei Toepfe, jeder mit Begruendung ----------
+
+    /** Reine Korrekturlage - ALLES ausdruecklich belegt. */
+    private fun reineKorrektur() = ExpectationLedger.Situation(
+        mealMarkerActive = false,
+        evidencePhase = EvidenceStock.Phase.DORMANT,
+        onsetActive = false,
+        mealWindow = false,
+        reboundWindow = false,
+        signalHealthy = true,
+        ledgerSealed = true,
+    )
+
+    @Test
+    fun `nur eine vollstaendig belegte Korrekturlage ergibt CORRECTION`() {
+        assertEquals(
+            ExpectationLedger.Classification(
+                ExpectationLedger.ExpectationContext.CORRECTION,
+                ExpectationLedger.ContextReason.PURE_CORRECTION,
+            ),
+            ExpectationLedger.classify(reineKorrektur()),
+        )
+    }
+
+    /**
+     * MAHLZEITENLAGEN LANDEN IN MEAL - mit dem Grund, der sie ausmacht.
+     *
+     * Ausgewertet wird spaeter der Grund, nicht nur der Topf: eine Analyse,
+     * die MARKER_ACTIVE und MEAL_WINDOW_OPEN nicht trennen kann, kann die
+     * Freigabekurve nicht beurteilen.
+     */
+    @Test
+    fun `jede ausdrueckliche Mahlzeitenlage ergibt MEAL mit ihrem Grund`() {
+        // Je Lage: der GRUND und - seit 25.08. orthogonal daneben - die
+        // BASIS. Marker und Evidenz sind BELEGE, Onset und Fenster nur
+        // Kinematik; der Korrekturschutz unterscheidet danach.
+        val faelle = mapOf(
+            reineKorrektur().copy(mealMarkerActive = true) to
+                (ExpectationLedger.ContextReason.MARKER_ACTIVE to ExpectationLedger.MealBasis.MARKER_CONFIRMED),
+            reineKorrektur().copy(evidencePhase = EvidenceStock.Phase.ACTIVE) to
+                (ExpectationLedger.ContextReason.EVIDENCE_ACTIVE to ExpectationLedger.MealBasis.EVIDENCE_CONFIRMED),
+            reineKorrektur().copy(onsetActive = true) to
+                (ExpectationLedger.ContextReason.ONSET_ACTIVE to ExpectationLedger.MealBasis.KINEMATIC_ONLY),
+            reineKorrektur().copy(mealWindow = true) to
+                (ExpectationLedger.ContextReason.MEAL_WINDOW_OPEN to ExpectationLedger.MealBasis.KINEMATIC_ONLY),
+        )
+        for ((lage, erwartet) in faelle) assertEquals(
+            ExpectationLedger.Classification(
+                ExpectationLedger.ExpectationContext.MEAL, erwartet.first, erwartet.second,
+            ),
+            ExpectationLedger.classify(lage), "$lage",
+        )
+    }
+
+    /**
+     * WEDER KORREKTUR NOCH MAHLZEIT (Tonis Verfeinerung 18.08.).
+     *
+     * Der erste Wurf warf diese drei mit echten Mahlzeiten in denselben Topf.
+     * Dosierseitig war das sicher - lambda-Evidenz entstand nicht -, aber die
+     * spaetere Analyse haette einen Rebound als Mahlzeit gezaehlt. Der
+     * Ausschluss ist deshalb ein eigener Topf, kein Anhaengsel von MEAL.
+     */
+    @Test
+    fun `Rebound, Signalfehler und unbekannte Eingabe ergeben EXCLUDED`() {
+        val faelle = mapOf(
+            reineKorrektur().copy(reboundWindow = true) to ExpectationLedger.ContextReason.REBOUND,
+            reineKorrektur().copy(signalHealthy = false) to ExpectationLedger.ContextReason.SIGNAL_UNHEALTHY,
+            reineKorrektur().copy(mealMarkerActive = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+            reineKorrektur().copy(evidencePhase = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+            reineKorrektur().copy(onsetActive = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+            reineKorrektur().copy(mealWindow = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+            reineKorrektur().copy(reboundWindow = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+            reineKorrektur().copy(signalHealthy = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+            reineKorrektur().copy(ledgerSealed = null) to ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+        )
+        for ((lage, grund) in faelle) assertEquals(
+            ExpectationLedger.Classification(ExpectationLedger.ExpectationContext.EXCLUDED, grund),
+            ExpectationLedger.classify(lage), "$lage",
+        )
+    }
+
+    /**
+     * DIE UNVERSIEGELBARE BUCHHALTUNG SUSPENDIERT DIE MESSUNG (Toni 18.08.).
+     *
+     * Solange der Ledger nicht versiegelbar ist, geht die Schutz-TBR weiter
+     * hinaus - richtig so -, aber ihr Stempel bleibt im Speicher. Eine in
+     * diesem Zustand ausgestellte Erwartung traefe nach einem Neustart auf
+     * denselben Stand wie bei ihrer Ausstellung: Gleichstand, also MET/MISSED
+     * fuer eine Strecke mit realem Eingriff. Deshalb entsteht hier gar keine.
+     */
+    @Test
+    fun `ein unversiegelbarer Ledger suspendiert die Messung`() {
+        assertEquals(
+            ExpectationLedger.Classification(
+                ExpectationLedger.ExpectationContext.EXCLUDED,
+                ExpectationLedger.ContextReason.LEDGER_UNSEALED,
+            ),
+            ExpectationLedger.classify(reineKorrektur().copy(ledgerSealed = false)),
+        )
+    }
+
+    /** Der Grund steht VOR allen anderen: ohne Siegel ist auch ueber eine
+     *  Mahlzeit keine Aussage moeglich. */
+    @Test
+    fun `der unversiegelbare Ledger schlaegt jeden anderen Grund`() {
+        for (lage in listOf(
+            reineKorrektur().copy(ledgerSealed = false, mealMarkerActive = true),
+            reineKorrektur().copy(ledgerSealed = false, reboundWindow = true),
+            reineKorrektur().copy(ledgerSealed = false, signalHealthy = false),
+        )) assertEquals(
+            ExpectationLedger.ContextReason.LEDGER_UNSEALED,
+            ExpectationLedger.classify(lage).reason, "$lage",
+        )
+    }
+
+    /**
+     * DIE REIHENFOLGE IST BEDEUTUNG: Ausschluss schlaegt Mahlzeit.
+     *
+     * Ein Rebound waehrend eines laufenden Markers ist auch als MAHLZEIT
+     * unbrauchbar - die Steigung kommt aus der Gegenregulation, nicht aus der
+     * Absorption. Stuende die Mahlzeitenpruefung vorn, wanderte genau dieser
+     * Fall in die Mahlzeitenanalyse und verzerrte sie.
+     */
+    @Test
+    fun `Ausschlussgruende schlagen die Mahlzeitenlage`() {
+        assertEquals(
+            ExpectationLedger.ContextReason.REBOUND,
+            ExpectationLedger.classify(
+                reineKorrektur().copy(mealMarkerActive = true, reboundWindow = true),
+            ).reason,
+            "Rebound trotz Marker",
+        )
+        assertEquals(
+            ExpectationLedger.ContextReason.SIGNAL_UNHEALTHY,
+            ExpectationLedger.classify(
+                reineKorrektur().copy(onsetActive = true, signalHealthy = false),
+            ).reason,
+            "ohne Signal ist auch der Onset nicht belegt",
+        )
+        assertEquals(
+            ExpectationLedger.ContextReason.UNKNOWN_INPUT,
+            ExpectationLedger.classify(
+                reineKorrektur().copy(mealMarkerActive = true, mealWindow = null),
+            ).reason,
+            "eine Luecke bleibt eine Luecke, auch neben einem Marker",
+        )
+    }
+
+    /**
+     * DER WICHTIGSTE GRENZFALL (Toni 18.08.): der MARKER endet frueher als
+     * eine langsame Absorption.
+     *
+     * Nur `mealMarkerActive` zu pruefen wuerde die Nachlaufphase einer
+     * Mahlzeit als reine Korrektur verbuchen - und genau dort ist eine
+     * ausbleibende Senkung der Normalfall.
+     */
+    @Test
+    fun `der beendete Marker allein macht noch keine Korrekturlage`() {
+        val nachlauf = reineKorrektur().copy(
+            mealMarkerActive = false,      // der Marker ist abgelaufen
+            evidencePhase = EvidenceStock.Phase.ACTIVE,  // die Absorption laeuft weiter
+        )
+        assertEquals(
+            ExpectationLedger.Classification(
+                ExpectationLedger.ExpectationContext.MEAL,
+                ExpectationLedger.ContextReason.EVIDENCE_ACTIVE,
+                // Die laufende Absorption ist ein BELEG, nicht blosse
+                // Kinematik - der Korrekturschutz haelt sich hier heraus.
+                ExpectationLedger.MealBasis.EVIDENCE_CONFIRMED,
+            ),
+            ExpectationLedger.classify(nachlauf),
+            "die Nachlaufphase ist keine Korrektur",
+        )
+    }
+
+    /** NUR CORRECTION TRAEGT LAMBDA - die beiden anderen Toepfe nicht. */
+    @Test
+    fun `weder MEAL noch EXCLUDED koennen lambda-Evidenz werden`() {
+        for (ktx in ExpectationLedger.ExpectationContext.entries) {
+            val erg = ExpectationLedger.Outcome(
+                ExpectationLedger.Entry(
+                    t0, t0 + H * 60_000L, SEG, 200.0, 150.0, CFG, REV, ktx,
+                    ExpectationLedger.ContextReason.PURE_CORRECTION,
+                    safetyLowerPredictedMgdl = 40.0,
+                ),
+                ExpectationLedger.Verdict.MISSED, t0 + H * 60_000L, 205.0,
+            )
+            assertEquals(
+                ktx == ExpectationLedger.ExpectationContext.CORRECTION,
+                erg.isLambdaEvidence(MARGE), "$ktx",
+            )
+        }
+    }
+}
