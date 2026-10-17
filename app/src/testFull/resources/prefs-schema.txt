@@ -268,7 +268,6 @@ fuse_expectation_stability_min|FuseIntKey|true
 fuse_fast_restraint_enabled|FuseRetiredKey|true
 fuse_forecast_shadow_collection_enabled|FuseRetiredKey|true
 fuse_guard_floor_mgdl|FuseDoubleKey|true
-fuse_hinweise|FuseIntentKey|false
 fuse_iob_th_percent|FuseIntKey|true
 fuse_ledger_reparatur|FuseIntentKey|false
 fuse_ledger_sperre|FuseIntentKey|false

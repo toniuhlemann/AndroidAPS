@@ -2,14 +2,17 @@ package app.aaps.core.ui.compose.preference
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.StringKey
 import app.aaps.core.keys.interfaces.Preferences
+import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.ui.compose.LocalConfig
 import app.aaps.core.ui.compose.LocalPreferences
 import org.junit.Rule
@@ -90,4 +93,32 @@ class AdaptivePreferenceItemsTest {
         }
         compose.onRoot().assertIsDisplayed()
     }
+
+    // Fork (FUSE): a live line on the row instead of the summary, and plain info rows between the values
+
+    @Test
+    fun aRowSummaryIsShownOnTheRow() {
+        render { AdaptiveDoublePreferenceItem(doubleKey = DoubleKey.OverviewInsulinButtonIncrement1, rowSummary = "what it does now") }
+        compose.onNodeWithText("what it does now").assertIsDisplayed()
+    }
+
+    @Test
+    fun aRowSummaryIsShownOnASwitchRow() {
+        render { AdaptiveSwitchPreferenceItem(booleanKey = BooleanKey.OverviewKeepScreenOn, rowSummary = "on since today") }
+        compose.onNodeWithText("on since today").assertIsDisplayed()
+    }
+
+    @Test
+    fun anInfoRowShowsItsTextAndCannotBeClicked() {
+        render { PreferenceInfoRow(PreferenceInfoDef(text = TextRef.Literal("The text"), title = TextRef.Literal("The heading"))) }
+        compose.onNodeWithText("The heading").assertIsDisplayed().assertHasNoClickAction()
+        compose.onNodeWithText("The text").assertIsDisplayed().assertHasNoClickAction()
+    }
+
+    @Test
+    fun anInfoRowWithoutHeadingIsAParagraph() {
+        render { PreferenceInfoRow(PreferenceInfoDef(text = TextRef.Literal("Only a paragraph"))) }
+        compose.onNodeWithText("Only a paragraph").assertIsDisplayed().assertHasNoClickAction()
+    }
 }
+

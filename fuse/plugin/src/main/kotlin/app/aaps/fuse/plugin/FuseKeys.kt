@@ -383,7 +383,8 @@ enum class FuseDoubleKey(
         app.aaps.fuse.core.controller.ExpectationAccount.MAX_STABILITY_FALL_MGDL_PER_MIN,
         title = TextRef.AndroidRes(R.string.fuse_expectation_stability_fall_title),
         summary = TextRef.AndroidRes(R.string.fuse_expectation_stability_fall_summary),
-        unitType = UnitType.MIN,
+        // mg/dl/min wie die Rampenkanten - MIN zeigte den Standardwert als "0 min" und nahm keine Kommazahl an
+        unitType = UnitType.DOUBLE_2,
     ),
 
     /**

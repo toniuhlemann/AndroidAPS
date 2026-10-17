@@ -30,6 +30,7 @@ import app.aaps.core.ui.compose.valueFormat
  *
  * @param title Optional title override. If null, uses doubleKey.title
  * @param visibilityContext Optional context for evaluating runtime visibility/enabled conditions
+ * @param rowSummary Optional live line on the row instead of the summary; the dialog keeps the summary
  *
  * @see AdaptiveDoublePreferencePreview
  */
@@ -38,7 +39,8 @@ fun AdaptiveDoublePreferenceItem(
     doubleKey: DoublePreferenceKey,
     title: TextRef? = null,
     unit: String = "",
-    visibilityContext: VisibilityContext? = null
+    visibilityContext: VisibilityContext? = null,
+    rowSummary: String? = null
 ) {
     val preferences = LocalPreferences.current
     val effectiveTitle = title ?: doubleKey.title
@@ -87,9 +89,10 @@ fun AdaptiveDoublePreferenceItem(
                 // slider branch builds its own row instead of going through Preference.
                 color = theme.titleColor.let { if (visibility.enabled) it else it.copy(alpha = theme.disabledOpacity) }
             )
-            if (summary != null) {
+            val rowText = rowSummary ?: summary
+            if (rowText != null) {
                 Text(
-                    text = summary,
+                    text = rowText,
                     style = theme.summaryTextStyle,
                     color = theme.summaryColor.let { if (visibility.enabled) it else it.copy(alpha = theme.disabledOpacity) }
                 )

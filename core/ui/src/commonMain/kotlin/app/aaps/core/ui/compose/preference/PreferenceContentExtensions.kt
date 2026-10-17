@@ -70,7 +70,8 @@ fun LazyListScope.addPreferenceSubScreenDef(
                 parentKey = def.key,
                 onShowMessage = onShowMessage,
                 sectionState = sectionState,
-                visibilityContext = visibilityContext
+                visibilityContext = visibilityContext,
+                rowSummaries = def.rowSummaries?.lines().orEmpty()
             )
         }
     }
@@ -85,7 +86,8 @@ private fun RenderPreferenceItems(
     parentKey: String,
     onShowMessage: (String) -> Unit,
     sectionState: PreferenceSectionState?,
-    visibilityContext: VisibilityContext?
+    visibilityContext: VisibilityContext?,
+    rowSummaries: Map<String, String> = emptyMap()
 ) {
     items.forEach { item ->
         when (item) {
@@ -94,10 +96,13 @@ private fun RenderPreferenceItems(
                     AdaptivePreferenceItem(
                         key = item,
                         onShowMessage = onShowMessage,
-                        visibilityContext = visibilityContext
+                        visibilityContext = visibilityContext,
+                        rowSummary = rowSummaries[item.key]
                     )
                 }
             }
+
+            is PreferenceInfoDef      -> PreferenceInfoRow(item)
 
             is PreferenceSubScreenDef -> {
                 val shouldShow = shouldShowSubScreenInline(
@@ -130,7 +135,8 @@ private fun RenderPreferenceItems(
                                     items = item.items,
                                     onShowMessage = onShowMessage,
                                     visibilityContext = visibilityContext,
-                                    onNavigateToSubScreen = null // Nested subscreens not supported here
+                                    onNavigateToSubScreen = null, // Nested subscreens not supported here
+                                    rowSummaries = item.rowSummaries?.lines().orEmpty()
                                 )
                             }
                         }

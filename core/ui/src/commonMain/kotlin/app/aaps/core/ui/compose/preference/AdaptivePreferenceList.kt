@@ -17,17 +17,20 @@ import app.aaps.core.keys.interfaces.VisibilityContext
  * Supported types:
  * - PreferenceKey: Rendered with AdaptivePreferenceItem
  * - PreferenceSubScreenDef: Rendered as navigation item
+ * - PreferenceInfoDef: Rendered as plain text
  *
  * @param items List of PreferenceItems to render
  * @param visibilityContext Optional context for evaluating runtime visibility conditions
  * @param onNavigateToSubScreen Callback for navigating to subscreens
+ * @param rowSummaries Live lines by preference key, shown on the row instead of the summary (see [PreferenceRowSummaries])
  */
 @Composable
 fun AdaptivePreferenceList(
     items: List<PreferenceItem>,
     onShowMessage: (String) -> Unit = { },
     visibilityContext: VisibilityContext? = null,
-    onNavigateToSubScreen: ((PreferenceSubScreenDef) -> Unit)? = null
+    onNavigateToSubScreen: ((PreferenceSubScreenDef) -> Unit)? = null,
+    rowSummaries: Map<String, String> = emptyMap()
 ) {
     items.forEach { item ->
         when (item) {
@@ -37,9 +40,12 @@ fun AdaptivePreferenceList(
                 AdaptivePreferenceItem(
                     key = item,
                     onShowMessage = onShowMessage,
-                    visibilityContext = visibilityContext
+                    visibilityContext = visibilityContext,
+                    rowSummary = rowSummaries[item.key]
                 )
             }
+
+            is PreferenceInfoDef      -> PreferenceInfoRow(item)
 
             is PreferenceSubScreenDef -> {
                 // Subscreens are handled by PreferenceContentExtensions as nested collapsible sections

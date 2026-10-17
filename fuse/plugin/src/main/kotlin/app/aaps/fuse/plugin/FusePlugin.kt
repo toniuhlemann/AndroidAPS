@@ -2729,6 +2729,9 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
     // v4: kein configuration()/applyConfiguration() mehr - die Sicherung traegt die registrierten
     // Schluessel selbst (ownPreferences, samt der entfallenen).
 
+    /** Die kurzen Zeilen am Feld in den Einstellungen - einmal je Plugin, der Bildschirm baut seinen Baum oft neu. */
+    internal val liveZeilen: FuseLiveZeilen by lazy { FuseLiveZeilen(this) }
+
     /** Die Schluessel beider Bloecke, deren Zusammenfassung gemeinsam neu entsteht. */
     internal val kontoUndFruehSchluessel: List<String> by lazy {
         listOf(

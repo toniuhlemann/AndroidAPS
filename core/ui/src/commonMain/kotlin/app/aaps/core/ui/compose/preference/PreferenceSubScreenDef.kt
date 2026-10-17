@@ -1,5 +1,6 @@
 package app.aaps.core.ui.compose.preference
 
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
 import app.aaps.core.keys.interfaces.PreferenceItem
 import app.aaps.core.keys.interfaces.PreferenceKey
@@ -24,6 +25,7 @@ import app.aaps.core.keys.interfaces.TextRef
  * @param items List of preference items (keys and/or nested subscreens)
  * @param summary Optional summary shown in the parent list
  * @param icon Optional Compose ImageVector icon shown next to the title
+ * @param rowSummaries Optional live lines for the rows of this screen, see [PreferenceRowSummaries]
  */
 data class PreferenceSubScreenDef(
     val key: String,
@@ -32,7 +34,8 @@ data class PreferenceSubScreenDef(
     val items: List<PreferenceItem> = emptyList(),
     /** Optional summary, in the same form as [PreferenceKey.summary]. */
     val summary: TextRef? = null,
-    val icon: ImageVector? = null
+    val icon: ImageVector? = null,
+    val rowSummaries: PreferenceRowSummaries? = null
 ) : PreferenceItem {
 
     /**
@@ -59,3 +62,29 @@ data class PreferenceSubScreenDef(
             }
         }
 }
+
+/**
+ * Live lines for the rows of one screen: preference key -> a short line shown under the title instead of the
+ * key's summary. The summary stays the explanation in the edit dialog, so the row says what the value does NOW and
+ * the dialog says what the setting is. Rows without a line keep their summary.
+ *
+ * It is called in composition, so an implementation can read the values its lines depend on and is recomposed
+ * when one of them changes.
+ */
+fun interface PreferenceRowSummaries {
+
+    @Composable
+    fun lines(): Map<String, String>
+}
+
+/**
+ * A row of plain text between the values of a screen: an explanation that is not a setting. It stores nothing and
+ * cannot be clicked.
+ *
+ * @param text the text
+ * @param title optional heading above the text; without one the text stands alone, like a short paragraph
+ */
+data class PreferenceInfoDef(
+    val text: TextRef,
+    val title: TextRef? = null
+) : PreferenceItem

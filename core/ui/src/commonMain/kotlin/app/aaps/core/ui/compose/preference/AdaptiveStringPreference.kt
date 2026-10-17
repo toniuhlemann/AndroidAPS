@@ -34,7 +34,9 @@ fun AdaptiveStringPreferenceItem(
     title: TextRef? = null,
     summary: TextRef? = null,
     isPassword: Boolean = false,
-    visibilityContext: VisibilityContext? = null
+    visibilityContext: VisibilityContext? = null,
+    /** Optional live line on the row instead of the value or summary; the dialog keeps the summary. */
+    rowSummary: String? = null
 ) {
     val effectiveTitle = title ?: stringKey.title
     val effectiveSummary = summary ?: stringKey.summary
@@ -70,6 +72,10 @@ fun AdaptiveStringPreferenceItem(
             isSecure && value.isEmpty()    -> {
                 val notSetResId = if (stringKey.isPin) CoreUiStrings.pin_not_set else CoreUiStrings.password_not_set
                 { Text(stringResource(effectiveSummary ?: notSetResId)) }
+            }
+
+            rowSummary != null             -> {
+                { Text(rowSummary) }
             }
 
             value.isNotEmpty()             -> {

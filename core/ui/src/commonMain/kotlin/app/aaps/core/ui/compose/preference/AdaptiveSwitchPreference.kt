@@ -34,7 +34,9 @@ fun AdaptiveSwitchPreferenceItem(
     summary: TextRef? = null,
     summaryOn: TextRef? = null,
     summaryOff: TextRef? = null,
-    visibilityContext: VisibilityContext? = null
+    visibilityContext: VisibilityContext? = null,
+    /** Optional live line instead of the summary. A switch has no dialog, so the summary is not shown then. */
+    rowSummary: String? = null
 ) {
     val effectiveTitle = title ?: booleanKey.title
     val effectiveSummary = summary ?: booleanKey.summary
@@ -53,6 +55,10 @@ fun AdaptiveSwitchPreferenceItem(
     var guardMessage by remember { mutableStateOf<String?>(null) }
 
     val summary: @Composable (() -> Unit)? = when {
+        rowSummary != null                      -> {
+            { Text(rowSummary) }
+        }
+
         summaryOn != null && summaryOff != null -> {
             { Text(stringResource(if (state.value) summaryOn else summaryOff)) }
         }

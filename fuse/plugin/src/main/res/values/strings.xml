@@ -221,9 +221,6 @@
     <string name="fuse_section_signal">Signal und Prognose</string>
     <string name="fuse_section_night_rebound">Nacht, Rebound und Basal</string>
     <string name="fuse_section_system">Diagnose und System</string>
-    <string name="fuse_hinweise_title">Erklaerungen und aktuelle Wirkung</string>
-    <string name="fuse_hinweise_summary">Die Hinweise je Bereich, und was die Werte von Erwartungskonto und frueher Versorgung gerade bewirken.</string>
-    <string name="fuse_hinweise_werte_title">Erwartungskonto und fruehe Versorgung - aktuelle Wirkung</string>
     <string name="fuse_ledger_sperre_title">Ledger-Sperre und Hold quittieren</string>
     <string name="fuse_ledger_sperre_summary">Aktuelle Sperre und letzte Reparatur. Der SANFTE Ausgang aus einem Ledger-Hold durch Zeilenfehler: nimmt einer benannten Zeile ihre Fehler, laesst Haftung, Mahlzeiten-Huelle und den Genau-einmal-Riegel stehen. Auch an einer echten Pumpe zulaessig.</string>
     <string name="fuse_ledger_wiederherstellung_title">Nach unterbrochenem Speichern wiederherstellen</string>

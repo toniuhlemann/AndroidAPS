@@ -33,6 +33,8 @@ import app.aaps.core.ui.compose.stringResource
  * @param key The PreferenceKey to render
  * @param onIntentClick Optional click handler for IntentPreferenceKey with CLICK type
  * @param intentUrl Optional URL for IntentPreferenceKey with URL type
+ * @param rowSummary Optional live line shown on the row instead of the summary; the summary stays in the edit
+ *   dialog (switch, number and text rows, see [PreferenceRowSummaries])
  */
 @Composable
 fun AdaptivePreferenceItem(
@@ -40,14 +42,16 @@ fun AdaptivePreferenceItem(
     onShowMessage: (String) -> Unit,
     visibilityContext: VisibilityContext? = null,
     onIntentClick: (() -> Unit)? = null,
-    intentUrl: String? = null
+    intentUrl: String? = null,
+    rowSummary: String? = null
 ) {
     when (key) {
         is BooleanPreferenceKey         -> {
             AdaptiveSwitchPreferenceItem(
 
                 booleanKey = key,
-                visibilityContext = visibilityContext
+                visibilityContext = visibilityContext,
+                rowSummary = rowSummary
             )
         }
 
@@ -68,7 +72,8 @@ fun AdaptivePreferenceItem(
                     AdaptiveIntPreferenceItem(
 
                         intKey = key,
-                        visibilityContext = visibilityContext
+                        visibilityContext = visibilityContext,
+                        rowSummary = rowSummary
                     )
                 }
 
@@ -77,7 +82,8 @@ fun AdaptivePreferenceItem(
                     AdaptiveIntPreferenceItem(
 
                         intKey = key,
-                        visibilityContext = visibilityContext
+                        visibilityContext = visibilityContext,
+                        rowSummary = rowSummary
                     )
                 }
             }
@@ -87,7 +93,8 @@ fun AdaptivePreferenceItem(
             AdaptiveDoublePreferenceItem(
 
                 doubleKey = key,
-                visibilityContext = visibilityContext
+                visibilityContext = visibilityContext,
+                rowSummary = rowSummary
             )
         }
 
@@ -151,7 +158,8 @@ fun AdaptivePreferenceItem(
                         AdaptiveStringPreferenceItem(
 
                             stringKey = key,
-                            visibilityContext = visibilityContext
+                            visibilityContext = visibilityContext,
+                            rowSummary = rowSummary
                         )
                     }
 
@@ -159,7 +167,8 @@ fun AdaptivePreferenceItem(
                         AdaptiveStringPreferenceItem(
 
                             stringKey = key,
-                            visibilityContext = visibilityContext
+                            visibilityContext = visibilityContext,
+                            rowSummary = rowSummary
                         )
                     }
                 }
