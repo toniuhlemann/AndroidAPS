@@ -35,7 +35,6 @@ import org.json.JSONObject
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.io.TempDir
 import org.mockito.Mock
 import org.mockito.kotlin.any
 import org.mockito.kotlin.anyOrNull
@@ -477,7 +476,9 @@ object Fuse20Folgen {
  * Einstellungen nach Schluesselnamen (FuseDoubleKey, FuseIntKey, FuseBooleanKey) und "ApsSmbMaxIob". Ein fehlender Schluessel faellt
  * auf seinen Standard zurueck und steht in der Umgebungsdatei unter "ohneWert".
  *
- * DURCHSICHT: schreibt nur die Dateien in das frische Ausgabeverzeichnis und den Ledger in ein @TempDir; liest nur die
+ * DURCHSICHT: schreibt nur in das frische Ausgabeverzeichnis - die Ergebnisdateien und je Folge einen Ledger unter `ledger/`
+ * (der Ledger traegt abgeleitete Werte der gespielten, auch privater Mahlzeiten und gehoert deshalb nicht ins System-Temp,
+ * dessen Aufraeumen unter Windows scheitern kann); liest nur die
  * Konfigurationsdatei, Umgebungsvariablen, Systemeigenschaften und die Wanduhr; kein Prozess, kein Netz, nichts geloescht.
  */
 class Fuse20GleichwertigkeitTest : TestBaseWithProfile() {
@@ -587,12 +588,20 @@ class Fuse20GleichwertigkeitTest : TestBaseWithProfile() {
     private fun stubKonfiguration(werte: JSONObject): List<String> {
         val ohneWert = ArrayList<String>()
         whenever(preferences.get(anyOrNull<BooleanKey>())).thenReturn(false)
+        // Jeder gesetzte Wert muss im zulaessigen Bereich seines Schluessels liegen - sonst liefe der Lauf still mit einer
+        // anderen Regel (etwa ohne fruehe Versorgung, weil ihre Einstellungen ungueltig sind) und zaehlte doch als regulaer.
+        // Die Luft deckt nur die Float-Ablage der Einstellungen ab.
+        val luft = 1e-6
         FuseDoubleKey.entries.forEach { k ->
-            val v = if (werte.has(k.name)) werte.getDouble(k.name) else k.defaultValue.also { ohneWert += k.name }
+            val v = if (werte.has(k.name)) werte.getDouble(k.name).also { x ->
+                require(x.isFinite() && x >= k.min - luft && x <= k.max + luft) { "Konfiguration: ${k.name} ausserhalb ${k.min}..${k.max}" }
+            } else k.defaultValue.also { ohneWert += k.name }
             whenever(preferences.get(k)).thenReturn(v)
         }
         FuseIntKey.entries.forEach { k ->
-            val v = if (werte.has(k.name)) werte.getInt(k.name) else k.defaultValue.also { ohneWert += k.name }
+            val v = if (werte.has(k.name)) werte.getInt(k.name).also { x ->
+                require(x in k.min..k.max) { "Konfiguration: ${k.name} ausserhalb ${k.min}..${k.max}" }
+            } else k.defaultValue.also { ohneWert += k.name }
             whenever(preferences.get(k)).thenReturn(v)
         }
         FuseBooleanKey.entries.forEach { k ->
@@ -707,7 +716,7 @@ class Fuse20GleichwertigkeitTest : TestBaseWithProfile() {
     }
 
     @Test
-    fun `FUSE 2,0 Stufe 1 - GN-A und GN-B ueber feste Folgen mit der festgelegten Konfiguration`(@TempDir dir: File) {
+    fun `FUSE 2,0 Stufe 1 - GN-A und GN-B ueber feste Folgen mit der festgelegten Konfiguration`() {
         val vorgabe = Fuse20Folgen.vorgabe()
         assumeTrue(
             vorgabe != null,
@@ -746,8 +755,10 @@ class Fuse20GleichwertigkeitTest : TestBaseWithProfile() {
         val zeilen = ArrayList<List<String>>()
         val uebergaenge = Fuse20Folgen.Uebergaenge()
         val hashes = LinkedHashSet<String>()
+        // Die Ledger der Folgen liegen mit im (privaten) Ausgabeverzeichnis, nie im System-Temp.
+        val ledgerBasis = File(out, "ledger").also(File::mkdirs)
         java.util.zip.GZIPOutputStream(java.io.FileOutputStream(File(out, Fuse20Folgen.DATEI_EXPORT))).bufferedWriter(Charsets.UTF_8).use { export ->
-            (Fuse20Folgen.FOLGEN + Fuse20Folgen.zusatzFolgen()).forEach { f -> lauf(f, dir, zeilen, uebergaenge, export, hashes) }
+            (Fuse20Folgen.FOLGEN + Fuse20Folgen.zusatzFolgen()).forEach { f -> lauf(f, ledgerBasis, zeilen, uebergaenge, export, hashes) }
         }
         val abdeckung = Fuse20Folgen.abdeckung(zeilen, uebergaenge)
         Fuse20Folgen.schreiben(out, zeilen, abdeckung, ohneWert)
