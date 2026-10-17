@@ -25,6 +25,12 @@ enum class SeriesType {
     HEART_RATE,
     STEPS,
     ACTIVITY,
+
+    /** Fork (FUSE): the disturbance r as bars, the meal effect the account expects and the ramp edges (F.DRV). */
+    FUSE_DRIVE,
+
+    /** Fork (FUSE): guard and tail margin, also with the announced meal, and the account state as a strip (F.GRD). */
+    FUSE_GUARD,
     PREDICTIONS
 }
 

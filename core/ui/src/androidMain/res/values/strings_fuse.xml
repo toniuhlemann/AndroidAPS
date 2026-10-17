@@ -28,4 +28,7 @@
     <string name="insulin_req_limit">Grenze</string>
     <string name="insulin_req_block">Block</string>
     <string name="insulin_req_time" comment="%1$s=time of the loop run">Stand %1$s</string>
+    <!-- FUSE graphs below BG, short names in the graph menu, as in the fork. -->
+    <string name="fuse_drive_shortname">F.DRV</string>
+    <string name="fuse_guard_shortname">F.GRD</string>
 </resources>

@@ -213,6 +213,8 @@ fun SecondaryGraphCompose(
     val devSlopeData = if (primaryType == SeriesType.DEV_SLOPE) viewModel.devSlopeGraphFlow.collectAsStateWithLifecycle().value else null
     val hrData = if (primaryType == SeriesType.HEART_RATE) viewModel.heartRateGraphFlow.collectAsStateWithLifecycle().value else null
     val stepsData = if (primaryType == SeriesType.STEPS) viewModel.stepsGraphFlow.collectAsStateWithLifecycle().value else null
+    // Fork (FUSE): F.DRV and F.GRD
+    val fuseData = if (primaryType == SeriesType.FUSE_DRIVE || primaryType == SeriesType.FUSE_GUARD) viewModel.fuseGraphFlow.collectAsStateWithLifecycle().value else null
     // Activity data: either as primary series OR as overlay (on IOB graph)
     val needsActivity = primaryType == SeriesType.ACTIVITY || (activityOverlay && hasIob)
     val activityData = if (needsActivity) viewModel.activityGraphFlow.collectAsStateWithLifecycle().value else null
@@ -242,6 +244,9 @@ fun SecondaryGraphCompose(
         SeriesType.HEART_RATE      -> viewModel.heartRateGraphFlow.collectAsStateWithLifecycle().value.heartRates
         SeriesType.STEPS           -> viewModel.stepsGraphFlow.collectAsStateWithLifecycle().value.steps
         SeriesType.ACTIVITY        -> viewModel.activityGraphFlow.collectAsStateWithLifecycle().value.activity
+        // Fork (FUSE): on the right axis only the main line - the drive bars as a line, the guard margin
+        SeriesType.FUSE_DRIVE      -> viewModel.fuseGraphFlow.collectAsStateWithLifecycle().value.drive.map { GraphDataPoint(it.timestamp, it.value) }
+        SeriesType.FUSE_GUARD      -> viewModel.fuseGraphFlow.collectAsStateWithLifecycle().value.guard
         SeriesType.PREDICTIONS     -> emptyList() // UI-only overlay flag, not a secondary series
     }
 
@@ -308,23 +313,14 @@ fun SecondaryGraphCompose(
     val processedDeviationLines = remember(deviationsData, stableTimeRange) {
         if (!hasRealTimeRange || deviationsData == null || deviationsData.deviations.isEmpty())
             return@remember null
-        val filtered = deviationsData.deviations
-            .map { Triple(timestampToX(it.timestamp, minTimestamp), it.value, it.deviationType) }
-            .filter { it.first in minX..maxX }
-            .sortedBy { it.first }
-        if (filtered.isEmpty()) return@remember null
-        val allX = filtered.map { it.first }
-        val typeValueMap = filtered.associate { it.first to (it.second to it.third) }
-        // Build per-type y arrays: real value where type matches, 0.0 otherwise
-        val perType = DeviationType.entries.associateWith { type ->
-            allX.map { x ->
-                val (value, pointType) = typeValueMap[x]!!
-                if (pointType == type) value else 0.0
-            }
-        }
-        // Only include types that have at least one non-zero value
-        val activeTypes = perType.filter { (_, ys) -> ys.any { it != 0.0 } }
-        ProcessedDeviationLines(allX, activeTypes)
+        // Shared with the FUSE drive bars (fork), see deviationLines
+        deviationLines(deviationsData.deviations, minTimestamp, minX, maxX)
+    }
+
+    // Fork (FUSE): bars, lines, meal markers and account strip of F.DRV or F.GRD
+    val processedFuse = remember(fuseData, primaryType, stableTimeRange) {
+        if (!hasRealTimeRange || fuseData == null) return@remember null
+        processFuse(fuseData, primaryType, minTimestamp, minX, maxX)
     }
 
     // IOB line processing
@@ -425,9 +421,10 @@ fun SecondaryGraphCompose(
     // Deliberately does NOT include the activity overlay: that one is mapped into this axis' units
     // (see processedActivityOverlay below), so feeding it back in here would be circular.
     val primaryYValues = remember(
-        processedIob, processedCob, processedCarbs, processedSimpleSeries, processedDevSlopeMin, processedDeviationLines, visibleMinX, visibleMaxX
+        processedIob, processedCob, processedCarbs, processedSimpleSeries, processedDevSlopeMin, processedDeviationLines, processedFuse, visibleMinX, visibleMaxX
     ) {
-        windowedPrimaryY(visibleMinX, visibleMaxX, processedIob, processedCob.first, processedCarbs, processedSimpleSeries, processedDevSlopeMin, processedDeviationLines)
+        windowedPrimaryY(visibleMinX, visibleMaxX, processedIob, processedCob.first, processedCarbs, processedSimpleSeries, processedDevSlopeMin, processedDeviationLines) +
+            (processedFuse?.windowedY(visibleMinX, visibleMaxX) ?: emptyList()) // Fork (FUSE)
     }
 
     // Zero-floor nice range of the primary layer, windowed — 0 if the visible window has no
@@ -501,12 +498,19 @@ fun SecondaryGraphCompose(
     // stale 0..1 axis until the next recomposition ("renders wrong, then fixes itself").
     val primarySeries = remember(
         processedDeviationLines, processedIob, processedIobTreatments, processedCob,
-        processedCarbs, processedSimpleSeries, processedDevSlopeMin, processedActivityOverlay
+        processedCarbs, processedSimpleSeries, processedDevSlopeMin, processedActivityOverlay, processedFuse
     ) {
         buildList {
             // Deviation lines (per-type step lines) — first so other series draw on top
             processedDeviationLines?.series?.forEach { (type, yValues) ->
                 add(PrimarySeriesSpec(processedDeviationLines.allX, yValues, SeriesSlot.DeviationLine(type)))
+            }
+            // Fork (FUSE): the drive bars like the deviations (under the lines), then the FUSE lines
+            processedFuse?.bars?.let { bars ->
+                bars.series.forEach { (type, yValues) -> add(PrimarySeriesSpec(bars.allX, yValues, SeriesSlot.DeviationLine(type))) }
+            }
+            processedFuse?.lines?.forEach { line ->
+                add(PrimarySeriesSpec(line.points.map { it.first }, line.points.map { it.second }, SeriesSlot.Fuse(line.style)))
             }
             // IOB line
             if (processedIob.isNotEmpty())
@@ -557,8 +561,9 @@ fun SecondaryGraphCompose(
     val iobLineStyle = rememberIobLineStyles()
     val cobLineStyle = rememberCobLineStyles()
     val normalizerLine = remember { createNormalizerLine() }
+    val fuseOnSurface = MaterialTheme.colorScheme.onSurface // Fork (FUSE): the expected drive, white in the dark theme
 
-    val lines = remember(primarySeries, seriesColors, iobLineStyle, cobLineStyle, normalizerLine) {
+    val lines = remember(primarySeries, seriesColors, iobLineStyle, cobLineStyle, normalizerLine, fuseOnSurface) {
         buildList {
             for (spec in primarySeries) {
                 add(
@@ -576,6 +581,7 @@ fun SecondaryGraphCompose(
                         SeriesSlot.DevSlopeMin      -> createDevSlopeMinLine()
                         SeriesSlot.ActivityOverlay  -> createSeriesLine(SeriesType.ACTIVITY, seriesColors)
                         is SeriesSlot.SimpleLine    -> createSeriesLine(slot.type, seriesColors)
+                        is SeriesSlot.Fuse          -> fuseLine(slot.style, fuseOnSurface, DEVIATION_COLOR_UAM)
                     }
                 )
             }
@@ -618,7 +624,11 @@ fun SecondaryGraphCompose(
     val nowLineColor = MaterialTheme.colorScheme.onSurface
     val nowLine = rememberNowLine(minTimestamp, nowTimestamp, nowLineColor)
     val inspectLine = rememberInspectLine(inspect)
-    val decorations = remember(nowLine, visibleRangeReporter, inspectLine) { listOfNotNull(nowLine, visibleRangeReporter, inspectLine) }
+    // Fork (FUSE): meal marker lines in both FUSE graphs, the account strip in F.GRD
+    val fuseDecorations = rememberFuseDecorations(processedFuse, MaterialTheme.colorScheme.onSurface)
+    val decorations = remember(nowLine, visibleRangeReporter, inspectLine, fuseDecorations) {
+        listOfNotNull(nowLine, visibleRangeReporter, inspectLine) + fuseDecorations
+    }
 
     // Dual-axis zero alignment.
     // Why: Vico computes each vertical axis range independently, so y=0 on the
@@ -723,9 +733,11 @@ fun SecondaryGraphCompose(
     // excursion, same rule as IOB); VAR_SENSITIVITY/HEART_RATE are free-range (no zero anchor);
     // SENSITIVITY/DEV_SLOPE are pivot-centered (pivot always lands exactly at mid-axis). Takes
     // precedence over primaryConstantRange/primaryAutoRange for these specific series types.
-    val primarySingleAxisScale = remember(primaryType, dualAxisRanges, hasBasalLayer, primaryYValues) {
+    val primarySingleAxisScale = remember(primaryType, dualAxisRanges, hasBasalLayer, primaryYValues, processedFuse) {
         if (dualAxisRanges != null || hasBasalLayer || primaryYValues.isEmpty()) return@remember null
         when (primaryType) {
+            // Fork (FUSE): symmetric around 0, at least the fork's minimum to each side
+            SeriesType.FUSE_DRIVE, SeriesType.FUSE_GUARD       -> processedFuse?.scale(primaryYValues, SECONDARY_GRAPH_TICK_COUNT)
             SeriesType.COB                                    -> niceScale(0.0, primaryYValues.max().coerceAtLeast(0.0), SECONDARY_GRAPH_TICK_COUNT)
             in ZERO_FLOOR_SERIES_TYPES                         -> zeroFloorNiceRange(primaryYValues.min(), primaryYValues.max(), SECONDARY_GRAPH_TICK_COUNT)
             SeriesType.VAR_SENSITIVITY, SeriesType.HEART_RATE  -> niceScale(primaryYValues.min(), primaryYValues.max(), SECONDARY_GRAPH_TICK_COUNT)
@@ -836,6 +848,7 @@ fun SecondaryGraphCompose(
         processedBasalActual,
         processedSecondary,
         processedActivityOverlay,
+        processedFuse,
         maxX,
         axisScale
     ) {
@@ -970,6 +983,9 @@ private sealed class SeriesSlot {
     data class SimpleLine(val type: SeriesType) : SeriesSlot()
     data object DevSlopeMin : SeriesSlot()
     data object ActivityOverlay : SeriesSlot()
+
+    /** Fork (FUSE): one line of F.DRV or F.GRD. */
+    data class Fuse(val style: FuseLineStyle) : SeriesSlot()
 }
 
 // =========================================================================
@@ -1170,10 +1186,15 @@ data class SeriesColors(
     val devSlope: Color,
     val heartRate: Color,
     val steps: Color,
-    val activity: Color
+    val activity: Color,
+    // Fork (FUSE): the line color on a right axis and of the axis itself, as in the fork
+    val fuseDrive: Color = FUSE_DRIVE_COLOR,
+    val fuseGuard: Color = FUSE_GUARD_COLOR
 ) {
 
     fun colorFor(type: SeriesType): Color = when (type) {
+        SeriesType.FUSE_DRIVE      -> fuseDrive
+        SeriesType.FUSE_GUARD      -> fuseGuard
         SeriesType.IOB             -> iob
         SeriesType.ABS_IOB         -> absIob
         SeriesType.COB             -> cob

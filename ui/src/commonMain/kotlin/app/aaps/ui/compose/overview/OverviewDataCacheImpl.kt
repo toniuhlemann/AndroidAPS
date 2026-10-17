@@ -45,6 +45,7 @@ import app.aaps.core.interfaces.overview.graph.CarbsGraphPoint
 import app.aaps.core.interfaces.overview.graph.CobGraphData
 import app.aaps.core.interfaces.overview.graph.DevSlopeGraphData
 import app.aaps.core.interfaces.overview.graph.DeviationsGraphData
+import app.aaps.core.interfaces.overview.graph.FuseGraphData
 import app.aaps.core.interfaces.overview.graph.EpsGraphPoint
 import app.aaps.core.interfaces.overview.graph.ExtendedBolusGraphPoint
 import app.aaps.core.interfaces.overview.graph.GraphConfigRepository
@@ -270,6 +271,8 @@ class OverviewDataCacheImpl(
     override val heartRateGraphFlow: StateFlow<HeartRateGraphData> = _heartRateGraphFlow.asStateFlow()
     private val _stepsGraphFlow = MutableStateFlow(StepsGraphData(emptyList()))
     override val stepsGraphFlow: StateFlow<StepsGraphData> = _stepsGraphFlow.asStateFlow()
+    private val _fuseGraphFlow = MutableStateFlow(FuseGraphData())
+    override val fuseGraphFlow: StateFlow<FuseGraphData> = _fuseGraphFlow.asStateFlow()
     private val _treatmentGraphFlow = MutableStateFlow(TreatmentGraphData(emptyList(), emptyList(), emptyList(), emptyList()))
     override val treatmentGraphFlow: StateFlow<TreatmentGraphData> = _treatmentGraphFlow.asStateFlow()
     private val _epsGraphFlow = MutableStateFlow<List<EpsGraphPoint>>(emptyList())
@@ -828,6 +831,10 @@ class OverviewDataCacheImpl(
         _stepsGraphFlow.value = data
     }
 
+    override fun updateFuseGraph(data: FuseGraphData) {
+        _fuseGraphFlow.value = data
+    }
+
     // =========================================================================
     // Category B: Reactive graph builders (treatments, RM, TT, basal)
     // =========================================================================
@@ -1262,6 +1269,7 @@ class OverviewDataCacheImpl(
         _varSensGraphFlow.value = VarSensGraphData(emptyList())
         _heartRateGraphFlow.value = HeartRateGraphData(emptyList())
         _stepsGraphFlow.value = StepsGraphData(emptyList())
+        _fuseGraphFlow.value = FuseGraphData()
         _treatmentGraphFlow.value = TreatmentGraphData(emptyList(), emptyList(), emptyList(), emptyList())
         _epsGraphFlow.value = emptyList()
         _basalGraphFlow.value = BasalGraphData(emptyList(), emptyList(), 0.0)

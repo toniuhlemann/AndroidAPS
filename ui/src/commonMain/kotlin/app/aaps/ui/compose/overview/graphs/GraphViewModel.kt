@@ -25,9 +25,11 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -114,6 +116,27 @@ class GraphViewModel(
     val varSensGraphFlow = cache.varSensGraphFlow
     val heartRateGraphFlow = cache.heartRateGraphFlow
     val stepsGraphFlow = cache.stepsGraphFlow
+    val fuseGraphFlow = cache.fuseGraphFlow
+
+    /**
+     * Fork (FUSE): whether the graph menu offers F.DRV and F.GRD - only while FUSE is the active APS and delivers
+     * them. Its own flow, so the graph section does not recompose on every FUSE update. Lazy: built when the graph
+     * section first asks, not in the constructor.
+     */
+    val fuseGraphAvailable: StateFlow<Boolean> by lazy {
+        cache.fuseGraphFlow
+            .map { it.available }
+            .distinctUntilChanged()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), cache.fuseGraphFlow.value.available)
+    }
+
+    /** Fork (FUSE): the meal marker presses for the BG graph, which needs nothing else of FUSE. Lazy, as above. */
+    val fuseMealMarkers: StateFlow<List<Long>> by lazy {
+        cache.fuseGraphFlow
+            .map { it.mealMarkers }
+            .distinctUntilChanged()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), cache.fuseGraphFlow.value.mealMarkers)
+    }
     val treatmentGraphFlow = cache.treatmentGraphFlow
     val epsGraphFlow = cache.epsGraphFlow
     val basalGraphFlow = cache.basalGraphFlow

@@ -100,6 +100,10 @@ interface OverviewDataCache {
     val stepsGraphFlow: StateFlow<StepsGraphData>
     fun updateStepsGraph(data: StepsGraphData)
 
+    // Fork (FUSE): F.DRV and F.GRD with the meal markers, from the process ring of the FUSE plugin
+    val fuseGraphFlow: StateFlow<FuseGraphData>
+    fun updateFuseGraph(data: FuseGraphData)
+
     // =========================================================================
     // Treatment graph flows (main graph overlays)
     // Populated reactively by observing database changes — no worker needed.

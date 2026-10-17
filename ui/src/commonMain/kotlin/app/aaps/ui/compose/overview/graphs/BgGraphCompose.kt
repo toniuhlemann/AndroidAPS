@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -27,6 +28,7 @@ import app.aaps.core.interfaces.overview.graph.SeriesType
 import app.aaps.core.interfaces.overview.graph.TargetLineData
 import app.aaps.core.ui.compose.AapsTheme
 import app.aaps.core.ui.compose.LocalDateUtil
+import app.aaps.core.ui.compose.icons.IcPluginFood
 import app.aaps.core.ui.compose.icons.IcProfile
 import com.patrykandpatrick.vico.compose.cartesian.CartesianChartHost
 import com.patrykandpatrick.vico.compose.cartesian.VicoScrollState
@@ -602,7 +604,17 @@ fun BgGraphCompose(
     val defaultMarkerController = CartesianMarkerController.rememberShowOnPress()
     val inspectLine = rememberInspectLine(inspect)
 
-    val decorations = remember(inRangeBox, nowLine, inspectLine) { listOfNotNull(inRangeBox, nowLine, inspectLine) }
+    // Fork (FUSE): the meal marker presses as vertical lines with a plate at the top - the same moment as in F.DRV and
+    // F.GRD. Without FUSE the list is empty.
+    val fuseMealMarkers by viewModel.fuseMealMarkers.collectAsStateWithLifecycle()
+    val mealIcon = rememberVectorPainter(IcPluginFood)
+    val density = LocalDensity.current.density
+    val fuseMarkerLines = remember(fuseMealMarkers, minTimestamp, nowLineColor, mealIcon, density) {
+        fuseMealMarkers.map { timestampToX(it, minTimestamp) }.takeIf { it.isNotEmpty() }
+            ?.let { FuseMealMarkerLines(it, nowLineColor, strokeWidthPx = 2f * density, icon = mealIcon, iconSizePx = 16f * density) }
+    }
+
+    val decorations = remember(inRangeBox, nowLine, inspectLine, fuseMarkerLines) { listOfNotNull(inRangeBox, nowLine, inspectLine, fuseMarkerLines) }
 
     // =========================================================================
     // Range providers — hoisted out of rememberCartesianChart so keys are re-evaluated on recomposition

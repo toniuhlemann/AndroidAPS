@@ -16,6 +16,7 @@ import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.nsclient.ProcessedDeviceStatusData
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.overview.graph.AbsIobGraphData
 import app.aaps.core.interfaces.overview.graph.ActivityGraphData
 import app.aaps.core.interfaces.overview.graph.BgDataPoint
@@ -872,6 +873,9 @@ class PrepareGraphDataRunner(
         data.cache.updateRatioGraph(RatioGraphData(ratio = ratioListCompose))
         data.cache.updateDevSlopeGraph(DevSlopeGraphData(dsMax = dsMaxListCompose, dsMin = dsMinListCompose))
         data.cache.updateVarSensGraph(VarSensGraphData(varSens = varSensListCompose))
+        // Fork (FUSE): F.DRV, F.GRD and the meal markers, while FUSE is the active APS. Not injected: the binding
+        // exists only in the FUSE builds.
+        data.cache.updateFuseGraph(FuseGraphDataBuilder.build(activePlugin.activeAPS as? FuseOverviewSource, fromTime, endTime))
 
         data.signals.emitProgress(CalculationWorkflow.ProgressData.PREPARE_IOB_AUTOSENS_DATA, 100)
     }

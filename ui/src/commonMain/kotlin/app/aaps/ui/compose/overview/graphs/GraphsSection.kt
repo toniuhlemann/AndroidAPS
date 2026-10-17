@@ -200,6 +200,13 @@ private val CONFIGURABLE_SERIES = SeriesType.entries.filter {
     it != SeriesType.IOB && it != SeriesType.PREDICTIONS
 }
 
+/** Fork (FUSE): the two FUSE series, offered only while FUSE delivers them (see `GraphViewModel.fuseGraphAvailable`). */
+private val FUSE_SERIES = setOf(SeriesType.FUSE_DRIVE, SeriesType.FUSE_GUARD)
+
+/** The series the graph menu offers: without FUSE as the active APS the two FUSE series are left out. */
+internal fun configurableSeries(fuseAvailable: Boolean): List<SeriesType> =
+    if (fuseAvailable) CONFIGURABLE_SERIES else CONFIGURABLE_SERIES.filter { it !in FUSE_SERIES }
+
 @OptIn(FlowPreview::class)
 @Composable
 fun GraphsSection(
@@ -219,6 +226,8 @@ fun GraphsSection(
     val savedGraphConfig by graphViewModel.graphConfigFlow.collectAsStateWithLifecycle()
     // In simple mode: fixed layout (BG, IOB+BAS, COB — no overlays, no editing)
     val graphConfig = if (isSimpleMode) SIMPLE_MODE_CONFIG else savedGraphConfig
+    // Fork (FUSE): F.DRV and F.GRD are offered only while FUSE delivers them
+    val fuseGraphAvailable by graphViewModel.fuseGraphAvailable.collectAsStateWithLifecycle()
 
     // Zoom.x(...) allocates a fresh (non-equal, unmemoized) lambda instance on every call.
     // rememberVicoZoomState's underlying rememberSaveable is keyed on initialZoom/minZoom/maxZoom
@@ -703,7 +712,8 @@ fun GraphsSection(
             GraphSeriesBottomSheet(
                 title = stringResource(CoreUiStrings.graph_number, index + 2),
                 selectedSeries = editing.series,
-                availableSeries = CONFIGURABLE_SERIES,
+                // A graph that already holds a FUSE series keeps its chips, so the series can still be deselected.
+                availableSeries = configurableSeries(fuseGraphAvailable || editing.series.any { it in FUSE_SERIES }),
                 height = editing.height,
                 onHeightChange = { h ->
                     // The current config, not the captured one: after "Remove graph" the captured
@@ -755,7 +765,7 @@ fun GraphsSection(
                 GraphSeriesBottomSheet(
                     title = stringResource(CoreUiStrings.graph_new),
                     selectedSeries = newGraphSeries,
-                    availableSeries = CONFIGURABLE_SERIES,
+                    availableSeries = configurableSeries(fuseGraphAvailable),
                     height = newGraphHeight,
                     onHeightChange = { newGraphHeight = it },
                     onToggle = { type ->
@@ -837,6 +847,8 @@ private fun seriesShortNameId(type: SeriesType): TextRef = when (type) {
     SeriesType.HEART_RATE      -> CoreUiStrings.heartRate_shortname
     SeriesType.STEPS           -> CoreUiStrings.steps_shortname
     SeriesType.ACTIVITY        -> CoreUiStrings.activity_shortname
+    SeriesType.FUSE_DRIVE      -> CoreUiStrings.fuse_drive_shortname
+    SeriesType.FUSE_GUARD      -> CoreUiStrings.fuse_guard_shortname
     SeriesType.PREDICTIONS     -> CoreUiStrings.predictions_shortname
 }
 
