@@ -43,6 +43,12 @@ data class APSResult(
         UNKNOWN,
         AMA,
         SMB,
-        AUTO_ISF
+        AUTO_ISF,
+        /**
+         * Fork: FUSE. The column stores the NAME as text, so this value needs no migration. It is
+         * still needed: a fork database holds rows with "FUSE", the converter reads them with valueOf,
+         * and the rolling 24 h reads at plugin start (and the graph) would crash without it.
+         */
+        FUSE
     }
 }

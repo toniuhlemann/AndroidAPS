@@ -100,6 +100,21 @@ internal class APSResultExtensionTest {
         assertEquals(19.7, (read.rawData() as RT).variable_sens)
     }
 
+    // Fork: a fork database holds FUSE rows. They must read back, or the 24 h reads at plugin start crash.
+    @Test
+    fun forkFuseRowReadsBackWithItsResultAndNoOrefParts() {
+        val stored = FakeApsResult(APSResult.Algorithm.FUSE, GlucoseStatusSMB(glucose = 146.0)).toDb()
+
+        assertEquals(DbAPSResult.Algorithm.valueOf("FUSE"), stored.algorithm)
+        assertNull(stored.glucoseStatusJson)
+        assertNull(stored.iobDataJson)
+
+        val read = stored.fromDb { FakeApsResult() }
+
+        assertEquals(APSResult.Algorithm.FUSE, read.algorithm)
+        assertEquals(19.7, (read.rawData() as RT).variable_sens)
+    }
+
     /** Only the members `fromDb` and `toDb` use do something. The rest is never called by them. */
     private class FakeApsResult(
         override var algorithm: APSResult.Algorithm = APSResult.Algorithm.UNKNOWN,

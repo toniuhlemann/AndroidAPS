@@ -48,6 +48,14 @@ fun app.aaps.database.entities.APSResult.fromDb(apsResultProvider: () -> APSResu
                 result.autosensResult = this.autosensDataJson?.let { Json.decodeFromString(it) }
             }
 
+        // Fork: FUSE does not fill the oref parts (glucose status, iob array, profile, meal, autosens) -
+        // it does not calculate with them. The RT is stored so the loop history and the overview work.
+        app.aaps.database.entities.APSResult.Algorithm.FUSE     ->
+            apsResultProvider().with(rtJson.decodeFromString(this.resultJson)).also { result ->
+                result.date = this.timestamp
+                result.currentTemp = this.currentTempJson?.let { Json.decodeFromString(it) }
+            }
+
         else                                                    -> error("Unsupported")
     }
 
@@ -96,6 +104,21 @@ fun APSResult.toDb(): app.aaps.database.entities.APSResult =
                 resultJson = rtJson.encodeToString(RT.serializer(), this.rawData() as RT)
             )
 
+        // Fork: FUSE stores only the RT and the current temp; null for the oref parts on purpose -
+        // an empty shell would claim data that does not exist.
+        APSResult.Algorithm.FUSE     ->
+            app.aaps.database.entities.APSResult(
+                timestamp = this.date,
+                algorithm = this.algorithm.toDb(),
+                glucoseStatusJson = null,
+                currentTempJson = this.currentTemp?.let { Json.encodeToString(CurrentTemp.serializer(), it) },
+                iobDataJson = null,
+                profileJson = null,
+                mealDataJson = null,
+                autosensDataJson = null,
+                resultJson = rtJson.encodeToString(RT.serializer(), this.rawData() as RT)
+            )
+
         else                         -> error("Unsupported")
     }
 
@@ -104,6 +127,7 @@ fun app.aaps.database.entities.APSResult.Algorithm.fromDb(): APSResult.Algorithm
         app.aaps.database.entities.APSResult.Algorithm.AMA      -> APSResult.Algorithm.AMA
         app.aaps.database.entities.APSResult.Algorithm.SMB      -> APSResult.Algorithm.SMB
         app.aaps.database.entities.APSResult.Algorithm.AUTO_ISF -> APSResult.Algorithm.AUTO_ISF
+        app.aaps.database.entities.APSResult.Algorithm.FUSE     -> APSResult.Algorithm.FUSE
         else                                                    -> error("Unsupported")
     }
 
@@ -112,5 +136,6 @@ fun APSResult.Algorithm.toDb(): app.aaps.database.entities.APSResult.Algorithm =
         APSResult.Algorithm.AMA      -> app.aaps.database.entities.APSResult.Algorithm.AMA
         APSResult.Algorithm.SMB      -> app.aaps.database.entities.APSResult.Algorithm.SMB
         APSResult.Algorithm.AUTO_ISF -> app.aaps.database.entities.APSResult.Algorithm.AUTO_ISF
+        APSResult.Algorithm.FUSE     -> app.aaps.database.entities.APSResult.Algorithm.FUSE
         else                         -> error("Unsupported")
     }

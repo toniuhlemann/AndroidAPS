@@ -60,6 +60,8 @@ interface APSResult {
         UNKNOWN,
         AMA,
         SMB,
-        AUTO_ISF
+        AUTO_ISF,
+        // Fork: the FUSE algorithm. Stored by NAME (no schema change); a fork database already holds it.
+        FUSE
     }
 }
