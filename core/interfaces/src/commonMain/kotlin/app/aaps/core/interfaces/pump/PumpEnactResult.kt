@@ -28,6 +28,14 @@ interface PumpEnactResult {
      */
     var cancelled: Boolean
 
+    /**
+     * Fork (FUSE KI-171): true ONLY when the request provably never reached the pump driver - the loop or
+     * the queue refused it before `deliverTreatment`, or the queue dropped it while it was still waiting.
+     * Never set after a pump call and never for a command that had started to run: there the pump may
+     * have delivered. Default false = nothing proven.
+     */
+    var notSentToPump: Boolean
+
     fun success(success: Boolean): PumpEnactResult
     fun cancelled(cancelled: Boolean): PumpEnactResult
     fun enacted(enacted: Boolean): PumpEnactResult
@@ -46,4 +54,5 @@ interface PumpEnactResult {
     fun isTempCancel(isTempCancel: Boolean): PumpEnactResult
     fun bolusDelivered(bolusDelivered: Double): PumpEnactResult
     fun queued(queued: Boolean): PumpEnactResult
+    fun notSentToPump(notSentToPump: Boolean): PumpEnactResult
 }

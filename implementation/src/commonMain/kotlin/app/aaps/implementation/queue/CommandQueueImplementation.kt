@@ -638,25 +638,28 @@ class CommandQueueImplementation(
         val hasCarbs = originalCarbs != 0.0
         if (hasCarbs) detailedBolusInfo.carbs = 0.0
 
-        // Running-mode gate: reject bolus if current mode forbids new delivery.
-        rejectedByRunningModeGate(PumpCommandGate.CommandKind.BOLUS)?.let { return it }
-
         val type = if (detailedBolusInfo.bolusType == BS.Type.SMB) CommandType.SMB_BOLUS else CommandType.BOLUS
+
+        // Running-mode gate: reject bolus if current mode forbids new delivery.
+        // Fork (FUSE KI-171): every SMB rejection before the command is queued provably never reached the
+        // pump, so it is marked notSentToPump. Nothing after `add(command)` is marked here.
+        rejectedByRunningModeGate(PumpCommandGate.CommandKind.BOLUS)?.let { return it.also { r -> if (type == CommandType.SMB_BOLUS) r.notSentToPump(true) } }
+
         // Suspend DB read must stay outside enqueueLock; CommandSMBBolus.execute() re-checks freshness at execution time.
         val lastBolusTime = if (type == CommandType.SMB_BOLUS) persistenceLayer.getNewestBolus()?.timestamp ?: 0L else 0L
         val command = enqueueLock.withLock {
             if (type == CommandType.SMB_BOLUS) {
                 if (bolusInQueue()) {
                     aapsLogger.debug(LTag.PUMPQUEUE, "Rejecting SMB since a bolus is queue/running")
-                    return pumpEnactResultProvider().enacted(false).success(false)
+                    return pumpEnactResultProvider().enacted(false).success(false).notSentToPump(true)
                 }
                 if (detailedBolusInfo.lastKnownBolusTime < lastBolusTime) {
                     aapsLogger.debug(LTag.PUMPQUEUE, "Rejecting bolus, another bolus was issued since request time")
-                    return pumpEnactResultProvider().enacted(false).success(false)
+                    return pumpEnactResultProvider().enacted(false).success(false).notSentToPump(true)
                 }
                 removeAll(CommandType.SMB_BOLUS, success = false, cancelled = true)
             }
-            if (isRunning(type)) return executingNowError()
+            if (isRunning(type)) return executingNowError().also { if (type == CommandType.SMB_BOLUS) it.notSentToPump(true) }
             if (type == CommandType.BOLUS) {
                 // A waiting SMB was calculated without this bolus, and this bolus without the SMB, so giving
                 // both would treat the same BG twice. Drop the SMB: after a failed SMB the loop runs again

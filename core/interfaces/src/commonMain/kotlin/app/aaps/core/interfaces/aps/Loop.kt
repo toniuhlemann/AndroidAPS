@@ -4,9 +4,12 @@ import app.aaps.core.data.model.RM
 import app.aaps.core.data.ue.Action
 import app.aaps.core.data.ue.Sources
 import app.aaps.core.data.ue.ValueWithUnit
+import app.aaps.core.interfaces.concurrent.AapsLock
+import app.aaps.core.interfaces.concurrent.withLock
 import app.aaps.core.interfaces.constraints.Constraint
 import app.aaps.core.interfaces.profile.Profile
 import app.aaps.core.interfaces.pump.PumpEnactResult
+import kotlin.concurrent.Volatile
 import kotlin.time.Clock
 
 interface Loop {
@@ -33,7 +36,42 @@ interface Loop {
         var lastTBRRequest: Long = 0
         var lastSMBRequest: Long = 0
         var lastOpenModeAccept: Long = 0
+
+        /**
+         * Fork (FUSE KI-171): SMB requests that were rejected WITHOUT reaching the pump driver
+         * (PumpEnactResult.notSentToPump). Such a rejection can arrive minutes after the request (the queue
+         * waits for Bluetooth), when this LastRun already describes a newer run - so each entry carries the
+         * identity of its own request instead of relying on the current one.
+         *
+         * Bounded (newest last) and replaced as a whole: written from the queue, read by the APS plugin in
+         * its next run.
+         */
+        @Volatile var smbNotSent: List<SmbNotSent> = emptyList()
+        private val smbNotSentLock = AapsLock()
+
+        fun recordSmbNotSent(entry: SmbNotSent) {
+            smbNotSentLock.withLock { smbNotSent = (smbNotSent + entry).takeLast(SMB_NOT_SENT_MAX) }
+        }
+
+        companion object {
+
+            const val SMB_NOT_SENT_MAX = 32
+        }
     }
+
+    /**
+     * Fork (FUSE KI-171): one SMB request that provably never reached the pump.
+     *
+     * @param request identity key - `APSResult.rawData()` of the rejected request, compared by REFERENCE by
+     *   the APS plugin that produced it.
+     * @param requestedU the amount AAPS tried to deliver (after constraints), in insulin units.
+     */
+    class SmbNotSent(
+        val request: Any?,
+        val requestedU: Double,
+        val atMs: Long,
+        val reason: String,
+    )
 
     /**
      * Last APS run result

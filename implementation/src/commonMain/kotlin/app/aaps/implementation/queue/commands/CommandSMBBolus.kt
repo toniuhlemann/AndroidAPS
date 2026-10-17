@@ -17,6 +17,7 @@ import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.ui.CoreUiStrings
+import kotlin.concurrent.Volatile
 import kotlin.time.Clock
 
 class CommandSMBBolus(
@@ -34,18 +35,30 @@ class CommandSMBBolus(
 
     override val commandType: Command.CommandType = Command.CommandType.SMB_BOLUS
 
+    /**
+     * Fork (FUSE KI-171): set as the first thing [execute] does. Before that the command was only waiting
+     * in the queue, so a [cancel] then provably never reached the pump. After it the executor may still
+     * cancel the command (its driver threw) - then the outcome is unknown and nothing is marked.
+     */
+    @Volatile private var started = false
+
     override suspend fun execute(): PumpEnactResult {
+        started = true
         val r: PumpEnactResult
         val lastBolusTime = persistenceLayer.getNewestBolus()?.timestamp ?: 0L
         aapsLogger.debug(LTag.PUMPQUEUE, "Last bolus: $lastBolusTime ${dateUtil.dateAndTimeAndSecondsString(lastBolusTime)}")
         // Fork: shared tolerance, see Constants.SMB_INTERVAL_TOLERANCE_SECONDS
         if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() - T.secs(Constants.SMB_INTERVAL_TOLERANCE_SECONDS).msecs() > dateUtil.now()) {
             aapsLogger.debug(LTag.APS, "SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
+            // Fork (FUSE KI-171): this branch and the "too old" one return before deliverTreatment, so the pump
+            // was provably never called. The pump branch is never marked, whatever its result.
             r = pumpEnactResultProvider().enacted(false).success(false).comment("SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
+                .notSentToPump(true)
         } else if (detailedBolusInfo.deliverAtTheLatest != 0L && detailedBolusInfo.deliverAtTheLatest + T.mins(1).msecs() > Clock.System.now().toEpochMilliseconds()) {
             r = activePlugin.activePump.deliverTreatment(detailedBolusInfo)
         } else {
             r = pumpEnactResultProvider().enacted(false).success(false).comment("SMB request too old")
+                .notSentToPump(true)
             aapsLogger.debug(LTag.PUMPQUEUE, "SMB bolus canceled. deliverAt: " + dateUtil.dateAndTimeString(detailedBolusInfo.deliverAtTheLatest))
         }
         aapsLogger.debug(LTag.PUMPQUEUE, "Result success: ${r.success} enacted: ${r.enacted}")
@@ -59,7 +72,11 @@ class CommandSMBBolus(
     override fun log(): String = "SMB BOLUS ${rh.gs(InterfacesStrings.format_insulin_units, detailedBolusInfo.insulin)}"
 
     override fun cancel(comment: TextRef, success: Boolean, cancelled: Boolean) {
-        super.cancel(comment, success, cancelled)
+        // Fork (FUSE KI-171): the queue drops only commands that are still waiting (removeAll, drain), and
+        // those never reached the pump. A command that has started is cancelled only by the executor after its
+        // driver threw - the pump may have delivered, so that one is not marked.
+        if (started) super.cancel(comment, success, cancelled)
+        else completion.complete(pumpEnactResultProvider().success(success).cancelled(cancelled).comment(comment).notSentToPump(true))
         bolusProgressData.clear(bolusGeneration)
     }
 }

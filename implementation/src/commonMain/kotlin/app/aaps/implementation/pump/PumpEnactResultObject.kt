@@ -28,9 +28,10 @@ class PumpEnactResultObject(private val rh: TextResolver) : PumpEnactResult {
     override var bolusDelivered = 0.0 // real value of delivered insulin
     override var queued = false
     override var cancelled = false // dropped on purpose, not tried and failed - see PumpEnactResult
+    override var notSentToPump = false // fork (FUSE KI-171): provably never reached the pump - see PumpEnactResult
 
     override fun toString() =
-        "PumpEnactResultObject(success=$success,enacted=$enacted,comment=$comment,duration=$duration,absolute=$absolute,percent=$percent,isPercent=$isPercent,isTempCancel=$isTempCancel,bolusDelivered=$bolusDelivered,queued=$queued)"
+        "PumpEnactResultObject(success=$success,enacted=$enacted,comment=$comment,duration=$duration,absolute=$absolute,percent=$percent,isPercent=$isPercent,isTempCancel=$isTempCancel,bolusDelivered=$bolusDelivered,queued=$queued,notSentToPump=$notSentToPump)"
 
     override fun success(success: Boolean): PumpEnactResultObject = this.also { this.success = success }
     override fun cancelled(cancelled: Boolean): PumpEnactResultObject = this.also { it.cancelled = cancelled }
@@ -44,4 +45,5 @@ class PumpEnactResultObject(private val rh: TextResolver) : PumpEnactResult {
     override fun isTempCancel(isTempCancel: Boolean): PumpEnactResultObject = this.also { it.isTempCancel = isTempCancel }
     override fun bolusDelivered(bolusDelivered: Double): PumpEnactResultObject = this.also { it.bolusDelivered = bolusDelivered }
     override fun queued(queued: Boolean): PumpEnactResultObject = this.also { it.queued = queued }
+    override fun notSentToPump(notSentToPump: Boolean): PumpEnactResultObject = this.also { it.notSentToPump = notSentToPump }
 }

@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import org.mockito.Mock
 import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.doThrow
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
@@ -164,6 +165,79 @@ class CommandSMBBolusTest : TestBaseWithProfile() {
         val received = command.completion.await()
         assertThat(received.success).isFalse()
         verify(bolusProgressData).clear(BOLUS_GENERATION)
+    }
+
+    // ---- Fork (FUSE KI-171): notSentToPump only where the pump was provably never called ----
+
+    @Test
+    fun `fork - the interval rejection is marked as never sent`() = runTest {
+        whenever(preferences.get(IntKey.ApsMaxSmbFrequency)).thenReturn(3)
+        val recentBolus = BS(timestamp = dateUtil.now() - T.mins(1).msecs(), type = BS.Type.NORMAL, amount = 0.0, iCfg = someICfg)
+        whenever(persistenceLayer.getNewestBolus()).thenReturn(recentBolus)
+
+        val result = newCommand(smbInfo()).execute()
+
+        assertThat(result.notSentToPump).isTrue()
+    }
+
+    @Test
+    fun `fork - the too old rejection is marked as never sent`() = runTest {
+        whenever(preferences.get(IntKey.ApsMaxSmbFrequency)).thenReturn(3)
+        whenever(persistenceLayer.getNewestBolus()).thenReturn(null)
+
+        val result = newCommand(smbInfo(deliverAtTheLatest = System.currentTimeMillis() - T.mins(5).msecs())).execute()
+
+        assertThat(result.notSentToPump).isTrue()
+    }
+
+    @Test
+    fun `fork - a pump result is never marked, also a failed one`() = runTest {
+        whenever(preferences.get(IntKey.ApsMaxSmbFrequency)).thenReturn(3)
+        whenever(persistenceLayer.getNewestBolus()).thenReturn(null)
+        val info = smbInfo()
+        val pumpResult = PumpEnactResultObject(rh).success(false).enacted(false)
+        val pump = mock<PumpWithConcentration> {
+            on { deliverTreatment(info) } doReturn pumpResult
+        }
+        whenever(activePlugin.activePump).thenReturn(pump)
+
+        val result = newCommand(info).execute()
+
+        assertThat(result.notSentToPump).isFalse()
+    }
+
+    @Test
+    fun `fork - a waiting SMB the queue drops was never sent`() = runTest {
+        whenever(rh.gs(app.aaps.core.ui.R.string.command_replaced)).thenReturn("replaced")
+        val command = newCommand(smbInfo())
+
+        command.cancel(app.aaps.core.ui.R.string.command_replaced, success = false)
+
+        val received = command.completion.await()
+        assertThat(received.success).isFalse()
+        assertThat(received.notSentToPump).isTrue()
+    }
+
+    @Test
+    fun `fork - a started SMB the executor cancels after a driver throw is not marked`() = runTest {
+        whenever(rh.gs(app.aaps.core.ui.R.string.error)).thenReturn("error")
+        whenever(preferences.get(IntKey.ApsMaxSmbFrequency)).thenReturn(3)
+        whenever(persistenceLayer.getNewestBolus()).thenReturn(null)
+        val info = smbInfo()
+        val pump = mock<PumpWithConcentration> {
+            on { deliverTreatment(info) } doThrow IllegalStateException("driver")
+        }
+        whenever(activePlugin.activePump).thenReturn(pump)
+        val command = newCommand(info)
+
+        // What CommandExecutor does: the driver throws, the executor cancels the running command.
+        assertThat(runCatching { command.executeAndComplete() }.isFailure).isTrue()
+        command.cancel(app.aaps.core.ui.R.string.error, success = false)
+
+        val received = command.completion.await()
+        assertThat(received.success).isFalse()
+        // The pump may have delivered before the driver threw: nothing is proven.
+        assertThat(received.notSentToPump).isFalse()
     }
 
     @Test

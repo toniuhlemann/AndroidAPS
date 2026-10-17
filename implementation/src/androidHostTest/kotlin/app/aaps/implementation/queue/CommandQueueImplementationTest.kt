@@ -5,6 +5,7 @@ import android.os.PowerManager
 import androidx.compose.ui.text.font.FontWeight
 import app.aaps.core.data.model.BS
 import app.aaps.core.data.model.EPS
+import app.aaps.core.data.model.RM
 import app.aaps.core.data.model.data.Block
 import app.aaps.core.interfaces.alerts.LocalAlertUtils
 import app.aaps.core.interfaces.configuration.Config
@@ -928,6 +929,105 @@ class CommandQueueImplementationTest : TestBaseWithProfile() {
 
         // then
         assertThat(commandQueue.size()).isEqualTo(0)
+    }
+
+    // ---- Fork (FUSE KI-171): an SMB that provably never reached the pump says so ----
+
+    private fun freshSmb() = DetailedBolusInfo().apply {
+        bolusType = BS.Type.SMB
+        lastKnownBolusTime = System.currentTimeMillis()
+    }
+
+    @Test
+    fun `fork - an SMB refused for an outdated last known bolus is marked as never sent`() = runTest {
+        val smb = DetailedBolusInfo().apply {
+            bolusType = BS.Type.SMB
+            lastKnownBolusTime = 0
+        }
+
+        val result = commandQueue.bolus(smb)
+
+        assertThat(result.success).isFalse()
+        assertThat(result.notSentToPump).isTrue()
+    }
+
+    @Test
+    fun `fork - an SMB refused because a bolus is queued is marked as never sent`() = runTest {
+        backgroundScope.launch { commandQueue.bolus(DetailedBolusInfo()) }
+        yield()
+
+        val result = commandQueue.bolus(freshSmb())
+
+        assertThat(result.success).isFalse()
+        assertThat(result.notSentToPump).isTrue()
+        assertThat(commandQueue.size()).isEqualTo(1)
+    }
+
+    @Test
+    fun `fork - an SMB refused by the running-mode gate is marked as never sent`() = runTest {
+        stubActiveMode(RM.Mode.DISCONNECTED_PUMP)
+
+        val result = commandQueue.bolus(freshSmb())
+
+        assertThat(result.success).isFalse()
+        assertThat(result.notSentToPump).isTrue()
+    }
+
+    @Test
+    fun `fork - a manual bolus refused by the running-mode gate carries no mark`() = runTest {
+        stubActiveMode(RM.Mode.DISCONNECTED_PUMP)
+
+        val result = commandQueue.bolus(DetailedBolusInfo().also { it.insulin = 1.0 })
+
+        assertThat(result.success).isFalse()
+        assertThat(result.notSentToPump).isFalse()
+    }
+
+    @Test
+    fun `fork - a waiting SMB dropped by clear was never sent`() = runTest {
+        var smbResult: PumpEnactResult? = null
+        backgroundScope.launch { smbResult = commandQueue.bolus(freshSmb()) }
+        yield()
+        assertThat(commandQueue.size()).isEqualTo(1)
+
+        commandQueue.clear()
+        yield()
+
+        assertThat(smbResult).isNotNull()
+        assertThat(smbResult!!.success).isFalse()
+        assertThat(smbResult!!.notSentToPump).isTrue()
+    }
+
+    @Test
+    fun `fork - a waiting SMB dropped for a manual bolus was never sent`() = runTest {
+        var smbResult: PumpEnactResult? = null
+        backgroundScope.launch { smbResult = commandQueue.bolus(freshSmb()) }
+        yield()
+
+        backgroundScope.launch { commandQueue.bolus(DetailedBolusInfo().apply { insulin = 1.0 }) }
+        yield() // the manual bolus drops the SMB
+        yield() // the SMB caller resumes with its result
+
+        assertThat(smbResult).isNotNull()
+        assertThat(smbResult!!.notSentToPump).isTrue()
+    }
+
+    /**
+     * The mark in `CommandSMBBolus.cancel` rests on this: the command that is already running is never
+     * cancelled by clear() - its outcome is unknown, so it gets no invented result.
+     */
+    @Test
+    fun `fork - clear leaves the running SMB alone`() = runTest {
+        var smbResult: PumpEnactResult? = null
+        backgroundScope.launch { smbResult = commandQueue.bolus(freshSmb()) }
+        yield()
+        commandQueue.pickup()
+        assertThat(commandQueue.performing()?.commandType).isEqualTo(Command.CommandType.SMB_BOLUS)
+
+        commandQueue.clear()
+        yield()
+
+        assertThat(smbResult).isNull()
     }
 
     @Test

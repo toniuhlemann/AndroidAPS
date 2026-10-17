@@ -746,12 +746,36 @@ class LoopPlugin(
                                         lastRun.lastSMBEnact = dateUtil.now()
                                         scheduleBuildAndStoreDeviceStatus("applySMBRequest")
                                     } else {
+                                        // Fork (FUSE KI-171): keep a PROVEN non-delivery with the identity of this
+                                        // request - it may arrive after newer runs replaced lastRun. Nothing else is
+                                        // recorded: a failure after a pump call may still have delivered.
+                                        if (smbResult.notSentToPump)
+                                            lastRun.recordSmbNotSent(
+                                                Loop.SmbNotSent(
+                                                    request = resultAfterConstraints.rawData(),
+                                                    requestedU = resultAfterConstraints.smb,
+                                                    atMs = dateUtil.now(),
+                                                    reason = smbResult.comment,
+                                                )
+                                            )
                                         scheduleSmbFallback(allowNotification)
                                     }
                                 } else {
                                     aapsLogger.debug(LTag.APS, "No SMB requested")
                                     scheduleBuildAndStoreDeviceStatus("applyTBRRequest")
                                 }
+                            } else if (resultAfterConstraints.isBolusRequested) {
+                                // Fork (FUSE KI-171): with a failed TBR the SMB of this run is never applied
+                                // (applySMBRequest is not called at all), so the requested SMB provably never
+                                // reached the pump.
+                                lastRun.recordSmbNotSent(
+                                    Loop.SmbNotSent(
+                                        request = resultAfterConstraints.rawData(),
+                                        requestedU = resultAfterConstraints.smb,
+                                        atMs = dateUtil.now(),
+                                        reason = "SMB not applied, TBR failed: " + tbrResult.comment,
+                                    )
+                                )
                             }
                         }
                         rxBus.send(EventLoopUpdateGui())
@@ -947,15 +971,17 @@ class LoopPlugin(
         val lastBolusTime = persistenceLayer.getNewestBolus()?.timestamp ?: 0L
         if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() - T.secs(Constants.SMB_INTERVAL_TOLERANCE_SECONDS).msecs() > dateUtil.now()) {
             aapsLogger.debug(LTag.APS, "SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
-            return pumpEnactResultProvider().comment(ApsStrings.smb_frequency_exceeded).enacted(false).success(false)
+            // Fork (FUSE KI-171): the three gates here return before commandQueue.bolus, so the pump is
+            // provably not called for this request.
+            return pumpEnactResultProvider().comment(ApsStrings.smb_frequency_exceeded).enacted(false).success(false).notSentToPump(true)
         }
         if (!pump.isInitialized()) {
             aapsLogger.debug(LTag.APS, "applySMBRequest: " + rh.gs(ApsStrings.pump_not_initialized))
-            return pumpEnactResultProvider().comment(ApsStrings.pump_not_initialized).enacted(false).success(false)
+            return pumpEnactResultProvider().comment(ApsStrings.pump_not_initialized).enacted(false).success(false).notSentToPump(true)
         }
         if (runningMode().pausesLoopExecution()) {
             aapsLogger.debug(LTag.APS, "applySMBRequest: " + rh.gs(InterfacesStrings.pumpsuspended))
-            return pumpEnactResultProvider().comment(InterfacesStrings.pumpsuspended).enacted(false).success(false)
+            return pumpEnactResultProvider().comment(InterfacesStrings.pumpsuspended).enacted(false).success(false).notSentToPump(true)
         }
         aapsLogger.debug(LTag.APS, "applySMBRequest: $request")
 
