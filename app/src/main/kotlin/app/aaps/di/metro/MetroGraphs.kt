@@ -60,6 +60,7 @@ import app.aaps.implementation.plugin.PluginStore
 import app.aaps.implementation.profile.ProfileSwitchScheduler
 import app.aaps.implementation.resources.ResourceHelperImpl
 import app.aaps.implementation.utils.fabric.FabricPrivacyImpl
+import app.aaps.plugins.aps.iobaction.LocalCommandChannelHooks
 import app.aaps.plugins.aps.loop.runningMode.RunningModeExpiryScheduler
 import app.aaps.plugins.aps.loop.runningMode.RunningModeReconciler
 import app.aaps.plugins.aps.openAPSAMA.DetermineBasalAMA
@@ -258,6 +259,7 @@ class MetroGraphs(
     val autotune: Autotune get() = root.autotune
     val runningModeReconciler: RunningModeReconciler get() = root.runningModeReconciler
     val iobActionExports: IobActionExports get() = root.iobActionExports
+    val localCommandChannelHooks: LocalCommandChannelHooks get() = root.localCommandChannelHooks
 
     /** The openAPS pieces the instrumented APS tests read. */
     val determineBasalSMB: DetermineBasalSMB get() = root.determineBasalSMB

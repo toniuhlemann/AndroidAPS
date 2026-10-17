@@ -117,4 +117,38 @@
     <string name="libre_special_settings_title">Libre special</string>
     <string name="need_step_count_permission">Application needs body activity permission to access step counts via the AAPS phone</string>
 
+    <!-- Fork: local command channel of the IOB-Action viewer -->
+    <string name="local_command_channel_title">Local command channel (IOB-Action)</string>
+    <string name="local_command_channel_summary">Lets the IOB-Action viewer set its own temp targets and short value leases. Everything is off by default.</string>
+    <string name="lcc_channel_enabled">Channel on</string>
+    <string name="lcc_channel_enabled_summary">Master switch. Off rejects every change; the status stays readable.</string>
+    <string name="lcc_tt">Temp targets</string>
+    <string name="lcc_tt_summary">Allows SET and CANCEL of the viewer\'s own temp targets. Only with the channel on.</string>
+    <string name="lcc_iobth">iobTH lease</string>
+    <string name="lcc_iobth_summary">Allows SET and CLEAR of iobTH as a time limited lease. The base setting is never changed.</string>
+    <string name="lcc_autostate">Automation state lease</string>
+    <string name="lcc_autostate_summary">Allows SET and CLEAR of existing automation states, only with their own values, time limited.</string>
+    <string name="lcc_smbratio">SMB ratio lease</string>
+    <string name="lcc_smbratio_summary">Allows SET and CLEAR of the SMB delivery ratio as a time limited lease. The base setting is never changed.</string>
+    <string name="lcc_weights">Weights lease (acce, brake, pp, dura, range)</string>
+    <string name="lcc_weights_summary">Allows SET and CLEAR of autoISF weights as a time limited lease. Only the named weights are changed.</string>
+    <string name="lcc_forced_vo">Validate only</string>
+    <string name="lcc_forced_vo_summary">The channel only checks commands and never changes anything. Works on all capabilities.</string>
+    <string name="lcc_secret">Create and show secret</string>
+    <string name="lcc_secret_summary">Creates a new secret and shows it once. Enter it in the viewer. A new secret replaces the old one.</string>
+    <string name="lcc_secret_dialog_title">Channel secret (shown once)</string>
+    <string name="lcc_copy">Copy</string>
+    <string name="lcc_trust_viewer">Trust viewer app</string>
+    <string name="lcc_trust_viewer_summary">Reads the signing digest of the installed IOB-Action viewer and makes it the only trusted caller.</string>
+    <string name="lcc_trusted_title">Viewer trusted</string>
+    <string name="lcc_trusted_message" comment="%1$s=start of the SHA-256 digest of the viewer signature, e.g. 3f2a9c0b1d4e5f60">Digest: %1$s…\nRun this again when the viewer is signed with another key.</string>
+    <string name="lcc_viewer_missing_title">Viewer not found</string>
+    <string name="lcc_viewer_missing_message">The IOB-Action viewer is not installed or its signature cannot be read.</string>
+    <string name="lcc_status">Status</string>
+    <string name="lcc_status_summary" comment="%1$s=secret state (present/missing), %2$s=trusted signer state (set/empty), %3$d=count of rejected unknown callers">Secret: %1$s · Trusted signer: %2$s · Unknown callers: %3$d</string>
+    <string name="lcc_status_present">present</string>
+    <string name="lcc_status_missing">MISSING</string>
+    <string name="lcc_status_set">set</string>
+    <string name="lcc_status_empty">EMPTY (deny all)</string>
+
 </resources>

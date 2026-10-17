@@ -17,6 +17,7 @@ import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.LongNonKey
 import app.aaps.core.keys.UnitDoubleKey
+import app.aaps.plugins.aps.iobaction.LocalCommandChannelSettings
 import app.aaps.plugins.aps.iobaction.ValueOverlayReader
 import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.common.truth.Truth.assertThat
@@ -36,6 +37,7 @@ class OpenAPSAutoISFPluginTest : TestBaseWithProfile() {
     @Mock lateinit var profiler: Profiler
     @Mock lateinit var automationStateService: AutomationStateInterface
     @Mock lateinit var effectiveAutoIsfSettings: EffectiveAutoIsfSettingsProvider
+    @Mock lateinit var localCommandChannelSettings: LocalCommandChannelSettings
     @Mock lateinit var iobActionExport: IobActionExportSink
     private lateinit var openAPSAutoISFPlugin: OpenAPSAutoISFPlugin
 
@@ -45,7 +47,7 @@ class OpenAPSAutoISFPluginTest : TestBaseWithProfile() {
             iobCobCalculator, hardLimits, preferences, dateUtil, processedTbrEbData, persistenceLayer, glucoseStatusProvider,
             bgQualityCheck, notificationManager, determineBasalSMB, profiler,
             GlucoseStatusCalculatorAutoIsf(aapsLogger, iobCobCalculator, dateUtil, deltaCalculator, preferences), { apsResultProvider() }, ch, automationStateService,
-            effectiveAutoIsfSettings, iobActionExport
+            effectiveAutoIsfSettings, iobActionExport, localCommandChannelSettings
         )
         // Neutral provider (no lease): effective == base, as with the channel off.
         whenever(effectiveAutoIsfSettings.snapshot()).thenReturn(

@@ -220,6 +220,9 @@ class MainApp : Application(), MetroMemberInjector, MetroViewModelFactoryOwner, 
             try {
                 config.updateInitProgress(getString(R.string.migrating_preferences))
                 doMigrations()
+                // Fork (IOB-Action viewer): the preference safety nets of the local command channel.
+                // After the migrations, so the automation states it reads are the migrated ones.
+                metroGraphs.localCommandChannelHooks.start()
 
                 // Re-read the profiles now that doMigrations() has converted the ancient raw
                 // SharedPreferences profile keys into the numbered ones. Without this the upgrade
@@ -407,6 +410,9 @@ class MainApp : Application(), MetroMemberInjector, MetroViewModelFactoryOwner, 
             StepSensorListener.register(this@MainApp)
             // Fork (IOB-Action viewer): core + config export on the same tick, whichever APS runs.
             appScope.launch { metroGraphs.iobActionExports.heartbeat() }
+            // Fork: the AUTOSTATE lease watch of the local command channel, on this handler thread
+            // as in the fork - never inside the APS run (see LocalCommandChannelHooks).
+            metroGraphs.localCommandChannelHooks.heartbeat()
         }
         handler.postDelayed(refreshWidget, 5000)
         setUserStats()

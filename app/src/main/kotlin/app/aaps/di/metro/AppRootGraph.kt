@@ -130,6 +130,7 @@ import app.aaps.implementation.resources.ResourceHelperImpl
 import app.aaps.implementation.scenes.ActiveSceneManager
 import app.aaps.implementation.scenes.SceneExecutor
 import app.aaps.implementation.utils.fabric.FabricPrivacyImpl
+import app.aaps.plugins.aps.iobaction.LocalCommandChannelHooks
 import app.aaps.plugins.aps.loop.runningMode.RunningModeExpiryJob
 import app.aaps.plugins.aps.loop.runningMode.RunningModeReconciler
 import app.aaps.plugins.aps.openAPS.DeltaCalculator
@@ -473,6 +474,9 @@ interface AppRootGraph : MetroViewModelMultibindings {
 
     /** Fork (IOB-Action viewer): the minute heartbeat of the viewer exports. `MainApp` drives it. */
     val iobActionExports: IobActionExports
+
+    /** Fork (IOB-Action viewer): preference safety nets and AUTOSTATE watch of the local command channel. */
+    val localCommandChannelHooks: LocalCommandChannelHooks
 
     /** Running-mode helpers, from commonMain. `MainApp` reads the reconciler. */
     val runningModeReconciler: RunningModeReconciler

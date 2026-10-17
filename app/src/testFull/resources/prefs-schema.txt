@@ -92,6 +92,7 @@ application_protection|IntKey|true
 appwidget_%d|IntComposedKey|true
 aps_incarnation_no|DiaconnIntNonKey|true
 aps_link_to_docs|ApsIntentKey|false
+aps_local_command_channel|ApsIntentKey|false
 autoISF_max|DoubleKey|true
 autoISF_min|DoubleKey|true
 automation_state_service|StringNonKey|true

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Fork, LocalCommandChannel (R5-F4): the service exists ONLY in the full flavor. The protocol
+     binds signed to this package; pumpcontrol and aapsclient get no exported service surface.
+     Exported, because the authorization is checked completely inside the service itself
+     (UID -> packages -> signing digest allowlist, default deny, plus HMAC). All gates are off
+     by default and can only be switched in the AAPS settings. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <service
+            android:name="app.aaps.iobaction.LocalCommandService"
+            android:exported="true"
+            tools:ignore="ExportedService" />
+    </application>
+
+</manifest>

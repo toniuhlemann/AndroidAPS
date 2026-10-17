@@ -66,6 +66,7 @@ import app.aaps.core.keys.StringNonKey
 import app.aaps.core.keys.UnitDoubleKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.TextRef.Companion.withArgs
+import app.aaps.core.keys.interfaces.withCompose
 import app.aaps.core.objects.constraints.ConstraintObject
 import app.aaps.core.objects.extensions.convertedToAbsolute
 import app.aaps.core.objects.extensions.plannedRemainingMinutes
@@ -78,6 +79,7 @@ import app.aaps.core.utils.MidnightUtils
 import app.aaps.plugins.aps.ApsStrings
 import app.aaps.plugins.aps.events.EventOpenAPSUpdateGui
 import app.aaps.plugins.aps.events.EventResetOpenAPSGui
+import app.aaps.plugins.aps.iobaction.LocalCommandChannelSettings
 import app.aaps.plugins.aps.iobaction.ValueOverlayReader
 import app.aaps.plugins.aps.keys.ApsIntentKey
 import app.aaps.plugins.aps.openAPSSMB.PhoneMovementDetector
@@ -128,7 +130,8 @@ open class OpenAPSAutoISFPlugin(
     private val automationStateService: AutomationStateInterface,
     // Fork (IOB-Action viewer): the effective autoISF settings (one snapshot per run) and the exports
     private val effectiveAutoIsfSettings: EffectiveAutoIsfSettingsProvider,
-    private val iobActionExport: IobActionExportSink
+    private val iobActionExport: IobActionExportSink,
+    private val localCommandChannelSettings: LocalCommandChannelSettings
 ) : PluginBaseWithPreferences(
     PluginDescription()
         .mainType(PluginType.APS)
@@ -1596,6 +1599,9 @@ open class OpenAPSAutoISFPlugin(
                     BooleanKey.FslUkfQ1Enabled
                 )
             )
+        ) + listOfNotNull(
+            // Fork: the local command channel of the IOB-Action viewer. Only where it exists (Android).
+            localCommandChannelSettings.screen()?.let { ApsIntentKey.LocalCommandChannel.withCompose(it) }
         ),
         icon = pluginDescription.icon
     )

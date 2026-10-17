@@ -203,6 +203,8 @@ android {
         buildConfig = true
         compose = true
         resValues = true
+        // Fork: the AIDL interface of the IOB-Action local command channel (ILocalCommandChannel)
+        aidl = true
     }
 
 

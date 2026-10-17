@@ -20,5 +20,14 @@ enum class ApsIntentKey(
         title = ApsStrings.openapsama_link_to_preference_json_doc_txt,
         preferenceType = PreferenceType.URL,
         urlRef = ApsStrings.openapsama_link_to_preference_json_doc
+    ),
+
+    // Fork: the settings screen of the IOB-Action local command channel (Android only, see
+    // LocalCommandChannelSettings). An action, so nothing to export.
+    LocalCommandChannel(
+        key = "aps_local_command_channel",
+        title = ApsStrings.local_command_channel_title,
+        summary = ApsStrings.local_command_channel_summary,
+        preferenceType = PreferenceType.ACTIVITY
     )
 }

@@ -156,6 +156,7 @@ class GraphScopeStabilityTest {
             "lastBgData",
             "lastLocationDataContainer",
             "localAlertUtils",
+            "localCommandChannelHooks",
             "localeDependentSetting",
             "loggerUtils",
             "loop",

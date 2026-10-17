@@ -87,6 +87,16 @@ class RawPreferenceStoreScanTest {
         // this build does not register, and it never writes.
         "plugins/aps/src/commonMain/kotlin/app/aaps/plugins/aps/openAPSAutoISF/IobActionConfigExporter.kt" to
             "reads the whole store, filtered and read only, for the viewer config export",
+        // Fork (IOB-Action viewer): the local command channel keeps its switches in its OWN namespace,
+        // on purpose outside Preferences - not in the settings export, and no channel command can set them.
+        "plugins/aps/src/androidMain/kotlin/app/aaps/plugins/aps/iobaction/AutoIsfValueLeaseCoordinator.kt" to
+            "reads the gate switches of the channel's own namespace",
+        "plugins/aps/src/androidMain/kotlin/app/aaps/plugins/aps/iobaction/LocalCommandChannelScreen.kt" to
+            "the settings screen of the channel's own namespace",
+        "plugins/aps/src/androidMain/kotlin/app/aaps/plugins/aps/iobaction/LocalCommandChannelHooks.kt" to
+            "listens for writes (safety net) to the base settings and the channel namespace, never reads or writes a setting",
+        "app/src/main/kotlin/app/aaps/iobaction/LocalCommandService.kt" to
+            "the channel service reads its gates and trusted signers from the channel's own namespace",
 
         // --- Runs before DI exists ---
         "implementation/src/androidMain/kotlin/app/aaps/implementation/utils/fabric/FabricPrivacyImpl.kt" to "reads before the graph is built (DI cycle)",
