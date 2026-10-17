@@ -19,6 +19,16 @@ object Constants {
      */
     const val OLD_BG_MINUTES = 9L
 
+    /**
+     * Fork (IOB-Action patches 0034/0038/0039): how much earlier than the SMB interval the next SMB
+     * may go. The bolus RECORD lands some seconds after the decision (queue, enact start), so with a
+     * BG every minute and an interval of one minute the next cycle always saw the last bolus as a
+     * little too young and waited: the setting delivered every OTHER minute. One value for all five
+     * gates (determine basal SMB and autoISF, the loop constraint gate, applySMBRequest and
+     * CommandSMBBolus), so they can never disagree. Amounts stay capped by the SMB ratio and iobTH.
+     */
+    const val SMB_INTERVAL_TOLERANCE_SECONDS = 15L
+
     // SMS COMMUNICATOR
     const val REMOTE_BOLUS_MIN_DISTANCE = 15 * 60 * 1000L
 

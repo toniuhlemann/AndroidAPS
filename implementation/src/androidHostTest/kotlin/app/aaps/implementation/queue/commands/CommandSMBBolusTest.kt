@@ -52,6 +52,37 @@ class CommandSMBBolusTest : TestBaseWithProfile() {
     }
 
     @Test
+    fun `fork - the interval allows the shared tolerance before its end`() = runTest {
+        whenever(preferences.get(IntKey.ApsMaxSmbFrequency)).thenReturn(1)
+        // 10 s before the end of a one minute interval: inside the tolerance, so the pump is called
+        val recentBolus = BS(timestamp = dateUtil.now() - T.secs(50).msecs(), type = BS.Type.SMB, amount = 0.1, iCfg = someICfg)
+        whenever(persistenceLayer.getNewestBolus()).thenReturn(recentBolus)
+        val info = smbInfo()
+        val pumpResult = PumpEnactResultObject(rh).success(true).enacted(true)
+        val pump = mock<PumpWithConcentration> {
+            on { deliverTreatment(info) } doReturn pumpResult
+        }
+        whenever(activePlugin.activePump).thenReturn(pump)
+
+        val result = newCommand(info).execute()
+
+        assertThat(result).isSameInstanceAs(pumpResult)
+    }
+
+    @Test
+    fun `fork - earlier than the shared tolerance is still rejected`() = runTest {
+        whenever(preferences.get(IntKey.ApsMaxSmbFrequency)).thenReturn(1)
+        // 20 s before the end of a one minute interval: outside the tolerance
+        val recentBolus = BS(timestamp = dateUtil.now() - T.secs(40).msecs(), type = BS.Type.SMB, amount = 0.1, iCfg = someICfg)
+        whenever(persistenceLayer.getNewestBolus()).thenReturn(recentBolus)
+
+        val result = newCommand(smbInfo()).execute()
+
+        assertThat(result.success).isFalse()
+        assertThat(result.enacted).isFalse()
+    }
+
+    @Test
     fun `execute calls pump when deliverAtTheLatest is recent enough`() = runTest {
         whenever(preferences.get(IntKey.ApsMaxSmbFrequency)).thenReturn(3)
         whenever(persistenceLayer.getNewestBolus()).thenReturn(null)

@@ -608,9 +608,9 @@ class LoopPlugin(
             resultAfterConstraints.smbConstraint = ConstraintObject(resultAfterConstraints.smb, aapsLogger)
             resultAfterConstraints.smb = constraintChecker.applyBolusConstraints(resultAfterConstraints.smbConstraint!!).value()
 
-            // safety check for multiple SMBs
+            // safety check for multiple SMBs (fork: shared tolerance, see Constants.SMB_INTERVAL_TOLERANCE_SECONDS)
             val lastBolusTime = persistenceLayer.getNewestBolus()?.timestamp ?: 0L
-            if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() > dateUtil.now()) {
+            if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() - T.secs(Constants.SMB_INTERVAL_TOLERANCE_SECONDS).msecs() > dateUtil.now()) {
                 aapsLogger.debug(LTag.APS, "SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
                 resultAfterConstraints.smb = 0.0
             }
@@ -945,7 +945,7 @@ class LoopPlugin(
     private suspend fun applySMBRequest(request: APSResult): PumpEnactResult {
         val pump = activePlugin.activePump
         val lastBolusTime = persistenceLayer.getNewestBolus()?.timestamp ?: 0L
-        if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() > dateUtil.now()) {
+        if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() - T.secs(Constants.SMB_INTERVAL_TOLERANCE_SECONDS).msecs() > dateUtil.now()) {
             aapsLogger.debug(LTag.APS, "SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
             return pumpEnactResultProvider().comment(ApsStrings.smb_frequency_exceeded).enacted(false).success(false)
         }

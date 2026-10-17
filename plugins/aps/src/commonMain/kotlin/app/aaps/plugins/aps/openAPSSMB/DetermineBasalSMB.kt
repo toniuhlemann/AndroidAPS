@@ -1279,7 +1279,8 @@ class DetermineBasalSMB(
                 val SMBInterval = min(10, max(1, profile.SMBInterval)) * 60.0   // in seconds
                 //console.error(naive_eventualBG, insulinReq, worstCaseInsulinReq, durationReq);
                 consoleError.add("naive_eventualBG $naive_eventualBG,${durationReq}m ${smbLowTempReq}U/h temp needed; last bolus ${round(lastBolusAge / 60.0, 1)}m ago; maxBolus: $maxBolus")
-                if (lastBolusAge > SMBInterval - 6.0) {   // 6s tolerance
+                // Fork: shared tolerance, see Constants.SMB_INTERVAL_TOLERANCE_SECONDS (was 6 s here and 0 s in the enact gates)
+                if (lastBolusAge > SMBInterval - Constants.SMB_INTERVAL_TOLERANCE_SECONDS) {
                     if (microBolus > 0) {
                         rT.units = microBolus
                         rT.reason.append("Microbolusing ${microBolus}U. ")

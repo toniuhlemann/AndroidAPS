@@ -1,5 +1,6 @@
 package app.aaps.implementation.queue.commands
 
+import app.aaps.core.data.configuration.Constants
 import app.aaps.core.data.time.T
 import app.aaps.core.interfaces.InterfacesStrings
 import app.aaps.core.interfaces.db.PersistenceLayer
@@ -37,7 +38,8 @@ class CommandSMBBolus(
         val r: PumpEnactResult
         val lastBolusTime = persistenceLayer.getNewestBolus()?.timestamp ?: 0L
         aapsLogger.debug(LTag.PUMPQUEUE, "Last bolus: $lastBolusTime ${dateUtil.dateAndTimeAndSecondsString(lastBolusTime)}")
-        if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() > dateUtil.now()) {
+        // Fork: shared tolerance, see Constants.SMB_INTERVAL_TOLERANCE_SECONDS
+        if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() - T.secs(Constants.SMB_INTERVAL_TOLERANCE_SECONDS).msecs() > dateUtil.now()) {
             aapsLogger.debug(LTag.APS, "SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
             r = pumpEnactResultProvider().enacted(false).success(false).comment("SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
         } else if (detailedBolusInfo.deliverAtTheLatest != 0L && detailedBolusInfo.deliverAtTheLatest + T.mins(1).msecs() > Clock.System.now().toEpochMilliseconds()) {
