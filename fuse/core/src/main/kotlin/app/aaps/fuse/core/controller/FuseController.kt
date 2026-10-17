@@ -827,7 +827,11 @@ object FuseController {
         /**
          * Fliesst in diesem Zyklus Kredit aus dem versiegelten Evidenzbestand?
          *
-         * Entwaffnet die Totbaender (s. [NightWindow.effectiveDeadbandMgdl]).
+         * Entwaffnet das NACHT-Totband (s. [NightWindow.effectiveDeadbandMgdl]);
+         * das Rebound-Totband entscheidet [evidenceMayOverrideRebound]. Der
+         * Runner reicht hier nur Kredit im Mahlzeitfenster weiter
+         * ([NightWindow.evidenceMayOverrideNight]) - danach bleibt das
+         * Nacht-Totband trotz Kredit scharf.
          *
          * OHNE DEFAULT, nach derselben Regel wie dort - und aus gemessenem
          * Anlass: die erste Fassung trug `= false`, der einzige

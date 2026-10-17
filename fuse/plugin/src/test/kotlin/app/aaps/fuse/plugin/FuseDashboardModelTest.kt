@@ -313,10 +313,32 @@ class FuseDashboardModelTest {
                 evidenceEpisodeMin = 10,
                 evidencePhase = "ACTIVE",
                 evidenceCreditMgdlPerMin = 0.4,
+                evidenceMayOverrideNight = true,
             ),
             null, now, null, ledger(), null
         )
         assertTrue(mitKredit.windows?.contains("Nacht-Totband entwaffnet (Kredit)") == true) { mitKredit.windows ?: "null" }
+    }
+
+    /**
+     * Kredit NACH dem Mahlzeitfenster entwaffnet das Nacht-Totband nicht (Toni) - die Anzeige liest das
+     * Zyklusergebnis des Runners und zeigt das Band scharf, obwohl die Episode noch Kredit ausweist.
+     */
+    @Test
+    fun `Totbandzeile bleibt scharf bei Kredit nach dem Mahlzeitfenster`() {
+        val nacht = state().copy(nightWindow = true, nightDeadbandMgdl = 45.0)
+        val v = FuseDashboardModel.build(
+            outcome().copy(
+                state = nacht,
+                evidenceEpisodeId = 1L,
+                evidenceEpisodeMin = 300,
+                evidencePhase = "ACTIVE",
+                evidenceCreditMgdlPerMin = 0.4,
+                evidenceMayOverrideNight = false,
+            ),
+            null, now, null, ledger(), null
+        )
+        assertTrue(v.windows?.contains("Nacht-Totband scharf bis 143") == true) { v.windows ?: "null" }
     }
 
     @Test

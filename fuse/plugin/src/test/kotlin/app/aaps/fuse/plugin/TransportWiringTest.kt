@@ -2560,9 +2560,16 @@ class TransportWiringTest : TestBaseWithProfile() {
      *
      * Aufbau: Nachtfenster deckt die Rig-Uhr ab, Totband 45 mg/dl, BG unter
      * Ziel+45. OHNE Kredit muss das Totband sperren (Gegenprobe), MIT
-     * aktivem Evidenzkredit muss es entwaffnet sein - die Totbaender
+     * aktivem Evidenzkredit war es entwaffnet - die Totbaender
      * schuetzen vor unangekuendigten Abweichungen, und eine markereroeffnete
      * Episode mit versiegelter unbezahlter Stoerung ist das Gegenteil davon.
+     *
+     * DIE GRENZE (Toni): das Nacht-Recht des Kredits gilt nur im
+     * Mahlzeitfenster, dem Fenster des Kontos zum Marker. Dieses Rig faehrt
+     * ohne Kurve, also ohne Konto und ohne Mahlzeitfenster: Kredit fliesst,
+     * das Nacht-Totband bleibt trotzdem scharf - die Lage des Anlasses
+     * (Kredit Stunden nach dem Marker, kein laufendes Fenster). Den Fall MIT
+     * Fenster prueft das Konto-Rig (ErwartungskontoRigTest).
      *
      * BOOST-FENSTER AUS (Abschluss-Audit 15.08.): die erste Fassung liess
      * den Rig-Boost 45 Minuten laufen, und ALLE geprueften Zyklen lagen
@@ -2572,7 +2579,7 @@ class TransportWiringTest : TestBaseWithProfile() {
      * Sonderrechte.
      */
     @Test
-    fun `das Nacht-Totband sperrt das Mahlzeitenfenster nicht`(@TempDir dir: File) {
+    fun `ohne Mahlzeitfenster entwaffnet Kredit das Nacht-Totband nicht`(@TempDir dir: File) {
         tailGuard = false
         conditionalTail = true
         markerAuthorized = true
@@ -2608,20 +2615,18 @@ class TransportWiringTest : TestBaseWithProfile() {
         // VORBEDINGUNG am Kreditzyklus selbst: BG liegt UNTER Ziel+Totband,
         // das Totband griffe also ohne Kredit - sonst prueft der Test nichts.
         assertTrue(kredit.signal!!.q1 < 98.0 + 45.0) { "BG ${kredit.signal!!.q1} muss im Totbandbereich liegen" }
-        assertTrue(
-            kredit.decision.bindingLimit != "nightDeadband" && kredit.decision.bindingLimit != "reboundDeadband",
-        ) { "Totband blockt trotz Kredit: ${kredit.decision.bindingLimit}" }
+        assertFalse(kredit.evidenceMayOverrideNight) { "ohne Mahlzeitfenster gibt es kein Nacht-Recht" }
+        assertEquals("nightDeadband", kredit.decision.bindingLimit) { "das Nacht-Totband muss trotz Kredit sperren" }
 
-        // KERN: Kappe oeffnen - im naechsten Kreditzyklus muss dosiert werden,
-        // das Totband darf nicht binden.
+        // KERN: Kappe oeffnen - auch dann dosiert kein Kreditzyklus unter der
+        // Schwelle, das Nacht-Totband bindet.
         maxSmbU = 0.3
-        val dosier = (1..5).map { cycle() }.filter { (it.evidenceCreditMgdlPerMin ?: 0.0) > 0.0 }
-        assertTrue(dosier.isNotEmpty()) { "Kredit muss weiterfliessen" }
-        assertTrue(dosier.none { it.decision.bindingLimit == "nightDeadband" || it.decision.bindingLimit == "reboundDeadband" }) {
-            "Totband blockt trotz Kredit: " + dosier.map { it.decision.bindingLimit }
-        }
-        assertTrue(dosier.any { it.decision.smbU > 0.0 }) {
-            "und dosiert werden muss auch: " + dosier.map { "${it.decision.block}/${it.decision.bindingLimit}" }
+        val danach = (1..5).map { cycle() }
+            .filter { (it.evidenceCreditMgdlPerMin ?: 0.0) > 0.0 && it.signal!!.q1 < 98.0 + 45.0 }
+        assertTrue(danach.isNotEmpty()) { "Kredit muss weiterfliessen" }
+        assertTrue(danach.all { it.decision.bindingLimit == "nightDeadband" && it.decision.smbU == 0.0 }) {
+            "das Nacht-Totband muss trotz Kredit sperren: " +
+                danach.map { "${it.decision.block}/${it.decision.bindingLimit}/${it.decision.smbU}" }
         }
     }
 

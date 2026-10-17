@@ -771,6 +771,56 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     }
 
     /**
+     * Ein zuegiger Anstieg unter der Nachtschwelle im Fenster, Ruecklauf, und ein zweiter zuegiger Anstieg nach dem
+     * Fensterende - wie vorbeugendes Gegenessen Stunden nach dem Marker. Zuegig, weil ein langsamer Anstieg im
+     * Evidenzbestand verfaellt, bevor er versiegelt (die Episode bliebe DORMANT).
+     */
+    private val fNacht = Fuse20Folgen.Folge(
+        "NACHT", 1_700_560_800_000L, -90, 240,
+        listOf(
+            -90 to 96.0, -10 to 96.0, 0 to 96.0, 5 to 98.0, 23 to 134.0, 40 to 134.0, 70 to 112.0, 110 to 98.0,
+            128 to 96.0, 133 to 98.0, 151 to 134.0, 170 to 134.0, 240 to 110.0,
+        ),
+        markerMin = 0,
+    )
+
+    /**
+     * NACHT-TOTBAND UND MAHLZEITFENSTER (Toni): Kredit entwaffnet das Nacht-Totband nur, solange das Fenster des
+     * Kontos laeuft. Im Fenster gilt "Rebound-Totfenster darf das Mahlzeitenfenster niemals blocken" unveraendert;
+     * danach bleibt das Band trotz Kredit scharf, unter der Schwelle wird nichts gegeben. Boost aus, sonst entwaffnete
+     * `markerBoost` das Band kreditunabhaengig.
+     */
+    @Test
+    fun `Kredit entwaffnet das Nacht-Totband nur im Mahlzeitfenster`(@TempDir dir: File) {
+        konfiguration(kontoAn = true)
+        whenever(preferences.get(FuseIntKey.NightStartMin)).thenReturn(0)
+        whenever(preferences.get(FuseIntKey.NightEndMin)).thenReturn(1439)
+        whenever(preferences.get(FuseIntKey.MarkerBoostMaxMin)).thenReturn(0)
+        val zyklen = lauf(fNacht, dir).filter { it.o.abortReason == null && it.o.state != null && it.o.signal != null }
+        fun unterSchwelle(z: Zyklus) = z.o.signal!!.q1 < z.o.state!!.targetMgdl + z.o.state!!.nightDeadbandMgdl
+        fun mitKredit(z: Zyklus) = (z.o.evidenceCreditMgdlPerMin ?: 0.0) > 0.0
+        val diagnose = {
+            zyklen.filter { it.minute % 5 == 0 }.joinToString(" ") {
+                "%d:%.0f/%s/%.2f/%s".format(
+                    it.minute, it.o.signal!!.q1, it.o.evidencePhase, it.o.evidenceCreditMgdlPerMin ?: 0.0, it.o.decision.bindingLimit,
+                )
+            }
+        }
+        val fensterEnde = zyklen.firstNotNullOfOrNull { it.konto?.windowEndTs } ?: throw AssertionError("kein Konto gebucht")
+        val imFenster = zyklen.filter { it.o.computeTs < fensterEnde && mitKredit(it) && unterSchwelle(it) }
+        val danach = zyklen.filter { it.o.computeTs >= fensterEnde && mitKredit(it) && unterSchwelle(it) }
+
+        assertTrue(imFenster.isNotEmpty()) { "kein Kreditzyklus unter der Schwelle im Fenster: " + diagnose() }
+        assertTrue(imFenster.all { it.o.evidenceMayOverrideNight }) { "im Fenster fehlt das Nacht-Recht: " + diagnose() }
+        assertTrue(imFenster.none { it.o.decision.bindingLimit == "nightDeadband" }) { "Nacht-Totband im Fenster: " + diagnose() }
+
+        assertTrue(danach.isNotEmpty()) { "kein Kreditzyklus unter der Schwelle nach dem Fenster: " + diagnose() }
+        assertTrue(danach.none { it.o.evidenceMayOverrideNight }) { "Nacht-Recht nach dem Fenster: " + diagnose() }
+        assertTrue(danach.all { it.o.decision.smbU == 0.0 }) { "nach dem Fenster dosiert: " + diagnose() }
+        assertTrue(danach.any { it.o.decision.bindingLimit == "nightDeadband" }) { "das Nacht-Totband bindet nicht: " + diagnose() }
+    }
+
+    /**
      * Derselbe Unterschied als Menge: Rueckfall ohne Konto (keine Kurve) gegen dieselbe Folge ohne Druck. Ohne Vollmacht
      * haelt das Rebound-Totband den Bedarf zurueck; im Rueckfall dosiert FUSE in denselben Zyklen.
      */

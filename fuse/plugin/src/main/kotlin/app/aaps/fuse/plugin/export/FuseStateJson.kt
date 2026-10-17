@@ -784,6 +784,10 @@ object FuseStateJson {
             .put("evidenceMayOverrideRebound", outcome.evidenceMayOverrideRebound)
             .put("reboundOverrideDeadlineTs", outcome.reboundOverrideDeadlineTs)
             .putOpt("reboundOverrideDenial", outcome.reboundOverrideDenial)
+            // DAS NACHT-RECHT DER EVIDENZ (Toni): Kredit UND laufendes
+            // Mahlzeitfenster. Ohne das Feld saehe ein Zyklus mit Kredit, aber
+            // scharfem Nacht-Totband nach einem Verdrahtungsfehler aus.
+            .put("evidenceMayOverrideNight", outcome.evidenceMayOverrideNight)
             // DAS GEMESSENE ABWAERTSRISIKO. Ohne diese fuenf ist im Trail
             // nicht zu sehen, WARUM ein Zyklus nichts gab - "kein Bedarf",
             // "Risiko aktiv" und "Basalnutzen zu klein" sehen als 0 U
@@ -967,6 +971,11 @@ object FuseStateJson {
             .put(
                 "reboundSuppressedByEvidence",
                 outcome.state?.reboundWindow == true && outcome.evidenceMayOverrideRebound,
+            )
+            // Dasselbe fuer das Nacht-Totband.
+            .put(
+                "nightSuppressedByEvidence",
+                outcome.state?.nightWindow == true && outcome.evidenceMayOverrideNight,
             )
             // ---- Die Evidenz-Episode als EIN Block ----------------------
             //
