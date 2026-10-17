@@ -247,7 +247,9 @@ compose.desktop {
             packageName = desktopPackageName
             // jpackage demands a plain numeric version - an MSI rejects anything else - so the
             // `-dev-b-kmp` style suffix that Versions.appVersion carries is trimmed off here.
-            packageVersion = Versions.appVersion.substringBefore('-')
+            // Fork: the version also carries a `+fuseX.Y.Z` part and four numbers (4.0.0.0), so
+            // keep only the first three numbers before any `+` or `-`.
+            packageVersion = Versions.appVersion.substringBefore('+').substringBefore('-').split('.').take(3).joinToString(".")
             // jpackage embeds a JRE, so the user installs an app rather than a JVM.
             targetFormats(
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Msi,
