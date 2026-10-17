@@ -18,7 +18,8 @@ import kotlin.time.Instant
 @Serializable
 data class RT(
     var algorithm: APSResult.Algorithm = APSResult.Algorithm.UNKNOWN,
-    var runningDynamicIsf: Boolean,
+    var runningDynamicIsf: Boolean? = false,
+    var runningAutoIsf: Boolean? = false,
     @Serializable(with = TimestampToIsoSerializer::class)
     var timestamp: Long? = null,
     val temp: String = "absolute",

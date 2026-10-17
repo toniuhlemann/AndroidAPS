@@ -68,7 +68,7 @@ fun EB.iobCalc(
     profile: EffectiveProfile,
     lastAutosensResult: AutosensResult,
     exerciseMode: Boolean,
-    halfBasalExerciseTarget: Int,
+    halfBasalExerciseTarget: Double,
     isTempTarget: Boolean
 ): IobTotal {
     if (!isValid) return IobTotal(time)

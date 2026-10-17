@@ -112,5 +112,9 @@
     <!--    autoISF -->
     <string name="autoISF_settings_title">AutoISF settings</string>
     <string name="smb_delivery_settings_title">SMB delivery settings</string>
+    <!-- autoISF 3.2.1 (Tobias/ga-zelle) -->
+    <string name="activity_monitor_settings_title">Activity monitor</string>
+    <string name="libre_special_settings_title">Libre special</string>
+    <string name="need_step_count_permission">Application needs body activity permission to access step counts via the AAPS phone</string>
 
 </resources>

@@ -36,5 +36,10 @@ enum class LongNonKey(
     // hasn't republished the roster yet). Not exported — re-pair regenerates this.
     NsClientControlPairedAt("nsclient_control_paired_at", 0L, exportable = false),
     LastVacuumRun("last_vacuum_run", 0L),
+    // autoISF 3.2.1: state, written by the plugins, never shown. Device runtime state → not exportable
+    // (an imported app_start_time would overwrite the one MainApp just wrote).
+    FslSmoothLastTimeRaw("fsl_last_time_raw", -1L, exportable = false),
+    FslCalibrationStart("fsl_cal_start_time", -1L, exportable = false),
+    AppStart("app_start_time", 0L, exportable = false),
 }
 

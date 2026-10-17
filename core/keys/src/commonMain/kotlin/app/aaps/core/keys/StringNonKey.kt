@@ -67,6 +67,9 @@ enum class StringNonKey(
     // Standalone Automation runtime. In core/keys (not the automation module) so the client→master
     // sync publisher/receiver in :plugins:sync can observe it without an inter-module dependency.
     AutomationEvents(key = "AUTOMATION_EVENTS", defaultValue = "", sync = SyncSpec(SyncChannel.Cold, SyncDirection.Bidirectional)),
+    // autoISF 3.2.x automation states (Tobias/ga-zelle). Same stored names as the automation-state plugin of 3.4.
+    AutomationCurrentStates(key = "automation_state_service", defaultValue = "{}"),
+    AutomationStateValues(key = "automation_state_values", defaultValue = "{}"),
     QuickLaunchActions(key = "quick_launch_actions", defaultValue = "[{\"type\":\"wizard\"},{\"type\":\"quick_launch_config\"}]"),
     InsulinConfiguration("insulin_configuration", "{}", sync = SyncSpec(SyncChannel.Cold, SyncDirection.Bidirectional)),
     ComposeGraphConfig("compose_graphconfig", ""),

@@ -28,7 +28,7 @@ class DetermineBasalSMBTest : TestBaseWithProfile() {
 
     @BeforeEach
     fun setup() {
-        sut = DetermineBasalSMB(profileUtil, fabricPrivacy)
+        sut = DetermineBasalSMB(profileUtil, fabricPrivacy, profileFunction)
     }
 
     // BG well above target and steady, timestamped now so the bad-CGM guard does not return early.
@@ -75,7 +75,7 @@ class DetermineBasalSMBTest : TestBaseWithProfile() {
         resistance_lowers_target = false,
         adv_target_adjustments = false,
         exercise_mode = false,
-        half_basal_exercise_target = 160,
+        half_basal_exercise_target = 160.0,
         maxCOB = 120,
         skip_neutral_temps = false,
         remainingCarbsCap = 90,

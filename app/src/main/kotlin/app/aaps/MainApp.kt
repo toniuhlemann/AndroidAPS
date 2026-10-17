@@ -32,6 +32,7 @@ import app.aaps.core.interfaces.rx.events.EventAppInitialized
 import app.aaps.core.interfaces.tempTargets.toJson
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.BooleanNonKey
+import app.aaps.plugins.aps.openAPSSMB.StepSensorListener
 import app.aaps.core.keys.LongNonKey
 import app.aaps.core.keys.StringKey
 import app.aaps.core.keys.StringNonKey
@@ -391,6 +392,9 @@ class MainApp : Application(), MetroMemberInjector, MetroViewModelFactoryOwner, 
             }, 10000
         )
         postSetupNotifications()
+        // autoISF 3.2.1 activity monitor: remember the start time and connect the phone sensors
+        preferences.put(LongNonKey.AppStart, dateUtil.now())
+        StepSensorListener.register(this@MainApp)
         KeepAliveWorker.schedule(this@MainApp)
         localAlertUtils.shortenSnoozeInterval()
         localAlertUtils.preSnoozeAlarms()
@@ -399,6 +403,8 @@ class MainApp : Application(), MetroMemberInjector, MetroViewModelFactoryOwner, 
         refreshWidget = Runnable {
             handler.postDelayed(refreshWidget, 60000)
             widgetUpdater.update("ScheduleEveryMin")
+            // Picks up the step counter once the permission was granted. Does nothing when already connected.
+            StepSensorListener.register(this@MainApp)
         }
         handler.postDelayed(refreshWidget, 5000)
         setUserStats()

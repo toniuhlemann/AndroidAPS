@@ -9,5 +9,7 @@ enum class IntNonKey(
 ) : IntNonPreferenceKey {
 
     ObjectivesManualEnacts("ObjectivesmanualEnacts", 0),
-    TddCycleOffset("tdd_cycle_offset", 0)
+    TddCycleOffset("tdd_cycle_offset", 0),
+    // autoISF 3.2.1: length of the SMB pause after a Libre calibration. Fixed (was an int key with min = max).
+    FslCalibrationDuration("Calibration_Duration", 20)
 }

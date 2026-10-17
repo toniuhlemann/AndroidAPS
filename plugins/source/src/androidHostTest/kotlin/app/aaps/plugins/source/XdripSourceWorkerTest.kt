@@ -37,7 +37,7 @@ class XdripSourceWorkerTest : TestBaseWithProfile() {
     @BeforeEach
     fun setupMock() {
         whenever(workerParameters.inputData).thenReturn(workDataOf())
-        worker = XdripSourcePlugin.XdripSourceWorker(context, workerParameters, aapsLogger, fabricPrivacy, xdripSourcePlugin, persistenceLayer, preferences, dateUtil, dataInbox)
+        worker = XdripSourcePlugin.XdripSourceWorker(context, workerParameters, aapsLogger, fabricPrivacy, xdripSourcePlugin, persistenceLayer, preferences, dateUtil, dataInbox, profileUtil)
     }
 
     @Test
@@ -94,7 +94,8 @@ class XdripSourceWorkerTest : TestBaseWithProfile() {
                 timestamp = timestamp,
                 value = 150.0,
                 raw = 150.0,
-                noise = null,
+                // autoISF 3.2.1: noise carries the uncalibrated sensor value (piggy back), for every source
+                noise = 150.0,
                 trendArrow = TrendArrow.FORTY_FIVE_DOWN,
                 sourceSensor = SourceSensor.DEXCOM_G6
             )

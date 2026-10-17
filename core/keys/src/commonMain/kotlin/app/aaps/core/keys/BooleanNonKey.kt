@@ -10,6 +10,9 @@ enum class BooleanNonKey(
 ) : BooleanNonPreferenceKey {
 
     GeneralSetupWizardProcessed("startupwizard_processed", false),
+    // autoISF 3.2.1 activity monitor: state written by the plugin on every run. Device runtime state → not exportable.
+    ActivityMonitorStepsActive("steps_activity_detected", false, exportable = false),
+    ActivityMonitorStepsInactive("steps_inactivity_detected", false, exportable = false),
     SetupWizardIUnderstand("I_understand", false),
     ObjectivesLoopUsed("ObjectivesLoopUsed", false),
     ObjectivesScaleUsed("ObjectivesScaleUsed", false),

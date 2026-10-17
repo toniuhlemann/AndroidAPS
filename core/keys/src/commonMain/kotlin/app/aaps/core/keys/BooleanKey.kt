@@ -201,6 +201,36 @@ enum class BooleanKey(
         sync = SyncSpec(SyncChannel.Cold, SyncDirection.Bidirectional)
     ),
 
+    // autoISF 3.2.1 (Tobias/ga-zelle): activity monitor and Libre calibration guard
+    ActivityMonitorDetection(
+        "activity_detection",
+        false,
+        KeysStrings.pref_title_activity_monitor,
+        KeysStrings.pref_summary_activity_monitor,
+        defaultedBySM = true,
+        sync = SyncSpec(SyncChannel.Cold, SyncDirection.Bidirectional)
+    ),
+    ActivityMonitorOvernight(
+        "ignore_inactivity_overnight",
+        true,
+        KeysStrings.pref_title_ignore_inactivity_overnight,
+        KeysStrings.pref_summary_ignore_inactivity_overnight,
+        defaultedBySM = true,
+        dependency = ActivityMonitorDetection,
+        sync = SyncSpec(SyncChannel.Cold, SyncDirection.Bidirectional)
+    ),
+    ActivityMonitorShowStepsFromSmartphone(
+        "steps_graph_from_smartphone",
+        true,
+        KeysStrings.pref_title_steps_graph_from_smartphone,
+        KeysStrings.pref_summary_steps_graph_from_smartphone,
+        defaultedBySM = true,
+        sync = SyncSpec(SyncChannel.Cold, SyncDirection.Bidirectional)
+    ),
+    // One-shot switches: the user sets them, the plugin resets them. Local only, not synced.
+    FslCalibrationTrigger("calibration_stops_SMB", false, KeysStrings.pref_title_calibration_stops_smb, KeysStrings.pref_summary_calibration_stops_smb, defaultedBySM = true),
+    FslCalibrationEnd("calibration_end", false, KeysStrings.pref_title_calibration_enable_smb, KeysStrings.pref_summary_calibration_enable_smb, defaultedBySM = true),
+
     MaintenanceEnableFabric("enable_fabric2", true, KeysStrings.pref_title_maintenance_enable_fabric, defaultedBySM = true, hideParentScreenIfHidden = true),
 
     // Master-only (not a follower client): unattended settings export backs up the local config, which on a

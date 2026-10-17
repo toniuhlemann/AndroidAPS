@@ -26,7 +26,7 @@ class DetermineBasalAutoISFTest : TestBaseWithProfile() {
 
     @BeforeEach
     fun setup() {
-        sut = DetermineBasalAutoISF(profileUtil)
+        sut = DetermineBasalAutoISF(profileUtil, preferences)
     }
 
     private fun glucoseStatus() = GlucoseStatusSMB(
@@ -69,7 +69,7 @@ class DetermineBasalAutoISFTest : TestBaseWithProfile() {
         resistance_lowers_target = false,
         adv_target_adjustments = false,
         exercise_mode = false,
-        half_basal_exercise_target = 160,
+        half_basal_exercise_target = 160.0,
         maxCOB = 120,
         skip_neutral_temps = false,
         remainingCarbsCap = 90,
@@ -128,6 +128,7 @@ class DetermineBasalAutoISFTest : TestBaseWithProfile() {
             smb_ratio = 0.5,
             smb_max_range_extension = 1.0,
             iob_threshold_percent = 100,
+            activity_consoleLog = "Activity Monitor skipped",
             auto_isf_consoleError = mutableListOf(),
             auto_isf_consoleLog = mutableListOf()
         )
@@ -256,6 +257,7 @@ class DetermineBasalAutoISFTest : TestBaseWithProfile() {
             smb_ratio = 0.5,
             smb_max_range_extension = 1.0,
             iob_threshold_percent = 100,
+            activity_consoleLog = "Activity Monitor skipped",
             auto_isf_consoleError = mutableListOf(),
             auto_isf_consoleLog = mutableListOf()
         )

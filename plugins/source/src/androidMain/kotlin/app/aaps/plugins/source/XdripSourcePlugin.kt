@@ -5,7 +5,9 @@ import android.content.Context
 import android.os.Bundle
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import app.aaps.core.data.configuration.Constants
 import app.aaps.core.data.model.GV
+import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.SourceSensor
 import app.aaps.core.data.model.TE
 import app.aaps.core.data.model.TrendArrow
@@ -19,6 +21,7 @@ import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.notifications.NotificationManager
 import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.plugin.PluginDescription
+import app.aaps.core.interfaces.profile.ProfileUtil
 import app.aaps.core.interfaces.receivers.Intents
 import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.source.BgSource
@@ -26,6 +29,10 @@ import app.aaps.core.interfaces.source.XDripSource
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.fabric.FabricPrivacy
 import app.aaps.core.keys.BooleanKey
+import app.aaps.core.keys.DoubleKey
+import app.aaps.core.keys.DoubleNonKey
+import app.aaps.core.keys.IntNonKey
+import app.aaps.core.keys.LongNonKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.objects.workflow.LoggingWorker
@@ -44,10 +51,12 @@ import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.IntKey
 import dev.zacsweers.metro.SingleIn
 import dev.zacsweers.metro.binding
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.pow
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlin.math.abs
-import kotlin.math.round
 
 @ContributesIntoMap(AppScope::class, binding = binding<PluginBase>())
 @IntKey(400)
@@ -92,7 +101,8 @@ class XdripSourcePlugin(
         private val persistenceLayer: PersistenceLayer,
         private val preferences: Preferences,
         private val dateUtil: DateUtil,
-        private val dataInbox: DataInbox
+        private val dataInbox: DataInbox,
+        private val profileUtil: ProfileUtil
     ) : LoggingWorker(context, params, Dispatchers.IO, aapsLogger, fabricPrivacy) {
 
         /**
@@ -156,11 +166,58 @@ class XdripSourcePlugin(
         private suspend fun processBundle(bundle: Bundle) {
             aapsLogger.debug(LTag.BGSOURCE, "Received xDrip data: $bundle")
             val glucoseValues = mutableListOf<GV>()
+            // autoISF 3.2.1 (Tobias/ga-zelle): Libre calibration (offset/slope) and first order
+            // exponential smoothing. For a Libre or G7 reading without raw value the sensor value is
+            // calibrated into `raw`, smoothed into `value`, and the uncalibrated value is kept in `noise`.
+            // Values are no longer rounded. Other sources pass through as before, apart from the rounding.
+            var extraBgEstimate = bundle.getDouble(Intents.EXTRA_BG_ESTIMATE, 0.0)
+            var extraRaw = bundle.getDouble(Intents.EXTRA_RAW, 0.0)
+            val offset = preferences.get(DoubleKey.FslCalOffset)
+            val slope = preferences.get(DoubleKey.FslCalSlope)
+            val factor = preferences.get(DoubleKey.FslSmoothAlpha)
+            val lastSmooth = preferences.get(DoubleNonKey.FslLastSmooth)
+            val lastTimeRaw = preferences.get(LongNonKey.FslSmoothLastTimeRaw)
+            val thisTimeRaw = bundle.getLong(Intents.EXTRA_TIMESTAMP, 0)
+            val elapsedMinutes = (thisTimeRaw - lastTimeRaw) / 60000.0
+            var smooth = extraBgEstimate
+            if (preferences.get(BooleanKey.FslCalibrationTrigger)) {
+                preferences.put(LongNonKey.FslCalibrationStart, dateUtil.now())
+                preferences.put(BooleanKey.FslCalibrationTrigger, false)
+                preferences.put(BooleanKey.FslCalibrationEnd, false)
+            }
+            val calibrationDuration = preferences.get(IntNonKey.FslCalibrationDuration)
+            val calibrationMinutes = calibrationDuration - (dateUtil.now() - preferences.get(LongNonKey.FslCalibrationStart)) / 60000
+            val calibrationStopsSMB = calibrationMinutes > 0 && !preferences.get(BooleanKey.FslCalibrationEnd)
+            if (calibrationStopsSMB) {
+                aapsLogger.debug(LTag.BGSOURCE, "Sensor calibrating for another ${calibrationMinutes}m")
+            }
+            val sourceCGM = bundle.getString(Intents.XDRIP_DATA_SOURCE) ?: ""
+            if (extraRaw == 0.0 && (sourceCGM == "Libre2" || sourceCGM == "Libre2 Native" || sourceCGM == "Libre3" || sourceCGM == "G7")) {
+                extraRaw = extraBgEstimate
+                extraBgEstimate = max(40.0, extraRaw * slope + offset * (if (profileUtil.units == GlucoseUnit.MMOL) Constants.MMOLL_TO_MGDL else 1.0))
+                val maxGap = 20
+                val cgmDelta = if (sourceCGM == "G7") 5.0 else 1.0
+                // no smoothing right after a calibration start and for long gaps (alpha up to 1)
+                val effectiveAlpha = if (calibrationDuration - calibrationMinutes < 2 && !preferences.get(BooleanKey.FslCalibrationEnd)) 1.0
+                else min(1.0, factor + (1.0 - factor) * ((max(0.0, elapsedMinutes - cgmDelta) / (maxGap - cgmDelta)).pow(2.0)))
+                if (lastSmooth > 0.0) {
+                    // exponential smoothing, see https://en.wikipedia.org/wiki/Exponential_smoothing
+                    smooth = lastSmooth + effectiveAlpha * (extraBgEstimate - lastSmooth)
+                }
+                preferences.put(DoubleNonKey.FslLastRaw, extraBgEstimate)
+                preferences.put(DoubleNonKey.FslLastSmooth, smooth)
+                preferences.put(LongNonKey.FslSmoothLastTimeRaw, thisTimeRaw)
+                var calibrationMsg = "Calibration json: {\"calibration_offset\":$offset,\"calibration_slope\":$slope,\"smoothFactor\":$factor,\"effectiveAlpha\":$effectiveAlpha"
+                calibrationMsg += ",\"calibrationStart\":${preferences.get(LongNonKey.FslCalibrationStart)},\"calibrationIgnore\":${preferences.get(BooleanKey.FslCalibrationEnd)}"
+                calibrationMsg += "}"
+                aapsLogger.debug(LTag.BGSOURCE, calibrationMsg)
+            }
             glucoseValues += GV(
-                timestamp = bundle.getLong(Intents.EXTRA_TIMESTAMP, 0),
-                value = round(bundle.getDouble(Intents.EXTRA_BG_ESTIMATE, 0.0)),
-                raw = round(bundle.getDouble(Intents.EXTRA_RAW, 0.0)),
-                noise = null,
+                timestamp = thisTimeRaw,
+                value = smooth,
+                raw = extraBgEstimate,
+                // piggy back: the uncalibrated sensor value (autoISF 3.2.1)
+                noise = extraRaw,
                 trendArrow = TrendArrow.fromString(bundle.getString(Intents.EXTRA_BG_SLOPE_NAME)),
                 sourceSensor = SourceSensor.fromString(bundle.getString(Intents.XDRIP_DATA_SOURCE) ?: "")
             )

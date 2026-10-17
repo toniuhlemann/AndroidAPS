@@ -351,6 +351,61 @@ enum class DoubleKey(
         unitType = UnitType.DOUBLE,
         sync = SyncSpec(SyncChannel.Cold, SyncDirection.Bidirectional)
     ),
+    // autoISF 3.2.1 (Tobias/ga-zelle): Libre calibration and smoothing, activity monitor scale
+    FslCalOffset(
+        key = "fslCal_Offset",
+        defaultValue = 0.0,
+        min = -50.0,
+        max = 50.0,
+        title = KeysStrings.pref_title_fsl_cal_offset,
+        summary = KeysStrings.pref_summary_fsl_cal_offset,
+        defaultedBySM = true,
+        unitType = UnitType.DOUBLE
+    ),
+    FslCalSlope(
+        key = "fslCal_Slope",
+        defaultValue = 1.0,
+        min = 0.5,
+        max = 1.5,
+        title = KeysStrings.pref_title_fsl_cal_slope,
+        summary = KeysStrings.pref_summary_fsl_cal_slope,
+        defaultedBySM = true,
+        unitType = UnitType.DOUBLE_3
+    ),
+    FslSmoothAlpha(
+        key = "fsl_exp1_factor",
+        defaultValue = 1.0,
+        min = 0.1,
+        max = 1.0,
+        title = KeysStrings.pref_title_fsl_exp1_factor,
+        summary = KeysStrings.pref_summary_fsl_exp1_factor,
+        defaultedBySM = true,
+        unitType = UnitType.DOUBLE_2
+    ),
+    ActivityScaleFactor(
+        key = "activity_scale_factor",
+        defaultValue = 1.0,
+        min = 0.0,
+        max = 1.5,
+        title = KeysStrings.pref_title_activity_scale_factor,
+        summary = KeysStrings.pref_summary_activity_scale_factor,
+        defaultedBySM = true,
+        dependency = BooleanKey.ActivityMonitorDetection,
+        unitType = UnitType.DOUBLE_2,
+        sync = SyncSpec(SyncChannel.Cold, SyncDirection.Bidirectional)
+    ),
+    InactivityScaleFactor(
+        key = "inactivity_scale_factor",
+        defaultValue = 1.0,
+        min = 0.0,
+        max = 1.5,
+        title = KeysStrings.pref_title_inactivity_scale_factor,
+        summary = KeysStrings.pref_summary_inactivity_scale_factor,
+        defaultedBySM = true,
+        dependency = BooleanKey.ActivityMonitorDetection,
+        unitType = UnitType.DOUBLE_2,
+        sync = SyncSpec(SyncChannel.Cold, SyncDirection.Bidirectional)
+    ),
 
     ;
 

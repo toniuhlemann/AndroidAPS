@@ -50,6 +50,7 @@ import app.aaps.core.interfaces.utils.fabric.FabricPrivacy
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
+import app.aaps.core.keys.LongNonKey
 import app.aaps.core.keys.UnitDoubleKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.TextRef.Companion.withArgs
@@ -399,9 +400,19 @@ open class OpenAPSSMBPlugin(
             } else autosensResult.sensResult = "autosens disabled"
         }
 
-        val iobArray = iobCobCalculator.calculateIobArrayForSMB(autosensResult, SMBDefaults.exercise_mode, SMBDefaults.half_basal_exercise_target, isTempTarget)
+        // autoISF 3.2.1: exercise mode from the high-TT switch, half basal target from the settings (mg/dl here)
+        val iobArray = iobCobCalculator.calculateIobArrayForSMB(
+            autosensResult,
+            preferences.get(BooleanKey.ApsAutoIsfHighTtRaisesSens),
+            profileUtil.convertToMgdlDetect(preferences.get(UnitDoubleKey.ApsAutoIsfHalfBasalExerciseTarget)),
+            isTempTarget
+        )
         val mealData = iobCobCalculator.getMealDataWithWaitingForCalculationFinish()
 
+        // autoISF 3.2.1 activity monitor inputs
+        val lastAppStart = preferences.get(LongNonKey.AppStart)
+        val elapsedTimeSinceLastStart = (dateUtil.now() - lastAppStart) / 60000
+        val hourOfDay = MidnightUtils.secondsFromMidnight() / 3600
         val oapsProfile = OapsProfile(
             dia = 0.0, // not used
             min_5m_carbimpact = 0.0, // not used
@@ -417,13 +428,31 @@ open class OpenAPSSMBPlugin(
             max_daily_safety_multiplier = preferences.get(DoubleKey.ApsMaxDailyMultiplier),
             current_basal_safety_multiplier = preferences.get(DoubleKey.ApsMaxCurrentBasalMultiplier),
             lgsThreshold = profileUtil.convertToMgdlDetect(preferences.get(UnitDoubleKey.ApsLgsThreshold)).toInt(),
-            high_temptarget_raises_sensitivity = false,
+            // mod Exercise mode
+            // high_temptarget_raises_sensitivity = false,
+            high_temptarget_raises_sensitivity = preferences.get(BooleanKey.ApsAutoIsfHighTtRaisesSens),
+            // mod finish
             low_temptarget_lowers_sensitivity = false,
             sensitivity_raises_target = preferences.get(BooleanKey.ApsSensitivityRaisesTarget),
             resistance_lowers_target = preferences.get(BooleanKey.ApsResistanceLowersTarget),
             adv_target_adjustments = SMBDefaults.adv_target_adjustments,
-            exercise_mode = SMBDefaults.exercise_mode,
-            half_basal_exercise_target = SMBDefaults.half_basal_exercise_target,
+            // mod Exercise mode
+            // exercise_mode = SMBDefaults.exercise_mode,
+            // half_basal_exercise_target = SMBDefaults.half_basal_exercise_target,
+            exercise_mode = preferences.get(BooleanKey.ApsAutoIsfHighTtRaisesSens),
+            half_basal_exercise_target = preferences.get(UnitDoubleKey.ApsAutoIsfHalfBasalExerciseTarget),
+            // mod finish
+            // mod activity mode
+            activity_detection = preferences.get(BooleanKey.ActivityMonitorDetection) && StepService.stepsAvailable(),
+            recent_steps_5_minutes = StepService.getRecentStepCount5Min(),
+            recent_steps_10_minutes = StepService.getRecentStepCount10Min(),
+            recent_steps_15_minutes = StepService.getRecentStepCount15Min(),
+            recent_steps_30_minutes = StepService.getRecentStepCount30Min(),
+            recent_steps_60_minutes = StepService.getRecentStepCount60Min(),
+            phone_moved = PhoneMovementDetector.phoneMoved(),
+            time_since_start = elapsedTimeSinceLastStart,
+            now = hourOfDay,
+            // end mod
             maxCOB = SMBDefaults.maxCOB,
             skip_neutral_temps = pump.setNeutralTempAtFullHour(),
             remainingCarbsCap = SMBDefaults.remainingCarbsCap,
@@ -478,7 +507,7 @@ open class OpenAPSSMBPlugin(
         aapsLogger.debug(LTag.APS, ">>> Invoking determine_basal SMB <<<")
         aapsLogger.debug(LTag.APS, "Glucose status:     $glucoseStatus")
         aapsLogger.debug(LTag.APS, "Current temp:       $currentTemp")
-        aapsLogger.debug(LTag.APS, "IOB data:           ${iobArray.joinToString()}")
+        aapsLogger.debug(LTag.APS, "IOB data:           ${iobCobCalculator.iobArrayToString(iobArray)}")
         aapsLogger.debug(LTag.APS, "Profile:            $oapsProfile")
         aapsLogger.debug(LTag.APS, "Autosens data:      $autosensResult")
         aapsLogger.debug(LTag.APS, "Meal data:          $mealData")
@@ -594,6 +623,11 @@ open class OpenAPSSMBPlugin(
             BooleanKey.ApsDynIsfAdjustSensitivity,
             BooleanKey.ApsSensitivityRaisesTarget,
             BooleanKey.ApsResistanceLowersTarget,
+            // autoISF 3.2.1: exercise mode and activity monitor also for SMB
+            BooleanKey.ApsAutoIsfHighTtRaisesSens,
+            BooleanKey.ApsAutoIsfLowTtLowersSens,
+            UnitDoubleKey.ApsAutoIsfHalfBasalExerciseTarget,
+            BooleanKey.ActivityMonitorDetection,
             BooleanKey.ApsUseSmb,
             BooleanKey.ApsUseSmbWithHighTt,
             BooleanKey.ApsUseSmbAlways,

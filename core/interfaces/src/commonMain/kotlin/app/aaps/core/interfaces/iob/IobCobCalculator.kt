@@ -24,7 +24,7 @@ interface IobCobCalculator {
     suspend fun getBasalData(profile: Profile, fromTime: Long): BasalData
 
     suspend fun calculateIobArrayInDia(profile: EffectiveProfile): Array<IobTotal>
-    suspend fun calculateIobArrayForSMB(lastAutosensResult: AutosensResult, exerciseMode: Boolean, halfBasalExerciseTarget: Int, isTempTarget: Boolean): Array<IobTotal>
+    suspend fun calculateIobArrayForSMB(lastAutosensResult: AutosensResult, exerciseMode: Boolean, halfBasalExerciseTarget: Double, isTempTarget: Boolean): Array<IobTotal>
     fun iobArrayToString(array: Array<IobTotal>): String
 
     fun clearCache()

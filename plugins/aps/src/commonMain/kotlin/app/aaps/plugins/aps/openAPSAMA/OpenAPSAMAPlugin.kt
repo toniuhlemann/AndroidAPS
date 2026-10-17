@@ -198,7 +198,7 @@ class OpenAPSAMAPlugin(
             resistance_lowers_target = false, // not used
             adv_target_adjustments = false, // not used
             exercise_mode = false, // not used
-            half_basal_exercise_target = 0, // not used
+            half_basal_exercise_target = 0.0, // not used
             maxCOB = 0, // not used
             skip_neutral_temps = pump.setNeutralTempAtFullHour(),
             remainingCarbsCap = 0, // not used

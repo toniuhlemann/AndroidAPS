@@ -428,4 +428,29 @@
 
     <!--    Appearance preferences-->
 
+    <!-- autoISF 3.2.1 (Tobias/ga-zelle) -->
+    <string name="pref_title_activity_monitor">Activity modifies sensitivity</string>
+    <string name="pref_summary_activity_monitor">Activity is detected in form of steps as measured by the phone. It does not replace an explicit sport adjustment but is a lower level complement.</string>
+    <string name="pref_title_ignore_inactivity_overnight">Disable inactivity detection during sleep</string>
+    <string name="pref_summary_ignore_inactivity_overnight">Stop inactivity adaptation during sleeping hours\nDefault is true, i.e. adaptation is off\n\nIf false, leave phone beside bed during short breaks to keep monitoring disabled</string>
+    <string name="pref_title_steps_graph_from_smartphone">Steps graph from smartphone sensor</string>
+    <string name="pref_summary_steps_graph_from_smartphone">Default: true\notherwise from watch sensor</string>
+    <string name="pref_title_calibration_stops_smb">Disable SMB and AutoISF weights for 20m after fresh calibration</string>
+    <string name="pref_summary_calibration_stops_smb">Trigger this once before changing calibration settings</string>
+    <string name="pref_title_calibration_enable_smb">Re-enable SMB and AutoISF weights earlier anyway</string>
+    <string name="pref_summary_calibration_enable_smb">Activate this when suppressing is no longer required because calibration transition was smooth</string>
+    <string name="pref_title_fsl_cal_offset">Offset of Libre calibration versus finger like in xDrip</string>
+    <string name="pref_summary_fsl_cal_offset">OFFSET value as in calibration formula\nLibre_calibrated = OFFSET + slope * Libre_raw</string>
+    <string name="pref_title_fsl_cal_slope">Slope of Libre calibration versus finger like in xDrip</string>
+    <string name="pref_summary_fsl_cal_slope">SLOPE value as in calibration formula\nLibre_calibrated = offset + SLOPE * Libre_raw</string>
+    <string name="pref_title_fsl_exp1_factor">Libre 1st order exponential smoothing factor</string>
+    <string name="pref_summary_fsl_exp1_factor">Used without xDrip 1 minute smoothing in between\n0.0 : max. effect\n1.0 : min. effect</string>
+    <string name="pref_title_activity_scale_factor">Scale factor for final activity sensitivity</string>
+    <string name="pref_summary_activity_scale_factor" formatted="false">Default: 1.0\nIf activity is detected then its default contribution of 15% or 30% is scaled up or down by this ratio\nA value of 0.0 disables activity contribution to sensitivity</string>
+    <string name="pref_title_inactivity_scale_factor">Scale factor for final inactivity sensitivity</string>
+    <string name="pref_summary_inactivity_scale_factor" formatted="false">Default: 1.0\nIf inactivity is detected then its default contribution of 10% or 20% is scaled up or down by this ratio\nA value of 0.0 disables inactivity contribution to sensitivity</string>
+    <string name="pref_title_inactivity_idle_start">Start hour for disabling inactivity monitoring</string>
+    <string name="pref_summary_inactivity_idle_start">Start hour when inactivity monitoring is disabled for sleep\nDefault in 24h notation is 22</string>
+    <string name="pref_title_inactivity_idle_end">End hour for disabling inactivity monitoring</string>
+    <string name="pref_summary_inactivity_idle_end">End hour of sleep when inactivity monitoring is re-enabled again\nDefault in 24h notation is 6</string>
 </resources>

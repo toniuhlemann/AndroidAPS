@@ -348,17 +348,6 @@ enum class IntKey(
         unitType = UnitType.GRAMS,
         sync = SyncSpec(SyncChannel.Cold, SyncDirection.Bidirectional)
     ),
-    ApsAutoIsfHalfBasalExerciseTarget(
-        key = "half_basal_exercise_target",
-        defaultValue = 160,
-        min = 120,
-        max = 200,
-        title = KeysStrings.pref_title_half_basal_exercise_target,
-        summary = KeysStrings.half_basal_exercise_target_summary,
-        defaultedBySM = true,
-        unitType = UnitType.MGDL,
-        sync = SyncSpec(SyncChannel.Cold, SyncDirection.Bidirectional)
-    ),
     ApsAutoIsfIobThPercent(
         key = "iob_threshold_percent",
         defaultValue = 100,
@@ -368,6 +357,29 @@ enum class IntKey(
         summary = KeysStrings.openapsama_iob_threshold_percent_summary,
         defaultedBySM = true,
         unitType = UnitType.PERCENT,
+        sync = SyncSpec(SyncChannel.Cold, SyncDirection.Bidirectional)
+    ),
+    // autoISF 3.2.1 activity monitor: hours in which inactivity is not monitored
+    ActivityMonitorIdleStart(
+        key = "inactivity_idle_start",
+        defaultValue = 22,
+        min = 0,
+        max = 23,
+        title = KeysStrings.pref_title_inactivity_idle_start,
+        summary = KeysStrings.pref_summary_inactivity_idle_start,
+        defaultedBySM = true,
+        dependency = BooleanKey.ActivityMonitorOvernight,
+        sync = SyncSpec(SyncChannel.Cold, SyncDirection.Bidirectional)
+    ),
+    ActivityMonitorIdleEnd(
+        key = "inactivity_idle_end",
+        defaultValue = 6,
+        min = 0,
+        max = 23,
+        title = KeysStrings.pref_title_inactivity_idle_end,
+        summary = KeysStrings.pref_summary_inactivity_idle_end,
+        defaultedBySM = true,
+        dependency = BooleanKey.ActivityMonitorOvernight,
         sync = SyncSpec(SyncChannel.Cold, SyncDirection.Bidirectional)
     ),
     ApsDynIsfAdjustmentFactor(
