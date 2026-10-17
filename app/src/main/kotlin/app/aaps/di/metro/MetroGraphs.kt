@@ -64,6 +64,7 @@ import app.aaps.plugins.aps.loop.runningMode.RunningModeExpiryScheduler
 import app.aaps.plugins.aps.loop.runningMode.RunningModeReconciler
 import app.aaps.plugins.aps.openAPSAMA.DetermineBasalAMA
 import app.aaps.plugins.aps.openAPSAutoISF.DetermineBasalAutoISF
+import app.aaps.plugins.aps.openAPSAutoISF.IobActionExports
 import app.aaps.plugins.aps.openAPSSMB.DetermineBasalSMB
 import app.aaps.plugins.automation.AutomationRuntime
 import app.aaps.plugins.constraints.objectives.ObjectivesPlugin
@@ -256,6 +257,7 @@ class MetroGraphs(
     val loop: Loop get() = root.loop
     val autotune: Autotune get() = root.autotune
     val runningModeReconciler: RunningModeReconciler get() = root.runningModeReconciler
+    val iobActionExports: IobActionExports get() = root.iobActionExports
 
     /** The openAPS pieces the instrumented APS tests read. */
     val determineBasalSMB: DetermineBasalSMB get() = root.determineBasalSMB

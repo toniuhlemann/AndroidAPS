@@ -61,4 +61,17 @@ interface AutomationStateInterface {
      * @param stateName The name of the state to delete
      */
     fun deleteState(stateName: String)
+
+    /**
+     * Fork (IOB-Action viewer): the state DEFINITION and its current VALUE, read together under one
+     * lock. inState()/getState() as two separate reads cannot tell "state missing" (unknown) from
+     * "false", and can race a write in between. Read only.
+     */
+    fun getStateSnapshot(stateName: String): AutomationStateSnapshot
 }
+
+/** known = false means the state is not defined (unknown is not false). */
+data class AutomationStateSnapshot(
+    val known: Boolean,
+    val value: String?,
+)

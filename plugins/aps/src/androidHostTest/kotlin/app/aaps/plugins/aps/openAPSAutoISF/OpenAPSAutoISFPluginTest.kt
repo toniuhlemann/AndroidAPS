@@ -4,6 +4,8 @@ import app.aaps.core.data.aps.SMBDefaults
 import app.aaps.core.data.configuration.Constants
 import app.aaps.core.interfaces.aps.GlucoseStatusAutoIsf
 import app.aaps.core.interfaces.aps.OapsProfileAutoIsf
+import app.aaps.core.interfaces.aps.AutoIsfOverrideState
+import app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider
 import app.aaps.core.interfaces.automation.AutomationStateInterface
 import app.aaps.core.interfaces.bgQualityCheck.BgQualityCheck
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
@@ -13,6 +15,7 @@ import app.aaps.core.interfaces.profiling.Profiler
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
+import app.aaps.core.keys.LongNonKey
 import app.aaps.core.keys.UnitDoubleKey
 import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.common.truth.Truth.assertThat
@@ -31,6 +34,8 @@ class OpenAPSAutoISFPluginTest : TestBaseWithProfile() {
     @Mock lateinit var bgQualityCheck: BgQualityCheck
     @Mock lateinit var profiler: Profiler
     @Mock lateinit var automationStateService: AutomationStateInterface
+    @Mock lateinit var effectiveAutoIsfSettings: EffectiveAutoIsfSettingsProvider
+    @Mock lateinit var iobActionExport: IobActionExportSink
     private lateinit var openAPSAutoISFPlugin: OpenAPSAutoISFPlugin
 
     @BeforeEach fun prepare() {
@@ -38,7 +43,12 @@ class OpenAPSAutoISFPluginTest : TestBaseWithProfile() {
             aapsLogger, rxBus, constraintChecker, rh, profileFunction, profileUtil, config, activePlugin,
             iobCobCalculator, hardLimits, preferences, dateUtil, processedTbrEbData, persistenceLayer, glucoseStatusProvider,
             bgQualityCheck, notificationManager, determineBasalSMB, profiler,
-            GlucoseStatusCalculatorAutoIsf(aapsLogger, iobCobCalculator, dateUtil, deltaCalculator, preferences), { apsResultProvider() }, ch, automationStateService
+            GlucoseStatusCalculatorAutoIsf(aapsLogger, iobCobCalculator, dateUtil, deltaCalculator, preferences), { apsResultProvider() }, ch, automationStateService,
+            effectiveAutoIsfSettings, iobActionExport
+        )
+        // Neutral provider (no lease): effective == base, as with the channel off.
+        whenever(effectiveAutoIsfSettings.snapshot()).thenReturn(
+            EffectiveAutoIsfSettingsProvider.Snapshot(100, 100, AutoIsfOverrideState.NONE, null, null, null)
         )
     }
 
@@ -211,25 +221,53 @@ class OpenAPSAutoISFPluginTest : TestBaseWithProfile() {
             iob_threshold_percent = 100,
             profile_percentage = 100
         )
-        assertThat(openAPSAutoISFPlugin.loop_smb(false, profile, 11.0, false, 11.1)).isEqualTo("AAPS")
+        // Fork 0059: loop_smb returns LoopSmbDecision(mode, reason) - the mode as before, the reason names the branch.
+        var d = openAPSAutoISFPlugin.loop_smb(false, profile, 11.0, false, 11.1)
+        assertThat(d.mode).isEqualTo("AAPS")
+        assertThat(d.reason).isEqualTo("microbolus-disabled")
         whenever(preferences.get(BooleanKey.ApsAutoIsfSmbOnEvenTarget)).thenReturn(true)
-        assertThat(openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1)).isEqualTo("fullLoop")
-        assertThat(openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, true, 10.1)).isEqualTo("iobTH")
+        d = openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1)
+        assertThat(d.mode).isEqualTo("fullLoop")
+        assertThat(d.reason).isEqualTo("none")
+        d = openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, true, 10.1)
+        assertThat(d.mode).isEqualTo("iobTH")
+        assertThat(d.reason).isEqualTo("iobTH")
         profile.target_bg = 122.0
-        assertThat(openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1)).isEqualTo("enforced")
+        d = openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1)
+        assertThat(d.mode).isEqualTo("enforced")
+        assertThat(d.reason).isEqualTo("none")
         profile.target_bg = 91.8    //5.1
         profile.out_units = "mmol/L"
-        assertThat(openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1)).isEqualTo("blocked")
+        d = openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1)
+        assertThat(d.mode).isEqualTo("blocked")
+        assertThat(d.reason).isEqualTo("odd-target")
         profile.target_bg = 149.4   //8.3
-        assertThat(openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1)).isEqualTo("blocked")
+        d = openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1)
+        assertThat(d.mode).isEqualTo("blocked")
+        assertThat(d.reason).isEqualTo("odd-target")
         profile.target_bg = 147.6   //8.2
-        assertThat(openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1)).isEqualTo("enforced")
+        assertThat(openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1).mode).isEqualTo("enforced")
         profile.target_bg = 145.8   //8.1
-        assertThat(openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1)).isEqualTo("blocked")
+        assertThat(openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1).reason).isEqualTo("odd-target")
         profile.target_bg = 144.0   //8.0
-        assertThat(openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1)).isEqualTo("enforced")
+        assertThat(openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1).mode).isEqualTo("enforced")
+        // max_iob = 0 -> blocked / max-iob-zero
+        profile.target_bg = 144.0
+        profile.out_units = "mg/dl"
+        d = openAPSAutoISFPlugin.loop_smb(true, profile.copy(max_iob = 0.0), 11.0, false, 11.1)
+        assertThat(d.mode).isEqualTo("blocked")
+        assertThat(d.reason).isEqualTo("max-iob-zero")
         whenever(preferences.get(BooleanKey.ApsAutoIsfSmbOnEvenTarget)).thenReturn(false)
-        assertThat(openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1)).isEqualTo("AAPS")
+        d = openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1)
+        assertThat(d.mode).isEqualTo("AAPS")
+        assertThat(d.reason).isEqualTo("even-odd-off")
+        // A running calibration window -> blocked / calibration. A start in the future makes the
+        // remaining minutes positive whatever the (construction time) duration setting is.
+        whenever(preferences.get(LongNonKey.FslCalibrationStart)).thenReturn(now + 600_000L)
+        whenever(preferences.get(BooleanKey.FslCalibrationEnd)).thenReturn(false)
+        d = openAPSAutoISFPlugin.loop_smb(true, profile, 11.0, false, 11.1)
+        assertThat(d.mode).isEqualTo("blocked")
+        assertThat(d.reason).isEqualTo("calibration")
     }
 
     @Test

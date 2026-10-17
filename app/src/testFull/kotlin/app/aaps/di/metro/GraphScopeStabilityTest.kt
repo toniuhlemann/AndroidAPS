@@ -150,6 +150,7 @@ class GraphScopeStabilityTest {
             "iconsProvider",
             "importExportPrefs",
             "insulinManager",
+            "iobActionExports",
             "iobCobCalculator",
             "l",
             "lastBgData",

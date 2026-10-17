@@ -82,6 +82,11 @@ class RawPreferenceStoreScanTest {
         "implementation/src/iosMain/kotlin/app/aaps/implementation/maintenance/cloud/IosGoogleDriveProvider.kt" to "cloud export, iOS part",
         "implementation/src/jvmMain/kotlin/app/aaps/implementation/maintenance/cloud/DesktopGoogleDriveProvider.kt" to "cloud export, desktop part",
         "implementation/src/commonMain/kotlin/app/aaps/implementation/maintenance/cloud/GoogleTokens.kt" to "holds the cloud token store the providers above use",
+        // Fork (IOB-Action viewer): a read-only copy of the store, filtered by an allow and a deny list,
+        // for the companion viewer. Like the export it has to see every key it matches, also the ones
+        // this build does not register, and it never writes.
+        "plugins/aps/src/commonMain/kotlin/app/aaps/plugins/aps/openAPSAutoISF/IobActionConfigExporter.kt" to
+            "reads the whole store, filtered and read only, for the viewer config export",
 
         // --- Runs before DI exists ---
         "implementation/src/androidMain/kotlin/app/aaps/implementation/utils/fabric/FabricPrivacyImpl.kt" to "reads before the graph is built (DI cycle)",

@@ -37,6 +37,26 @@ class DetermineBasalAutoISF(
     private var consoleError = mutableListOf<String>()
     private var consoleLog = mutableListOf<String>()
 
+    /**
+     * Fork (IOB-Action viewer): the SMB decision of the CURRENT cycle, for the viewer graph (SMB
+     * delivered / capped / blocked markers). Set in [determine_basal], read by the plugin's export
+     * right after the call. Pure side output: it is NEVER read back into a dosing path.
+     */
+    var lastSmbDecision: SmbDecision? = null
+
+    /**
+     * wantedU = the uncapped SMB wish (insulinReq * ratio); deliveredU = rT.units after all caps.
+     * limitReason names the constraint that shaped this cycle's SMB; capIobU is the commitment view
+     * max(net IOB, bolus IOB); headroomU / headroomAfterU the iobTH headroom before and after it.
+     */
+    data class SmbDecision(
+        val wantedU: Double, val deliveredU: Double, val maxBolusU: Double?, val state: String,
+        val limitReason: String? = null,
+        val capIobU: Double? = null,
+        val headroomU: Double? = null,
+        val headroomAfterU: Double? = null,
+    )
+
     private fun Double.toFixed2(): String = NumberFormat.DECIMAL_2_UP_TO_3.format(round(this, 2))
 
     fun round_basal(value: Double): Double = value
@@ -218,6 +238,7 @@ class DetermineBasalAutoISF(
         consoleError = mutableListOf()
         consoleError.add(activity_consoleLog)
         consoleLog = mutableListOf()
+        lastSmbDecision = null   // a cycle that does not reach the SMB branch reports nothing
         var rT = RT(
             algorithm = APSResult.Algorithm.AUTO_ISF,
             runningAutoIsf = true,
@@ -1115,6 +1136,20 @@ class DetermineBasalAutoISF(
             rate = round_basal(rate)
             insulinReq = round(insulinReq, 3)
             rT.insulinReq = insulinReq
+            // Fork (viewer, dosing neutral): the default SMB decision of this cycle. The SMB block below
+            // overrides it with the precise state; otherwise (SMB off / bg at or below threshold) a
+            // positive insulinReq means an SMB was WANTED but suppressed.
+            lastSmbDecision = SmbDecision(
+                0.0, 0.0, null, if (insulinReq > 0.0) "blocked" else "none",
+                limitReason = when {
+                    insulinReq <= 0.0                -> null
+                    !microBolusAllowed || !enableSMB -> "smb-disabled"
+                    bg <= threshold                  -> "bg-below-threshold"
+                    else                             -> "smb-off"
+                },
+                capIobU = round(iob_data.iob - min(0.0, iob_data.basaliob), 3),
+                headroomU = round(iobTHvirtual - (iob_data.iob - min(0.0, iob_data.basaliob)), 3),
+            )
             //console.error(iob_data.lastBolusTime);
             //console.error(profile.temptargetSet, target_bg, rT.COB);
             // only allow microboluses with COB or low temp targets, or within DIA hours of a bolus
@@ -1135,13 +1170,24 @@ class DetermineBasalAutoISF(
                 val roundSMBTo = 1 / profile.bolus_increment
                 //var microBolus: Double
                 var microBolus = kotlin.math.floor(kotlin.math.min(insulinReq / 2, maxBolus) * roundSMBTo) / roundSMBTo
+                // Fork shadow: which constraint shaped this SMB (export only).
+                var shadowLimitReason: String? = null
                 if (autoIsfMode) {
-                    microBolus = kotlin.math.min(insulinReq * smb_ratio, maxBolus)
-                    if (microBolus > iobTHvirtual - iob_data.iob && (loop_wanted_smb == "fullLoop" || loop_wanted_smb == "enforced")) {
-                        microBolus = iobTHvirtual - iob_data.iob
-                        consoleError.add("Full loop capped SMB at ${round(microBolus, 2)} to not exceed $iobTHtolerance% of effective iobTH ${round(iobTHvirtual / iobTHtolerance * 100, 2)}U")
+                    val rawWant = insulinReq * smb_ratio
+                    microBolus = kotlin.math.min(rawWant, maxBolus)
+                    if (rawWant > maxBolus) shadowLimitReason = "maxBolus"
+                    // Fork 0049: the single SMB cap uses the SAME commitment basis as the 0040 entry gate,
+                    // max(net IOB, bolus IOB). Negative basal IOB (zero temp protection phases) no longer
+                    // frees extra single SMB budget; with positive basal IOB nothing changes.
+                    val capIob = iob_data.iob - min(0.0, iob_data.basaliob)
+                    if (microBolus > iobTHvirtual - capIob && (loop_wanted_smb == "fullLoop" || loop_wanted_smb == "enforced")) {
+                        microBolus = iobTHvirtual - capIob
+                        shadowLimitReason = "iobTH"
+                        consoleError.add("Full loop capped SMB at ${round(microBolus, 2)} to not exceed $iobTHtolerance% of effective iobTH ${round(iobTHvirtual / iobTHtolerance * 100, 2)}U (capIob ${round(capIob, 2)}U = max(net, bolus))")
                     }
+                    val preFloor = microBolus
                     microBolus = kotlin.math.floor(microBolus * roundSMBTo) / roundSMBTo
+                    if (shadowLimitReason == null && preFloor > 0 && microBolus < preFloor - 1e-9) shadowLimitReason = "rounding"
                 }
 
                 // calculate a long enough zero temp to eventually correct back up to target
@@ -1206,6 +1252,37 @@ class DetermineBasalAutoISF(
                     rT.reason.append("Waiting ${waitingMins.withoutZeros()}m ${waitingSeconds.withoutZeros()}s to microbolus again.")
                 }
                 //rT.reason += ". ";
+
+                // Fork (viewer, dosing neutral): the precise SMB decision of this cycle. wantedFloored removes
+                // the bolus increment rounding, so a pure round-down is not labelled "capped".
+                run {
+                    val deliveredU = rT.units ?: 0.0
+                    val wantedU = if (autoIsfMode) insulinReq * smb_ratio else kotlin.math.min(insulinReq / 2.0, maxBolus)
+                    val wantedFloored = kotlin.math.floor(wantedU * roundSMBTo) / roundSMBTo
+                    val capIob = iob_data.iob - min(0.0, iob_data.basaliob)
+                    val state = when {
+                        deliveredU > 0.0 && deliveredU < wantedFloored - 1e-9 -> "capped"
+                        deliveredU > 0.0                                       -> "delivered"
+                        microBolus > 0.0                                       -> "waiting"   // would deliver, SMB interval not over
+                        insulinReq > 0.0                                       -> "blocked"   // wanted, nothing delivered
+                        else                                                   -> "none"
+                    }
+                    lastSmbDecision = SmbDecision(
+                        wantedU = round(wantedU, 3),
+                        deliveredU = round(deliveredU, 3),
+                        maxBolusU = maxBolus,
+                        state = state,
+                        limitReason = when {
+                            state == "waiting"                                -> "interval"
+                            state == "delivered" && shadowLimitReason == null -> null
+                            state == "none"                                   -> null
+                            else                                              -> shadowLimitReason ?: if (state == "blocked") "rounding" else null
+                        },
+                        capIobU = round(capIob, 3),
+                        headroomU = round(iobTHvirtual - capIob, 3),
+                        headroomAfterU = round(iobTHvirtual - capIob - deliveredU, 3),
+                    )
+                }
 
                 // if no zero temp is required, don't return yet; allow later code to set a high temp
                 if (durationReq > 0) {

@@ -136,6 +136,7 @@ import app.aaps.plugins.aps.openAPS.DeltaCalculator
 import app.aaps.plugins.aps.openAPSAMA.DetermineBasalAMA
 import app.aaps.plugins.aps.openAPSAutoISF.DetermineBasalAutoISF
 import app.aaps.plugins.aps.openAPSAutoISF.GlucoseStatusCalculatorAutoIsf
+import app.aaps.plugins.aps.openAPSAutoISF.IobActionExports
 import app.aaps.plugins.aps.openAPSSMB.DetermineBasalSMB
 import app.aaps.plugins.aps.openAPSSMB.GlucoseStatusCalculatorSMB
 import app.aaps.plugins.automation.AutomationRuntime
@@ -469,6 +470,9 @@ interface AppRootGraph : MetroViewModelMultibindings {
 
     /** Autotune, for the automation actions. */
     val autotune: Autotune
+
+    /** Fork (IOB-Action viewer): the minute heartbeat of the viewer exports. `MainApp` drives it. */
+    val iobActionExports: IobActionExports
 
     /** Running-mode helpers, from commonMain. `MainApp` reads the reconciler. */
     val runningModeReconciler: RunningModeReconciler

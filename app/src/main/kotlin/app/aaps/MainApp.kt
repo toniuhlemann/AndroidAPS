@@ -405,6 +405,8 @@ class MainApp : Application(), MetroMemberInjector, MetroViewModelFactoryOwner, 
             widgetUpdater.update("ScheduleEveryMin")
             // Picks up the step counter once the permission was granted. Does nothing when already connected.
             StepSensorListener.register(this@MainApp)
+            // Fork (IOB-Action viewer): core + config export on the same tick, whichever APS runs.
+            appScope.launch { metroGraphs.iobActionExports.heartbeat() }
         }
         handler.postDelayed(refreshWidget, 5000)
         setUserStats()

@@ -1,6 +1,7 @@
 package app.aaps.plugins.automation.states
 
 import app.aaps.core.interfaces.automation.AutomationStateInterface
+import app.aaps.core.interfaces.automation.AutomationStateSnapshot
 import app.aaps.core.interfaces.concurrent.AapsLock
 import app.aaps.core.interfaces.concurrent.withLock
 import app.aaps.core.keys.StringNonKey
@@ -80,6 +81,12 @@ class AutomationStateService(
         }
         stateValues[trimmedName] = trimmedValues
         preferences.put(StringNonKey.AutomationStateValues, Json.encodeToString(stateValues))
+    }
+
+    override fun getStateSnapshot(stateName: String): AutomationStateSnapshot = lock.withLock {
+        val trimmedName = stateName.trim()
+        if (!stateValues.containsKey(trimmedName)) AutomationStateSnapshot(known = false, value = null)
+        else automationStates[trimmedName].let { AutomationStateSnapshot(known = it != null, value = it) }
     }
 
     override fun hasStateValues(stateName: String): Boolean = lock.withLock {

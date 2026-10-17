@@ -5,6 +5,7 @@ import androidx.collection.forEach
 import app.aaps.core.data.aps.SMBDefaults
 import app.aaps.core.data.configuration.Constants
 import app.aaps.core.data.model.AIV
+import app.aaps.core.data.model.BS
 import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.getPassedDurationToTimeInMinutes
 import app.aaps.core.data.model.SC
@@ -16,7 +17,11 @@ import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.AutosensResult
 import app.aaps.core.interfaces.aps.CurrentTemp
 import app.aaps.core.interfaces.aps.GlucoseStatus
+import app.aaps.core.interfaces.aps.GlucoseStatusAutoIsf
+import app.aaps.core.interfaces.aps.IobTotal
+import app.aaps.core.interfaces.aps.MealData
 import app.aaps.core.interfaces.aps.OapsProfileAutoIsf
+import app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider
 import app.aaps.core.interfaces.automation.AutomationStateInterface
 import app.aaps.core.interfaces.bgQualityCheck.BgQualityCheck
 import app.aaps.core.interfaces.concurrent.AapsLock
@@ -39,6 +44,7 @@ import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.plugin.PluginBaseWithPreferences
 import app.aaps.core.interfaces.plugin.PermissionGroup
 import app.aaps.core.interfaces.plugin.PluginDescription
+import app.aaps.core.interfaces.profile.EffectiveProfile
 import app.aaps.core.interfaces.profile.Profile
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.profile.ProfileUtil
@@ -80,6 +86,10 @@ import dev.zacsweers.metro.SingleIn
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
@@ -112,7 +122,10 @@ open class OpenAPSAutoISFPlugin(
     private val glucoseStatusCalculatorAutoIsf: GlucoseStatusCalculatorAutoIsf,
     private val apsResultProvider: () -> APSResult,
     private val ch: ConcentrationHelper,
-    private val automationStateService: AutomationStateInterface
+    private val automationStateService: AutomationStateInterface,
+    // Fork (IOB-Action viewer): the effective autoISF settings (one snapshot per run) and the exports
+    private val effectiveAutoIsfSettings: EffectiveAutoIsfSettingsProvider,
+    private val iobActionExport: IobActionExportSink
 ) : PluginBaseWithPreferences(
     PluginDescription()
         .mainType(PluginType.APS)
@@ -160,6 +173,7 @@ open class OpenAPSAutoISFPlugin(
         get() = if (preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatioBgRange) < 10.0) preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatioBgRange) * Constants.MMOLL_TO_MGDL else preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatioBgRange)
     val smbMaxRangeExtension; get() = preferences.get(DoubleKey.ApsAutoIsfSmbMaxRangeExtension)
     private val enableSMB_EvenOn_OddOff_always; get() = preferences.get(BooleanKey.ApsAutoIsfSmbOnEvenTarget) // for profile target
+    /** The BASE iobTH setting. The run uses the effective value of its settings snapshot. */
     val iobThresholdPercent; get() = preferences.get(IntKey.ApsAutoIsfIobThPercent)
     private val exerciseMode; get() = SMBDefaults.exercise_mode
     private val highTemptargetRaisesSensitivity; get() = preferences.get(BooleanKey.ApsAutoIsfHighTtRaisesSens)
@@ -257,7 +271,9 @@ open class OpenAPSAutoISFPlugin(
         // Round down to minutesClass min and use it as a key for caching
         // Add BG to key as it affects calculation
         val key = timestamp - timestamp % T.mins(minutesClass).msecs() + glucose.toLong()
-        val sensitivity = autoISF(profile)
+        // Fork 0044: this path serves getIsfMgdl() for ANY caller (overview, NS upload, widgets,
+        // automations). Its console lines must not land in the live AUTO-ISF console of the loop run.
+        val sensitivity = autoISF(profile, mutableListOf())
         if (sensitivity > 0) {
             // can default to 0, e.g. for the first 2-3 loops in a virgin setup
             aapsLogger.debug("calculateVariableIsf CALC ${dateUtil.dateAndTimeAndSecondsString(timestamp)} $sensitivity")
@@ -273,6 +289,10 @@ open class OpenAPSAutoISFPlugin(
     override suspend fun invoke(initiator: String, tempBasalFallback: Boolean) = withContext(Dispatchers.Default) {
         aapsLogger.debug(LTag.APS, "invoke from $initiator tempBasalFallback: $tempBasalFallback")
         lastAPSResult = null
+        // Fork (capability matrix A1): ONE effective settings snapshot per APS run, a pure RAM read.
+        // Without a lease the effective value is the base preference, so the run is unchanged.
+        val autoIsfSettingsSnapshot = effectiveAutoIsfSettings.snapshot()
+        val effectiveIobThPercent = autoIsfSettingsSnapshot.iobThPercentEffective
         val glucoseStatus = glucoseStatusProvider.glucoseStatusData
         val profile = profileFunction.getProfile()
         val pump = activePlugin.activePump
@@ -446,7 +466,7 @@ open class OpenAPSAutoISFPlugin(
             smb_delivery_ratio_bg_range = preferences.get(DoubleKey.ApsAutoIsfSmbDeliveryRatioBgRange),   //smb_delivery_ratio_bg_range was always in mg/dL
             smb_max_range_extension = smbMaxRangeExtension,
             enableSMB_EvenOn_OddOff_always = enableSMB_EvenOn_OddOff_always,
-            iob_threshold_percent = iobThresholdPercent,
+            iob_threshold_percent = effectiveIobThPercent,
             profile_percentage = profile_percentage
         )
 
@@ -493,15 +513,44 @@ open class OpenAPSAutoISFPlugin(
         }
         var iobTH_reduction_ratio = 1.0
         var use_iobTH = false
-        if (iobThresholdPercent != 100) {
+        if (effectiveIobThPercent != 100) {
             iobTH_reduction_ratio = profile_percentage / 100.0 * sensitivityRatio
             use_iobTH = true
         }
         val iobTHtolerance = 130.0
-        val iobTHvirtual = iobThresholdPercent * iobTHtolerance / 10000.0 * oapsProfile.max_iob * iobTH_reduction_ratio
-        val loopWantedSmb = loop_smb(microBolusAllowed, oapsProfile, iobData.iob, use_iobTH, iobTHvirtual / iobTHtolerance * 100.0)
+        val iobTHvirtual = effectiveIobThPercent * iobTHtolerance / 10000.0 * oapsProfile.max_iob * iobTH_reduction_ratio
+        // Fork 0040: the SMB budget gate compares against max(bolus IOB, net IOB) instead of net IOB.
+        // Negative basal IOB (withheld basal from zero temps) builds up exactly in PROTECTIVE phases and
+        // freed bolus headroom right when the ceiling should be tightest. Asymmetric on purpose: positive
+        // basal IOB (high temps) still uses budget, withheld basal can no longer create budget.
+        // Predictions and eventualBG keep using net IOB - only the budget gate changes.
+        val gateIob = iobData.iob - min(0.0, iobData.basaliob)   // = max(bolus IOB, net IOB)
+        // Fork 0059: the mode drives dosing as before, the reason goes to the export only.
+        val loopSmbDecision = loop_smb(microBolusAllowed, oapsProfile, gateIob, use_iobTH, iobTHvirtual / iobTHtolerance * 100.0)
+        val loopWantedSmb = loopSmbDecision.mode
         val flatBGsDetected = bgQualityCheck.state == BgQualityCheck.State.FLAT
         val smbRatio = determine_varSMBratio(glucoseStatus.glucose.toInt(), target_bg, loopWantedSmb)
+
+        // Fork 0041/0048: the COVERAGE line in the AUTO-ISF console - the insulin coverage the coverage
+        // automations gate on. Raw bg (leads the smoothed value at turns), PROFILE target/ISF/IC (not the
+        // TT or the autoISF ISF - a stable denominator) and max(bolus IOB, net IOB) as in the 0040 gate;
+        // bolus coverage next to it. Diagnostic only, never read back into dosing.
+        try {
+            val covRaw = persistenceLayer.getLastGlucoseValue()?.value ?: glucoseStatus.glucose
+            val covIsf = profile.getProfileIsfMgdl()
+            val covIc = profile.getIc()
+            val covTarget = profile.getTargetMgdl()
+            val covNeed = max(0.2, (covRaw - covTarget) / covIsf + mealData.mealCOB / covIc)
+            val covBolusIob = max(0.0, iobData.iob - iobData.basaliob)
+            consoleError.add(
+                "Coverage ${(100.0 * gateIob / covNeed).roundToLong()}% (raw ${covRaw.roundToLong()}, profTgt ${covTarget.roundToLong()}, " +
+                    "need ${round(covNeed, 2)}U, iobGate ${round(gateIob, 2)}U [max bol/net]) | " +
+                    "BolusCov ${(100.0 * covBolusIob / covNeed).roundToLong()}% (bolus ${round(covBolusIob, 2)}U)"
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+        }
 
         aapsLogger.debug(LTag.APS, ">>> Invoking determine_basal AutoISF <<<")
         aapsLogger.debug(LTag.APS, "Glucose status:     $glucoseStatus")
@@ -530,7 +579,7 @@ open class OpenAPSAutoISFPlugin(
             profile_percentage = profile_percentage,
             smb_ratio = smbRatio,
             smb_max_range_extension = smbMaxRangeExtension,
-            iob_threshold_percent = iobThresholdPercent,
+            iob_threshold_percent = effectiveIobThPercent,
             activity_consoleLog = activityLog,
             auto_isf_consoleError = consoleError,
             auto_isf_consoleLog = consoleLog
@@ -553,10 +602,240 @@ open class OpenAPSAutoISFPlugin(
         //aapsLogger.debug(LTag.APS, "autoIsfValues to write contains: $autoIsfValues")
         runCatching { persistenceLayer.insertOrUpdateAutoIsfValues(autoIsfValues) }
             .onFailure { aapsLogger.error(LTag.APS, "AutoIsfValues not stored", it) }
+        // Fork (IOB-Action viewer): the state export of this cycle and the signal to the viewer.
+        // Write-only and guarded: a failing export never touches the loop.
+        exportState(now, profile, glucoseStatus, oapsProfile, iobData, mealData, profile_percentage, smbRatio, loopSmbDecision, autoIsfSettingsSnapshot)
+        iobActionExport.loopCycleWritten(now)
         //val autoIsfRecords = persistenceLayer.getAutoIsfValuesFromTime(now-100000L)
         //aapsLogger.debug(LTag.APS, "autoIsfValues records read contain: $autoIsfRecords")
         rxBus.send(EventOpenAPSUpdateGui())
     }
+
+    /**
+     * Fork (IOB-Action viewer): iobaction_state.json of this determine-basal cycle - the full loop and
+     * autoISF state, so the viewer does not have to parse the log. Same keys as the 3.4 fork. Written
+     * only, guarded: an export problem is logged and never reaches the loop.
+     */
+    private suspend fun exportState(
+        now: Long,
+        profile: EffectiveProfile,
+        glucoseStatus: GlucoseStatus,
+        oapsProfile: OapsProfileAutoIsf,
+        iobData: IobTotal,
+        mealData: MealData,
+        profilePercentage: Int,
+        smbRatio: Double,
+        loopSmbDecision: LoopSmbDecision,
+        snapshot: EffectiveAutoIsfSettingsProvider.Snapshot
+    ) {
+        try {
+            val activeTt = persistenceLayer.getTemporaryTargetActiveAt(now)
+            val gsAisf = glucoseStatus as? GlucoseStatusAutoIsf
+            // The calculation the overview header uses (iobArray[0] is the SMB decision array and
+            // reports another basal IOB). Falls back to iobData below.
+            val headerIob = notCancelled { iobCobCalculator.calculateFromTreatmentsAndTemps(now, profile) }
+            val dbSmbs = notCancelled {
+                persistenceLayer.getBolusesFromTimeToTime(now - T.hours(6).msecs(), now, true)
+                    .filter { it.type == BS.Type.SMB && it.isValid && it.amount > 0.0 }
+                    .map { IobActionExportSink.SmbIn(it.timestamp, it.amount) }
+            } ?: emptyList()
+            // Recent manual bolus and rescue carbs straight from the database, so the viewer's meal mode
+            // and rebound hold need no log. SMBs are excluded.
+            val halfHourAgo = now - T.mins(30).msecs()
+            val bolusWindowMs = T.mins(15).msecs()
+            val normalBoluses = notCancelled {
+                persistenceLayer.getBolusesFromTimeToTime(halfHourAgo - bolusWindowMs, now, false)
+                    .filter { it.type == BS.Type.NORMAL && it.isValid && it.amount > 0.0 }
+            }
+            // RESCUE = carbs WITHOUT a manual bolus within +/- 15 min. In HCL, carbs without a manual
+            // bolus are eaten because of a low or too much IOB; a real meal carries a manual bolus.
+            val rescueCarbs = normalBoluses?.let { boluses ->
+                notCancelled {
+                    persistenceLayer.getCarbsFromTimeToTimeExpanded(halfHourAgo, now, false)
+                        .filter { c -> c.isValid && c.amount > 0.0 && boluses.none { abs(it.timestamp - c.timestamp) <= bolusWindowMs } }
+                }
+            }
+            val mealSnapshot = notCancelled { automationStateService.getStateSnapshot("MEAL_ACTIVE") }
+            val profileName = notCancelled { profileFunction.getProfileName() }
+            val profileNameRemaining = notCancelled { profileFunction.getProfileNameWithRemainingTime() }
+            val pump = activePlugin.activePump
+
+            val state = buildJsonObject {
+                putOpt("ts", now)
+                put("aps", lastAPSResult?.json() ?: JsonObject(emptyMap()))
+                put("autoIsf", buildJsonObject {
+                    // The factors come from the fit and can be non-finite on a flat window: left out then.
+                    putOpt("acce", autoIsfValues.acceIsf.finiteOrNull())
+                    putOpt("bg", autoIsfValues.bgIsf.finiteOrNull())
+                    putOpt("pp", autoIsfValues.ppIsf.finiteOrNull())
+                    putOpt("dura", autoIsfValues.duraIsf.finiteOrNull())
+                    putOpt("final", autoIsfValues.finalIsf.finiteOrNull())
+                    putOpt("iobThEffectiveU", autoIsfValues.iobThEffective.finiteOrNull())
+                    // 0059: the exact branch of the SMB gate (smb-disabled alone is ambiguous).
+                    putOpt("smbGateMode", loopSmbDecision.mode)
+                    putOpt("smbGateReason", loopSmbDecision.reason)
+                })
+                // The pump bolus increment and the BG time stamp this run used. Absent when unknown.
+                putOpt("bolusIncrementU", oapsProfile.bolus_increment.takeIf { it.isFinite() && it > 0.0 })
+                putOpt("apsGlucoseTs", glucoseStatus.date.takeIf { it > 0L })
+                put("smb", buildJsonObject {
+                    putOpt("ratio", smbRatio)                       // effective SMB delivery ratio of this cycle
+                    putOpt("ratio_fixed", smb_delivery_ratio)
+                    putOpt("ratio_min", smb_delivery_ratio_min)
+                    putOpt("ratio_max", smb_delivery_ratio_max)
+                    putOpt("ratio_bg_range", smb_delivery_ratio_bg_range)
+                })
+                // The SMB decision of this cycle (wanted vs delivered, state, which limit shaped it).
+                determineBasalAutoISF.lastSmbDecision?.let { d ->
+                    put("smbDecision", buildJsonObject {
+                        putOpt("wantedU", d.wantedU.finiteOrNull())
+                        putOpt("deliveredU", d.deliveredU.finiteOrNull())
+                        putOpt("maxBolusU", d.maxBolusU?.finiteOrNull())
+                        putOpt("state", d.state)
+                        putOpt("limitReason", d.limitReason)
+                        putOpt("capIobU", d.capIobU?.finiteOrNull())
+                        putOpt("headroomU", d.headroomU?.finiteOrNull())
+                        putOpt("headroomAfterU", d.headroomAfterU?.finiteOrNull())
+                    })
+                }
+                // Shadow telemetry: two fit horizons, the factor chain, the pp candidate. Export only.
+                put("shadow", buildJsonObject {
+                    AutoIsfShadow.fit?.let { f ->
+                        put("fit", buildJsonObject {
+                            putOpt("acceShort", f.acceShort.finiteOrNull())
+                            putOpt("winShortMin", f.winShortMin.finiteOrNull())
+                            putOpt("acceMid", f.acceMid?.finiteOrNull())
+                            putOpt("winMidMin", f.winMidMin?.finiteOrNull())
+                            putOpt("acceBest", f.acceBest.finiteOrNull())
+                            putOpt("winBestMin", f.winBestMin.finiteOrNull())
+                            putOpt("rSquBest", f.rSquBest.finiteOrNull())
+                            putOpt("rmseBest", f.rmseBest?.finiteOrNull())
+                            putOpt("nPoints", f.nPoints)
+                            putOpt("signAgreeShortMid", f.signAgreeShortMid)
+                            putOpt("use1MinuteRaw", f.use1MinuteRaw)
+                            putOpt("cycleTs", f.capturedAtMs)
+                        })
+                    }
+                    AutoIsfShadow.factors?.let { fc ->
+                        put("factors", buildJsonObject {
+                            putOpt("strongestPreBrake", fc.strongestPreBrake.finiteOrNull())
+                            putOpt("acceBrake", fc.acceBrake?.finiteOrNull())
+                            putOpt("liftAfterBrake", fc.liftAfterBrake.finiteOrNull())
+                            putOpt("finalAfterClamp", fc.finalAfterClamp.finiteOrNull())
+                            putOpt("ppLive", fc.ppLive.finiteOrNull())
+                            putOpt("ppCandidate", fc.ppCandidate?.finiteOrNull())
+                            putOpt("persistentDelta", fc.persistentDelta?.finiteOrNull())
+                            putOpt("cycleTs", fc.capturedAtMs)
+                        })
+                    }
+                })
+                // The fork's truth about the MEAL_ACTIVE automation state, so the viewer can see a split brain.
+                mealSnapshot?.let { snap ->
+                    val known = snap.known && snap.value in listOf("true", "false")
+                    put("automation", buildJsonObject {
+                        putOpt("mealActiveKnown", known)
+                        putOpt("mealActive", known && snap.value == "true")
+                    })
+                }
+                put("profile", buildJsonObject {
+                    putOpt("max_iob", oapsProfile.max_iob)
+                    putOpt("sens", oapsProfile.sens)
+                    putOpt("target_bg", oapsProfile.target_bg)
+                    putOpt("min_bg", oapsProfile.min_bg)
+                    putOpt("max_bg", oapsProfile.max_bg)
+                    putOpt("carb_ratio", oapsProfile.carb_ratio)
+                    putOpt("profile_percentage", profilePercentage)
+                    // The legacy field carries the BASE in both files (viewer compatibility); the
+                    // effective value, the state and the lease come separately.
+                    putOpt("iob_threshold_percent", snapshot.iobThPercentBase)
+                    putOpt("iob_threshold_percent_base", snapshot.iobThPercentBase)
+                    putOpt("iob_threshold_percent_effective", snapshot.iobThPercentEffective)
+                    putOpt("iobth_override_state", snapshot.overrideState.name)
+                    putOpt("iobth_lease_id", snapshot.leaseId)
+                    putOpt("iobth_lease_version", snapshot.leaseVersion)
+                    putOpt("iobth_lease_expires_at", snapshot.expiresAtWallMs)
+                    putOpt("name", profileName)
+                    putOpt("name_remaining", profileNameRemaining)
+                    putOpt("enable_autoISF", autoIsfWeights)
+                    putOpt("current_basal", oapsProfile.current_basal)
+                    putOpt("bgAccel_ISF_weight", bgAccel_ISF_weight)
+                    putOpt("pp_ISF_weight", pp_ISF_weight)
+                    putOpt("bgBrake_ISF_weight", bgBrake_ISF_weight)
+                    putOpt("dura_ISF_weight", dura_ISF_weight)
+                })
+                put("iob", buildJsonObject {
+                    val net = headerIob?.iob ?: iobData.iob
+                    val basal = headerIob?.basaliob ?: iobData.basaliob
+                    putOpt("net", net)
+                    putOpt("basal", basal)
+                    putOpt("bolus", net - basal)
+                    putOpt("activity", headerIob?.activity ?: iobData.activity)
+                })
+                put("device", buildJsonObject {
+                    putOpt("reservoir", notCancelled { ch.fromPump(pump.reservoirLevel.value) }?.finiteOrNull())
+                    putOpt("battery", pump.batteryLevel.value)
+                })
+                putOpt("carbsReq", lastAPSResult?.carbsReq)
+                normalBoluses?.firstOrNull { it.timestamp >= halfHourAgo }?.let { manual ->
+                    putOpt("manualBolusU", manual.amount)
+                    putOpt("manualBolusAgeMin", ((now - manual.timestamp) / 60000L).toInt())
+                }
+                if (!rescueCarbs.isNullOrEmpty()) {
+                    putOpt("rescueCarbsTakenG", rescueCarbs.sumOf { it.amount })
+                    putOpt("rescueCarbsAgeMin", ((now - rescueCarbs.maxOf { it.timestamp }) / 60000L).toInt())
+                }
+                gsAisf?.let { gs ->
+                    put("glucose", buildJsonObject {
+                        putOpt("bgAcceleration", gs.bgAcceleration.finiteOrNull())
+                        putOpt("corrSqu", gs.corrSqu.finiteOrNull())
+                        putOpt("delta", gs.delta.finiteOrNull())
+                        putOpt("shortAvgDelta", gs.shortAvgDelta.finiteOrNull())
+                        putOpt("longAvgDelta", gs.longAvgDelta.finiteOrNull())
+                        putOpt("duraISFminutes", gs.duraISFminutes.finiteOrNull())
+                        putOpt("duraISFaverage", gs.duraISFaverage.finiteOrNull())
+                    })
+                }
+                put("meal", buildJsonObject {
+                    putOpt("mealCOB", mealData.mealCOB.finiteOrNull())
+                    putOpt("carbs", mealData.carbs)
+                    putOpt("slopeFromMaxDeviation", mealData.slopeFromMaxDeviation.finiteOrNull())
+                    // 999 is the AAPS sentinel for "no valid 1 h history"; it switches the UAM prediction
+                    // off. Made visible, so it is clear WHY the loop doses more carefully after a restart.
+                    putOpt("slopeFromMinDeviation", mealData.slopeFromMinDeviation.finiteOrNull())
+                })
+                activeTt?.let { tt ->
+                    put("tt", buildJsonObject {
+                        putOpt("target", tt.lowTarget)
+                        putOpt("remainingMin", (tt.timestamp + tt.duration - now) / 60000L)
+                    })
+                }
+            }
+            iobActionExport.writeState(
+                state, dbSmbs,
+                IobActionExportSink.Factors(
+                    acce = autoIsfValues.acceIsf.finiteOrNull(),
+                    bg = autoIsfValues.bgIsf.finiteOrNull(),
+                    pp = autoIsfValues.ppIsf.finiteOrNull(),
+                    dura = autoIsfValues.duraIsf.finiteOrNull(),
+                    final = autoIsfValues.finalIsf.finiteOrNull(),
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            aapsLogger.error(LTag.APS, "IobAction state export failed", e)
+        }
+    }
+
+    /** The value, or null when it throws; coroutine cancellation is passed on. */
+    private inline fun <T> notCancelled(block: () -> T): T? =
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
 
     override fun getGlucoseStatusData(allowOldData: Boolean): GlucoseStatus? = glucoseStatusCalculatorAutoIsf.getGlucoseStatusData(allowOldData)
 
@@ -716,7 +995,9 @@ open class OpenAPSAutoISFPlugin(
         return activityRatio
     }
 
-    suspend fun autoISF(profile: Profile): Double {
+    // Fork 0044: callers outside the loop pass their own list, so the live console only gets the
+    // loop's own factor block. The returned value is the same either way.
+    suspend fun autoISF(profile: Profile, console: MutableList<String> = consoleError): Double {
         val sens = profile.getProfileIsfMgdl()
         val glucose_status = glucoseStatusCalculatorAutoIsf.getGlucoseStatusData(allowOldData = false)
 
@@ -742,7 +1023,7 @@ open class OpenAPSAutoISFPlugin(
                 val c = (mgdlHalfBasalExerciseTarget - normalTarget)
                 if (c * (c + target_bg - normalTarget) <= 0.0) {
                     sensitivityRatio = resistanceMax
-                    // consoleError.add("Sensitivity decrease for temp target of $target_bg limited by Autosens_max; ")
+                    // console.add("Sensitivity decrease for temp target of $target_bg limited by Autosens_max; ")
 
                 } else {
                     sensitivityRatio = c / (c + target_bg - normalTarget)
@@ -770,16 +1051,16 @@ open class OpenAPSAutoISFPlugin(
         val calibrationMinutes = calibrationDuration - (dateUtil.now() - preferences.get(LongNonKey.FslCalibrationStart)) / 60000
         val calibrationStopsSMB = calibrationMinutes > 0 && !preferences.get(BooleanKey.FslCalibrationEnd)
         if (calibrationStopsSMB) {
-            consoleError.add("AutoISF weights disabled while calibrating")
+            console.add("AutoISF weights disabled while calibrating")
             skipWeights = true
         } else if (!usingDynamicIsf() || !autoIsfWeights || glucose_status == null) {
-            consoleError.add("AutoISF weights disabled in Preferences")
+            console.add("AutoISF weights disabled in Preferences")
             skipWeights = true
         }
         if (skipWeights) {
-            consoleError.add("----------------------------------")
-            consoleError.add("end AutoISF")
-            consoleError.add("----------------------------------")
+            console.add("----------------------------------")
+            console.add("end AutoISF")
+            console.add("----------------------------------")
             return round(sens / sensitivityRatio, 1)
         }
         val autosensResult = AutosensResult()
@@ -805,24 +1086,24 @@ open class OpenAPSAutoISFPlugin(
         // calculate acce_ISF from bg acceleration and adapt ISF accordingly
         val fit_corr: Double = glucose_status.corrSqu
         val bg_acce: Double = glucose_status.bgAcceleration
-        //consoleError.add("Parabola fit results were acceleration:${round(bg_acce, 2)}, correlation:$fit_corr, duration:${glucose_status.parabolaMinutes}m")
+        //console.add("Parabola fit results were acceleration:${round(bg_acce, 2)}, correlation:$fit_corr, duration:${glucose_status.parabolaMinutes}m")
         if (glucose_status.a2 != 0.0 && fit_corr >= 0.9) {
             var minmax_delta: Double = -glucose_status.a1 / 2 / glucose_status.a2 * 5      // back from 5min block to 1 min
             val minmax_value: Double = round(glucose_status.a0 - minmax_delta * minmax_delta / 25 * glucose_status.a2, 1)
             minmax_delta = round(minmax_delta, 1)
             if (minmax_delta > 0 && bg_acce < 0) {
-                consoleError.add("Parabolic fit extrapolates a maximum of ${convert_bg(minmax_value)} in about $minmax_delta minutes")
+                console.add("Parabolic fit extrapolates a maximum of ${convert_bg(minmax_value)} in about $minmax_delta minutes")
             } else if (minmax_delta > 0 && bg_acce > 0.0) {
 
-                consoleError.add("Parabolic fit extrapolates a minimum of ${convert_bg(minmax_value)} in about $minmax_delta minutes")
+                console.add("Parabolic fit extrapolates a minimum of ${convert_bg(minmax_value)} in about $minmax_delta minutes")
                 if (minmax_delta <= 30 && minmax_value < target_bg) {   // start braking
                     acce_weight = -bgBrake_ISF_weight
-                    consoleError.add("extrapolation below target soon: use bgBrake_ISF_weight instead")
+                    console.add("extrapolation below target soon: use bgBrake_ISF_weight instead")
                 }
             }
         }
         if (fit_corr < 0.9) {
-            consoleError.add("acce_ISF adaptation by-passed as correlation ${round(fit_corr, 3)} is too low")
+            console.add("acce_ISF adaptation by-passed as correlation ${round(fit_corr, 3)} is too low")
         } else {
             val fit_share = 10 * (fit_corr - 0.9)                            // 0 at correlation 0.9, 1 at 1.00
             var cap_weight = 1.0                                             // full contribution above target
@@ -843,7 +1124,7 @@ open class OpenAPSAutoISFPlugin(
                 }
             }
             acce_ISF = 1.0 + bg_acce * cap_weight * acce_weight * fit_share
-            consoleError.add("acce_ISF adaptation is ${round(acce_ISF, 2)}")
+            console.add("acce_ISF adaptation is ${round(acce_ISF, 2)}")
             if (acce_ISF != 1.0) {
                 sens_modified = true
             }
@@ -851,7 +1132,7 @@ open class OpenAPSAutoISFPlugin(
         autoIsfValues.acceIsf = acce_ISF
 
         val bg_ISF = 1 + interpolate(100 - bg_off)
-        consoleError.add("bg_ISF adaptation is ${round(bg_ISF, 2)}")
+        console.add("bg_ISF adaptation is ${round(bg_ISF, 2)}")
         autoIsfValues.bgIsf = bg_ISF
         var liftISF: Double
         val final_ISF: Double
@@ -859,9 +1140,15 @@ open class OpenAPSAutoISFPlugin(
             liftISF = min(bg_ISF, acce_ISF)
             if (acce_ISF > 1.0) {
                 liftISF = bg_ISF * acce_ISF                                 // bg_ISF could become > 1 now
-                consoleError.add("bg_ISF adaptation lifted to ${round(liftISF, 2)} as bg accelerates already")
+                console.add("bg_ISF adaptation lifted to ${round(liftISF, 2)} as bg accelerates already")
             }
-            final_ISF = withinISFlimits(liftISF, autoISF_min, maxISFReduction, sensitivityRatio, exerciseModeActive, resistanceModeActive, stepActivityDetected, stepInactivityDetected)
+            final_ISF = withinISFlimits(liftISF, autoISF_min, maxISFReduction, sensitivityRatio, exerciseModeActive, resistanceModeActive, stepActivityDetected, stepInactivityDetected, console)
+            // Fork shadow (export only, the live loop call only): the factor chain below target.
+            if (console === consoleError) AutoIsfShadow.factors = AutoIsfShadow.FactorShadow(
+                strongestPreBrake = min(bg_ISF, acce_ISF), acceBrake = acce_ISF.takeIf { it < 1.0 },
+                liftAfterBrake = liftISF, finalAfterClamp = final_ISF,
+                ppLive = 1.0, ppCandidate = null, persistentDelta = null,
+            )
             return min(720.0, round(sens / final_ISF, 1))         // observe ISF maximum of 720(?)
         } else if (bg_ISF > 1.0) {
             sens_modified = true
@@ -871,16 +1158,16 @@ open class OpenAPSAutoISFPlugin(
         val deltaType = "pp"
         when {
             bg_off > 0.0                     -> {
-                consoleError.add("${deltaType}_ISF adaptation by-passed as average glucose < $target_bg+10")
+                console.add("${deltaType}_ISF adaptation by-passed as average glucose < $target_bg+10")
             }
 
             glucose_status.shortAvgDelta < 0 -> {
-                consoleError.add("${deltaType}_ISF adaptation by-passed as no rise or too short lived")
+                console.add("${deltaType}_ISF adaptation by-passed as no rise or too short lived")
             }
 
             else                             -> {
                 pp_ISF = 1.0 + max(0.0, bg_delta * pp_ISF_weight)
-                consoleError.add("pp_ISF adaptation is ${round(pp_ISF, 2)}")
+                console.add("pp_ISF adaptation is ${round(pp_ISF, 2)}")
                 if (pp_ISF != 1.0) {
                     sens_modified = true
                 }
@@ -889,15 +1176,26 @@ open class OpenAPSAutoISFPlugin(
         }
         autoIsfValues.ppIsf = pp_ISF
 
+        // Fork shadow - pp persistence CANDIDATE (does NOT dose): computed fresh, no stored peak. Only
+        // valid while delta, short and long average delta are all positive and the pp zone is active
+        // (bg above target + 10, as live). With delta <= 0 the live value applies (candidate null).
+        val ppCandidate: Double? = if (console === consoleError &&
+            bg_off <= 0.0 && bg_delta > 0.0 &&
+            glucose_status.shortAvgDelta > 0.0 && glucose_status.longAvgDelta > 0.0
+        ) {
+            val persistentDelta = max(bg_delta, min(glucose_status.shortAvgDelta, glucose_status.longAvgDelta))
+            1.0 + max(0.0, persistentDelta * pp_ISF_weight)
+        } else null
+
         var dura_ISF = 1.0
         val weightISF: Double = dura_ISF_weight
         when {
             dura05 < 10.0      -> {
-                consoleError.add("dura_ISF by-passed; bg is only $dura05 m at level $avg05")
+                console.add("dura_ISF by-passed; bg is only $dura05 m at level $avg05")
             }
 
             avg05 <= target_bg -> {
-                consoleError.add("dura_ISF by-passed; avg. glucose $avg05 below target $target_bg")
+                console.add("dura_ISF by-passed; avg. glucose $avg05 below target $target_bg")
             }
 
             else               -> {
@@ -906,23 +1204,36 @@ open class OpenAPSAutoISFPlugin(
                 val avg05Weight = weightISF / target_bg
                 dura_ISF += dura05Weight * avg05Weight * (avg05 - target_bg)
                 sens_modified = true
-                consoleError.add("dura_ISF adaptation is ${round(dura_ISF, 2)} because ISF ${round(sens, 1)} did not do it for ${round(dura05, 1)}m")
+                console.add("dura_ISF adaptation is ${round(dura_ISF, 2)} because ISF ${round(sens, 1)} did not do it for ${round(dura05, 1)}m")
             }
         }
         autoIsfValues.duraIsf = dura_ISF
 
         if (sens_modified) {
-            liftISF = max(dura_ISF, max(bg_ISF, max(acce_ISF, pp_ISF)))
+            val strongestPreBrake = max(dura_ISF, max(bg_ISF, max(acce_ISF, pp_ISF)))
+            liftISF = strongestPreBrake
             if (acce_ISF < 1.0) {
-                consoleError.add("strongest autoISF factor ${round(liftISF, 2)} weakened to ${round(liftISF * acce_ISF, 2)} as bg decelerates already")
+                console.add("strongest autoISF factor ${round(liftISF, 2)} weakened to ${round(liftISF * acce_ISF, 2)} as bg decelerates already")
                 liftISF = liftISF * acce_ISF
             }
-            final_ISF = withinISFlimits(liftISF, autoISF_min, maxISFReduction, sensitivityRatio, exerciseModeActive, resistanceModeActive, stepActivityDetected, stepInactivityDetected)
+            final_ISF = withinISFlimits(liftISF, autoISF_min, maxISFReduction, sensitivityRatio, exerciseModeActive, resistanceModeActive, stepActivityDetected, stepInactivityDetected, console)
+            // Fork shadow - the factor chain (the live loop call only; export only, doses unchanged).
+            if (console === consoleError) AutoIsfShadow.factors = AutoIsfShadow.FactorShadow(
+                strongestPreBrake = strongestPreBrake, acceBrake = acce_ISF.takeIf { it < 1.0 },
+                liftAfterBrake = liftISF, finalAfterClamp = final_ISF,
+                ppLive = pp_ISF, ppCandidate = ppCandidate,
+                persistentDelta = ppCandidate?.let { max(bg_delta, min(glucose_status.shortAvgDelta, glucose_status.longAvgDelta)) },
+            )
             return round(sens / final_ISF, 1)
         }
-        consoleError.add("----------------------------------")
-        consoleError.add("end AutoISF")
-        consoleError.add("----------------------------------")
+        console.add("----------------------------------")
+        console.add("end AutoISF")
+        console.add("----------------------------------")
+        // Fork shadow - a neutral cycle (no factor active), so the export never shows an old chain.
+        if (console === consoleError) AutoIsfShadow.factors = AutoIsfShadow.FactorShadow(
+            strongestPreBrake = 1.0, acceBrake = null, liftAfterBrake = 1.0,
+            finalAfterClamp = 1.0, ppLive = pp_ISF, ppCandidate = ppCandidate, persistentDelta = null,
+        )
         return round(sens / sensitivityRatio, 1)     // nothing changed
     }
 
@@ -994,14 +1305,15 @@ open class OpenAPSAutoISFPlugin(
 
     fun withinISFlimits(
         liftISF: Double, minISFReduction: Double, maxISFReduction: Double, sensitivityRatio: Double,
-        exerciseModeActive: Boolean, resistanceModeActive: Boolean, stepActivityDetected:Boolean, stepInactivityDetected: Boolean
+        exerciseModeActive: Boolean, resistanceModeActive: Boolean, stepActivityDetected:Boolean, stepInactivityDetected: Boolean,
+        console: MutableList<String> = consoleError
     ): Double {
         var liftISFlimited: Double = liftISF
         if (liftISF < minISFReduction) {
-            consoleError.add("weakest autoISF factor ${round(liftISF, 2)} limited by autoISF_min $minISFReduction")
+            console.add("weakest autoISF factor ${round(liftISF, 2)} limited by autoISF_min $minISFReduction")
             liftISFlimited = minISFReduction
         } else if (liftISF > maxISFReduction) {
-            consoleError.add("strongest autoISF factor ${round(liftISF, 2)} limited by autoISF_max $maxISFReduction")
+            console.add("strongest autoISF factor ${round(liftISF, 2)} limited by autoISF_max $maxISFReduction")
             liftISFlimited = maxISFReduction
         }
         val finalISF: Double
@@ -1033,16 +1345,24 @@ open class OpenAPSAutoISFPlugin(
                 finalISF = min(liftISFlimited, sensitivityRatio)            // low TT lowers sensitivity dominates
             }
         }
-        consoleError.add("final ISF factor is ${round(finalISF, 2)} " + originSens)
-        consoleError.add("----------------------------------")
-        consoleError.add("end AutoISF")
-        consoleError.add("----------------------------------")
+        console.add("final ISF factor is ${round(finalISF, 2)} " + originSens)
+        console.add("----------------------------------")
+        console.add("end AutoISF")
+        console.add("----------------------------------")
         autoIsfValues.finalIsf = finalISF
         return finalISF
     }
 
-    fun loop_smb(microBolusAllowed: Boolean, profile: OapsProfileAutoIsf, iob_data_iob: Double, useIobTh: Boolean, iobThEffective: Double): String {
-        val iobThUser = preferences.get(IntKey.ApsAutoIsfIobThPercent)
+    /**
+     * Fork 0059: the exact branch of the SMB gate, for the export. The modes and every branch
+     * condition are UNCHANGED (dosing identical); [reason] only names the branch.
+     */
+    data class LoopSmbDecision(val mode: String, val reason: String)
+
+    fun loop_smb(microBolusAllowed: Boolean, profile: OapsProfileAutoIsf, iob_data_iob: Double, useIobTh: Boolean, iobThEffective: Double): LoopSmbDecision {
+        // Fork: the same truth as the calculation - profile.iob_threshold_percent IS the effective value
+        // of this run (no second preference read in the same cycle).
+        val iobThUser = profile.iob_threshold_percent
         if (useIobTh) {
             val iobThPercent: Double
             if ( profile.max_iob<0.001 ) {
@@ -1063,7 +1383,7 @@ open class OpenAPSAutoISFPlugin(
         autoIsfValues.iobThEffective = if (useIobTh) iobThEffective else profile.max_iob
 
         if (!microBolusAllowed) {
-            return "AAPS"                                                 // see message in enable_smb
+            return LoopSmbDecision("AAPS", "microbolus-disabled")         // see message in enable_smb
         }
 
         if (preferences.get(BooleanKey.FslCalibrationTrigger)) {
@@ -1078,7 +1398,7 @@ open class OpenAPSAutoISFPlugin(
         aapsLogger.debug(LTag.APS, CalibrationMsg)
         if (calibrationStopsSMB) {
             consoleLog.add("SMB disabled while calibrating for another ${calibrationMinutes}m")
-            return "blocked"
+            return LoopSmbDecision("blocked", "calibration")
         } else if (enableSMB_EvenOn_OddOff_always) {
             //TODO: cleaner conversion back to original mmol/L if applicable
             var target = convert_bg_to_units(profile.target_bg, profile)
@@ -1102,27 +1422,27 @@ open class OpenAPSAutoISFPlugin(
             if (!evenTarget) {
                 consoleLog.add("SMB disabled; current target $target $msgUnits $msgEven $msgTail")
                 consoleLog.add("Loop allows minimal power")
-                return "blocked"
+                return LoopSmbDecision("blocked", "odd-target")
             } else if (profile.max_iob == 0.0) {
                 consoleLog.add("SMB disabled because of max_iob=0")
-                return "blocked"
+                return LoopSmbDecision("blocked", "max-iob-zero")
             } else if (useIobTh && iobThEffective < iob_data_iob) {
                 consoleLog.add("SMB disabled by Full Loop logic: iob $iob_data_iob is above effective iobTH $iobThEffective")
                 consoleLog.add("Loop power level temporarily capped")
-                return "iobTH"
+                return LoopSmbDecision("iobTH", "iobTH")
             } else {
                 consoleLog.add("SMB enabled; current target $target $msgUnits $msgEven $msgTail")
                 return if (profile.target_bg < 100) {     // indirect assessment; later set it in GUI
                     consoleLog.add("Loop allows maximum power")
-                    "fullLoop"                                      // even number
+                    LoopSmbDecision("fullLoop", "none")             // even number
                 } else {
                     consoleLog.add("Loop allows medium power")
-                    "enforced"                                      // even number
+                    LoopSmbDecision("enforced", "none")             // even number
                 }
             }
         }
         consoleLog.add("Loop allows AAPS power level")
-        return "AAPS"                                                      // leave it to standard AAPS
+        return LoopSmbDecision("AAPS", "even-odd-off")                     // leave it to standard AAPS
     }
 
     fun determine_varSMBratio(bg: Int, target_bg: Double, loop_wanted_smb: String): Double {   // let SMB delivery ratio increase from min to max depending on how much bg exceeds target
