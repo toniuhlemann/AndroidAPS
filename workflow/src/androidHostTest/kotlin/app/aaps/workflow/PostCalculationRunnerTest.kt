@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test
 import org.mockito.Mock
 import org.mockito.kotlin.any
 import org.mockito.kotlin.doSuspendableAnswer
+import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
@@ -36,11 +37,13 @@ class PostCalculationRunnerTest : TestBaseWithProfile() {
     @Mock lateinit var widgetUpdater: WidgetUpdater
     @Mock lateinit var processedDeviceStatusData: ProcessedDeviceStatusData
     @Mock lateinit var sceneExpiryCheck: SceneExpiryCheck
+    @Mock lateinit var prepareGraphDataRunner: PrepareGraphDataRunner
 
     private fun runner() =
         PostCalculationRunner(
             aapsLogger, workflowChainData, iobCobCalculator, loop,
-            widgetUpdater, config, processedDeviceStatusData, profileUtil, preferences, sceneExpiryCheck
+            widgetUpdater, config, processedDeviceStatusData, profileUtil, preferences, sceneExpiryCheck,
+            prepareGraphDataRunner
         )
 
     // Nothing in these tests stops a run part way.
@@ -260,5 +263,73 @@ class PostCalculationRunnerTest : TestBaseWithProfile() {
         Assertions.assertEquals(WorkOutcome.Success, result)
         verify(loop, never()).invoke(any(), any(), any())
         verify(widgetUpdater).update("WorkFlow")
+    }
+
+    private fun prepareData(graphsAfterLoop: Boolean) = PrepareGraphData(
+        iobCobCalculator = iobCobCalculator, overviewData = mock<OverviewData>(), cache = mock<OverviewDataCache>(),
+        signals = mock<CalculationSignalsEmitter>(), reason = "test", end = 0L, bgDataReload = true,
+        limitDataToOldestAvailable = true, triggeredByNewBG = true, emitFinalProgress = false, graphsAfterLoop = graphsAfterLoop
+    )
+
+    private fun newBgForTheLoop() {
+        val ads = mock<AutosensDataStore>()
+        val bg = mock<InMemoryGlucoseValue>()
+        whenever(bg.timestamp).thenReturn(5000L)
+        whenever(iobCobCalculator.ads).thenReturn(ads)
+        whenever(ads.actualBg()).thenReturn(bg)
+        whenever(loop.lastBgTriggeredRun).thenReturn(0L)
+    }
+
+    // Fork patch 0033: the loop decides first, the graph phases of the same chain follow, then the widget.
+    @Test
+    fun `fork 0033 - the loop decides before the graph phases run`() = runTest {
+        newBgForTheLoop()
+        val prepare = prepareData(graphsAfterLoop = true)
+        val post = dataWith(runLoopAndWidgetPhase = true)
+        whenever(workflowChainData.postFor(any(), any())).thenReturn(post)
+        whenever(workflowChainData.prepareFor(any(), any())).thenReturn(prepare)
+        val calls = mutableListOf<String>()
+        whenever(loop.invoke(any(), any(), any())).doSuspendableAnswer { calls += "loop" }
+        whenever(prepareGraphDataRunner.prepareGraphsAfterLoop(eq(prepare), any())).doSuspendableAnswer { calls += "graphs"; true }
+        whenever(widgetUpdater.update(any())).then { calls += "widget"; Unit }
+
+        val result = run()
+
+        Assertions.assertEquals(WorkOutcome.Success, result)
+        assertThat(calls).containsExactly("loop", "graphs", "widget").inOrder()
+    }
+
+    @Test
+    fun `fork 0033 - graph phases stopped part way stop the post phase`() = runTest {
+        newBgForTheLoop()
+        val post = dataWith(runLoopAndWidgetPhase = true)
+        whenever(workflowChainData.postFor(any(), any())).thenReturn(post)
+        val prepare = prepareData(graphsAfterLoop = true)
+        whenever(workflowChainData.prepareFor(any(), any())).thenReturn(prepare)
+        whenever(prepareGraphDataRunner.prepareGraphsAfterLoop(any(), any())).thenReturn(false)
+
+        Assertions.assertEquals(WorkOutcome.Stopped, run())
+        verify(widgetUpdater, never()).update(any())
+    }
+
+    @Test
+    fun `fork 0033 - no graph phases here when the prepare pass already ran them`() = runTest {
+        newBgForTheLoop()
+        val post = dataWith(runLoopAndWidgetPhase = true)
+        whenever(workflowChainData.postFor(any(), any())).thenReturn(post)
+        val prepare = prepareData(graphsAfterLoop = false)
+        whenever(workflowChainData.prepareFor(any(), any())).thenReturn(prepare)
+
+        Assertions.assertEquals(WorkOutcome.Success, run())
+        verifyBlocking(prepareGraphDataRunner, never()) { prepareGraphsAfterLoop(any(), any()) }
+    }
+
+    @Test
+    fun `fork 0033 - the predictions only phase prepares no graphs`() = runTest {
+        val post = dataWith(runLoopAndWidgetPhase = false)
+        whenever(workflowChainData.postFor(any(), any())).thenReturn(post)
+
+        Assertions.assertEquals(WorkOutcome.Success, run())
+        verifyBlocking(prepareGraphDataRunner, never()) { prepareGraphsAfterLoop(any(), any()) }
     }
 }

@@ -64,7 +64,7 @@ class PrepareGraphDataRunnerTest : TestBaseWithProfile() {
     // The runner asks this between phases; nothing in these tests stops a run part way.
     private suspend fun run() = runner().run(job = "main", generation = 1L, isStopped = { false })
 
-    private fun buildData(bgDataReload: Boolean, emitFinalProgress: Boolean) =
+    private fun buildData(bgDataReload: Boolean, emitFinalProgress: Boolean, graphsAfterLoop: Boolean = false) =
         PrepareGraphData(
             iobCobCalculator = dataIobCob,
             overviewData = overviewData,
@@ -75,7 +75,8 @@ class PrepareGraphDataRunnerTest : TestBaseWithProfile() {
             bgDataReload = bgDataReload,
             limitDataToOldestAvailable = false,
             triggeredByNewBG = false,
-            emitFinalProgress = emitFinalProgress
+            emitFinalProgress = emitFinalProgress,
+            graphsAfterLoop = graphsAfterLoop
         )
 
     @BeforeEach
@@ -163,6 +164,40 @@ class PrepareGraphDataRunnerTest : TestBaseWithProfile() {
         verify(signals).emitProgress(eq(ProgressData.DRAW_BG), any())
         verify(signals).emitProgress(eq(ProgressData.DRAW_IOB), any())
         verify(signals).emitProgress(eq(ProgressData.DRAW_FINAL), any())
+    }
+
+    /**
+     * Fork patch 0033: with the graphs after the loop the prepare pass only loads the BG and calculates
+     * IOB/COB, so the loop can start as soon as these two are done. The graph phases then run through
+     * prepareGraphsAfterLoop, in their usual order, without the DRAW_BG step the bar is already past.
+     */
+    @Test
+    fun `fork 0033 - the prepare pass leaves the graph phases to the post phase`() = runTest {
+        stubSuspendCalls()
+        val data = buildData(bgDataReload = false, emitFinalProgress = false, graphsAfterLoop = true)
+        whenever(workflowChainData.prepareFor(any(), any())).thenReturn(data)
+
+        assertIs<WorkOutcome.Success>(run())
+
+        verify(cache, never()).updateBgReadings(any())
+        verify(cache, never()).updateTimeRange(any())
+        verify(signals, never()).emitProgress(eq(ProgressData.DRAW_BG), any())
+        verify(signals, never()).emitProgress(eq(ProgressData.DRAW_IOB), any())
+
+        assertThat(runner().prepareGraphsAfterLoop(data, isStopped = { false })).isTrue()
+
+        verify(cache).updateBgReadings(any())
+        verify(signals, never()).emitProgress(eq(ProgressData.DRAW_BG), any())
+        verify(signals).emitProgress(eq(ProgressData.DRAW_IOB), any())
+    }
+
+    @Test
+    fun `fork 0033 - graph phases that are stopped report it`() = runTest {
+        stubSuspendCalls()
+        val data = buildData(bgDataReload = false, emitFinalProgress = false, graphsAfterLoop = true)
+
+        assertThat(runner().prepareGraphsAfterLoop(data, isStopped = { true })).isFalse()
+        verify(signals, never()).emitProgress(eq(ProgressData.DRAW_IOB), any())
     }
 
     /**

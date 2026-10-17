@@ -30,6 +30,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.TimeSource
 
 /**
  * Merged tail-of-chain worker covering: APS loop invocation, widget update,
@@ -49,7 +50,8 @@ class PostCalculationRunner(
     private val processedDeviceStatusData: ProcessedDeviceStatusData,
     private val profileUtil: ProfileUtil,
     private val preferences: Preferences,
-    private val sceneExpiryCheck: SceneExpiryCheck
+    private val sceneExpiryCheck: SceneExpiryCheck,
+    private val prepareGraphDataRunner: PrepareGraphDataRunner
 ) : CalculationPhase {
 
     /** Runs the phase that follows the prepare pass. [isStopped] is asked between steps. */
@@ -60,6 +62,9 @@ class PostCalculationRunner(
             endOverdueScene()
             invokeLoop()
             if (isStopped()) return WorkOutcome.Stopped
+            // Fork patch 0033: the graph phases of this chain run after the loop, see PrepareGraphData.graphsAfterLoop.
+            val prepare = workflowChainData.prepareFor(job, generation)
+            if (prepare?.graphsAfterLoop == true && !prepareGraphDataRunner.prepareGraphsAfterLoop(prepare, isStopped)) return WorkOutcome.Stopped
             widgetUpdater.update("WorkFlow")
             if (isStopped()) return WorkOutcome.Stopped
         }
@@ -113,7 +118,11 @@ class PostCalculationRunner(
         val decisionBefore = loop.lastRun?.lastAPSRun
         loop.lastBgTriggeredRun = glucoseValue.timestamp
         try {
+            // Fork (1-minute CGM timing): with the phase line of PrepareGraphDataRunner this gives the time
+            // from a new BG to the loop decision on a device.
+            val started = TimeSource.Monotonic.markNow()
             loop.invoke("Calculation for $glucoseValue", true)
+            aapsLogger.debug(LTag.WORKER) { "Loop for BG ${glucoseValue.timestamp} took ${started.elapsedNow().inWholeMilliseconds} ms" }
         } catch (e: CancellationException) {
             if (loop.lastRun?.lastAPSRun == decisionBefore) loop.lastBgTriggeredRun = previousTrigger
             throw e

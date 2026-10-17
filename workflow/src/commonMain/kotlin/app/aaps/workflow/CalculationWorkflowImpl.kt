@@ -90,7 +90,9 @@ class CalculationWorkflowImpl(
             limitDataToOldestAvailable = isMain,
             triggeredByNewBG = triggeredByNewBG,
             // HISTORY ends here, so emit DRAW_FINAL inline. MAIN delegates to the post phase.
-            emitFinalProgress = !isMain
+            emitFinalProgress = !isMain,
+            // Fork patch 0033: MAIN prepares the graphs after the loop, HISTORY has no loop.
+            graphsAfterLoop = isMain
         )
         startMutex.withLock {
             val generation = if (isMain) {

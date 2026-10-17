@@ -21,7 +21,13 @@ class PrepareGraphData(
     val bgDataReload: Boolean,
     val limitDataToOldestAvailable: Boolean,
     val triggeredByNewBG: Boolean,
-    val emitFinalProgress: Boolean
+    val emitFinalProgress: Boolean,
+    /**
+     * Fork patch 0033: the graph phases (bucketed data, BG readings, IOB/autosens graph data) run in the
+     * post phase, after the loop, instead of before it. Set for MAIN: only the BG load and IOB/COB feed
+     * the loop, the graph phases only prepare the overview. HISTORY has no loop and keeps them here.
+     */
+    val graphsAfterLoop: Boolean = false
 )
 
 /** The input of the phase that runs after [PrepareGraphData]. */

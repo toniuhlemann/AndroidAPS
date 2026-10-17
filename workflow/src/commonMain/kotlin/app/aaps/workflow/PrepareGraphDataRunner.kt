@@ -60,6 +60,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToLong
 import kotlin.time.Instant
+import kotlin.time.TimeSource
 
 /**
  * Merged worker covering: BG load+smooth, bucketed data prep, BG readings prep,
@@ -97,6 +98,10 @@ class PrepareGraphDataRunner(
     override suspend fun run(job: String, generation: Long, isStopped: () -> Boolean): WorkOutcome {
         val data = workflowChainData.prepareFor(job, generation)
             ?: return WorkOutcome.StaleInput
+        // Fork (1-minute CGM timing): the time of each phase, logged once per finished run, so the time
+        // from a new BG to the loop decision can be split up on a device. Only the BG load and IOB/COB
+        // feed the loop; the bucketed data, BG and IOB/autosens graph phases only prepare the overview.
+        val started = TimeSource.Monotonic.markNow()
 
         // ===== Phase 1: Load BG into ads + smooth (was LoadBgDataWorker) =====
         if (data.bgDataReload) {
@@ -111,16 +116,14 @@ class PrepareGraphDataRunner(
             data.iobCobCalculator.bgDataReloaded()
         }
         if (isStopped()) return WorkOutcome.Stopped
+        val bgLoaded = started.elapsedNow()
 
-        // ===== Phase 2: Bucketed data → cache (was PrepareBucketedDataWorker) =====
-        prepareBucketedData(data)
-        if (isStopped()) return WorkOutcome.Stopped
-
-        // ===== Phase 3: BG readings → cache (was PrepareBgDataWorker) =====
-        prepareBgData(data)
-
-        data.signals.emitProgress(CalculationWorkflow.ProgressData.DRAW_BG, 100)
-        if (isStopped()) return WorkOutcome.Stopped
+        // ===== Phases 2 & 3: bucketed data and BG readings → cache (was PrepareBucketedDataWorker, PrepareBgDataWorker) =====
+        // Fork patch 0033: for MAIN they run after the loop, see prepareGraphsAfterLoop.
+        if (!data.graphsAfterLoop) {
+            if (!prepareBgGraphs(data, isStopped)) return WorkOutcome.Stopped
+        }
+        val bgGraphsPrepared = started.elapsedNow()
 
         // ===== Phases 4 & 5: IOB/COB autosens + graph data prep (was IobCobOref* + PrepareIobAutosens) =====
         // True once this run no longer owns the chain: it was stopped, or a newer generation took the
@@ -128,9 +131,15 @@ class PrepareGraphDataRunner(
         val superseded = { isStopped() || workflowChainData.prepareFor(job, generation) == null }
         if (activePlugin.activeSensitivity.isOref1) runIobCobOref1(data, isStopped, superseded) else runIobCobOref(data, isStopped, superseded)
         if (isStopped()) return WorkOutcome.Stopped
-        prepareIobAutosensGraphData(data, isStopped)
-        if (isStopped()) return WorkOutcome.Stopped
-        data.signals.emitProgress(CalculationWorkflow.ProgressData.DRAW_IOB, 100)
+        val iobCobCalculated = started.elapsedNow()
+        if (!data.graphsAfterLoop) {
+            if (!prepareIobGraph(data, isStopped)) return WorkOutcome.Stopped
+        }
+        val iobGraphPrepared = started.elapsedNow()
+        aapsLogger.debug(LTag.WORKER) {
+            "Calculation phases [ms] $job: bgLoad ${bgLoaded.inWholeMilliseconds} bgGraphs ${(bgGraphsPrepared - bgLoaded).inWholeMilliseconds} " +
+                "iobCob ${(iobCobCalculated - bgGraphsPrepared).inWholeMilliseconds} iobGraph ${(iobGraphPrepared - iobCobCalculated).inWholeMilliseconds}"
+        }
 
         // ===== Phase 6: Final progress emit (terminal worker only) =====
         if (data.emitFinalProgress) {
@@ -138,6 +147,47 @@ class PrepareGraphDataRunner(
         }
 
         return WorkOutcome.Success
+    }
+
+    /**
+     * Fork patch 0033: the graph phases of a MAIN run, called by [PostCalculationRunner] right after the
+     * loop. Before, the loop waited for them on every new BG, although nothing in them feeds the loop:
+     * the bucketed data itself is built in phase 1, and the loop reads IOB/COB from phase 4. The order
+     * among them stays as it was, and it stays ahead of the predictions, which keep the horizon this
+     * pass reads back (see keptEndTime).
+     *
+     * DRAW_BG is not signalled here: it is the first step of the progress, and the IOB/COB pass already
+     * moved the bar past it. The IOB/autosens pass and DRAW_IOB follow in their usual order.
+     *
+     * @return false when the run was stopped part way
+     */
+    suspend fun prepareGraphsAfterLoop(data: PrepareGraphData, isStopped: () -> Boolean): Boolean {
+        val started = TimeSource.Monotonic.markNow()
+        if (!prepareBgGraphs(data, isStopped, signalDrawBg = false)) return false
+        val bgGraphsPrepared = started.elapsedNow()
+        if (!prepareIobGraph(data, isStopped)) return false
+        aapsLogger.debug(LTag.WORKER) {
+            "Graph phases after the loop [ms]: bgGraphs ${bgGraphsPrepared.inWholeMilliseconds} " +
+                "iobGraph ${(started.elapsedNow() - bgGraphsPrepared).inWholeMilliseconds}"
+        }
+        return true
+    }
+
+    /** Phases 2 and 3. @return false when the run was stopped part way */
+    private suspend fun prepareBgGraphs(data: PrepareGraphData, isStopped: () -> Boolean, signalDrawBg: Boolean = true): Boolean {
+        prepareBucketedData(data)
+        if (isStopped()) return false
+        prepareBgData(data)
+        if (signalDrawBg) data.signals.emitProgress(CalculationWorkflow.ProgressData.DRAW_BG, 100)
+        return !isStopped()
+    }
+
+    /** Phase 5 and its DRAW_IOB signal. @return false when the run was stopped part way */
+    private suspend fun prepareIobGraph(data: PrepareGraphData, isStopped: () -> Boolean): Boolean {
+        prepareIobAutosensGraphData(data, isStopped)
+        if (isStopped()) return false
+        data.signals.emitProgress(CalculationWorkflow.ProgressData.DRAW_IOB, 100)
+        return true
     }
 
     /**
@@ -306,7 +356,9 @@ class PrepareGraphDataRunner(
             )
             // start from oldest to be able sub cob
             for (i in bucketedData.size - 4 downTo 0) {
-                data.signals.emitProgress(CalculationWorkflow.ProgressData.IOB_COB_OREF, 100 - (100.0 * i / bucketedData.size).toInt())
+                // Fork patch 0037: progress on every 20th bucket only (and the last one, i == 0). Once per
+                // bucket was about 400 updates on every new reading of a 1-minute CGM, only for the progress bar.
+                if (i % 20 == 0) data.signals.emitProgress(CalculationWorkflow.ProgressData.IOB_COB_OREF, 100 - (100.0 * i / bucketedData.size).toInt())
                 if (isStopped()) {
                     aapsLogger.debug(LTag.AUTOSENS, "Aborting calculation thread (trigger): ${data.reason}")
                     return
@@ -533,7 +585,8 @@ class PrepareGraphDataRunner(
             )
             // start from oldest to be able to sub cob
             for (i in bucketedData.size - 4 downTo 0) {
-                data.signals.emitProgress(CalculationWorkflow.ProgressData.IOB_COB_OREF, 100 - (100.0 * i / bucketedData.size).toInt())
+                // Fork patch 0037, see runIobCobOref1.
+                if (i % 20 == 0) data.signals.emitProgress(CalculationWorkflow.ProgressData.IOB_COB_OREF, 100 - (100.0 * i / bucketedData.size).toInt())
                 if (isStopped()) {
                     aapsLogger.debug(LTag.AUTOSENS) { "Aborting calculation thread (trigger): ${data.reason}" }
                     return
