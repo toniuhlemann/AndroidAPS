@@ -166,6 +166,10 @@ class ForkDatabaseMigrationTest {
 
     private fun createFrom(statements: List<String>, version: Int) = withRaw { c ->
         statements.forEach { c.execSQL(it) }
+        // A database that an app has opened carries the custom indexes of its onOpen - the fork and
+        // upstream create the same ones. Without them here the upstream 36 case passed while the real
+        // database failed Room's schema check on `carbs` (test phone, RC1 -> this version).
+        createCustomIndexes(c)
         c.execSQL("PRAGMA user_version = $version")
     }
 

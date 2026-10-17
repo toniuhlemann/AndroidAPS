@@ -49,7 +49,7 @@ internal fun createCustomIndexes(connection: SQLiteConnection) {
     connection.execSQL("CREATE INDEX IF NOT EXISTS `index_runningModes_end` ON `runningModes` (`timestamp` + `duration`)")
 }
 
-private fun dropCustomIndexes(connection: SQLiteConnection) {
+internal fun dropCustomIndexes(connection: SQLiteConnection) {
     connection.execSQL("DROP INDEX IF EXISTS `index_temporaryBasals_end`")
     connection.execSQL("DROP INDEX IF EXISTS `index_extendedBoluses_end`")
     connection.execSQL("DROP INDEX IF EXISTS `index_temporaryTargets_end`")

@@ -78,6 +78,11 @@ private class ForkAwareMigration(from: Int, private val upstream: Array<Migratio
             version++
         }
         createForkTables(connection)
+        // Like every upstream step: the custom indexes the last open created must go, or Room's schema
+        // check fails on the first table that has one (`carbs`). onOpen creates them again. Without an
+        // upstream step to run - an upstream 36 database - nothing else dropped them (seen on the test
+        // phone, RC1 -> this version).
+        dropCustomIndexes(connection)
     }
 }
 
