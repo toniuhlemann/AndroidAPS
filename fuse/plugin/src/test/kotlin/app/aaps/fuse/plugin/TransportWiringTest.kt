@@ -12,6 +12,7 @@ import app.aaps.core.data.model.TrendArrow
 import app.aaps.core.data.pump.defs.PumpType
 import app.aaps.core.interfaces.aps.AutosensDataStore
 import app.aaps.core.interfaces.aps.IobTotal
+import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.db.ProcessedTbrEbData
@@ -3320,9 +3321,35 @@ class TransportWiringTest : TestBaseWithProfile() {
          * damit die Auswertbarkeit, nicht die Zuordnung.
          */
         UNKORRELIERT,
+
+        /**
+         * v4 (Produktchat): die Warteschlange war gehalten (Einstellungs-Import), der Loop hat den Apply-Block
+         * nicht betreten. Die Beobachtung entsteht hier NICHT von Hand, sondern aus einem echten `Loop.LastRun` in der
+         * Gestalt, die der v4-Loop dabei hinterlaesst (`LoopPluginTest`: "a held queue leaves the trace..."), durch die
+         * echte Lesung des Plugins ([FusePlugin.PriorActuation.aus]).
+         */
+        GEHALTEN,
     }
 
     private var letzterAusgang = Ausgang.GESENDET
+
+    /** Die RT, die der letzte Zyklus publiziert hat - fuer [Ausgang.GEHALTEN]. */
+    private var letzteRt: RT? = null
+
+    /**
+     * Die Spur des v4-Loops nach einem Lauf mit gehaltener Warteschlange: `request` ist das APS-Ergebnis dieses Laufs,
+     * `constraintsProcessed` seine Kopie (dieselbe RT-Instanz), `smbSetByPump` blieb leer - der Apply-Block wurde nie
+     * betreten. Dieselbe Gestalt haelt `LoopPluginTest` am echten Loop fest.
+     */
+    private fun gehaltenerLauf(rt: RT): Loop.LastRun {
+        val request = apsResultProvider().with(rt)
+        return Loop.LastRun().apply {
+            this.request = request
+            this.constraintsProcessed = request.newAndClone()
+            this.smbSetByPump = null
+            this.tbrSetByPump = null
+        }
+    }
     private var letzteMengeU: Double? = null
     private var pPropId: String? = null
     private var pStripped = false
@@ -3340,6 +3367,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         pSealed = false
         pPersistFailed = false
         letzterGrund = null
+        letzteRt = null
     }
 
     /**
@@ -3360,23 +3388,26 @@ class TransportWiringTest : TestBaseWithProfile() {
     ): FuseCycleRunner.Outcome {
         // (1) DER BELEG UEBER DEN VORIGEN ZYKLUS - vor dem Lauf gebildet,
         // solange die published*-Felder noch den Vorgaenger beschreiben.
+        // v4: fuer GEHALTEN liefert die echte Lesung des Plugins die drei Beobachtungswerte.
+        val gehalten = letzteRt?.takeIf { letzterAusgang == Ausgang.GEHALTEN }
+            ?.let { rt -> FusePlugin.PriorActuation.aus(gehaltenerLauf(rt), rt, ofComputeTs = 0L) }
         val claim = pPropId
             ?.takeIf { ledger.hasOpenProposal(it) }
             ?.let { id ->
                 NotSentProof.reasonFor(
                     NotSentProof.Observation(
-                        correlated = letzterAusgang != Ausgang.UNKLAR &&
-                            letzterAusgang != Ausgang.UNKORRELIERT,
+                        correlated = gehalten?.correlated ?: (letzterAusgang != Ausgang.UNKLAR &&
+                            letzterAusgang != Ausgang.UNKORRELIERT),
                         ledgerPublishedU = ledger.publishedAmountOf(id),
                         gateStripped = pStripped,
                         gateSealed = pSealed,
                         gatePersistFailed = pPersistFailed,
-                        aapsConstrainedU = when (letzterAusgang) {
+                        aapsConstrainedU = if (gehalten != null) gehalten.aapsConstrainedU else when (letzterAusgang) {
                             Ausgang.CONSTRAINT_NULL -> 0.0
                             Ausgang.UNKLAR          -> null
                             else                    -> letzteMengeU   // auch UNKORRELIERT
                         },
-                        smbSetByPumpPresent = when (letzterAusgang) {
+                        smbSetByPumpPresent = if (gehalten != null) gehalten.smbSetByPumpPresent else when (letzterAusgang) {
                             Ausgang.NIE_KOMMANDIERT -> false
                             // SAEHE aus wie ein Beweis - nur die Zuordnung fehlt.
                             Ausgang.UNKORRELIERT    -> false
@@ -3438,6 +3469,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         pPersistFailed = !publication.sealed
         letzterAusgang = ausgang
         letzteMengeU = publication.rt.units
+        letzteRt = publication.rt
         return o
     }
 
@@ -8550,6 +8582,37 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertEquals(gesendet, abgaben.filter { it.wirktAufReihe }.map { it.ts to it.u })
         assertEquals(gesendet, boluses.map { it.timestamp to it.amount })
         assertTrue(series(clock).last().value < reiheOhneAbgaben(clock).last() - 1e-6, "bestaetigte Abgaben senken die Reihe")
+    }
+
+    /**
+     * KI-171, REGEL C BEI GEHALTENER WARTESCHLANGE (v4, Produktchat). FUSE publiziert eine SMB, der Loop fuehrt
+     * sie wegen `isHeld` (Einstellungs-Import) nicht aus. Danach darf im Ledger KEINE offene SMB-Haftung bleiben -
+     * sonst haftete eine nie gegebene Menge bis DIA + 2 h (Phantom, Fehlerklasse KI-171).
+     *
+     * Die Spur des Loops ist die des v4-Loops (`LoopPluginTest`), gelesen von der echten Lesung des Plugins; Beweis,
+     * Gate und Ledger laufen echt.
+     */
+    @Test
+    fun `KI-171 - eine wegen isHeld nicht ausgefuehrte SMB hinterlaesst keine offene Haftung`(@TempDir dir: File) {
+        ausnahmeLage(dir)
+        maxSmbU = 0.3
+        rueckfuehrungAn()
+        var offen: String? = null
+        var n = 0
+        while (offen == null && n < 60) {
+            n++
+            transport(dir, ausgang = Ausgang.GEHALTEN)
+            if ((letzteMengeU ?: 0.0) > 0.0) offen = pPropId
+        }
+        val id = requireNotNull(offen) { "Vorbedingung: FUSE muss eine SMB publiziert haben" }
+        assertTrue(ledger.openTransportItems().any { it.proposalId == id }) { "Vorbedingung: die publizierte SMB haftet" }
+
+        // Der Folgezyklus wertet den Lauf mit gehaltener Warteschlange aus.
+        transport(dir)
+
+        assertEquals(QueueRejectReason.BOLUS_IN_QUEUE, letzterGrund, "Regel C muss greifen")
+        assertFalse(ledger.hasOpenProposal(id), "die Zeile ist geschlossen")
+        assertTrue(ledger.openTransportItems().none { it.proposalId == id }) { "keine offene SMB-Haftung" }
     }
 
     /** RIG-VERTRAG 2: vergangene Messpunkte bleiben unveraendert - auch bei spaeteren Abgaben mit anderem ISF. */

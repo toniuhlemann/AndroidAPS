@@ -12,12 +12,14 @@ import app.aaps.core.interfaces.InterfacesStrings
 import app.aaps.core.interfaces.aps.APS
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.Loop
+import app.aaps.core.interfaces.aps.RT
 import app.aaps.core.interfaces.constraints.Constraint
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.logging.UserEntryLogger
 import app.aaps.core.interfaces.nsclient.ProcessedDeviceStatusData
 import app.aaps.core.interfaces.plugin.EnforcedState
+import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.profile.EffectiveProfile
 import app.aaps.core.interfaces.pump.PumpEnactResult
 import app.aaps.core.interfaces.pump.PumpRate
@@ -1048,5 +1050,61 @@ class LoopPluginTest : TestBaseWithProfile() {
         assertThat(first!!.isCancelled).isTrue()
         assertThat(loopPlugin.smbFallbackJob).isNotSameInstanceAs(first)
         assertThat(loopPlugin.smbFallbackJob!!.isActive).isTrue()
+    }
+
+    // ---- Fork (FUSE KI-171, rule C): what a run leaves behind when the queue is held ----
+
+    /**
+     * Fork (FUSE KI-171, rule C). While the queue is held (settings import) the loop does not enact the change
+     * request of this run. FUSE has to see exactly that in the next run - otherwise the SMB it published stays a
+     * liability in its ledger until DIA + 2 h, a phantom dose. Rule C reads three things from `lastRun`: the
+     * request is this run's APS result (the same RT instance), the SMB after the constraints is positive, and
+     * `smbSetByPump` stayed null because the apply block was never entered. This test holds the v4 loop to all
+     * three; `TransportWiringTest` in fuse/plugin takes the same trace through FUSE's ledger.
+     */
+    @Test
+    fun `fork - a held queue leaves the trace that releases the SMB of this run`() = runTest {
+        setupForPreCheck()
+        mockCurrentMode(RM(mode = RM.Mode.CLOSED_LOOP, timestamp = dateUtil.now(), duration = 0))
+        whenever(profileFunction.getProfile()).thenReturn(effectiveProfile)
+        whenever(profileFunction.isProfileValid(any())).thenReturn(true)
+        whenever(commandQueue.size()).thenReturn(0)
+        whenever(commandQueue.performing()).thenReturn(null)
+        whenever(commandQueue.bolusInQueue()).thenReturn(false)
+        whenever(commandQueue.isHeld()).thenReturn(true)
+        whenever(virtualPumpPlugin.pumpDescription).thenReturn(PumpDescription())
+        whenever(virtualPumpPlugin.baseBasalRate).thenReturn(PumpRate(1.0))
+        whenever(ch.fromPump(any<PumpRate>())).thenReturn(1.0)
+        whenever(constraintChecker.applyBasalConstraints(any(), any())).thenAnswer { it.getArgument<Constraint<Double>>(0) }
+        whenever(constraintChecker.applyBasalPercentConstraints(any(), any())).thenAnswer { it.getArgument<Constraint<Int>>(0) }
+        whenever(constraintChecker.applyBolusConstraints(any())).thenAnswer { it.getArgument<Constraint<Double>>(0) }
+        // The APS result asks the shared checker whether it is a closed loop.
+        whenever(constraintsChecker.isClosedLoopAllowed()).thenReturn(ConstraintObject(true, aapsLogger))
+        whenever(persistenceLayer.getNewestBolus()).thenReturn(null)
+        whenever(persistenceLayer.insertOrUpdateApsResult(any())).thenReturn(PersistenceLayer.TransactionResult())
+
+        // An APS that publishes an SMB and a temp basal - as FUSE does, through the real result class.
+        val published = RT(algorithm = APSResult.Algorithm.FUSE, timestamp = dateUtil.now(), rate = 0.0, duration = 30, units = 0.3, deliverAt = dateUtil.now())
+        val apsResult = apsResultProvider().with(published)
+        val aps = mock<PluginBase>(extraInterfaces = arrayOf(APS::class))
+        whenever(aps.isEnabled()).thenReturn(true)
+        whenever((aps as APS).lastAPSResult).thenReturn(apsResult)
+        whenever(activePlugin.activeAPS).thenReturn(aps as APS)
+
+        loopPlugin.invoke("test", allowNotification = false)
+        loopPlugin.onStop() // the device status job this run scheduled
+
+        val lastRun = loopPlugin.lastRun
+        assertThat(lastRun).isNotNull()
+        // The identity FUSE matches on: the same RT instance, also after newAndClone().
+        assertThat(lastRun!!.request!!.rawData()).isSameInstanceAs(published)
+        assertThat(lastRun.constraintsProcessed!!.rawData()).isSameInstanceAs(published)
+        assertThat(lastRun.constraintsProcessed!!.smb).isGreaterThan(0.0)
+        // The apply block was never entered: no placeholder, and nothing went to the queue.
+        assertThat(lastRun.smbSetByPump).isNull()
+        assertThat(lastRun.tbrSetByPump).isNull()
+        verify(commandQueue, never()).bolus(any())
+        verify(commandQueue, never()).tempBasalAbsolute(any(), any(), any(), any(), any())
+        verify(commandQueue, never()).tempBasalPercent(any(), any(), any(), any(), any())
     }
 }

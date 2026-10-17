@@ -67,14 +67,21 @@ private class FuseAnsicht(
     val dashboard: FuseDashboardModel.View,
     val details: String,
     val markerAktiv: Boolean,
+    /** Das Mahlzeitfenster des Kontos laeuft noch (nach den ersten 90 min startet ein Druck dann eine NEUE Mahlzeit). */
+    val fensterLaeuft: Boolean,
     val fruehGesperrt: Boolean,
     val fruehBestaetigt: Boolean,
 )
 
 private suspend fun ansicht(plugin: FusePlugin, now: Long): FuseAnsicht {
+    // Konsolidierung 2.0: die Karte zeigt das Mahlzeitfenster des Kontos (Tonis Frist), nicht das 90-min-Markerfenster
+    // aus 1.x - sonst stand dort "abgelaufen", waehrend die Mahlzeit noch lief. Ohne Konto wie bisher.
+    val armedTs = plugin.mealMarkerArmedTs()
+    val fensterEnde = plugin.mahlzeitFensterEndeTs()
     val marker = FuseScreenModel.MarkerInfo(
-        armedTs = plugin.mealMarkerArmedTs(),
-        windowMin = OnsetChannel.MARKER_WINDOW_MIN,
+        armedTs = armedTs,
+        windowMin = if (fensterEnde > armedTs && armedTs > 0L) ((fensterEnde - armedTs) / 60_000L).toInt()
+        else OnsetChannel.MARKER_WINDOW_MIN,
         envelopeU = plugin.mealMarkerEnvelopeU(),
     )
     val ledger = plugin.ledgerInfo()
@@ -86,7 +93,7 @@ private suspend fun ansicht(plugin: FusePlugin, now: Long): FuseAnsicht {
         settings = FuseSettingsReport.build(plugin.preferences),
     )
     val gesperrt = plugin.fruehGesperrtNachTief(now)
-    return FuseAnsicht(dashboard, details, plugin.mealMarkerActive(now), gesperrt, gesperrt && plugin.fruehNachTiefBestaetigt())
+    return FuseAnsicht(dashboard, details, plugin.mealMarkerActive(now), fensterEnde > now, gesperrt, gesperrt && plugin.fruehNachTiefBestaetigt())
 }
 
 @Composable
@@ -136,7 +143,15 @@ private fun FuseScreen(plugin: FusePlugin, dateUtil: DateUtil, rxBus: RxBus, onS
                     } else rueckfrage = fakten to ereignis
                 }
             }) {
-                Text(if (s?.markerAktiv == true) "◉ MAHLZEIT AKTIV" else stringResource(TextRef.AndroidRes(R.string.fuse_marker_m)))
+                // Nach den ersten 90 min startet ein Druck eine NEUE Mahlzeit (neues Konto), auch wenn das Fenster der
+                // laufenden noch offen ist - der Knopf sagt das, statt wie ohne Mahlzeit auszusehen.
+                Text(
+                    when {
+                        s?.markerAktiv == true -> "◉ MAHLZEIT AKTIV"
+                        s?.fensterLaeuft == true -> stringResource(TextRef.AndroidRes(R.string.fuse_marker_new_meal))
+                        else -> stringResource(TextRef.AndroidRes(R.string.fuse_marker_m))
+                    }
+                )
             }
             if (onSettings != null) OutlinedButton(onClick = onSettings) { Text(stringResource(TextRef.AndroidRes(R.string.fuse_open_settings))) }
         }

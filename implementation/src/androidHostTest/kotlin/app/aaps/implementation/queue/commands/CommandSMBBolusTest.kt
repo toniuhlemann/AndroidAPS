@@ -12,10 +12,13 @@ import app.aaps.core.keys.IntKey
 import app.aaps.implementation.pump.PumpEnactResultObject
 import app.aaps.shared.tests.TestBaseWithProfile
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
 import org.mockito.Mock
 import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.doSuspendableAnswer
 import org.mockito.kotlin.doThrow
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.verify
@@ -237,6 +240,40 @@ class CommandSMBBolusTest : TestBaseWithProfile() {
         val received = command.completion.await()
         assertThat(received.success).isFalse()
         // The pump may have delivered before the driver threw: nothing is proven.
+        assertThat(received.notSentToPump).isFalse()
+    }
+
+    /**
+     * Fork (FUSE KI-171, product chat): "started" is set BEFORE the first driver call, and a started SMB stays
+     * liable also when the connection drops. Here the drop arrives while the driver is being called: the queue
+     * cancels the command (connection timeout) and the driver then reports a failure. The pump may have delivered,
+     * so nothing is marked - had `started` been set only after the driver call, the cancel would mark it.
+     */
+    @Test
+    fun `fork - a started SMB stays liable when the connection drops during the driver call`() = runTest {
+        whenever(rh.gs(app.aaps.core.ui.R.string.connectiontimedout)).thenReturn("Connection timed out")
+        whenever(preferences.get(IntKey.ApsMaxSmbFrequency)).thenReturn(3)
+        whenever(persistenceLayer.getNewestBolus()).thenReturn(null)
+        val info = smbInfo()
+        val driverCalled = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val pump = mock<PumpWithConcentration>()
+        whenever(pump.deliverTreatment(info)).doSuspendableAnswer {
+            driverCalled.complete(Unit)
+            release.await()
+            PumpEnactResultObject(rh).success(false).enacted(false).comment("connection lost")
+        }
+        whenever(activePlugin.activePump).thenReturn(pump)
+        val command = newCommand(info)
+
+        val running = launch { command.executeAndComplete() }
+        driverCalled.await()
+        command.cancel(app.aaps.core.ui.R.string.connectiontimedout, success = false)
+        release.complete(Unit)
+        running.join()
+
+        val received = command.completion.await()
+        assertThat(received.success).isFalse()
         assertThat(received.notSentToPump).isFalse()
     }
 
