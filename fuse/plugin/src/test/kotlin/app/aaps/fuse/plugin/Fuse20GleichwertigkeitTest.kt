@@ -231,12 +231,52 @@ object Fuse20Folgen {
         markerMin = 0,
     )
 
-    val ZUSATZ: Map<String, Folge> = mapOf("SNACK" to SNACK)
+    /**
+     * ZUSATZFOLGE Abbruch (Toni, Offline-Vergleich des Kontos): Markerdruck, die Mahlzeit beginnt und bricht ab - der Zucker
+     * steigt kurz und faellt zurueck. Synthetisch. Laeuft NUR auf Anforderung ([ZUSATZ_VAR]).
+     */
+    val ABBRUCH = Folge(
+        "ABBRUCH", 1_700_301_600_000L, -60, 240,
+        listOf(-60 to 110.0, 0 to 112.0, 15 to 128.0, 30 to 132.0, 45 to 120.0, 75 to 105.0, 120 to 100.0, 240 to 100.0),
+        markerMin = 0,
+    )
 
-    /** Die angeforderten Zusatzfolgen ([ZUSATZ_VAR]); leer im Normalfall. */
+    /**
+     * ZUSATZFOLGE Tief mit Rettungs-KH (Toni, Offline-Vergleich): Markerdruck bei fallendem Zucker, ein Tief, danach nur die
+     * Rettungs-KH - keine echte Mahlzeit. Synthetisch. Laeuft NUR auf Anforderung ([ZUSATZ_VAR]).
+     */
+    val TIEFRESCUE = Folge(
+        "TIEFRESCUE", 1_700_388_000_000L, -90, 240,
+        listOf(-90 to 150.0, -20 to 115.0, 0 to 95.0, 10 to 62.0, 16 to 60.0, 24 to 95.0, 35 to 120.0, 60 to 135.0, 120 to 125.0, 240 to 115.0),
+        markerMin = 0,
+    )
+
+    val ZUSATZ: Map<String, Folge> = mapOf("SNACK" to SNACK, "ABBRUCH" to ABBRUCH, "TIEFRESCUE" to TIEFRESCUE)
+
+    /**
+     * PRIVATE FOLGEN AUS EINER DATEI (Offline-Vergleich mit echten Mahlzeiten): der Pfad steht in [FOLGEN_DATEI_VAR], die
+     * Datei liegt im privaten Bereich und NIE im Repo. Je Zeile `name;nullMs;markerMin;minute;bg` (leerer markerMin = kein
+     * Druck); `#` beginnt einen Kommentar. Ohne Variable keine Folge.
+     */
+    const val FOLGEN_DATEI_VAR = "FUSE_GN_FOLGEN_DATEI"
+
+    fun dateiFolgen(): List<Folge> {
+        val pfad = (System.getenv(FOLGEN_DATEI_VAR) ?: System.getProperty("fuse.gn.folgendatei"))?.takeIf { it.isNotBlank() }
+            ?: return emptyList()
+        return java.io.File(pfad).readLines(Charsets.UTF_8).map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("#") }
+            .map { it.split(";") }
+            .groupBy { it[0] }
+            .map { (name, z) ->
+                val punkte = z.map { it[3].toInt() to it[4].toDouble() }.sortedBy { it.first }
+                Folge(name, z.first()[1].toLong(), punkte.first().first, punkte.last().first, punkte, z.first()[2].toIntOrNull())
+            }
+    }
+
+    /** Die angeforderten Zusatzfolgen ([ZUSATZ_VAR]) und die privaten aus der Datei ([FOLGEN_DATEI_VAR]); leer im Normalfall. */
     fun zusatzFolgen(): List<Folge> = (System.getenv(ZUSATZ_VAR) ?: System.getProperty("fuse.gn.zusatzfolgen") ?: "")
         .split(",").map { it.trim() }.filter { it.isNotEmpty() }
-        .map { requireNotNull(ZUSATZ[it]) { "unbekannte Zusatzfolge $it" } }
+        .map { requireNotNull(ZUSATZ[it]) { "unbekannte Zusatzfolge $it" } } + dateiFolgen()
 
     /**
      * DIE IDEALE PUMPE nach den AAPS-Regeln, dieselbe Regel wie in der Treueprobe T1: eine TBR endet mit ihrer Dauer, dem naechsten
