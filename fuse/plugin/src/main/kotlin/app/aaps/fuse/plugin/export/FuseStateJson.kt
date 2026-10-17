@@ -1,0 +1,2586 @@
+package app.aaps.fuse.plugin.export
+
+import app.aaps.core.interfaces.aps.RT
+import app.aaps.fuse.core.util.Sha
+import app.aaps.fuse.plugin.FuseCycleRunner
+import app.aaps.fuse.core.controller.TurnResponseShadow
+import app.aaps.fuse.plugin.ledger.EpisodeBudgets
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * Der Zyklus-Datensatz, den R89 zur Installationsvoraussetzung macht.
+ *
+ * Seit v7 (Audit R95, Fix 3) ist der Commitment-Ledger verdrahtet: R89
+ * §360-361 verlangt Ledgerrevision und die Mengenbilanz
+ * (gross/accounted/residual), und beides kommt jetzt aus der ECHTEN
+ * Ledger-Sicht des Zyklus statt als benannte Luecke. `r89Complete` haengt
+ * an der tatsaechlich uebergebenen Sicht: fehlt sie (alter Aufrufer, Fehler
+ * im Adapter), stehen die GAP_NO_LEDGER-Luecken wieder da - ein Datensatz,
+ * der vollstaendig AUSSIEHT, wuerde sonst als Freigabe gelesen.
+ *
+ * Reine Erzeugung: kein Dateizugriff, kein Android. Das Schreiben liegt in
+ * [FuseStateExporter], damit der Inhalt ohne Geraet pruefbar bleibt.
+ */
+object FuseStateJson {
+
+    const val VERSION = 1
+
+    /**
+     * Version des REGELWERKS. Handgepflegte Konstante — also genau die Sorte
+     * Zahl, die stimmt, bis jemand das Hochzaehlen vergisst. Deshalb steht in
+     * JEDEM Datensatz `ruleSetVersionIsManual: true`: eine Auswertung darf
+     * einen unveraenderten Wert NICHT als Beweis lesen, dass sich die Regeln
+     * nicht geaendert haben.
+     */
+    // v8 (09.08.): Fix-Pass 5 - prior-freie Sicherheitsbahn, Bremsbahn in
+    // allen Mit-Dosis-Pruefungen, Transportmenge in Bahn+Schwanz (3of3),
+    // erklaerte Absorption als Bedarf, Puls-Zaehler, SMB+TBR gemeinsam.
+    // v6 (08.08. mittags): Marker entwaffnet Rebound-Bremse (Gas-vor-Bremse
+    // nur fuer erklaertes Wissen) + Mess-Flag reboundSuppressedByMarker.
+    // v7 (08.08. abends, Audit R95 Fix 3): Commitment-Ledger verdrahtet -
+    // ledger-Block gefuellt (revision/transportCommitment/hold/openEntries/
+    // holdGeneration/aktive Fehler), Transportmenge geht von den Headrooms
+    // der Kandidatensuche ab, Hold nullt nach dem Lift, Episodenbudgets
+    // restartfest, Huellen-Belastung auf gate-wirksame Menge umgestellt.
+    // v9 (11.08.): EIN Mahlzeitenmarker - S/M/L und die zwei Stufenhuellen
+    // sind weg, es gilt nur noch primeEnvelopeU.
+    // v10 (15.08.): eine laufende Schutz-Null endet, sobald ihr Grund weg ist
+    // (endZeroWhenReasonGone). Aendert die Aktuation auf der TBR-Achse - ein
+    // Lauf davor und danach ist NICHT vergleichbar, deshalb eigene Version.
+    // v11 (19.08.): DAS MAHLZEITENFUNDAMENT. Phase B verteilt das
+    // markerautorisierte Budget zeitlich anders - eine dosierwirksame
+    // Architekturaenderung. Ein Lauf davor und danach ist NICHT vergleichbar,
+    // und die drei Einstellungen dazu gehen ab jetzt in den Hash ein (s.
+    // [hashOf]). Ohne den Bump traegen Laeufe vor und nach dem Umbau
+    // denselben Regelstand, obwohl sie verschieden dosieren.
+    // v12 (19.08.): das Rebound-Sonderrecht der Evidenz bekommt eine
+    // markerbezogene Frist (EvidenceReboundOverrideMaxMin). Ein Lauf davor
+    // und danach dosiert im spaeten Rebound verschieden - eigene Version.
+    // v13 (20.08.): gemessenes Abwaertsrisiko schliesst einen restartfesten
+    // SMB-Riegel; erst drei gesunde Zyklen mit UKF >= +0,20 oeffnen wieder.
+    // v14 (20.08.): der dadurch in Phase A unvermeidbar gewordene Rueckstand
+    // darf nach genau dieser Erholung kontrolliert in Phase B nachlaufen.
+    // v15 (21.08.): der harte Positiv-Insulin-Horizont des Abwaertsriegels
+    // wird vom laengeren Basal-Nutzen-Horizont getrennt
+    // (positiveDescentHorizonMin, ab jetzt im Hash), Erholung ueberlebt den
+    // Neustart, SAFETY_HOLD-/Riegel-Rueckstaende laufen nach der Erholung in
+    // Phase B nach; ein manueller NORMAL-Bolus nach dem Marker sperrt nur den
+    // Sicherheits-Uebertrag. Nachgetragen am 22.08. - der Bump selbst kam
+    // ohne Journaleintrag (Review-Finding).
+    // v21 (22.08. spaet): der Wende-Exit des Liveness-Kanals ist
+    // magnitudensensitiv - TURN_EXIT/TURN_STANDING verlangen die
+    // bestaetigte Wende der Schatten-Klassifikation (3 monoton fallende
+    // Werte, kumuliert >= 0,20 mg/dl/min) statt zweier beliebig kleiner
+    // Rueckgaenge. Live entwaffneten 0,005er-Rueckgaenge den Kanal.
+    // v20 (22.08. spaet): getrennte Tag-/Nacht-Druckschwelle des
+    // Liveness-Kanals (Auswahl ueber das autoritative Nachtfenster, OHNE
+    // den Totband-Schalter; Lese-Migration: ungesetzte Nachtschwelle folgt
+    // der Tagesschwelle). Tag/Nacht-Wechsel ist KEIN CONFIG_CHANGED; ein
+    // Wechsel in die Nacht unter der neuen Schwelle endet als
+    // PRESSURE_GONE ohne Sperre.
+    // v19 (22.08. spaet): die Re-Arm-Sperre des Liveness-Kanals NULLT den
+    // Bewaffnungs-Streak. Live gemessen zaehlte er waehrend der Pause
+    // weiter, und der Kanal war nach Fristablauf sofort
+    // wieder scharf - der Vertrag verlangt drei FRISCHE Druckzyklen nach
+    // der Sperre.
+    // v18 (22.08. nachts): der Liveness-Kanal (Bauvertrag Toni+Codex,
+    // Schalter default AUS). Bei bestaetigtem, nicht fallendem Hochdruck
+    // wird der erkannte Mittelbahn-Bedarf dosierbar: final = max(normal,
+    // liveness), Tail im Kanal weder Veto noch Kappe, kumulativ
+    // mengenbegrenzt (eigener Kanaldeckel, globales iobTH, maxIOB),
+    // gemessene Riegel absolut, restartfeste Re-Arm-Sperre, BG-Schwelle
+    // der Druckbedingung einstellbar (Default 160). Der gemessene
+    // Anlass: durchgehend falsche Unterkanten-Zertifikate und lange
+    // blockierte Hyper-Phasen.
+    // v17 (22.08. abends): der Marker-Prime-Aufschub (Punkt 6, Bau-GO Toni,
+    // Schalter default AUS, KEIN Aktivierungs-GO). Eingeschaltet haelt er
+    // markerautorisiertes Insulin bei gemessenem, ueberdecktem Fall mit
+    // Boden im gepinnten langen Horizont zurueck und gibt den offenen Rest
+    // nach bestaetigter Erholung schrittweise frei - dosierwirksam in beide
+    // Richtungen, darum eigene Version; die drei Stellgroessen gehen in den
+    // Hash ein.
+    // v16 (22.08.): Zulassungsschwelle und Fenster des Low-Tors
+    // (LowGateMinBenefitMgdl, LowGateHorizonMin) gehen in Hash und
+    // policyValues ein. Beide steuern, ab wann eine Zero-TBR als nutzlos gilt
+    // - dosierwirksam auf der TBR-Achse, bis v15 unsichtbar im Fingerprint:
+    // zwei Laeufe mit 5 und 20 mg/dl Schwelle trugen denselben Regelstand,
+    // und der Trail konnte nicht einmal zeigen, welche Werte galten.
+    // v22 (23.08.): das Theil-Sen-Fenster des Hauptschaetzers wird
+    // konfigurierbar (TheilSenWindowMin, 8..18, Default 18 = bitgleich zum
+    // Candidate-Lock R58) und geht in Hash, policyValues und die
+    // Methoden-Kennung TS-PS-...-W<min>-... ein. Zwei Laeufe mit W18 und
+    // W10 sind verschiedene Schaetzer und duerfen weder denselben
+    // Fingerprint noch dieselbe Kennung tragen; ueber die configGeneration
+    // entwertet der neue Hash zugleich alle offenen Erwartungen des alten
+    // Fensters (Pkt. 5 des Vertrags). Belegt durch den Zwei-Tage-Replay
+    // (Problemtag: W10 entriegelt Onset+Deadlock; Kontrolltag: W10
+    // praktisch identisch zu W18).
+    // v23 (23.08. spaet): der Ratio-Deckel des Liveness-Kanals
+    // (LivenessRatioCap, Default 1.0 = nicht bindend, damit der Bump selbst
+    // dosierneutral ist). liveRatio = min(effectiveRatio, Cap) begrenzt die
+    // Geschwindigkeit des Kanals je Zyklus; der Kanaldeckel begrenzt die
+    // Menge, die gemessenen Exits beenden den Lauf - komplementaer, nichts
+    // ersetzt etwas. Gemessener Anlass: eine grosse Menge in kurzer Zeit mit
+    // anschliessendem Tief - bei der Wirklatenz war die Menge vor jedem
+    // moeglichen gemessenen Exit draussen. Zwei Laeufe mit
+    // verschiedenem Cap dosieren im Kanal verschieden -> Hash+policyValues.
+    // v24 (23.08. nachts): der Liveness-Kanal bekommt MEAL- und
+    // CORRECTION-Mengenprofile (Bauauftrag Toni). Der Marker autorisiert
+    // fuer die gepinnte Leistungsfrist (Default 120 min) die offenen
+    // MEAL-Caps (Ratio + IOB je Profil); danach faellt der Kanal auf die
+    // gedaempften CORRECTION-Caps zurueck. Evidenz darf laenger leben,
+    // verlaengert das Mengenprivileg aber nicht. Lese-Migration: ungesetzte
+    // Profilwerte folgen den bisherigen Globalwerten - der Bump selbst ist
+    // dosierneutral. Die fuenf Stellgroessen ersetzen livenessRatioCap und
+    // livenessIobCapPercent in Hash und policyValues; relational validiert
+    // (CORRECTION nie offener als MEAL, fail-closed).
+    // v25 (24.08. abends): der ZERO-TBR-LATCH (Bauauftrag Toni). Eine vom
+    // Low-Tor berechtigt eroeffnete Zero-TBR bleibt fuer die Dauer der
+    // Fall-Episode verriegelt - der punktuelle Nutzenwert darf sie nicht
+    // mehr wegwerfen (Befund: mehrere eroeffnete Nullen verworfen,
+    // Profilbasal floss in einen vorhersehbaren Fall, danach ein Tief). Geloest nur durch belegte Erholung (geteilte Descent-Semantik
+    // +0,20 x 3 mit q1- und Risiko-Bedingung) oder den Ruhe-Ausgang.
+    // Schalter Default AUS -> der Bump selbst ist dosierneutral. NUR die
+    // Basalachse; der SMB-Pfad bleibt ueber latchZeroOnly unberuehrt.
+    // v26 (24.08. abends, DOSIERWIRKSAM): das Liveness-MEAL-Profil traegt
+    // die R-Rampe SELBST (Befund im Live-Trail: spaet nach dem Marker,
+    // steiler Anstieg, mealWindow false -> state.effectiveSmbRatio fiel auf die
+    // Korrektur-Ratio 0,15, und "Live M" dosierte unsichtbar mit dem
+    // K-Tempo; der Profildeckel als reine Obergrenze konnte nichts
+    // anheben). Basis: MEAL = Rampe correction->rise ueber r (geteilte
+    // Mathematik mit dem Normalpfad), CORRECTION = Korrektur-Ratio;
+    // Profildeckel ERST NACH der Basis. Der Normalpfad bleibt bitgleich.
+    // Export: liveness.baseRatio vor dem Deckel.
+    // v27 (24.08. spaet, DOSIERWIRKSAM, Tonis Korrektur zu v26): die
+    // Liveness-Basis kommt in BEIDEN Profilen aus der R-Rampe - der
+    // Unterschied MEAL/CORRECTION ist AUSSCHLIESSLICH der ausgewaehlte
+    // Ratio-Deckel. v26 liess CORRECTION fest auf der Korrektur-Ratio
+    // stehen; damit wurde ein K-Deckel 0,20 nur als Obergrenze einer
+    // festen 0,15 gelesen und konnte nie skalieren (Beispiele: maessiges r ->
+    // Basis knapp ueber 0,15 unter dem Deckel; steiles r -> Basis ueber dem Deckel, K-Deckel kappt
+    // auf 0,20). Der normale Nicht-Liveness-Pfad behaelt sein
+    // mealWindow-Gate und bleibt bitgleich.
+    // v28 (24.08. spaet, DOSIERWIRKSAM bei gesetztem Anteil): der
+    // Phase-A-SOFORTANTEIL nach iLet-Prinzip (Bauauftrag Toni).
+    // MealFoundationPhaseAUpfrontShare (Default 0,00 = bitgleich) pinnt beim
+    // Markerdruck; upfrontU = phaseABudget x Share wird im ersten
+    // berechtigten Zyklus als typisierte Quelle MEAL_UPFRONT angefordert -
+    // NICHT von maxSMB zerteilt, Budget/iobTH/maxIOB/Transport/Pumpenraster
+    // bleiben hart. Exactly-once als BILANZ auf den persistierten, gate- und
+    // beweiskorrigierten Zaehlern (upfrontFloorU = upfront - deliveredPhaseA
+    // - deferredOpen); gemessener Abwaertsriegel leitet in den bestehenden
+    // DeferredPrime-Aufschub um, aktiver Zero-Latch sperrt ausdruecklich.
+    // PrimeWindowMin bleibt die Phasengrenze. Export: neun
+    // phaseAUpfront*-Felder im mealFoundation-Block.
+    // v29 (24.08. nacht, DOSIERWIRKSAM bei aktivem Latch, Tonis
+    // Nachbesserung): der Zero-Latch zuendet auf das Fall-Verdikt
+    // (FALLING_WITH_BOLUS_OVERCOVERAGE) erst nach ZWEI aufeinanderfolgenden
+    // qualifizierenden Zyklen - und auch die ERSTE Zero-TBR wartet (das
+    // gedaempfte Verdikt geht als NONE in decide; Zyklus 1 KEEP, Zyklus 2
+    // Null+Latch, MEASURED_LOW sofort beides). Ausserdem Tonis
+    // Sofortdosis-Freigabetor (v28-Auflagen): MEAL_UPFRONT nur mit aktivem
+    // DeferredPrime-Netz, nie im Predictor-Fallback; typisierte
+    // Risikogruende (120-min-LowThreat-Verdikt roh, aktiver Zero-Latch,
+    // Rebound) VERSCHIEBEN die offene Sofortmenge in den Aufschub - nie
+    // die Pumpenrate lesen, nie verwerfen (90-s-Anschluss, Unterbrechung
+    // nullt);
+    // MEASURED_LOW verriegelt weiter sofort, ein aktiver Latch wird von
+    // jedem Fall-Verdikt gehalten. Anlass: ein Grenzfall (knappe Ueberdeckung,
+    // Bodenkontakt knapp im Horizont) verriegelte als EINZELNER
+    // Zyklus eine lange Null - ein Sensorzacken darf das nicht. Export:
+    // lowThreat.overcoverageMarginMgdl/horizonMarginMin (Messfelder, keine
+    // Mindestmarge geraten) + zeroLatch.armStreak.
+    // v30 (25.08., DOSIERWIRKSAM bei eingeschalteten Schaltern, beide
+    // Default AUS): die KORREKTURPFAD-RIEGEL. (1) CorrectionReversalGuard -
+    // nach steilem Fall loest eine schnelle Gegenbewegung keine
+    // Korrektur-SMBs aus, solange das robuste r negativ/unbestaetigt ist
+    // (Pflichtfall: Korrektur-SMBs auf ein Sensor-V bei negativem r,
+    // Prognose deutlich zu hoch). (2) PositiveCorrectionRearm - Zero-Latch-Loesung
+    // und Nachtende oeffnen positive Korrektur-SMBs erst nach Mindestdauer
+    // UND zusammenhaengend bestaetigter Aufwaertslage (Pflichtfall: eine
+    // SMB in der ersten Minute nach der Nachtband-Kante). NUR reiner
+    // Korrekturkontext - Marker/Prime/Fundament/MEAL-Frist bleiben
+    // unberuehrt, r/UKF werden NICHT global haerter; kein Carry; der
+    // Zero-Latch bleibt zweite Schutzlinie. Neun Stellgroessen in Hash und
+    // policyValues; Export-Block correctionGuards.
+    // NACHBESSERUNG (Review 25.08. abends, vor dem ersten Flash - dieselbe
+    // Versionsnummer): (P0.1) beide Riegel-Identitaeten persistiert
+    // (Ledger episodes.correctionReversal/correctionRearm), Zaehler nach
+    // Neustart genullt; (P0.2) Korrekturkontext aus der AUTORITATIVEN
+    // ExpectationLedger.classify statt zweitgefuehrter Rekonstruktion -
+    // Export correctionGuards.contextReason; (P0.3) der Rearm-Zaehler
+    // zaehlt nur bei gesunder Lage (READY, q1 nicht fallend, kein
+    // Low/Descent/Rebound/Hold); (P1.4) die Nachtkante ankert nur, wenn
+    // der letzte Nachtzyklus positiven Bedarf AUSSCHLIESSLICH ueber das
+    // Nachtband unterdrueckt hat; (P1.5) die r-Bestaetigung zaehlt erst
+    // ab der V-Zuendung.
+    // v33 (26.08.): die REBOUND-FENSTERDAUER ist einstellbar
+    // (FuseIntKey.ReboundWindowMin, 45..240, Default 45 = bitgleich zum
+    // bisherigen Verhalten). Anlass ist ein gemessener Verlauf: das Totband
+    // liess unter Ziel+Band nichts durch, aber im Zyklus nach Fensterende
+    // sprang die Ratio auf den Anstiegswert und der SMB deutlich nach oben;
+    // bis zum naechsten Tief floss eine grosse Menge, zum Teil aus dem
+    // Liveness-Kanal. Die Dauer wirkt an DREI Stellen:
+    // Fenstertest und Restzeit im Runner sowie das Tief-Gedaechtnis in
+    // FuseLowMemory, das nach einem Neustart alles aeltere verwirft - haette
+    // man dort die Konstante stehen lassen, kappte jeder Flash ein laengeres
+    // Fenster still auf 45 Minuten.
+    // v34 (28.08.): DIE PHASE-A-DIREKTDOSIS IST VOM ZERO-LATCH ENTKOPPELT.
+    // Ein historisch gehaltener Basalschutz blockiert die autorisierte
+    // Mahlzeiten-Direktdosis nicht mehr; aktuelle Low-Gefahr, gemessenes
+    // Abwaertsrisiko, Rebound sowie Signal-, Modell- und Ledger-Sperren
+    // bleiben unveraendert wirksam. Anlass ist ein Fruehstueck: ueber viele
+    // Minuten war `zeroLatch` der EINZIGE Eintrag in `currentHazard`, bei
+    // descentRisk=false und gesundem Signal, und die autorisierte Menge lag
+    // still. Dosierwirksam, deshalb der Bump.
+    // Zwei Stellen mussten mit, beide KEINE Parameteraenderung: der
+    // bedarfsbegrenzte Ruhekandidat fuehrt den Latch jetzt als eigene
+    // Bedingung (sonst haette die Entkopplung die Korrekturbahn geoeffnet),
+    // und in `upfrontState` schlaegt REQUESTED den Latch-Zweig (sonst
+    // meldete der Markerdialog "verriegelt", waehrend die Menge herausgeht).
+    // v35 (28.08.): DER FREIGABEVERTRAG DES MEAL_UPFRONT-BATCHES.
+    // Zwei Nulltoleranzen (UKF < 0, q1 gefallen) sind durch den
+    // Stabilitaetsnachweis auf der gemessenen Reihe ersetzt; MEASURED_LOW ist
+    // ein eigenes Gefahrenfeld; das 120-min-Basalverdikt ist durch den am
+    // Marker gepinnten Abwaertsrisiko-Vertrag ersetzt; die Vorgeschichte
+    // zaehlt auch zeitlich. Am selben Fruehstueck verschiebt das die
+    // Anforderung deutlich nach vorn - dieselbe Menge, Sekunden nach dem
+    // Marker. Dosierwirksam ohne jeden Zweifel.
+    // v36 (29.08.): TYPISIERTER WIDERRUF-REBASE der Evidenzsumme. Ein
+    // regulaerer Ledger-Widerruf (am Fensterende eines Fruehstuecks) senkte `evidenceCommittedU`; EvidenceStock wertete das als
+    // verlorenen Zustand (UNKNOWN ohne Selbstheilung), und EXCLUDED_LAGE
+    // nahm den Liveness-Kanal fuer den Episodenrest aus dem Spiel - bei
+    // noch lange gueltiger Markervollmacht. Jetzt traegt der Ledger eine
+    // monotone commitmentRevision, die NUR die beiden Widerrufspfade
+    // atomar vorruecken; nur eine Absenkung MIT vorgerueckter Revision ist
+    // ein legaler Rebase (Marke runter, keine Erstattung, Gefahren-Tore
+    // laufen weiter), jede andere bleibt fail-closed UNKNOWN. Aendert die
+    // Evidenzphase und damit die Kanalverfuegbarkeit - dosierwirksam.
+    // v37 (29.08., M2 aus Bauauftrag 7.5.2): das Liveness-Bewaffnungstor
+    // liest den URSPRUENGLICHEN Normalpfad-Block (underlyingNormalBlock =
+    // vetted.block VOR liftUpfront) statt des publizierten Blocks.
+    // Autorisierte Boeden (Foundation-Drip, Prime, Upfront) plus
+    // MarkerFloor-Restauration machten aus GUARD_FLOOR ein NONE und
+    // verzoegerten die Bewaffnung um den Streak-3-Zyklus (an zwei
+    // Fruehstuecken je 1 Zyklus gemessen). Nur das Bewaffnungstor; alle
+    // Gefahren-/Integritaetstore unveraendert. Dosierwirksam.
+    // v38 (29.08., A4 aus Bauauftrag 7.5.7): policyMode (LEGACY |
+    // CENTRAL_PROFILES) + die vier zentralen Profilwerte als KANDIDATEN in
+    // Config, Validierung (Aktivierung nur mit vier gueltigen Werten,
+    // relational K nie offener als M, typisierte Ablehnung), policyValues
+    // und Hash. In Schritt A konsumiert sie KEIN Dosierpfad - der Bump
+    // selbst ist bei Default AUS dosierneutral, aber die Hash-Eingaben
+    // wechseln (offene Erwartungen werden wie bei v22/v24 einmalig
+    // entwertet - gewollt).
+    // v39 (29.08., M1 aus Bauauftrag 7.5.1): eigene MEAL-Druckschwelle des
+    // Liveness-Kanals unter gueltiger Markervollmacht (absolut, mg/dl).
+    // Unkonfiguriert = bisherige Tag-/Nachtschwelle (neutraler Altpfad,
+    // Default-bitgleich); gesetzt ist sie DOSIERWIRKSAM: lange Versorgungs-
+    // Loecher an einem Abend und einem Fruehstueck entstanden aus der
+    // Korrektur-Schwelle unter stehender MEAL-Vollmacht.
+    // bgMinSource kennt jetzt MEAL; Profilwechsel ist KEIN CONFIG_CHANGED.
+    // v40 (29.08., M3 aus Bauauftrag 7.5.5): konfigurierbare
+    // Bewaffnungszyklen unter MEAL-Vollmacht (MealArmCycles, Default 3 =
+    // Altbestand-bitgleich; CORRECTION bleibt immer bei 3). Gesetzt auf 1
+    // bewaffnet der Kanal im ERSTEN Druckzyklus der autorisierten
+    // Mahlzeit - autoISF-artige Sofortreaktion nur unter der Vollmacht.
+    // v41 (29.08., B1 aus Bauauftrag 5.1): die VERBINDLICHE ENDPRUEFUNG.
+    // Im Modus CENTRAL_PROFILES prueft ExposureGate die endgueltige
+    // Zusatzdosis als LETZTE hebende Mengenstufe an BEIDEN Einbaustellen
+    // (Hauptpfad nach dem Liveness-Merge, Fallback nach dessen
+    // MeasuredDescentGate) gegen min(iobTH, maxIOB, Kontextgrenze) minus
+    // capIob+Transport; AuthorizedLift traegt dieselbe Grenze bereits in
+    // der GRANT-BILDUNG. Neuer Block EXPOSURE_LIMIT (absolut, nie hebbar,
+    // NO_NEW_POSITIVE, GUARD_CHAIN_PASSED). Im LEGACY-Modus bitgleich
+    // inaktiv - dosierwirksam erst mit aktivierten zentralen Profilen.
+    // v42 (29.08., B2 aus Bauauftrag 7.2): effectiveDemandRatio =
+    // min(Basis, Kontext-Cap) fuer NORMAL und LIVENESS. Der Normalpfad
+    // bekommt den Cap als EIGENEN benannten Kandidaten (demandRatioCap)
+    // in die Kappenliste - die Basis (Rampe, Rebound-/Mahlzeit-Fenster)
+    // bleibt unveraendert; die Liveness-Basis bleibt die v27-Rampe OHNE
+    // Fenster-Gate (dokumentierte Basisdifferenz), ihr Profil-Cap ist im
+    // zentralen Modus der Kontext-Cap und ERSETZT die Alt-Caps (kein
+    // min(alt, neu); die Profil-IOB-Deckel bleiben nach 7.4 stehen).
+    // Direktdosen (Upfront/Prime/Foundation/Aufschub/CALM) deutet der
+    // Cap NIE um (Invariante 5). Kontextblock jetzt VOR der State-
+    // Konstruktion: Fallback-/Abbruch-Zyklen pflegen die Markerfrist
+    // mit (dieselben Werte, nur frueher). Im LEGACY-Modus bitgleich.
+    // v43 (29.08. spaet, P1 aus Tonis Review): im Modus CENTRAL_PROFILES
+    // ist der Liveness-Kanaldeckel die KONTEXTGRENZE (derselbe Raum wie
+    // die Endpruefung); die Legacy-Prozentdeckel (livenessMeal-/
+    // livenessCorrectionIobCapPercent) sind dort vollstaendig wirkungslos
+    // - vorher wirkten sie als versteckte Parallelarchitektur weiter,
+    // OHNE im Policy-Hash zu stehen. Lauf-Kennung traegt die
+    // Exposure-Limits statt der ignorierten Deckel;
+    // selectedIobCapPercent exportiert im Zentralmodus null. Im
+    // LEGACY-Modus bitgleich.
+    // v44 (29.08. nachts, Tonis CENTRAL-only-Vertrag): der LEGACY-Pfad
+    // ist ENTFERNT - Modusschalter, Legacy-Runtime und die sechs alten
+    // Liveness-Cap-/Ratio-Keys existieren nicht mehr. Die vier
+    // Profilwerte tragen ECHTE Defaults (3,0 / 7,0 / 0,20 / 0,35 -
+    // Startsatz aus den Messfaellen); CORRECTION ist der Grundzustand,
+    // MEAL kommt aus der Markervollmacht. policyMode bleibt als
+    // Export-KONSTANTE CENTRAL_PROFILES. Globale Sicherheitsgrenzen
+    // (iobTH, maxIOB, maxSMB, Gefahren-Gates) und die MEAL-Regler
+    // (Frist, Druckschwellen, Armierung, Re-Arm, Fundament A/B)
+    // unveraendert. Fuer bisher-LEGACY-Geraete ist der Flash der
+    // BEWUSSTE Architekturwechsel auf die zentrale Politik.
+    // v45 (30.08., P1 Livefall): die MEAL-/Evidenz-Entwaffnung
+    // des Rebound-Totbands gilt auch im HARTEN Liveness-Tor. Vorher las
+    // das Tor das rohe Fenster (reboundRaw) und blieb EXCLUDED/
+    // REBOUND_ACTIVE, waehrend der Normalpfad laengst per
+    // evidenceMayOverrideRebound entwaffnet war und nach einer ersten Menge
+    // mit GUARD_FLOOR schloss - serielle Blockade trotz freiem
+    // MEAL-Headroom. Jetzt sperrt reboundRaw nur noch bei NICHT geltendem
+    // Sonderrecht (dieselbe typisierte Rechnung, NightWindow.
+    // evidenceMayOverrideRebound: Kredit + passender Pin + Frist, nie
+    // widerrufen). Alle anderen harten Riegel (Signal, Sicht, Modell,
+    // Ledger, Low, Descent, Latch, EXCLUDED_LAGE, FALLING) und alle
+    // Mengen-/Endpruefungen unveraendert.
+    // v46 (P0, gemessener Livefall): die EPISODENSTATISTIK
+    // (mealStats/mealDeliveries) bucht MEAL-Abgaben im halb offenen
+    // Fenster bis authorizationExpiresAt (120 min), nicht mehr nur im
+    // 90-min-Onset-Fenster - im Livefall fehlte der Anzeige die gesamte
+    // zwischen T+90 und der Deadline publizierte Menge. Traeger ist die
+    // MEAL-Vollmacht des Zyklus (DosingContext.mealAuthorized, Pin-
+    // Identitaet, exakt an der Deadline zaehlt CORRECTION). Onset-/
+    // Markerfenster, Huellen-, Evidenz-, Foundation-Zaehler und der
+    // Absorptions-Kredit unveraendert; Publikations-Rollback korrigiert
+    // die Statistik weiter (resolve/revoke). DOSIERNEUTRAL: der einzige
+    // dosierwirksame Leser der Liste (Absorptions-Kredit) laeuft nur
+    // unter markerBoost (<= 45 min) und sieht spaete Buchungen nie.
+    // v47 (Schritt B): BASALLUECKEN-KONTEXT, rein beobachtend.
+    // Beim beobachteten Markerdruck friert der Zyklus die Lage ein
+    // (preMarkerBasalIobU, laufende Null-TBR ja/nein, Nullphasen-Alter
+    // und ausgelassenes Profilbasal aus der echten TBR-/Profilhistorie -
+    // unsichere Groessen typisiert null, nie geschaetzt) und exportiert
+    // sie restartfest als basalGap-Block samt zyklusaktuellem Basal-IOB/
+    // Nullstatus. KEIN Dosierpfad liest diese Werte (Neutralitaets-Rig):
+    // nie Exposure-Headroom, kein Auto-Bolus, kein Budget aus
+    // rueckwaertslaufendem Basal-IOB.
+    // v48: MESSGRUNDLAGE DER NULLPHASEN, rein beobachtend. Drei
+    // Ergaenzungen, die eine Mengenbilanz ueber den Trail erst
+    // moeglich machen: (a) scheduledBasalUph = das LAUFENDE
+    // Profilbasal je Zyklus - der Marker-Schnappschuss in basalGap
+    // ist Stunden alt, und ohne diesen Wert ist jede Auswertung ein
+    // Modellfit; (b) overcoverageMarginMgdl jetzt auch OHNE
+    // anliegendes Verdikt - bisher war die Groesse genau in der Zeit
+    // null, in der der Riegel ohne Grund weiterhielt, also genau dort
+    // unmessbar, wo die Frage sitzt; (c) zeroTally/lastZeroTally =
+    // laufende Bilanz jeder Nullphase mit DREI Zeitklassen (gesamt /
+    // ohne Schutzgrund / ohne Grund und nicht fallend) plus
+    // ausgelassenem Profilbasal, restartfest im Ledger.
+    // DOSIERNEUTRAL: kein Pfad liest diese Felder; (b) ist eine reine
+    // Ergaenzung im Ergebnisobjekt (einziger Leser ist der Export),
+    // die Verdikte selbst sind unveraendert. omittedU ist KEIN Budget -
+    // die fehlende Basalwirkung steht bereits im negativen Basal-IOB.
+    // v49: ZWEI SCHALTBARE NULLPHASEN-VARIANTEN, beide Default AUS.
+    // V1 Grund-Weg-Ausgang des Zero-Latch
+    // (ZeroLatchReasonGoneExitCycles): loest die verriegelte Null, wenn
+    // das LowThreat-Verdikt ueber N zusammenhaengende Zyklen NONE ist UND
+    // die Erholung bestaetigt ist. Er beendet NUR die Verriegelung -
+    // danach gilt wieder das Profilbasal; eine Rate darueber existiert im
+    // Aktuationsraum nicht, ein Nachholen ausgelassener Basalmenge findet
+    // nicht statt.
+    // V2 Serien-Deckel des markerlosen Korrekturpfads
+    // (CorrectionSeriesCapU/CorrectionSeriesWindowMin): begrenzt die
+    // SERIE statt des einzelnen SMB, ueber eine rollierende, restartfeste
+    // Liste; Headroom = Deckel - im Fenster Geflossenes - offene
+    // Transportmenge. Gebucht wird nur, was den Transport uebersteht
+    // (Rollback bei Verwurf und bei bewiesenem Nicht-Senden). Er wirkt
+    // ausschliesslich im Exposure-Gate und fasst die Basalachse nicht an.
+    // v50: STUFENWEISE BASALRUECKKEHR (Default AUS, bitgleich).
+    // Eine verriegelte Schutz-Null kennt jetzt drei Aktuationszustaende:
+    // ZERO (unveraendert), PARTIAL_RECOVERY (ein Anteil des Profilbasals
+    // laeuft weiter, waehrend der Latch sicherheitswirksam aktiv bleibt)
+    // und RELEASED (unveraendert am strengeren Ruhe-Ausgang - die
+    // Teilstufe ersetzt ihn NICHT). Eintritt nach drei zusammenhaengenden
+    // frischen Zyklen ohne Schutzgrund, mit gesundem Signal, ohne
+    // measuredLow, ohne descentRisk und mit UKF >= -0,03; bewusst OHNE
+    // q1NichtFallend, weil gerade der milde Restabfall der Anlassfall ist.
+    // Die Rate ist IMMER kleiner als das Profilbasal (neue TbrAction
+    // PARTIAL_BASAL -> TbrPolicy.Intent.PARTIAL_BASAL, nach unten auf den
+    // Basalschritt gerastert): keine positive TBR, kein Ausgleich der
+    // ausgelassenen Menge, kein Uebertrag. Waehrend der Teilstufe ist die
+    // SMB-Achse hart genullt - das ist zugleich die Voraussetzung dafuer,
+    // dass die Anforderung ueberhaupt durchkommt (C7a verwirft eine
+    // anhebende TBR, wenn im selben Zyklus ein SMB positiv ist).
+    // Kehrt ein Schutzgrund zurueck, gilt im SELBEN Zyklus wieder ZERO.
+    // v51: REBOUND-EVIDENZ-AUSNAHME AM LIVENESS-TOR (Default AUS, bitgleich).
+    // Eingeschaltet sperrt das rohe Rebound-Fenster den Kanal nicht mehr
+    // allein, weil Buchungen den versiegelten Kredit verbraucht haben:
+    // MEAL-Vollmacht + gepinntes, nicht abgelaufenes Sonderrecht DIESES
+    // Markers + Tief vor dem Druck + Evidenzbestand ACTIVE/PENDING_SEAL +
+    // gemessen stabile Rohreihe. Nur dieses eine Tor; Normalpfad,
+    // Totbaender, Direktdosis, Mengen und Gates unveraendert. Dazu
+    // dosierneutral liveness.noLiftReason (NO_HEADROOM aufgeschluesselt).
+    // v52: BUCHUNGSBEDINGTER AUSGANG OHNE NEUE SPERRE (Default AUS, bitgleich).
+    // Beendet das Rebound-Tor einen laufenden Lauf wegen buchungsbedingter
+    // Evidenzerschoepfung, endet der Lauf ohne NEUE Wiederanlaufsperre - nur
+    // ohne erfasste Gefahr, ohne weitere Torsperre, ohne manuelle Intervention,
+    // ohne Konfigurationswechsel, mit vollstaendiger Diagnose. Bestehende
+    // Sperren, Mengen und alle Tore unveraendert.
+    // v53 (Toni 15.09., Experiment, Default AUS): Halte-Anhebung des
+    // Stoerungsterms NUR im Bedarf des laufenden Liveness-Kanals - 20 min
+    // gehaltener positiver Antrieb, zwei Zyklen gemessen bestaetigt, nie im
+    // Rebound-Fenster, hoechstens 40 mg/dl. Tore, Bewaffnung, Deckel, Grenzen
+    // und die exportierte Release-Bahn unveraendert.
+    // v54 (Toni 15.09. abends, Schalter weiter AUS): die Halte-Anhebung gilt nur
+    // unter gueltiger MEAL-Autorisierung und bestaetigt ueber frische
+    // Rohwert-Bloecke mit neuem Hoch, Bedarf je Block einmal - die fruehere
+    // Zwei-Zyklen-Bestaetigung ueber die Rate allein ist entfallen.
+    // v55 (Toni 18.09., Kandidat H8, Default 0 = AUS): frueher adaptiver
+    // MEAL-Bedarf. Nur unter gueltiger MEAL-Autorisierung, Marker +10..+45 min,
+    // reifem Signal, W10 >= 1,0 (Liveness-Druckschwelle R_MIN) und UKF >= 0 -
+    // riseRampLowR bleibt allein Unterkante der Ratio-Rampe: die Freigabe-Mittelbahn
+    // des Liveness-Kanals wird max(produktiv, target + W10 * H) (nie Summe),
+    // Ratio-Rampe und Kanaldruck lesen in diesen Zyklen den W10-Antrieb. Tore,
+    // Deckel, Grenzen, Raster, Horizonte und Reversal-/Safety-Bahn unveraendert.
+    const val RULE_SET_VERSION = 55
+
+    /** Schema des Trail-Datensatzes - s. die Notiz an der Schreibstelle. */
+    const val SCHEMA_VERSION = 5
+
+    /** Gruende fuer fehlende Felder. Benannt statt weggelassen. */
+    const val GAP_NO_LEDGER = "LEDGER_NOT_WIRED"
+    const val GAP_POLICY_NOT_READ = "POLICY_NOT_READ_THIS_CYCLE"
+    const val GAP_HASH_NOT_FINITE = "HASH_INPUT_NOT_FINITE"
+    const val GAP_METRICS_LAG = "EXPORT_METRICS_LAG_BY_ONE"
+
+    /** Der Kern ist verdrahtet, wurde in diesem fruehen Abbruchzyklus aber
+     *  mangels auswertbarem Signal nicht erreicht. */
+    const val GAP_EVIDENCE_NOT_EVALUATED = "EVIDENCE_NOT_EVALUATED_THIS_CYCLE"
+
+    /** Messwerte des VORIGEN Schreibvorgangs. Sie koennen nicht im eigenen
+     *  Datensatz stehen — die Dauer des Schreibens ist erst danach bekannt. */
+    data class PrevWrite(val writeMs: Long, val bytes: Int)
+
+    /** Woher der laufende Build stammt. `committed = false` heisst: es lag
+     *  Unversioniertes im Baum — der Hash allein identifiziert den Stand dann
+     *  NICHT, und genau das muss im Datensatz stehen. */
+    data class Build(val versionName: String, val head: String, val committed: Boolean)
+
+    /** Die Ledger-Sicht NACH den Buchungen des Zyklus. [revision] ist die
+     *  monotone Aenderungszaehlung des Adapters (R89 §360). */
+    data class LedgerSnapshot(
+        val revision: Long,
+        val state: app.aaps.fuse.core.ledger.LedgerState,
+        /** Messwerte des letzten Schreibvorgangs; `null` = in diesem
+         *  Prozess noch nicht geschrieben. */
+        val persist: app.aaps.fuse.plugin.ledger.FuseLedgerStore.PersistStats? = null,
+        /** Die ZUSAMMENGESETZTE Sperre des Adapters; `null` = nicht uebergeben,
+         *  dann faellt `hold` auf `state.holdActuation` zurueck. */
+        val view: app.aaps.fuse.plugin.ledger.LedgerView? = null,
+    )
+
+    /**
+     * Was das PUBLIKATIONSGATE mit diesem Zyklus gemacht hat (B0c).
+     *
+     * Der Grund einer Zurueckhaltung stand bisher ausschliesslich als
+     * angehaengter Text im `rt.reason`; der Trail exportiert nur die vier
+     * Aktuatorfelder, also war er dort unsichtbar. Ein Zyklus, in dem eine
+     * gerechnete Menge NICHT hinausging, sah im Trail aus wie einer, der
+     * keine gerechnet hat - und die Unterscheidung ist genau das, was eine
+     * Auswertung braucht.
+     *
+     * Die Werte kommen als DATEN aus [app.aaps.fuse.plugin.ledger.LedgerPublicationGate.Outcome],
+     * nicht aus einer nachtraeglichen Zerlegung des Grundtextes.
+     *
+     * @param allowed hat das RT das Gate unveraendert verlassen? Ohne units
+     *   trivialerweise true - [reason] unterscheidet die Faelle.
+     * @param reason `null`, wenn nichts entfernt wurde.
+     * @param treatmentViewPresent hatte der Zyklus eine Behandlungs-Vollsicht?
+     *   Vom Zyklus selbst, nicht vom Gate abgeleitet.
+     */
+    data class PublicationGate(val allowed: Boolean, val reason: String?, val treatmentViewPresent: Boolean)
+
+    /**
+     * B3: die PATCH-EPOCHE dieses Zyklus.
+     *
+     * Der SPERRGRUND steht schon im Publikationsgate
+     * (`REAL_PUMP_EPOCH_UNKNOWN`) - was dort fehlt, ist die DIAGNOSE: WARUM
+     * ist die Epoche unbekannt? Ohne sie sieht man im Trail, dass gesperrt
+     * wurde, aber nicht, ob es an einem fehlenden Datensatz, einem
+     * Handeintrag, einer fremden Pumpe oder einer nicht lesbaren aktiven
+     * Pumpe lag. Das sind vier verschiedene Ursachen mit vier verschiedenen
+     * Massnahmen.
+     *
+     * @param epochTs `null` heisst UNBEKANNT, nicht "keine Epoche" - siehe
+     *   [reason].
+     * @param reason der Name aus `FusePatchEpoch.Reason`. Er sagt bewusst
+     *   MATCHING_PUMP_IDENTITY und nicht "PUMP_ORIGIN": bewiesen ist eine
+     *   passende Identitaet, nicht die Herkunft.
+     * @param applicable ist die Patch-Epoche fuer die AKTIVE Pumpe ueberhaupt
+     *   eine Kategorie? `null` heisst "aktive Pumpe nicht lesbar".
+     *
+     *   OHNE dieses Feld ist der Export irrefuehrend: an der VirtualPump steht
+     *   dort `known=false, reason=NO_EVENT`, und das SIEHT aus wie eine
+     *   fehlende Epoche, obwohl es dort gar keine geben kann. Wer den Trail
+     *   liest, wuerde einen Defekt suchen, den es nicht gibt - und schlimmer,
+     *   er koennte den umgekehrten Schluss ziehen und die Sperre fuer wirksam
+     *   halten, wo sie gar nicht greift.
+     */
+    data class PatchEpoch(
+        val epochTs: Long?,
+        val known: Boolean,
+        val reason: String,
+        val applicable: Boolean? = null,
+    )
+
+    /**
+     * DAS LETZTE BEDIENEREIGNIS AM MAHLZEITEN-MARKER (Toni 04.10.).
+     *
+     * `dosingContext.reason` sagt nach einer Ruecknahme nur NO_MARKER - genau
+     * wie vor jedem Marker. Ob der Marker ablief, zurueckgenommen oder vom
+     * Ledger-Abgleich entfernt wurde, war im Trail nicht zu unterscheiden.
+     * Der Block steht in JEDEM Zyklus nach dem Ereignis (wie ledgerReset),
+     * bis ein neues kommt oder der Prozess endet.
+     *
+     * @param type ARMED | WITHDRAWAL_PENDING | WITHDRAWAL_UNDONE |
+     *        WITHDRAWAL_DROPPED | WITHDRAWN | RECONCILED
+     * @param dueTs Faelligkeit einer vorgemerkten Ruecknahme, sonst null.
+     */
+    data class MarkerEvent(
+        val type: String,
+        val ts: Long,
+        val source: String,
+        val markerTs: Long,
+        val dueTs: Long? = null,
+    )
+
+    fun record(
+        cycleId: String,
+        outcome: FuseCycleRunner.Outcome,
+        rt: RT,
+        policy: FuseCycleRunner.Config?,
+        build: Build?,
+        buildStartNs: Long,
+        prev: PrevWrite?,
+        // VOR nowNs, damit bestehende Aufrufe mit Trailing-Lambda den neuen
+        // Parameter per Default ueberspringen koennen.
+        ledger: LedgerSnapshot? = null,
+        publicationGate: PublicationGate? = null,
+        patchEpoch: PatchEpoch? = null,
+        /**
+         * Die LETZTE Ledger-Reparatur, falls es je eine gab.
+         *
+         * Sie steht in JEDEM Zyklus danach, nicht nur in dem, in dem sie
+         * passiert ist. Ein frisch zurueckgesetzter Ledger sieht sonst exakt
+         * aus wie ein unbenutzter, und "keine Haftung" waere von "hier wurde
+         * Haftung verworfen" nicht zu unterscheiden.
+         */
+        ledgerReset: app.aaps.fuse.plugin.ledger.FuseLedgerRepair.ResetRecord? = null,
+        /**
+         * Was AAPS mit dem SMB des VORIGEN Zyklus gemacht hat (Scheibe 1).
+         * Reine Messung - keine Zahl davon wird gelesen.
+         */
+        priorActuation: app.aaps.fuse.plugin.FusePlugin.PriorActuation? = null,
+        /**
+         * KI-171: was dieser Zyklus von den AAPS-Ablagen "Pumpe nie
+         * angesprochen" sah und welche Zeilen daraus entlastet werden.
+         */
+        pumpNeverCalled: app.aaps.fuse.plugin.FusePlugin.PumpNeverCalledTrace? = null,
+        /**
+         * DER ERWARTUNGS-LEDGER - reine Beobachtung, keine Zahl davon wird
+         * gelesen.
+         */
+        expectation: Expectation? = null,
+        /** Das letzte Bedienereignis am Marker, s. [MarkerEvent]. */
+        markerEvent: MarkerEvent? = null,
+        nowNs: () -> Long,
+    ): JSONObject {
+        val gaps = JSONArray()
+        fun gap(field: String, reason: String) = gaps.put(JSONObject().put("field", field).put("reason", reason))
+
+        val o = JSONObject()
+        o.put("v", VERSION)
+        o.put("cycleId", cycleId)
+        o.put("computeTs", outcome.computeTs)
+            .put("computeDurationMs", outcome.computeDurationMs ?: JSONObject.NULL)
+            .put("mealStats", outcome.mealStats?.let { m ->
+                JSONObject().put("sinceMin", m.sinceMin).put("totalU", fin(m.totalU))
+                    .put("first30U", fin(m.first30U)).put("first60U", fin(m.first60U))
+            } ?: JSONObject.NULL)
+            // ---- Mahlzeitenfundament (Punkt 12, Toni 18.08.) --------------
+            //
+            // IMMER GESCHRIEBEN, auch ohne Autorisierung. Konsolidierung 2.0:
+            // das Fundament ist entfallen - der Block steht mit seinen
+            // Feldnamen (Abbau spaeter abgestimmt) und den Werten "kein Fundament" (`armed: false`,
+            // Nullen); nur die Messung VOR dem Fundament (die Normalentscheidung)
+            // und die neutralen Sofortanteil-Felder kommen weiter aus dem Outcome.
+            // DIE ENDKETTE DES SOFORTANTEILS - bis eben NUR im Outcome, also
+            // nur fuer den Replay lesbar. Auf dem Geraet fehlte sie
+            // vollstaendig: der Trail trug weder Ruhemodus noch Streak,
+            // Grant, MarkerFloor-Anhebung oder Endmenge. Die Tests waren
+            // trotzdem gruen, weil der Replay den Outcome direkt liest -
+            // genau die Art Luecke, die ein Viewer als Erstes findet.
+            .put("upfrontChain", outcome.upfrontChain?.let { upfrontChainJson(it) })
+            // DER AUFNAHMENACHWEIS DER TRANSPORTMENGE (03.10.2026, s.
+            // TransportAufnahme): wieviele ungebundene Posten die Zuordnung
+            // traf, wieviele davon belegt den Transport verliessen und mit
+            // welcher Menge; sonst der erste Grund, warum nicht. Ohne dieses
+            // Feld waere ein entlasteter Zyklus von einem doppelt zaehlenden
+            // im Trail nicht zu unterscheiden. `null` = vor dem Nachweis
+            // abgebrochen.
+            .put("transportInclusion", outcome.transportSicht?.let { s ->
+                JSONObject()
+                    .put("candidates", s.aufnahme.kandidaten)
+                    .put("proven", s.aufnahme.aufgenommenU.size)
+                    .put("provenU", fin(s.aufnahme.belegtU))
+                    .put("reason", s.aufnahme.grund ?: JSONObject.NULL)
+                    // Die Transportmenge, mit der der Zyklus danach rechnete.
+                    .put("modelledU", fin(s.modelliertU))
+            })
+            // E-034: nur bei eingeschaltetem Konto - aus bleibt der Datensatz bitgleich.
+            .apply { outcome.erwartungskonto?.let { put("expectationAccount", erwartungskontoJson(it)) } }
+            .put("mealFoundation", JSONObject()
+                .put("armed", false)
+                .put("armedTs", 0L)
+                .put("totalBudgetU", 0.0)
+                .put("phaseABudgetU", 0.0)
+                .put("phaseBBudgetU", 0.0)
+                .put("phaseAUpfrontShare", 0.0)
+                .put("phaseAUpfrontPlannedU", 0.0)
+                .put("phaseARemainderU", 0.0)
+                .put("phaseAUpfrontRequestedU", fin(outcome.phaseAUpfrontRequestedU))
+                .put("phaseAUpfrontPublishedU", 0.0)
+                .put("phaseAUpfrontConfirmedU", JSONObject.NULL)
+                .put("phaseAUpfrontPendingU", fin(outcome.phaseAUpfrontPendingU))
+                .put("phaseAUpfrontState", outcome.phaseAUpfrontState ?: JSONObject.NULL)
+                .put("phaseAUpfrontTransferredU", fin(outcome.phaseAUpfrontTransferredU))
+                .put("phaseAUpfrontLapsedU", fin(outcome.phaseAUpfrontLapsedU))
+                .put(
+                    "phaseAUpfrontProposalId",
+                    if (outcome.phaseAUpfrontRequestedU > 0.0) cycleId else JSONObject.NULL,
+                )
+                .put("effectiveHandoverTs", 0L)
+                .put("latchedHandoverTs", 0L)
+                .put("endTs", 0L)
+                .put("phase", "NONE")
+                .put("preFoundationSmbU", fin(outcome.preFoundationSmbU))
+                .put("preFoundationBlock", outcome.preFoundationBlock.name)
+                .putOpt("preFoundationBindingLimit", outcome.preFoundationBindingLimit)
+                .put("foundationLiftU", fin(outcome.foundationLiftU))
+                .put("deliveredPhaseAU", 0.0)
+                .put("deliveredSinceHandoverU", 0.0)
+                .put("confirmedNotSentPhaseAU", 0.0)
+                .put("effectiveCarryU", 0.0)
+                .put("descentDeferredPhaseAU", 0.0)
+                .put("descentCarryEligibility", "NO_DEFERRED")
+                // Wie bisher ohne Autorisierung: 0 - nur der Abbruch kannte den Wert nicht.
+                .put("manualBolusAfterMarkerU", if (outcome.abortReason != null) JSONObject.NULL else 0.0)
+                .put("effectiveDescentCarryU", 0.0)
+                .put("phaseBAllowanceU", 0.0)
+                .put("plannedTotalU", 0.0)
+                .put("backlogU", 0.0)
+                .put("dueU", 0.0)
+                .put("remainingInWindowU", 0.0)
+                .put("binding", JSONObject.NULL)
+                .put("effectiveWindowMin", 0)
+                .put("effectiveRateUPerMin", 0.0),
+            )
+            // Die Evidenz-Episode: Identitaet UND der Grund, falls keine
+            // eroeffnet wurde. Beides, weil "0 ohne Grund" (kein Marker) etwas
+            // anderes ist als "0 mit Grund" (Druck nicht durabel).
+            // DER GRUND STEHT AUSSERHALB DES BLOCKS, und das ist kein Versehen:
+            // er erklaert, warum es KEINE Episode gibt - im Block waere er
+            // unerreichbar, weil der dann `null` ist. Id und Widerruf standen
+            // dagegen DOPPELT (Toni 12.08.) und sind hier entfallen: ein Block,
+            // eine Wahrheit.
+            .put("evidenceEpisodeDenial", outcome.evidenceEpisodeDenial ?: JSONObject.NULL)
+            // M2: der urspruengliche Normalpfad-Block VOR den autorisierten
+            // Boeden - die Groesse, die das Bewaffnungstor liest. Getrennt
+            // von mealFoundation.preFoundationBlock (der misst VOR dem
+            // Fundament-Lift). null = Fallback-Pfad ohne Kandidatensuche.
+            .put("underlyingNormalBlock", outcome.underlyingNormalBlock ?: JSONObject.NULL)
+            // A3 (Bauauftrag §8): die gemeinsame Expositionssicht als reine
+            // Diagnose. ALLE Zahlen stammen aus ExposureView/State - hier
+            // wird nur abgeschrieben, nie gerechnet. Bezugsgroessen und
+            // NULL-Regeln (Bedarf 0 -> Prozentwert null; fehlende Eingabe ->
+            // unbekannt) stehen in ExposureView.coverage. `source` ist die
+            // capsStage der Entscheidung - das vorhandene Herkunftslabel,
+            // keine zweite Wahrheit.
+            // Punkt-2-Fix: der Block haengt nicht mehr allein an
+            // occupiedExposureU - der FALLBACK fuellt Provenienz und Gate,
+            // aber keine Sicht-Zahlen; sein exposure-Block war deshalb
+            // faelschlich NULL und versteckte source/gate.
+            .put("exposure", if (outcome.exposureOccupiedU == null && outcome.exposureFinalSource == null) JSONObject.NULL else
+                JSONObject()
+                    .put("occupiedExposureU", outcome.exposureOccupiedU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("pendingExposureU", outcome.exposurePendingU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("capIobU", outcome.exposureCapIobU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("bolusIobU", outcome.exposureBolusIobU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("basalIobU", outcome.exposureBasalIobU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("staticCorrectionNeedU", outcome.exposureStaticNeedU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("coveragePct", outcome.exposureCoveragePct?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("excessU", outcome.exposureExcessU?.let { fin(it) } ?: JSONObject.NULL)
+                    // B1: die TYPISIERTE Quellen-Provenienz der Endmenge -
+                    // identisch abgeleitet fuer Haupt- und Fallbackpfad,
+                    // aus typisierten Fakten, nie aus Texten.
+                    .put("source", outcome.exposureFinalSource ?: JSONObject.NULL)
+                    // Punkt-2-Fix: die letzte hebende ABSICHT - getrennt von
+                    // der finalen Quelle (bei finaler Nullmenge NONE). Ein
+                    // voll gekappter Liveness-Vorschlag erscheint als
+                    // requestedSource=LIVENESS, source=NONE.
+                    .put("requestedSource", outcome.exposureRequestedSource ?: JSONObject.NULL)
+                    // B1: das Ergebnis der verbindlichen Endpruefung
+                    // (null = LEGACY-Modus, Pruefung nicht gelaufen).
+                    .put("gate", outcome.exposureGateBindet?.let { bindet ->
+                        JSONObject()
+                            .put("bindet", bindet)
+                            .put("blocked", outcome.exposureGateBlocked ?: false)
+                            .put("headroomU", outcome.exposureGateHeadroomU?.let { fin(it) } ?: JSONObject.NULL)
+                            .put("effectiveLimitU", outcome.exposureGateEffectiveLimitU?.let { fin(it) } ?: JSONObject.NULL)
+                            .put("contextLimitU", outcome.exposureGateContextLimitU?.let { fin(it) } ?: JSONObject.NULL)
+                            .put("binding", outcome.exposureGateBinding ?: JSONObject.NULL)
+                    } ?: JSONObject.NULL)
+            )
+            // DER TYPISIERTE SMB-STATUS (Toni 29.08. spaet) - Schema fuer
+            // den Viewer-Anschluss, NIE aus Reason-Texten geraten:
+            //   state      FREE | STOP | NO_DEMAND | UNKNOWN
+            //   stopReason EXPOSURE | IOB_TH | MAX_IOB | GUARD | TAIL |
+            //              HEALTH | LEDGER | PUMP | SAFETY | DESCENT |
+            //              DEFERRED (null ausser bei STOP)
+            //   requestedU Anforderung VOR der Endpruefung
+            //   cappedU    nach der Endpruefung
+            //   publishedU publizierte Anforderung (= decision.smbU;
+            //              pumpenbestaetigt ist eine ANDERE Wahrheit und
+            //              steht im Transport)
+            .put("smb", outcome.smbState?.let { st ->
+                JSONObject()
+                    .put("state", st)
+                    .put("stopReason", outcome.smbStopReason ?: JSONObject.NULL)
+                    .put("requestedU", outcome.smbRequestedU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("cappedU", outcome.smbCappedU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("publishedU", outcome.smbPublishedU?.let { fin(it) } ?: JSONObject.NULL)
+                    // DREI VERSCHIEDENE ZAHLEN, DREI VERSCHIEDENE FRAGEN:
+                    // `requestedU` was der Regler wollte, `publishedU` was
+                    // nach der Endpruefung uebrig war - und `actuatedU` was
+                    // nach dem letzten Riegel und dem Pumpen-Gate wirklich
+                    // hinausgeht. Ohne die dritte Zahl stand "SMB FREI"
+                    // ueber einer nachgelagert gesperrten Dosis.
+                    .put("actuatedU", outcome.smbActuatedU?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("finalBlock", outcome.smbFinalBlock ?: JSONObject.NULL)
+            } ?: JSONObject.NULL)
+            // A1: der zentrale Dosierkontext (Bauauftrag §4) mit den vier
+            // Pflichtfeldern; policyGeneration = der bestehende Policy-Hash
+            // (Tonis Entscheid: keine neue Generation erfinden). Optionaler
+            // Block - alte Trails und Viewer bleiben lesbar.
+            .put("dosingContext", outcome.dosingContextProfile?.let { prof ->
+                JSONObject()
+                    .put("profile", prof)
+                    .put("reason", outcome.dosingContextReason ?: JSONObject.NULL)
+                    .put("authorizationId", outcome.dosingContextAuthorizationId ?: JSONObject.NULL)
+                    .put("authorizationExpiresAt", outcome.dosingContextAuthorizationExpiresAt ?: JSONObject.NULL)
+                    .put("policyGeneration", policy?.let { hashOf(it) } ?: JSONObject.NULL)
+            } ?: JSONObject.NULL)
+            // DAS REBOUND-SONDERRECHT (Toni 19.08.): konfigurierte
+            // Frist, gepinnter Ablauf, Restzeit, das Ergebnis und der
+            // typisierte Grund. Ohne den Grund waere im Trail nicht zu
+            // sehen, WARUM ein Kredit das Band nicht mehr entwaffnet -
+            // abgelaufen, widerrufen oder gar kein Kredit sehen in der
+            // Wirkung gleich aus.
+            .put("evidenceMayOverrideRebound", outcome.evidenceMayOverrideRebound)
+            .put("reboundOverrideDeadlineTs", outcome.reboundOverrideDeadlineTs)
+            .putOpt("reboundOverrideDenial", outcome.reboundOverrideDenial)
+            // DAS GEMESSENE ABWAERTSRISIKO. Ohne diese fuenf ist im Trail
+            // nicht zu sehen, WARUM ein Zyklus nichts gab - "kein Bedarf",
+            // "Risiko aktiv" und "Basalnutzen zu klein" sehen als 0 U
+            // gleich aus und bedeuten voellig Verschiedenes.
+            .put("descentRiskActive", outcome.descentRiskActive)
+            .putOpt("descentRiskDenial", outcome.descentRiskDenial)
+            .put("descentFallRatePerMin", fin(outcome.descentFallRatePerMin))
+            .put("descentOvercoverageMgdl", fin(outcome.descentOvercoverageMgdl))
+            .put("descentMinutesToFloor", fin(outcome.descentMinutesToFloor))
+            // DIE DOSIERWIRKSAME HYSTERESE hinter dem Rohsignal. Ein
+            // `descentRiskActive=false` bedeutet nicht automatisch frei:
+            // der Riegel kann noch auf die bestaetigte Wende warten.
+            .put("descentLatchActive", outcome.descentLatchActive)
+            .putOpt("descentLatchReason", outcome.descentLatchReason)
+            .put("descentRecoveryCycles", outcome.descentRecoveryCycles)
+            .put("descentLatchedAtTs", outcome.descentLatchedAtTs)
+
+        // ---- Punkt 6: der Marker-Prime-Aufschub -------------------------
+        // IMMER als Objekt, auch ungenutzt: ein verfallener Rest MUSS im
+        // Trail sichtbar bleiben (Vertrag 10), und die Ableitung von
+        // openU/Frist muss offline nachrechenbar sein.
+        // Konsolidierung 2.0: Rueckhalt, Huelle, Klemmung und Freigabe sind
+        // entfallen - hullRemainingU, die clamp-Felder, releasedU und denial
+        // stehen neutral (0/null); Pin, Frist, Horizont, withheldU und
+        // Verfall bleiben.
+        o.put(
+            "deferredPrime", JSONObject()
+                .put("openU", fin(outcome.deferredPrimeOpenU))
+                // DIE HUELLE UND IHRE KLEMMUNG. Ohne diese vier Felder
+                // sieht ein durch einen manuellen Bolus gedeckter
+                // Bestand aus wie ein stilles Verschwinden - genau die
+                // Fehldeutung, die ein gemessener Abendfall provoziert hat.
+                .put("hullRemainingU", fin(outcome.deferredHullRemainingU))
+                .put("openBeforeClampU", fin(outcome.deferredOpenBeforeClampU))
+                .put("clampReductionU", fin(outcome.deferredClampReductionU))
+                .put("clampReason", outcome.deferredClampReason)
+                // Der Zeitstempel macht eine WIEDERHOLUNG erkennbar.
+                // Ohne ihn saehe ein klebengebliebenes Ereignis wie
+                // eine erneute Klemmung aus und wuerde beim Summieren
+                // mehrfach gezaehlt.
+                .put("clampTs", outcome.deferredClampTs)
+                .put("clampHullAtClampU", fin(outcome.deferredClampHullAtClampU))
+                .put("pinnedForTs", outcome.deferredPrimePinnedForTs)
+                .put("deadlineTs", outcome.deferredPrimeDeadlineTs)
+                .put("horizonMin", outcome.deferredPrimeHorizonMin)
+                .put("withheldU", fin(outcome.deferredPrimeWithheldU))
+                .put("releasedU", fin(outcome.deferredPrimeReleasedU))
+                .put("denial", outcome.deferredPrimeDenial ?: JSONObject.NULL)
+                .put("lapseReason", outcome.deferredPrimeLapseReason ?: JSONObject.NULL)
+                .put("lapseU", fin(outcome.deferredPrimeLapseU))
+                .put("lapseTs", outcome.deferredPrimeLapseTs),
+        )
+            // ---- Der Liveness-Kanal --------------------------------------
+            // IMMER als Objekt: die Sperre und der Grund der NICHT-Hebung
+            // (denial/exit) muessen offline nachlesbar sein - besonders in
+            // den Zyklen, in denen der Kanal NICHT gehoben hat.
+            .put(
+                "liveness", JSONObject()
+                    .put("active", outcome.livenessActive)
+                    .put("streak", outcome.livenessStreak)
+                    .put("candidateU", fin(outcome.livenessCandidateU))
+                    .put("needU", fin(outcome.livenessNeedU))
+                    .put("releaseMeanMgdl", fin(outcome.livenessReleaseMeanMgdl))
+                    .put("baseRatio", fin(outcome.livenessBaseRatio))
+                    .put("liveRatio", fin(outcome.livenessLiveRatio))
+                    .put("profile", outcome.livenessProfile ?: JSONObject.NULL)
+                    .put("profileReason", outcome.livenessProfileReason ?: JSONObject.NULL)
+                    .put("selectedRatioCap", fin(outcome.livenessSelectedRatioCap))
+                    .put("selectedIobCapPercent", fin(outcome.livenessSelectedIobCapPercent))
+                    .put("profileIobLimitU", fin(outcome.livenessProfileIobLimitU))
+                    .put("normalSmbU", fin(outcome.livenessNormalSmbU))
+                    .put("staticCorrectionNeedU", fin(outcome.livenessStaticCorrectionNeedU))
+                    .put("effectiveInsulinCoverageU", JSONObject.NULL)
+                    .put("coverageMarginU", JSONObject.NULL)
+                    .put("coverageState", outcome.livenessCoverageState ?: JSONObject.NULL)
+                    // Review Toni 24.08.: nicht behaupten - null, bis eine
+                    // modellkonsistente Stoerungsgroesse existiert. Die
+                    // Druckbedingung steht getrennt daneben.
+                    .put("disturbanceActive", JSONObject.NULL)
+                    .put("pressureActive", outcome.livenessPressureActive ?: JSONObject.NULL)
+                    .put("markerPowerPinnedFor", outcome.markerPowerPinnedFor)
+                    .put("markerPowerDeadlineTs", outcome.markerPowerDeadlineTs)
+                    .put(
+                        "markerPowerRemainingMin",
+                        if (outcome.markerPowerDeadlineTs > outcome.computeTs)
+                            (outcome.markerPowerDeadlineTs - outcome.computeTs) / 60_000L
+                        else 0L,
+                    )
+                    .put("bgMinEffectiveMgdl", fin(outcome.livenessBgMinEffectiveMgdl))
+                    .put("bgMinSource", outcome.livenessBgMinSource ?: JSONObject.NULL)
+                    .put("headroomU", fin(outcome.livenessHeadroomU))
+                    .put("liftU", fin(outcome.livenessLiftU))
+                    .put("binding", outcome.livenessBinding ?: JSONObject.NULL)
+                    .put("denial", outcome.livenessDenial ?: JSONObject.NULL)
+                    .put("exit", outcome.livenessExit ?: JSONObject.NULL)
+                    .put("modelReject", outcome.livenessModelReject ?: JSONObject.NULL)
+                    .put("reArmUntilTs", outcome.livenessReArmUntilTs)
+                    // v51: WARUM der bewaffnete Kanal nichts hebt - dosierneutral,
+                    // `denial` bleibt zeichengleich.
+                    .put("noLiftReason", outcome.livenessNoLiftReason ?: JSONObject.NULL)
+                    // Schattenrechnung VOR den Toren - Bedarf, Kandidat und
+                    // Deckelrest auch in gesperrten Zyklen. Dosierneutral.
+                    .put("shadowNeedU", fin(outcome.livenessShadowNeedU))
+                    .put("shadowCandidateU", fin(outcome.livenessShadowCandidateU))
+                    .put("shadowHeadroomU", fin(outcome.livenessShadowHeadroomU))
+                    // v51: die Rebound-Evidenz-Ausnahme. `allowed` = die
+                    // Bedingungen gelten; `vetoLifted` = sie hat das rohe Veto in
+                    // diesem Zyklus TATSAECHLICH aufgehoben. Bestand (Phase im
+                    // evidenceEpisode-Block), frischer Zufluss und Messlage stehen
+                    // getrennt - Bestand ist kein Anstiegsnachweis.
+                    .put(
+                        "reboundEvidenceException", JSONObject()
+                            .put("allowed", outcome.livenessReboundExceptionAllowed ?: JSONObject.NULL)
+                            .put("denial", outcome.livenessReboundExceptionDenial ?: JSONObject.NULL)
+                            .put("vetoLifted", outcome.livenessReboundVetoLifted)
+                            .put("evidenceInflowMgdl", fin(outcome.livenessEvidenceInflowMgdl))
+                            .put("measuredStability", outcome.livenessMeasuredStability ?: JSONObject.NULL)
+                            .put("lossCause", outcome.livenessEvidenceLossCause ?: JSONObject.NULL)
+                            // lossCause allein heisst nicht "keine Gefahr": die
+                            // Gefahren stehen unabhaengig von der Torreihenfolge daneben.
+                            .put("concurrentHazards", outcome.livenessConcurrentHazards?.let { org.json.JSONArray(it) } ?: JSONObject.NULL)
+                            // NUR die erfassten Gefahren - kein Freigabenachweis: Sicht,
+                            // Modell, manuelle Intervention u. a. prueft der Runner getrennt.
+                            .put("bookingWithoutCapturedHazard", outcome.livenessBookingWithoutCapturedHazard),
+                    )
+                    // v53: Halte-Anhebung im Bedarf. upliftMgdl null = nicht
+                    // ausgewertet; needU enthaelt sie, releaseMeanMgdl nicht.
+                    .put(
+                        "driveHold", JSONObject()
+                            .put("upliftMgdl", fin(outcome.livenessHold.upliftMgdl))
+                            .put("streak", outcome.livenessHold.streak)
+                            .put("denial", outcome.livenessHold.denial ?: JSONObject.NULL)
+                            // v54: Messbestaetigung (frische Rohwert-Bloecke).
+                            .put("evidenceDenial", outcome.livenessHold.evidenceDenial ?: JSONObject.NULL)
+                            .put("evidenceBlockMedianMgdl", fin(outcome.livenessHold.evidenceBlockMedianMgdl)),
+                    )
+                    // v55: frueher adaptiver MEAL-Bedarf (H8). Dosierneutrale
+                    // Beschreibung; aeltere Leser ignorieren das Objekt.
+                    // releaseMeanMgdl oben bleibt die produktive Bahn, needU
+                    // und candidateU rechnen mit effectiveReleaseMeanMgdl.
+                    .put(
+                        "earlyAdaptiveMeal", JSONObject()
+                            .put("configuredHorizonMin", outcome.earlyAdaptiveMeal.configuredHorizonMin)
+                            .put("horizonMin", outcome.earlyAdaptiveMeal.horizonMin)
+                            // Eignung, Auswahl und Kanalangebot getrennt (Review 18.09.):
+                            // eligible = Eintritt erfuellt, selected = H8-Bahn stellte die
+                            // Mittelbahn; abgegeben ist, was liftU und die Entscheidung zeigen.
+                            .put("eligible", outcome.earlyAdaptiveMeal.eligible)
+                            .put("selected", outcome.earlyAdaptiveMeal.selected)
+                            .put("denial", outcome.earlyAdaptiveMeal.denial ?: JSONObject.NULL)
+                            .put("markerAgeMin", fin(outcome.earlyAdaptiveMeal.markerAgeMin))
+                            .put("w10DriveMgdlPerMin", fin(outcome.earlyAdaptiveMeal.w10DriveMgdlPerMin))
+                            .put("ukfRatePerMin", fin(outcome.earlyAdaptiveMeal.ukfRatePerMin))
+                            .put("earlyReleaseMeanMgdl", fin(outcome.earlyAdaptiveMeal.earlyReleaseMeanMgdl))
+                            .put("productionReleaseMeanMgdl", fin(outcome.earlyAdaptiveMeal.productionReleaseMeanMgdl))
+                            .put("effectiveReleaseMeanMgdl", fin(outcome.earlyAdaptiveMeal.effectiveReleaseMeanMgdl))
+                            .put("candidateAfterHeadroomU", fin(outcome.earlyAdaptiveMeal.candidateAfterHeadroomU))
+                            .put("source", outcome.earlyAdaptiveMeal.source ?: JSONObject.NULL)
+                            // Die in diesem Zyklus verwendete Ratio-Rampe (cfg) und ihr Antrieb.
+                            .put("ratioDriveMgdlPerMin", fin(outcome.earlyAdaptiveMeal.ratioDriveMgdlPerMin))
+                            .put("riseRampLowR", fin(outcome.earlyAdaptiveMeal.riseRampLowR))
+                            .put("riseRampHighR", fin(outcome.earlyAdaptiveMeal.riseRampHighR)),
+                    )
+                    // v52: endete der Lauf ohne neue Sperre - und wenn nicht, warum.
+                    .put(
+                        "bookingExit", JSONObject()
+                            .put("skipReArm", outcome.livenessBookingExitSkipReArm)
+                            .put("denial", outcome.livenessBookingExitDenial ?: JSONObject.NULL),
+                    ),
+            )
+            .put(
+                "reboundOverrideRestMin",
+                outcome.reboundOverrideDeadlineTs
+                    .takeIf { it > 0L }
+                    ?.let { ((it - outcome.computeTs) / 60_000L).toInt() }
+                    ?: JSONObject.NULL,
+            )
+            // Und ob ein Rebound-Band in DIESEM Zyklus wegen der
+            // Evidenz geschwiegen hat - die Frage, die der Anlassfall der Rebound-Frist
+            // aufgeworfen hat.
+            .put(
+                "reboundSuppressedByEvidence",
+                outcome.state?.reboundWindow == true && outcome.evidenceMayOverrideRebound,
+            )
+            // ---- Die Evidenz-Episode als EIN Block ----------------------
+            //
+            // Vorher standen Menge, Alter und Deckel einzeln nebeneinander -
+            // mit der Folge, dass nach dem Ablauf eine alte `committedU` neben
+            // einem fehlenden Anker und einem `null`-Alter stand (Toni 12.08.).
+            // Das liest sich wie eine laufende Episode.
+            //
+            // Jetzt: entweder es gibt eine Episode, dann ist der Block
+            // vollstaendig - oder es gibt keine, dann ist er `null`. Kein
+            // Zwischending.
+            //
+            // `phase`, `stockMgdl` und `reason` stehen als benannte LUECKE,
+            // wenn ein frueher Abbruch den verdrahteten EvidenceStock in
+            // diesem Zyklus nicht erreicht hat. Sie hier mit 0 oder
+            // "DORMANT" zu fuellen waere eine erfundene Auswertung.
+            .put("evidenceEpisode", outcome.evidenceEpisodeId.takeIf { it > 0L }?.let { id ->
+                JSONObject()
+                    .put("id", id)
+                    .put("ageMin", outcome.evidenceEpisodeMin ?: JSONObject.NULL)
+                    .put("capMin", outcome.evidenceEpisodeCapMin)
+                    .put("committedU", fin(outcome.evidenceCommittedU))
+                    .put("creditRevoked", outcome.evidenceCreditRevoked)
+                    .put("phase", outcome.evidencePhase ?: JSONObject.NULL)
+                    .put("stockMgdl", outcome.evidenceStockMgdl?.let { fin(it) } ?: JSONObject.NULL)
+                    // Diagnose (Toni 14.09.): Buchungsabzug und Bestand ohne ihn.
+                    .put("deductionMgdl", outcome.evidenceDeductionMgdl?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("stockBeforeDeductionMgdl", outcome.evidenceStockBeforeDeductionMgdl?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("declineMgdl", outcome.evidenceDeclineMgdl?.let { fin(it) } ?: JSONObject.NULL)
+                    .put("reason", outcome.evidenceReason ?: JSONObject.NULL)
+                    .put("creditMgdlPerMin", outcome.evidenceCreditMgdlPerMin?.let { fin(it) } ?: JSONObject.NULL)
+                    // Widerrufs-Revision + Rebase-Kennzeichen (Toni 29.08.):
+                    // optionale Felder, alte Trails/Viewer bleiben lesbar.
+                    .put("commitmentRevision", outcome.evidenceCommitmentRevision)
+                    .put("revokeRebased", outcome.evidenceRevokeRebased ?: JSONObject.NULL)
+            } ?: JSONObject.NULL)
+        if (outcome.evidenceEpisodeId > 0L && outcome.evidencePhase == null)
+            gap("evidenceEpisode.phase", GAP_EVIDENCE_NOT_EVALUATED)
+        putOrGap(o, "sourceTs", outcome.sourceTs, gaps, "NO_SIGNAL_THIS_CYCLE")
+        o.put("abortReason", outcome.abortReason ?: JSONObject.NULL)
+
+        // ---- Entscheidung + die VIER Aktuatorfelder (R89) -------------------
+        val d = outcome.decision
+        o.put(
+            "decision", JSONObject()
+                .put("smbU", d.smbU)
+                .put("tbr", d.tbr.name)
+                .put("block", d.block.name)
+                .put("bindingLimit", d.bindingLimit)
+                // A: im Kontofenster kam die Basismenge aus dem Normalbedarf.
+                .put("normalInAccountWindow", d.normalDemandInAccountWindow)
+                .put("insulinReqU", fin(d.insulinReqU))
+                .put("predAtReleaseMgdl", fin(d.predAtReleaseMgdl))
+                .put("minLowerMgdl", fin(d.minLowerMgdl))
+                // S0: main/combined getrennt wie bei der unteren Familie drei
+                // Zeilen tiefer. `predAtReleaseMgdl` und `minLowerMgdl` sind
+                // ueber BEIDE Bahnen minimiert, `minMeanMgdl` war es nie - als
+                // unqualifizierter Nachbar zweier kombinierter Felder gelesen,
+                // ergab das wieder eine Bahn, die es nicht gibt.
+                .put("minMeanMainMgdl", fin(outcome.prediction?.minMeanBg))
+                .put(
+                    "minMeanCombinedMgdl",
+                    fin(listOfNotNull(outcome.prediction?.minMeanBg, outcome.restraint?.minMeanBg).minOrNull())
+                )
+                // Hat die SCHNELLE Bahn gebremst? Ohne dieses Feld ist im
+                // Nachhinein nicht unterscheidbar, ob eine Zurueckhaltung aus
+                // dem traegen Antrieb kam oder aus der Bremse.
+                .put("restraintBound", d.restraintBound)
+                // S0: und WELCHE der beiden Wirkungen es war. Die Bremse kann
+                // die Sicherheitsbahn senken (blockieren) oder den Bedarf
+                // kuerzen - bis hierher war beides dasselbe Bit.
+                .put("restraintBoundGuard", d.restraintBoundGuard)
+                .put("restraintBoundDemand", d.restraintBoundDemand)
+                // Das Minimum der HAUPTbahn allein: erst zusammen mit
+                // `minLowerMgdl` ist das AUSMASS der Bremswirkung ablesbar,
+                // nicht nur ihr Vorhandensein.
+                .put("minLowerMainMgdl", fin(d.minLowerMainMgdl))
+                // S0 (I16): WIE TIEF und WIE BALD unter dem Guard-Boden. Der
+                // Guard ist ein Schwellentest - eine Bahn bei 69 war im Trail
+                // von einer bei -382 nicht zu unterscheiden.
+                .put("floorDeficitMgdl", fin(d.floorDeficitMgdl))
+                .put("timeToFloorMin", d.timeToFloorMin ?: JSONObject.NULL)
+                // S0 (I16): ZWEI Zeitindizes, und sie gehoeren zu verschiedenen
+                // Bahnen. `...Main` ist der der Hauptbahn, `...Combined` der
+                // der Bahn, gegen die der Regler ENTSCHEIDET (Haupt UND Bremse)
+                // - also der Partner von `minLowerMgdl`.
+                //
+                // Ein einzelnes Feld war widerspruechlich: live stand ein
+                // minLower deutlich unter dem Anker bei Index 0. Beide Zahlen
+                // waren richtig - die Hauptbahn hatte ihr Minimum wirklich am
+                // Anker, das tiefere Minimum kam aus der Bremsbahn -, aber nebeneinander
+                // ergaben sie eine unmoegliche Bahn.
+                .put("timeToMinSafetyLowerMainMin", outcome.prediction?.timeToMinSafetyLowerMin ?: JSONObject.NULL)
+                .put("timeToMinSafetyLowerCombinedMin", d.timeToMinCombinedMin ?: JSONObject.NULL)
+                // S0 (K2): ALLE Mengengrenzen, nicht nur die bindende.
+                // `bindingLimit` nennt bei Gleichstand die erste der Liste -
+                // und mit IobThPercent = 100 sind iobTh- und maxIob-Spielraum
+                // bitgenau gleich, der Gleichstand ist also der Normalfall.
+                // Die Stufe, zu der die Liste gehoert. Ohne sie konnte eine
+                // Basisliste neben einer Menge stehen, die eine SPAETERE Stufe
+                // bestimmt hat - bei gleichen Namen unbemerkt.
+                .put("capsStage", d.capsStage)
+                .put("caps", JSONArray().apply {
+                    d.caps.forEach {
+                        put(
+                            JSONObject()
+                                .put("name", it.name)
+                                .put("valueU", fin(it.valueU))
+                                .put("active", it.active)
+                        )
+                    }
+                })
+                // FEHLTE bis 08.08. - der Schirm zeigte die Schwanz-Kosten,
+                // der Trail nicht (alle bindenden Zyklen einer Nacht "0").
+                .put("tailCostU", fin(d.tailCostU))
+                // `reason` traegt die TBR-AKTION im Klartext - SAFETY_ZERO_NEW,
+                // SAFETY_ZERO_RENEW, SAFETY_ZERO_ALREADY_RUNNING,
+                // KEEP_CANCEL_STALE_ZERO, NO_POSITIVE_KEEP_NON_POSITIVE. Ohne
+                // sie waere "neu, erneuert, behalten oder beendet" im Trail
+                // nicht unterscheidbar (Tonis Auflage 17.08.).
+                .put("reason", outcome.reason)
+                .put("alarm", outcome.alarm)
+        )
+
+        // ---- DAS LOW-TOR, mit voller Rechenspur (Toni 17.08.) ---------------
+        //
+        // Seit dem 17.08. ist dies der EINZIGE Weg zu einer Zero-TBR. Der Block
+        // steht auch bei ABGELEHNTEM Tor da, und das ist sein Zweck: eine Null,
+        // die nicht kam, ist sonst von einem Zyklus ohne Befund nicht zu
+        // unterscheiden. Fehlt der Block ganz, wurde das Tor in diesem Zyklus
+        // nicht ausgewertet (Abbruchpfad) - auch das ist eine Aussage.
+        // ---- DER ERWARTUNGS-LEDGER (Toni 18.08., Punkt 4) -------------------
+        //
+        // Getrennt nach den drei Kontexten, und die AKTUELLE Strecke getrennt
+        // von der historischen. Nur `current.eligible` duerfte je eine
+        // Adaption tragen - deshalb steht der Ablehnungsgrund daneben und
+        // nicht bloss eine Null: eine 0 ohne Begruendung liesse spaeter nicht
+        // unterscheiden, ob nie etwas belegt war, ob eingegriffen wurde oder
+        // ob nur die Uhr weiterlief.
+        expectation?.let { e ->
+            o.put(
+                "expectation", JSONObject()
+                    .put("result", e.lastResult)
+                    .put("open", e.openEntries)
+                    .put("byContext", JSONObject().apply { e.byContext.forEach { (k, v) -> put(k, v) } })
+                    .put("byVerdict", JSONObject().apply { e.byVerdict.forEach { (k, v) -> put(k, v) } })
+                    .put("historicalStreakMin", e.historicalStreakMin)
+                    .put(
+                        "current", JSONObject()
+                            .put("minutes", e.current.minutes)
+                            .put("eligible", e.current.eligible)
+                            .put("freshThroughTs", e.current.freshThroughTs ?: JSONObject.NULL)
+                            .put("denial", e.current.denialReason?.name ?: JSONObject.NULL)
+                            .put("currentContextReason", e.current.currentContextReason?.name ?: JSONObject.NULL),
+                    )
+                    .put("epoch", e.stampEpochId)
+                    .put("sequence", e.stampSequence)
+                    // LASTMESSUNG vor dem ersten Feldlauf: der Recorder
+                    // schreibt in jedem Zyklus, bei Ein-Minuten-Takt 1440 mal
+                    // am Tag.
+                    .put("writeBytes", e.writeBytes)
+                    .put("writeMs", e.writeDurationMs)
+                    // DIE ENTKOPPLUNG SICHTBAR MACHEN. Ohne diese drei Zahlen
+                    // saehe ein Rueckstau aus wie ein ruhiger Zyklus: die
+                    // Strecke stuende still, und niemand wuesste warum.
+                    .put("queueDepth", e.queueDepth)
+                    .put("droppedCycles", e.droppedCycles)
+                    .put("asOfTs", e.asOfTs)
+                    .put("historyTruncated", e.historyTruncated)
+                    .put("droppedOutcomesTotal", e.droppedOutcomesTotal)
+                    .put("oldestRetainedDueTs", e.oldestRetainedDueTs)
+                    .put(
+                        "samples", JSONArray().apply {
+                            e.samples.forEach { sm ->
+                                put(
+                                    JSONObject()
+                                        .put("dueTs", sm.dueTs)
+                                        .put("ctx", sm.context)
+                                        .put("verdict", sm.verdict)
+                                        .put("meanErrorMgdl", fin(sm.meanErrorMgdl))
+                                        .put("distSafetyLowerMgdl", fin(sm.distanceFromSafetyLowerMgdl))
+                                        .put("lambda", fin(sm.lambda)),
+                                )
+                            }
+                        },
+                    ),
+            )
+        }
+        o.put(
+            "zeroLatch", JSONObject()
+                .put("active", outcome.zeroLatchActive)
+                .put("sinceTs", outcome.zeroLatchSinceTs)
+                .put("reason", outcome.zeroLatchReason ?: JSONObject.NULL)
+                .put("calmStreak", outcome.zeroLatchCalmStreak)
+                // v29: der Ausloese-Zaehler des Fall-Verdikts (2 zuenden).
+                .put("armStreak", outcome.zeroLatchArmStreak)
+                .put("overrode", outcome.zeroLatchOverrode),
+        )
+        // Schritt B v47: die Basalluecken-Lage - beim Markerdruck
+        // gelatcht (preMarker*, Pin-Identitaet) plus zyklusaktuell. REIN
+        // BEOBACHTEND; null heisst "nicht belastbar bestimmbar", nie 0.
+        o.put(
+            "basalGap", JSONObject()
+                .put("currentBasalIobU", fin(outcome.state?.basalIobU))
+                .put("currentZeroTbrActive", outcome.currentZeroTbrActive ?: JSONObject.NULL)
+                .put("partialRecoveryActive", outcome.partialRecoveryActive)
+                .put("partialRecoveryStreak", outcome.partialRecoveryStreak)
+                // ---- ANZEIGEVERTRAG DER TEILSTUFE (Viewer) -------------
+                //
+                // IST und ABSICHT getrennt: die tatsaechlich laufende
+                // Pumpenrate steht anderswo im Trail, hier steht, was FUSE
+                // WILL. Eine bloss angeforderte Teilrate darf nie wie eine
+                // laufende aussehen - deshalb ist die Zielrate ein eigenes
+                // Feld und die Phase typisiert.
+                //
+                // `null` heisst "keine Teilstufe im Spiel", nicht 0.
+                // Altexporte ohne diese Felder bleiben lesbar; der Viewer
+                // faellt dort auf die bisherige TBR-Zeile zurueck.
+                .put("partialRecoveryTargetUPerH", fin(outcome.partialRecoveryTargetUPerH))
+                .put("partialRecoveryPhase", outcome.partialRecoveryPhase ?: JSONObject.NULL)
+                .put("partialRecoveryAction", outcome.partialRecoveryAction ?: JSONObject.NULL)
+                .put("partialRecoveryAttempts", outcome.partialRecoveryAttempts)
+                .put("partialRecoveryMaxAttempts", outcome.partialRecoveryMaxAttempts)
+                .put("partialRecoveryEntryCycles", outcome.partialRecoveryEntryCycles)
+                // DER IST-ZUSTAND desselben Zyklus - damit die TBR-Zeile
+                // links die laufende Pumpenrate und rechts Ziel, Phase,
+                // Aktion und Versuche zeigen kann, ohne eine zweite Datei
+                // zu brauchen. `partialRecoveryView` sagt, ob der IST-Wert
+                // ueberhaupt eine Aussage ist.
+                .put("partialRecoveryObservedUPerH", fin(outcome.partialRecoveryObservedUPerH))
+                .put(
+                    "partialRecoveryObservedRemainingMin",
+                    outcome.partialRecoveryObservedRemainingMin ?: JSONObject.NULL,
+                )
+                .put("partialRecoveryView", outcome.partialRecoveryView ?: JSONObject.NULL)
+                .put("partialRecoveryObservedSource", outcome.partialRecoveryObservedSource ?: JSONObject.NULL)
+                // DIE SUCHE SELBST: ohne diese Felder war im Trail nicht zu
+                // sehen, WARUM eintrittsberechtigte Zyklen nicht aktiv wurden -
+                // Datenluecke und Guard-Null sahen gleich aus.
+                .put("partialRecoverySearchRateUPerH", fin(outcome.partialRecoverySearchRateUPerH))
+                .put("partialRecoverySearchReject", outcome.partialRecoverySearchReject ?: JSONObject.NULL)
+                .put("partialRecoverySearchLimit", outcome.partialRecoverySearchLimit ?: JSONObject.NULL)
+                .put("partialRecoveryBindingOffsetMin", outcome.partialRecoveryBindingOffsetMin ?: JSONObject.NULL)
+                .put("partialRecoveryBaselineMinLowerMgdl", fin(outcome.partialRecoveryBaselineMinLowerMgdl))
+                .put("pinnedFor", outcome.basalGap?.pinnedFor ?: JSONObject.NULL)
+                .put("preMarkerBasalIobU", fin(outcome.basalGap?.preMarkerBasalIobU))
+                .put("preMarkerZeroTbrActive", outcome.basalGap?.zeroTbrActive ?: JSONObject.NULL)
+                .put("preMarkerZeroTbrAgeMin", outcome.basalGap?.zeroTbrAgeMin ?: JSONObject.NULL)
+                .put("preMarkerScheduledBasalUph", fin(outcome.basalGap?.scheduledBasalUph))
+                .put("preMarkerOmittedBasalU", fin(outcome.basalGap?.omittedBasalU))
+                // DAS LAUFENDE PROFILBASAL - der Marker-Schnappschuss oben
+                // ist STUNDEN alt und beschreibt die aktuelle Stufe nicht.
+                // Ohne dieses Feld ist jede Mengenbilanz ueber den Trail ein
+                // Modellfit; mit ihm ist sie eine Ablesung.
+                .put("scheduledBasalUph", fin(outcome.scheduledBasalUph))
+                .put("zeroTally", tallyJson(outcome.zeroTally))
+                .put("lastZeroTally", tallyJson(outcome.lastZeroTally)),
+        )
+        // Korrekturpfad-Riegel (v30, 25.08.): beide Urteile vollstaendig -
+        // auch in Zyklen, in denen NICHT geblockt wurde (das Replay braucht
+        // die Gegenprobe genauso wie den Treffer). null = Pfad hat sie
+        // nicht gerechnet (Fallback/Abort).
+        o.put(
+            "correctionGuards", JSONObject()
+                .put("context", outcome.correctionContext)
+                // Review-P0.2: der ContextReason der AUTORITATIVEN
+                // Klassifikation (ExpectationLedger.classify) - warum der
+                // Kontext (nicht) Korrektur war.
+                .put("contextReason", outcome.correctionContextReason ?: JSONObject.NULL)
+                // Die orthogonale Mahlzeitenbasis: MARKER_CONFIRMED /
+                // EVIDENCE_CONFIRMED (Beleg - nie Schutz) gegen
+                // KINEMATIC_ONLY / NONE (Verdacht bzw. Korrektur - Schutz
+                // erlaubt). Nicht aus contextReason erschliessbar.
+                .put("mealBasis", outcome.correctionMealBasis ?: JSONObject.NULL)
+                .put(
+                    "reversal",
+                    outcome.correctionReversal?.let { r ->
+                        JSONObject()
+                            .put("blocks", r.blocks)
+                            .put("reason", r.reason ?: JSONObject.NULL)
+                            .put("fallMinUkf", fin(r.fallMinUkf))
+                            .put("fallMinAgeMin", fin(r.fallMinAgeMin))
+                            .put("rConfirmStreak", r.rConfirmStreak)
+                    } ?: JSONObject.NULL,
+                )
+                .put(
+                    "rearm",
+                    outcome.correctionRearm?.let { r ->
+                        JSONObject()
+                            .put("blocks", r.blocks)
+                            .put("reason", r.reason ?: JSONObject.NULL)
+                            .put("source", r.source.name)
+                            .put("holdRestMin", fin(r.holdRestMin))
+                            .put("upConfirmStreak", r.upConfirmStreak)
+                    } ?: JSONObject.NULL,
+                ),
+        )
+        outcome.lowThreat?.let { lt ->
+            o.put(
+                "lowThreat", JSONObject()
+                    .put("verdict", lt.verdict.name)
+                    .put("denial", lt.denial ?: JSONObject.NULL)
+                    .put("fallRatePerMin", fin(lt.fallRatePerMin))
+                    // AUSDRUECKLICH der Bolusanteil - das Netto-IOB steht
+                    // unter state.iobU und ist eine andere Groesse.
+                    .put("bolusIobU", fin(lt.bolusIobU))
+                    .put("distanceToFloorMgdl", fin(lt.distanceToFloorMgdl))
+                    .put("minutesToFloor", fin(lt.minutesToFloor))
+                    // Was eine ab jetzt laufende Null bis zum Bodenkontakt
+                    // verhindert haette. Unter der Schwelle ist sie keine
+                    // Massnahme, sondern nur ein Basalverlust.
+                    .put("benefitMgdl", fin(lt.benefitMgdl))
+                    // v29: die Grenzfall-Messgroessen des v29-Anlassfalls -
+                    // Ueberdeckungsstaerke und Abstand zur Horizontkante.
+                    // Reine Messfelder; eine Mindestmarge wird erst nach
+                    // Replay-Auswertung festgelegt.
+                    .put("overcoverageMarginMgdl", fin(lt.overcoverageMarginMgdl))
+                    .put("horizonMarginMin", fin(lt.horizonMarginMin)),
+            )
+        }
+        // Genau die vier Felder, ueber die AAPS aktuiert. null heisst hier
+        // AUSDRUECKLICH "nichts angefordert" und nicht "unbekannt".
+        o.put(
+            "rt", JSONObject()
+                .put("rate", fin(rt.rate))
+                .put("duration", rt.duration ?: JSONObject.NULL)
+                .put("units", fin(rt.units))
+                .put("deliverAt", rt.deliverAt ?: JSONObject.NULL)
+        )
+
+        // ---- Gate ----------------------------------------------------------
+        // `allowed`, nicht `mayActuate` — letzteres ist eine lokale Variable im
+        // RT-Bauer. Und `pumpClass` ist bei fehlender Pumpe der Sentinel "none",
+        // kein Klassenname; wer danach sucht, sucht vergeblich.
+        //
+        // `realPump` ist der Unterschied, auf den es bei der Auswertung
+        // ankommt: eine erlaubte VirtualPump und eine erlaubte Medtrum sind
+        // beide `allowed`, aber nur bei einer davon war echtes Insulin im
+        // Spiel. Ohne dieses Feld liesse sich das im Nachhinein nur noch am
+        // Namen des Verdikts ablesen — und Namen aendern sich.
+        o.put(
+            "gate", JSONObject()
+                .put("verdict", outcome.gate.verdict.name)
+                .put("allowed", outcome.gate.allowed)
+                .put("realPump", outcome.gate.realPump)
+                .put("pumpClass", outcome.gate.pumpDescription)
+                .put("reason", outcome.gate.reason)
+        )
+
+        // ---- Publikationsgate (B0c) ----------------------------------------
+        // NICHT dasselbe wie `gate`: jenes ist der harte Pumpenriegel,
+        // dieses die Ledger-Freigabe des Zyklus. Beide koennen unabhaengig
+        // voneinander eine Menge zurueckhalten, und im Trail muss unterscheidbar
+        // bleiben, welches es war.
+        // ---- Patch-Epoche (B3) ---------------------------------------------
+        if (patchEpoch == null) gap("patchEpoch", "NOT_REPORTED")
+        else o.put(
+            "patchEpoch", JSONObject()
+                .put("known", patchEpoch.known)
+                .put("reason", patchEpoch.reason)
+                .putOpt("epochTs", patchEpoch.epochTs)
+                // Ausdruecklich `JSONObject.NULL` statt Weglassen: "aktive
+                // Pumpe nicht lesbar" ist eine Aussage und muss im Trail von
+                // "Feld gibt es in diesem Build noch nicht" unterscheidbar
+                // bleiben.
+                .put("applicable", patchEpoch.applicable ?: JSONObject.NULL)
+        )
+
+        // KEINE Luecke, wenn nichts dasteht: "nie repariert" ist der Normalfall
+        // und keine fehlende Angabe. Eine Luecke hier wuerde die echten
+        // Luecken im Rauschen ertraenken.
+        ledgerReset?.let { o.put("ledgerReset", app.aaps.fuse.plugin.ledger.FuseLedgerRepair.encode(it)) }
+
+        // Ebenso ohne Luecke: "kein Ereignis seit Prozessstart" ist normal.
+        markerEvent?.let { e ->
+            o.put(
+                "markerEvent", JSONObject()
+                    .put("type", e.type)
+                    .put("ts", e.ts)
+                    .put("source", e.source)
+                    .put("markerTs", e.markerTs)
+                    .put("dueTs", e.dueTs ?: JSONObject.NULL)
+            )
+        }
+
+        if (publicationGate == null) gap("publicationGate", "NOT_REPORTED")
+        else o.put(
+            "publicationGate", JSONObject()
+                .put("allowed", publicationGate.allowed)
+                .put("reason", publicationGate.reason ?: JSONObject.NULL)
+                .put("treatmentViewPresent", publicationGate.treatmentViewPresent)
+        )
+
+        // ---- Signal --------------------------------------------------------
+        val s = outcome.signal
+        if (s == null) gap("signal", "NO_SIGNAL_THIS_CYCLE")
+        else o.put(
+            "signal", JSONObject()
+                .put("q1", fin(s.q1))
+                .put("rawBg", fin(s.rawBg))
+                .put("rSigned", fin(s.rSigned))
+                // DREI Ratenmaasse nebeneinander - ein zweites Thermometer,
+                // kein zweiter Regler. Nur rSigned wirkt; die anderen beiden
+                // machen messbar, wieviel Vorsprung ein kuerzeres Fenster hat.
+                .put("ukfRatePerMin", fin(s.ukfRatePerMin))
+                .put("rawSlopePerMin", fin(s.rawSlopePerMin))
+                .put("activityAtAnchor", fin(s.activityAtAnchor))
+                .put("isfAtAnchor", fin(s.isfAtAnchor))
+                .put("ukfLearnedR", fin(s.ukfLearnedR))
+                // 4.0 = der Clamp aus UkfQ1.kt:136 (nacktes Literal DORT; hier
+                // nicht referenzierbar, ohne die gelockte Datei anzufassen -
+                // die Fork-Kopie ist byteidentisch, eine einseitige Aenderung
+                // ergaebe zwei stumm divergierende Filter).
+                .put("ukfRateSaturated", kotlin.math.abs(s.ukfRatePerMin) >= 4.0 - 1e-9)
+                // Der Antrieb der Bremsbahn, fertig BGI-bereinigt - exakt die
+                // am 06.08. korrigierte Groesse, jetzt nachrechenbar.
+                .put("fastDriveAdjusted", fin(s.ukfRatePerMin + s.activityAtAnchor * s.isfAtAnchor))
+                .put("samplesUsed", s.samplesUsed)
+                .put("rawSeriesSize", s.rawSeriesSize)
+                // POST-GAP-TELEMETRIE (11.08.). Sechs Zahlen, die EINE Frage
+                // beantworten, die keine von ihnen allein beantwortet: war der
+                // erste Punkt nach einer Luecke fragwuerdig und wurde er kurz
+                // darauf stark revidiert?
+                //
+                // Gemessen stand nach langer Luecke ein Wert mit FRISCHEM
+                // Zeitstempel im Datensatz, drei Minuten spaeter ein deutlich hoeherer - FUSE las
+                // einen steilen Anstieg und gab eine Korrekturmenge in ein Nicht-Ereignis. Eine
+                // reine Ratenpruefung sieht das nicht: der erste Punkt hat
+                // gegen den Wert vor der Luecke eine voellig unauffaellige Rate. Erst
+                // `postGapIndex` ZUSAMMEN mit `stepFromLastMgdl` zeigt es.
+                .put("gapBeforeMin", fin(s.gapBeforeMin))
+                // DER WIRKSAME Wert dieses Laufs (Bauauftrag Toni 25.08.):
+                // die Grenze stand frueher an drei Orten und war im Trail
+                // gar nicht sichtbar - ein Replay-Befund liess sich damit
+                // nicht gegen den Lauf pruefen, der ihn erzeugt hat. Er
+                // kommt aus dem Outcome, nicht aus einem globalen Objekt:
+                // sonst zeigte der Trail den Wert des ZULETZT gebauten
+                // Runners statt den dieses Zyklus.
+                .put("rSegmentBreakMs", outcome.rSegmentBreakMs)
+                // Ebenso die WIRKSAME Reifebedingung. Ohne sie liesse sich
+                // ein Reife-Replay-Befund nicht gegen den Lauf pruefen,
+                // der ihn erzeugt hat - und ein versehentlich nicht
+                // gesetzter Hebel saehe wie ein Ergebnis aus.
+                // WIEDEREINSTIEG NACH FUNKLUECKE (Exportauflage Toni 25.08.):
+                // die WIRKSAME Reife dieses Zyklus, ihr Grund, die Dauer der
+                // erkannten Luecke, das Alter des Segments - und der
+                // Reifestand aus DERSELBEN Fensterbreite, die auch das
+                // Dosiertor benutzt. Ohne diese Felder liesse sich ein
+                // Rejoin-Befund nicht gegen den Zyklus pruefen, der ihn
+                // erzeugt hat.
+                .put("maturityMinPoints", s.rejoin.maturity.minPointsAt(s.sourceTs))
+                .put("maturityMinSlopes", s.rejoin.maturity.minSlopesAt(s.sourceTs))
+                .put("rejoinActive", s.rejoin.active)
+                .put("rejoinCause", s.rejoin.cause.name)
+                .put("rejoinGapMs", s.rejoin.gapMs)
+                .put("rejoinAgeMs", s.rejoin.ageMs)
+                // Die REGIMEGRENZE samt Zeitpunkt und die Etablierungsfrage
+                // (Review Toni 25.08. abends): ohne beides laesst sich im
+                // Trail nicht unterscheiden, ob eine Kalibrierung den
+                // AKTUELLEN Segmentbeginn erklaert oder bloss irgendwo im
+                // Rueckblickpuffer liegt.
+                .put("rejoinRegimeCause", s.rejoin.regime.bound.name)
+                .put("rejoinRegimeTs", s.rejoin.regime.boundaryTs)
+                .put("rejoinRegimeSegmentTs", s.rejoin.regime.segmentStartTs)
+                .put("rejoinPreGapStrictReady", s.rejoin.preGapStrictReady)
+                // 0 = dieses Segment traegt die STRENGE Reife noch nicht.
+                // Genau daran ist ablesbar, wie lange der Wiedereinstieg
+                // ueberhaupt etwas geaendert hat.
+                .put("fullMaturityTs", s.fullMaturityTs)
+                .let { j ->
+                    val reife = app.aaps.fuse.core.signal.BgiAdjustedSeries.readiness(
+                        s.adjusted.points, s.sourceTs,
+                        windowMs = (policy?.theilSenWindowMin
+                            ?: (app.aaps.fuse.core.signal.BgiAdjustedSeries.WINDOW_MS / 60_000L).toInt()) * 60_000L,
+                        maturity = s.rejoin.maturity,
+                    )
+                    j.put("readyPoints", reife.points)
+                        .put("readyPointsRequired", reife.pointsRequired)
+                        .put("readySlopes", reife.slopes)
+                        .put("readySlopesRequired", reife.slopesRequired)
+                        .put("readyReason", reife.reason.name)
+                        // DIE STRENGEN ANFORDERUNGEN AUSDRUECKLICH (Toni
+                        // 25.08. spaet, fuer den Viewer): waehrend 4x3 traegt,
+                        // nennen readyPointsRequired/readySlopesRequired die
+                        // WIRKSAMEN Schranken. Eine Anzeige wie
+                        // "streng 4/5P - 3/8S" braucht daneben die strengen -
+                        // und die soll der Viewer nicht hartkodieren, sonst
+                        // steht dort eine Zahl, die niemand nachfuehrt.
+                        // Die ZAEHLER sind politikunabhaengig und gelten fuer
+                        // beide Lesarten.
+                        .put("strictPointsRequired",
+                             app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION.minPoints)
+                        .put("strictSlopesRequired",
+                             app.aaps.fuse.core.signal.MaturityPolicy.PRODUCTION.minSlopes)
+                }
+                .put("stepFromLastMgdl", fin(s.stepFromLastMgdl))
+                .put("stepRateActualMgdlPerMin", fin(s.stepRateActualMgdlPerMin))
+                .put("postGapIndex", s.postGapIndex)
+                // Alter des Rohwerts: trennt "der Wert ist alt" von "der Wert
+                // ist falsch". Aus computeTs - sourceTs, damit die Signalquelle
+                // ohne Uhr auskommt.
+                .put("sourceAgeMin", fin((outcome.computeTs - s.sourceTs) / 60_000.0))
+                .put("q1Outlier", s.q1Outlier)
+                .put("boundedBy", s.boundedBy.name)
+                .put("windowFromTs", s.windowFromTs)
+                // Die Segment-Identitaet des Erwartungs-Ledgers - stabil bis
+                // zum naechsten echten Bruch. Ohne sie im Trail liesse sich
+                // ein SEGMENT_CHANGED-Denial nicht nachrechnen.
+                .put("signalEpochTs", s.signalEpochTs)
+        )
+
+        // ---- WENDE-KLASSIFIKATION (frueher Wende-/Tau-Shadow, Toni 20.08.) -
+        // 2.0 (Stufe 1, K1): die Prognose-Sammler sind entfernt. Der Block
+        // bleibt mit der Klassifikation, die der Liveness-Exit liest; enabled
+        // ist fest false, die Listen sind leer - so wie bisher bei
+        // ausgeschaltetem Sammler.
+        outcome.turnResponseShadow?.let { sh ->
+            val c = sh.classification
+            o.put(
+                "turnResponseShadow", JSONObject()
+                    .put("enabled", false)
+                    .put("collectionEpoch", outcome.forecastShadowEpochTs)
+                    .put("methodId", TurnResponseShadow.METHOD_ID)
+                    .put("dosageNeutral", true)
+                    .put("phase", c.phase.name)
+                    .put("reason", c.reason.name)
+                    .put("slowDriveMgdlPerMin", fin(c.slowDriveMgdlPerMin))
+                    .put("fastDriveMgdlPerMin", fin(c.fastDriveMgdlPerMin))
+                    .put("delta1MgdlPerMin", fin(c.delta1MgdlPerMin))
+                    .put("delta2MgdlPerMin", fin(c.delta2MgdlPerMin))
+                    .put("delta3MgdlPerMin", fin(c.delta3MgdlPerMin))
+                    .put("upwardMeanDriveMgdlPerMin", fin(c.upwardMeanDriveMgdlPerMin))
+                    .put("adaptiveRestraintTauMin", c.adaptiveRestraintTauMin)
+                    .put("computeDurationMs", 0.0)
+                    .put("variants", JSONArray())
+                    .put("downVariants", JSONArray()),
+            )
+        } ?: gap("turnResponseShadow", "NO_SHADOW_THIS_CYCLE")
+
+        // ---- S0: die Bahnhub-Zerlegung -------------------------------------
+        // WARUM BEIDE BAHNEN: der Guard entscheidet gegen das Minimum ueber
+        // Haupt- UND Bremsbahn. Stammt es aus der Bremse, erklaert der Hub der
+        // Hauptbahn den falschen Ort - derselbe Fehler, den die getrennten
+        // Zeitindizes oben gerade beheben. Ein Hub allein waere hier also nicht
+        // "die Haelfte", sondern irrefuehrend.
+        //
+        // NICHTS hiervon wird gelesen: keine Grenze, kein Zweig, keine Dosis.
+        fun hub(h: app.aaps.fuse.core.predictor.TrajectoryHub?): Any =
+            h?.let {
+                JSONObject()
+                    .put("driveMeanMgdl", fin(it.driveMeanMgdl))
+                    .put("driveLowerMgdl", fin(it.driveLowerMgdl))
+                    .put("driveSafetyLowerMgdl", fin(it.driveSafetyLowerMgdl))
+                    .put("bgiMgdl", fin(it.bgiMgdl))
+                    .put("transportMgdl", fin(it.transportMgdl))
+                    // Die beiden Gewichtssummen sind der Schluessel: mit ihnen
+                    // rechnet ein Auswerter den Hub eines GEDACHTEN Antriebs
+                    // nach, ohne den Zerfall nachbauen zu muessen.
+                    .put("decayWeightSumPositive", fin(it.decayWeightSumPositive))
+                    .put("decayWeightSumNegative", fin(it.decayWeightSumNegative))
+            } ?: JSONObject.NULL
+
+        fun hubsOf(p: app.aaps.fuse.core.predictor.PredictorResult?): Any =
+            p?.let {
+                JSONObject()
+                    .put("atHorizon", hub(it.hubAtHorizon))
+                    .put("atMinSafetyLower", hub(it.hubAtMinSafetyLower))
+                    .put("timeToMinSafetyLowerMin", it.timeToMinSafetyLowerMin)
+            } ?: JSONObject.NULL
+
+        // Benannt statt weggelassen (Kopfregel dieser Datei): ein blankes
+        // `null` verwechselt "Abbruch vor der Bahn" mit "Bahn vorhanden".
+        if (outcome.prediction == null) gap("hub", "NO_TRAJECTORY_THIS_CYCLE")
+        else o.put(
+            "hub", JSONObject()
+                .put("main", hubsOf(outcome.prediction))
+                .put("restraint", hubsOf(outcome.restraint))
+        )
+
+        val b = outcome.band
+        if (b == null) gap("drive", "NO_BAND_THIS_CYCLE")
+        else o.put(
+            "drive", JSONObject()
+                .put("mean", fin(b.mean))
+                .put("lower", fin(b.lower))
+                .put("spread", fin(b.spread))
+                .put("pairCount", b.pairCount)
+                // S0: WIRKT das Band ueberhaupt? `spread == 0` war der einzige
+                // Hinweis auf ein abgeschaltetes Band und ist mehrdeutig - auch
+                // ein aktives Band liefert bei entarteter Paarverteilung 0.
+                // Das Flag kommt aus DEMSELBEN Praedikat wie der Zweig.
+                .put("quantilePct", b.quantilePct)
+                .put("bandActive", b.bandActive)
+                .put("methodId", policy?.let { app.aaps.fuse.core.signal.PairSlopeBand.methodId(it.driveLowerQuantilePct, it.theilSenWindowMin) } ?: JSONObject.NULL)
+                .put("candidate", outcome.candidate?.let { c ->
+                    JSONObject()
+                        .put("smbU", fin(c.smbU))
+                        .put("reject", c.reject?.name ?: JSONObject.NULL)
+                        .put("bindingLimit", c.bindingLimit)
+                        .put("meanWithCandidate", c.meanWithCandidateMgdl?.let { fin(it) } ?: JSONObject.NULL)
+                        .put("minLowerWithCandidate", c.minLowerWithCandidateMgdl?.let { fin(it) } ?: JSONObject.NULL)
+                        .put("effectPerU", c.effectPerUAtReleaseMgdl?.let { fin(it) } ?: JSONObject.NULL)
+                        .put("evaluated", c.candidatesEvaluated)
+                } ?: JSONObject.NULL)
+                .put("candidateGap", outcome.candidateGap ?: JSONObject.NULL)
+                // Konsolidierung 2.0: die Sofort-Freigabe ist entfallen, `prime` steht auf null.
+                .put("prime", outcome.prime?.let { pr ->
+                    JSONObject()
+                        .put("active", pr.active)
+                        .put("floorU", fin(pr.floorU))
+                        .put("remainingU", fin(pr.remainingU))
+                        .put("reason", pr.reason)
+                } ?: JSONObject.NULL)
+                .put("onset", outcome.onset?.let { o ->
+                    JSONObject()
+                        .put("active", o.active)
+                        .put("mealMarker", o.mealMarker)
+                        .put("driveMgdlPerMin", o.driveMgdlPerMin?.let { fin(it) } ?: JSONObject.NULL)
+                        .put("remainingU", fin(o.remainingU))
+                        .put("reason", o.reason)
+                } ?: JSONObject.NULL)
+                .put("discount", outcome.discount?.let { d ->
+                    JSONObject()
+                        .put("lambda", fin(d.lambda))
+                        .put("bolusActivityUPerMin", fin(d.bolusActivityUPerMin))
+                        .put("isfMgdlPerU", fin(d.isfMgdlPerU))
+                        .put("termMgdlPerMin", fin(d.termMgdlPerMin))
+                        .put("lowerBefore", fin(d.lowerBeforeMgdlPerMin))
+                        .put("lowerAfter", fin(d.lowerAfterMgdlPerMin))
+                } ?: JSONObject.NULL)
+        )
+
+        // ---- Observer ------------------------------------------------------
+        // ALLES, was eine spaetere Nachrechnung von PERSISTENCE und TURN
+        // braucht. Bewusst der ZUSTAND und nicht das Ergebnis: die Rohreihe
+        // liegt ohnehin in der Datenbank, und welche Minuten FUSE gesehen hat,
+        // steht als computeTs/sourceTs in jeder Zeile dieses Trails. Damit ist
+        // die Bewertungsregel nachtraeglich aenderbar, statt in der
+        // Zustandsmaschine festzustehen.
+        //
+        // Der EINGEFRORENE Peak einer Episode wird NICHT hier gebildet - er
+        // ergibt sich aus livePeak ueber die Zeilen zwischen Confirm und
+        // Phasenende. Ihn im Kern einzufrieren hiesse, eine Regel zu locken,
+        // die noch nie an Daten geprueft wurde.
+        val st = outcome.step
+        if (st == null) gap("observer", "NO_STEP_THIS_CYCLE")
+        else {
+            val obs = JSONObject()
+                .put("accepted", st.accepted)
+                .put("phase", st.phase.name)
+                .put("healthReasons", JSONArray(st.healthReasons.map { it.name }))
+                .put("safetyReasons", JSONArray(st.safetyReasons.map { it.name }))
+                .put("candidateId", st.candidateId ?: JSONObject.NULL)
+                .put("eventId", st.eventId ?: JSONObject.NULL)
+                .put("livePeakTs", st.livePeak?.sourceTs ?: JSONObject.NULL)
+                .put("livePeakValue", fin(st.livePeak?.value))
+                .put("quietAccumMin", fin(st.quietAccumMin))
+                // Tief-Halt (Toni: die Restzeit muss sichtbar sein): Fortschritt und die festen Ausgangsgrenzen.
+                .put("lowExitAccumMin", fin(st.lowExitAccumMin))
+                .put("lowExitMgdl", fin(LOW_EXIT_GRENZEN.lowExitMgdl))
+                .put("lowExitMin", fin(LOW_EXIT_GRENZEN.lowExitMin))
+                .put("confirmCount", st.confirmCount)
+                .put("carryDurMin", fin(st.carryDurMin))
+                .put("resetCauses", JSONArray(st.resetCauses.map { it.name }))
+                .put("sensorEpoch", outcome.sensorEpoch ?: JSONObject.NULL)
+                .put("calibrationEpoch", outcome.calibrationEpoch ?: JSONObject.NULL)
+            // Der Uebergang ist der ANKER: triggerSourceTs beim RISE_CONFIRMED
+            // ist der Zeitpunkt, gegen den eine Episode spaeter bewertet wird.
+            st.transition?.let { tr ->
+                obs.put(
+                    "transition", JSONObject()
+                        .put("type", tr.type.name)
+                        .put("from", tr.from.name)
+                        .put("to", tr.to.name)
+                        .put("reasons", JSONArray(tr.reasons.toList()))
+                        .put("triggerSourceTs", tr.triggerSourceTs)
+                        .put("triggerComputeTs", tr.triggerComputeTs)
+                        .put("candidateId", tr.candidateId ?: JSONObject.NULL)
+                        .put("eventId", tr.eventId ?: JSONObject.NULL)
+                )
+            }
+            o.put("observer", obs)
+        }
+
+        // ---- Zustand -------------------------------------------------------
+        o.put(
+            "state", JSONObject()
+                .put("health", outcome.health?.name ?: JSONObject.NULL)
+                .put("iobU", fin(outcome.iobU))
+                .put("targetMgdl", fin(outcome.targetMgdl))
+                .put("targetSource", outcome.targetSource ?: JSONObject.NULL)
+                .put("isfMgdlPerU", fin(outcome.isfMgdlPerU))
+                // RUECKFALL AUF DIE OUTCOME-FELDER (Toni 17.08.): im
+                // Abbruchzyklus ist `state` null, aber abort() kennt beide
+                // Grenzen und legt sie in outcome.iobThU/maxIobU - der
+                // AAPS-Tab faellt darauf zurueck (FuseDashboardModel), der
+                // Export tat es nicht. Damit galt "iobTH nie verstecken" am
+                // Geraet, aber nicht in der Datei, die der Viewer liest.
+                .put("iobThU", fin(outcome.state?.iobThU ?: outcome.iobThU))
+                .put("maxIobU", fin(outcome.state?.maxIobU ?: outcome.maxIobU))
+                // Der WIRKSAME Anteil, nicht beide Rohwerte: welche Zahl gegolten hat,
+                // haengt an der Phase, und im Nachhinein soll niemand die falsche
+                // von zweien lesen. Die Rohwerte stehen ohnehin unter policy.values.
+                .put("reboundWindow", outcome.state?.reboundWindow ?: JSONObject.NULL)
+                // Rest des Rebound-Fensters [min]. Additiv, kein Schemabruch:
+                // aeltere Leser sehen das Feld nicht, neuere behandeln sein
+                // Fehlen als UNBEKANNT - nicht als "Fenster zu Ende".
+                .put("reboundRestMin", outcome.state?.reboundRestMin ?: JSONObject.NULL)
+                // NACHTFENSTER, bisher unsichtbar (Toni 15.08.): der
+                // Runner setzt es korrekt, aber im Trail stand es nirgends -
+                // ob das Nacht-Totband scharf war, liess sich nur aus der Uhr
+                // und der Konfiguration herleiten. Genau diese Herleitung will
+                // niemand nachts machen. Die uebrigen Fenster (rebound,
+                // marker, meal) stehen laengst da; dieses fehlte als einziges.
+                .put("nightWindow", outcome.state?.nightWindow ?: JSONObject.NULL)
+                .put("reboundSuppressedByMarker", outcome.state?.reboundSuppressedByMarker ?: JSONObject.NULL)
+                // DER DRUCKZEITPUNKT, nicht nur "Marker aktiv".
+                //
+                // Bisher stand im Trail ausschliesslich das Boolean
+                // `drive.onset.mealMarker`. Damit ist die wichtigste Groesse im
+                // FCL gar nicht messbar: die LATENZ vom Knopfdruck bis zur
+                // ersten Freigabe. Ob nach 2 oder nach 25 Minuten das erste
+                // Insulin kommt, entscheidet ueber Peak oder kein Peak - und
+                // ohne t0 laesst sich das im Nachhinein nicht ausrechnen.
+                // 0 = kein Marker.
+                .put("markerArmedTs", outcome.state?.markerArmedTs ?: JSONObject.NULL)
+                .put("markerNoPrime", outcome.state?.markerNoPrime ?: JSONObject.NULL)
+                // Toni: die Wahl "nur Erwartung" - nur wenn getroffen,
+                // damit Laeufe ohne sie bitgleich bleiben.
+                .apply { if (outcome.state?.markerExpectationOnly == true) put("markerExpectationOnly", true) }
+                .put("markerBoost", outcome.state?.markerBoost ?: JSONObject.NULL)
+                .put("mealWindow", outcome.state?.mealWindow ?: JSONObject.NULL)
+                .put("smbRatioEffective", fin(outcome.state?.effectiveSmbRatio))
+                // S0: der EINGANG der Rampe, nicht das Signal. Beide sind
+                // meistens dieselbe Zahl - aber wenn der OnsetChannel aktiv
+                // ist, gilt `max(rSigned, onsetDrive)`, und dann war der
+                // Rampeneingang ein anderer als das exportierte `signal.rSigned`.
+                // Ohne dieses Feld ist der wirksame Anteil im Nachhinein nicht
+                // herleitbar; die Differenz zu `signal.rSigned` ist genau der
+                // Beitrag des Onset-Kanals.
+                .put("rampInputMgdlPerMin", fin(outcome.state?.rSignedMgdlPerMin))
+                .put("context", outcome.decision.context?.name ?: JSONObject.NULL)
+        )
+
+        // ---- Schwanz -------------------------------------------------------
+        // DIE KOSTEN DER ZIRKULARITAET, beziffert (11.08.).
+        //
+        // `unconditional` ist die Kante ohne Kohlenhydrate - gegen sie hat der
+        // Schwanz bisher immer gerechnet und gemessen 25 Minuten am Stueck
+        // gesperrt. `conditional` ist dieselbe Kante MIT der Ankuendigung.
+        // Ihre Differenz geteilt durch den Schwanz-ISF ist das Budget, das die
+        // Ankuendigung verschafft - die Zahl, an der sich die bedingte Bahn
+        // messen lassen muss.
+        //
+        // `conditional` null heisst: kein Kredit lief oder der Schalter ist aus.
+        o.put(
+            "tailLower", JSONObject()
+                .put("unconditionalMgdl", fin(outcome.tailLowerUnconditionalMgdl))
+                .put("conditionalMgdl", fin(outcome.tailLowerConditionalMgdl))
+                // JE BAHN EINZELN (Livebefund). Nur die kombinierten
+                // Werte zu zeigen war zu wenig: die Hebung der Hauptbahn wurde
+                // von der unbedingten Bremsbahn kassiert, und im Export sahen
+                // beide Zahlen einfach gleich aus - ohne Hinweis darauf, WO die
+                // Hebung verlorenging.
+                .put("mainUncondMgdl", fin(outcome.tailLowerMainUncondMgdl))
+                .put("mainCondMgdl", fin(outcome.tailLowerMainCondMgdl))
+                .put("restraintUncondMgdl", fin(outcome.tailLowerRestraintUncondMgdl))
+                .put("restraintCondMgdl", fin(outcome.tailLowerRestraintCondMgdl))
+        )
+
+        val t = d.tail
+        if (t == null) o.put("tail", JSONObject.NULL)
+        else o.put(
+            "tail", JSONObject()
+                .put("usable", t.usable)
+                .put("budgetU", fin(t.budgetU))
+                // ACHTUNG SEMANTIKWECHSEL (C3/C4, 09.08.): existingU ist ab
+                // jetzt die GESAMTE Haftung am Horizont (IOB + Transport +
+                // beschlossene Menge), nicht mehr nur das sichtbare IOB. Die
+                // drei Anteile stehen einzeln daneben - eine Auswertung, die
+                // alte und neue Exporte mischt, muss das wissen.
+                .put("existingU", fin(t.existingU))
+                .put("existingIobAtHU", fin(t.existingIobAtHU))
+                .put("transportLiabilityU", fin(t.transportLiabilityU))
+                .put("candidateLiabilityU", fin(t.candidateLiabilityU))
+                .put("headroomU", fin(t.headroomU))
+                .put("costU", fin(d.tailCostU))
+                .put("completeness", t.completeness)
+                .put("lowerBgAtHSource", t.lowerBgAtHSource)
+                // Die beiden Faktoren des Budgets - ohne sie ist eine Sperre
+                // nicht in "Bahn zu tief" gegen "ISF-Nenner zu hoch"
+                // zerlegbar (Kontroll-Audit 09.08.).
+                .put("lowerBgAtHMgdl", fin(t.lowerBgAtHMgdl))
+                .put("isfTailMgdlPerU", fin(t.isfTailMgdlPerU))
+                .put("negativeLiabilityClamped", t.negativeLiabilityClamped)
+                .put("invalidReason", t.invalidReason ?: JSONObject.NULL)
+        )
+
+        // ---- Insulinmodell: WELCHE Kurve diese Zahlen erzeugt hat -----------
+        // DIA und peak sind Profil-Eigenschaften und koennen sich zwischen zwei
+        // Zeilen des Trails aendern, ohne dass sonst irgendetwas es anzeigt.
+        // Ohne diesen Block ist nicht entscheidbar, ob zwei Zyklen vergleichbar
+        // sind (Kontroll-Audit 09.08.).
+        val im = outcome.insulinModel
+        if (im == null) o.put("insulinModel", JSONObject.NULL)
+        else o.put(
+            "insulinModel", JSONObject()
+                .put("insulinType", im.insulinType)
+                .put("diaHours", fin(im.diaHours))
+                .put("peakMin", im.peakMin)
+                .put("codeProvenance", im.codeProvenance)
+        )
+
+        // ---- Ledger (R89 §360-361, verdrahtet seit v7) ----------------------
+        if (ledger == null) {
+            // Kein Ersatzwert: fehlt die Sicht, stehen die Luecken wieder da.
+            o.put("ledger", JSONObject.NULL)
+            gap("ledger.revision", GAP_NO_LEDGER)
+            gap("ledger.grossLiabilityU", GAP_NO_LEDGER)
+            gap("ledger.accountedU", GAP_NO_LEDGER)
+            gap("ledger.residualU", GAP_NO_LEDGER)
+        } else {
+            val ls = ledger.state
+            val open = ls.openEntries
+            o.put(
+                "ledger", JSONObject()
+                    .put("revision", ledger.revision)
+                    .put("transportCommitmentU", fin(ls.transportCommitmentU))
+                    // `hold` ist die SPERRE (zusammengesetzt, Diagnosekorrektur
+                    // 15.09.) - bisher stand hier nur `state.holdActuation`, und
+                    // ein Seal-/Recovery-Hold exportierte "hold": false.
+                    .put("hold", ledger.view?.hold ?: ls.holdActuation)
+                    .put("holdActuation", ls.holdActuation)
+                    .put("holdReason", ledger.view?.holdReason ?: JSONObject.NULL)
+                    .put("holdSources", ledger.view?.let { JSONArray(it.holdSources) } ?: JSONObject.NULL)
+                    .put("holdGeneration", ls.holdGeneration)
+                    // Die R89-Mengenbilanz ueber die OFFENEN Zeilen:
+                    // gross - accounted = residual (= transportCommitment,
+                    // geschlossene Zeilen tragen 0).
+                    .put("grossLiabilityU", fin(open.sumOf { it.grossLiabilityU }))
+                    .put("accountedU", fin(open.sumOf { it.accountedAmountU ?: 0.0 }))
+                    .put("residualU", fin(ls.transportCommitmentU))
+                    // PHANTOMHAFTUNG (09.08.): Zeilen, die nach DIA plus
+                    // Spanne nie abgeglichen waren und deshalb als wirkungslos
+                    // abgeschrieben wurden. Ihre Menge haftet nicht mehr - der
+                    // GRUND bleibt ein Befund ueber die Abgleichung, und ohne
+                    // diese Zahl faellt er niemandem auf.
+                    .put("unresolvedBeyondAction", ls.entries.values.count { it.expiredBeyondAction })
+                    .put("openEntries", JSONArray(open.map { e ->
+                        JSONObject()
+                            .put("proposalId", e.proposalId)
+                            .put("phase", e.phase.name)
+                            .put("accounting", e.accounting.name)
+                            .put("delivery", e.delivery.name)
+                            .put("commitmentU", fin(e.commitmentU))
+                            // WARUM eine Zeile entlastet wurde - ohne diese
+                            // Angabe waere der Entlastungsweg am Geraet
+                            // unsichtbar, und ein falsch feuernder Beleg
+                            // fiele erst an der Dosis auf (s. NotSentProof).
+                            .put("queueReject", e.queueReject?.name ?: JSONObject.NULL)
+                    }))
+                    // Wieviele Zeilen OHNE IOB-Nachweis freigegeben wurden.
+                    .put("provenNotSentCount", ls.entries.values.count { it.debtFreeingReject })
+                    // DIE DURABILITAET ALS ZAHLEN. Ohne sie ist am Geraet nicht
+                    // zu sehen, ob der fsync ueberhaupt laeuft und was er kostet -
+                    // und ein FEHLGESCHLAGENER Persist waere voellig unsichtbar.
+                    .put("persist", ledger.persist?.let { p ->
+                        JSONObject()
+                            .put("outcome", p.outcome.name)
+                            .put("bytes", p.bytes)
+                            .put("totalMs", p.totalMs)
+                            .put("fileSyncMs", p.fileSyncMs)
+                            .put("dirSyncMs", p.dirSyncMs)
+                    } ?: JSONObject.NULL)
+                    .put("activeErrors", JSONArray(ls.errors.filter { it.active }.map { r ->
+                        JSONObject()
+                            .put("proposalId", r.proposalId ?: JSONObject.NULL)
+                            .put("error", r.error.name)
+                            // Sperrt dieser Fehler? SNAPSHOT_EPOCH_REBASED etwa ist aktiv, aber nicht sperrend.
+                            .put("blocking", r.error in app.aaps.fuse.core.ledger.LedgerState.FAIL_CLOSED_ERRORS)
+                            .put("occurrences", r.occurrences)
+                            .put("lastDetail", r.lastDetail)
+                    }))
+            )
+        }
+
+        // ---- Politik -------------------------------------------------------
+        val pol = JSONObject()
+            .put("ruleSetVersion", RULE_SET_VERSION)
+            // s. KDoc von RULE_SET_VERSION — ohne dieses Feld liest eine
+            // Auswertung einen unveraenderten Hash als Beweis fuer
+            // Unveraendertheit.
+            .put("ruleSetVersionIsManual", true)
+        if (policy == null) {
+            pol.put("source", "none").put("hash", JSONObject.NULL)
+            gap("policy.hash", GAP_POLICY_NOT_READ)
+        } else {
+            pol.put("source", "cycle")
+            pol.put("values", policyValues(policy))
+            val h = hashOf(policy)
+            if (h == null) {
+                pol.put("hash", JSONObject.NULL)
+                gap("policy.hash", GAP_HASH_NOT_FINITE)
+            } else pol.put("hash", h)
+        }
+        o.put("policy", pol)
+
+        // ---- Build ---------------------------------------------------------
+        // R89 verlangt Policy- UND Build-Hash. Ohne den zweiten laesst sich ein
+        // Geraetelauf nicht auf einen Commit zurueckfuehren - und genau das ist
+        // die Frage, die man nach einer auffaelligen Nacht als erstes stellt.
+        if (build == null) gap("build", "BUILD_INFO_MISSING")
+        else o.put(
+            "build", JSONObject()
+                .put("versionName", build.versionName)
+                .put("head", build.head)
+                .put("committed", build.committed)
+        )
+
+        // ---- Exportmetrik --------------------------------------------------
+        val ex = JSONObject().put("buildMs", (nowNs() - buildStartNs) / 1_000_000)
+        if (prev == null) {
+            ex.put("prevWriteMs", JSONObject.NULL).put("prevBytes", JSONObject.NULL)
+            gap("export.prevWriteMs", GAP_METRICS_LAG)
+        } else ex.put("prevWriteMs", prev.writeMs).put("prevBytes", prev.bytes)
+        o.put("export", ex)
+
+        o.put("gaps", gaps)
+        // Der Kopf sagt in EINEM Feld, ob dieser Datensatz die R89-Bedingung
+        // erfuellt - und das haengt an der TATSAECHLICH uebergebenen
+        // Ledger-Sicht, nicht an der Codeversion.
+        // SCHEMAVERSION. Sie kommt, weil in dieser Serie wirklich ein
+        // Schluessel umbenannt wurde (`timeToMinSafetyLowerMin` ->
+        // `...MainMin`): EINE Trail-Datei traegt beide Schreibweisen, und
+        // ohne Marke ist einer Zeile nicht anzusehen, welche gilt.
+        //  2 = S0-A/B/C (10.08.), Schluessel `timeToMinSafetyLowerMin`
+        //  3 = ab 11.08.: MainMin/CombinedMin, minMean* getrennt, capsStage
+        //  4 = ab 11.08.: priorActuation (fusePublished/afterBolusConstraints/
+        //      aapsConstrained des VORIGEN Zyklus) + Post-Gap-Felder
+        //  5 = ab 15.09.: `ledger.hold` ist die ZUSAMMENGESETZTE Sperre (bis 4:
+        //      nur state.holdActuation, jetzt `ledger.holdActuation`), dazu
+        //      holdReason, holdSources und `activeErrors[].blocking`
+        o.put("schemaVersion", SCHEMA_VERSION)
+        // SCHEIBE 1: der Ausgang des VORIGEN Zyklus.
+        //
+        // `ofComputeTs` steht ganz vorn und ist nicht optional: diese Zahlen
+        // beschreiben NICHT diesen Datensatz. FUSEs invoke kehrt zurueck, bevor
+        // AAPS seine Constraints anwendet - lesbar ist der eigene Ausgang
+        // deshalb erst einen Zyklus spaeter. Ohne die Herkunft daneben waere
+        // das genau die Fehlbenennung, gegen die die ganze Mengenachse gebaut
+        // wird.
+        //
+        // DIE ACHSE IST FUENFTEILIG:
+        //   certified -> fusePublished -> aapsConstrained -> queueRequested -> enacted
+        // Hier sind die ersten drei. `queueRequestedU` ist heute NICHT
+        // beobachtbar: `constraintsProcessed` entsteht VOR Suspend-, Loop- und
+        // Queue-Pruefungen, TBR-Ausfuehrung, applySMBRequest, dem zweiten
+        // Intervalltor und CommandSMBBolus.
+        o.put("priorActuation", priorActuation?.let { p ->
+            JSONObject()
+                .put("ofComputeTs", p.ofComputeTs)
+                // Identitaet der RT-INSTANZ, nicht der APSResult-Huelle.
+                // false heisst: fremder oder veralteter lastRun, die Zahlen
+                // sind dann bewusst null statt irgendetwas.
+                .put("correlated", p.correlated)
+                .put("fusePublishedU", fin(p.fusePublishedU))
+                .put("afterBolusConstraintsU", fin(p.afterBolusConstraintsU))
+                .put("aapsConstrainedU", fin(p.aapsConstrainedU))
+        } ?: JSONObject.NULL)
+        // KI-171: Beleg D. `claimed` sind die Zeilen, die DIESER Zyklus
+        // entlastet; der Ledger fuehrt sie danach mit queueReject OTHER (der
+        // Name bleibt rueckflashfest). `matched` ohne `claimed` heisst: Zeile
+        // schon zu, schon ueber A bis C belegt oder Mengen passten nicht.
+        o.put("pumpNeverCalled", pumpNeverCalled?.let { t ->
+            JSONObject()
+                .put("recordsVisible", t.recordsVisible)
+                .put("matched", JSONArray(t.matched))
+                .put("claimed", JSONArray(t.claimed))
+                .put("alreadyClosed", JSONArray(t.alreadyClosed))
+        } ?: JSONObject.NULL)
+        o.put("r89Complete", ledger != null)
+        return o
+    }
+
+    /**
+     * Die Stellgroessen, die den Zyklus bestimmt haben — als Klartext neben dem
+     * Hash, damit ein Unterschied nicht nur erkennbar, sondern lesbar ist.
+     *
+     * Jeder Double geht durch [fin]: `org.json` WIRFT bei NaN/Infinity
+     * ("Forbidden numeric value"). Ein Wurf hier laege im runCatching des
+     * Exports und liesse den ganzen Datensatz verschwinden — ausgerechnet den,
+     * der die kaputte Einstellung dokumentiert.
+     */
+    fun policyValues(p: FuseCycleRunner.Config): JSONObject = JSONObject()
+        .put("smbRatioCorrection", fin(p.smbRatio))
+        .put("smbRatioRise", fin(p.smbRatioRise))
+        // Fix-Pass 4 Nr. 17: die geteilte maxIOB-Preference gehoert in den
+        // Fingerprint - sie ist therapieaktiv (Constraint-Kette + iobTH-Basis).
+        .put("sharedMaxIobU", fin(p.sharedMaxIobU))
+        .put("maxSmbU", fin(p.maxSmbU))
+        .put("guardFloorMgdl", fin(p.guardFloorMgdl))
+        .put("positiveDescentHorizonMin", fin(p.positiveDescentHorizonMin))
+        // v16: die zwei Stellgroessen des Low-Tors. Ohne sie war im Trail
+        // nicht einmal ablesbar, mit welcher Nutzenschwelle ein Lauf fuhr.
+        .put("lowGateMinBenefitMgdl", fin(p.lowGateMinBenefitMgdl))
+        .put("lowGateHorizonMin", fin(p.lowGateHorizonMin))
+        .put("iobThPercent", p.iobThPercent)
+        .put("releaseHorizonMin", p.releaseHorizonMin)
+        .put("liabilityHorizonMin", p.liabilityHorizonMin)
+        .put("driveTauMin", p.driveTauMin)
+        .put("absorptionCreditWindowMin", p.absorptionCreditWindowMin)
+        .put("markerBoostMaxMin", p.markerBoostMaxMin)
+        .put("nightStartMin", p.nightStartMin)
+        .put("nightEndMin", p.nightEndMin)
+        .put("nightDeadbandMgdl", p.nightDeadbandMgdl)
+        // 2.0 (Stufe 1, K3): fest an. Das Feld bleibt mit dem WIRKSAMEN Wert,
+        // damit Viewer, Auswertungen und der 1.x-Rueckweg dasselbe lesen.
+        .put("nightDeadbandEnabled", true)
+        .put("reboundDeadbandMgdl", p.reboundDeadbandMgdl)
+        .put("reboundDeadbandEnabled", true)
+        .put("reboundWindowMin", p.reboundWindowMin)
+        .put("driveLowerQuantilePct", p.driveLowerQuantilePct)
+        .put("theilSenWindowMin", p.theilSenWindowMin)
+        .put("signalRejoinEnabled", p.signalRejoinEnabled)
+        // Konsolidierung 2.0: die Einstellungen ohne Wirkung sind entfernt und fehlen hier - Ruhe-Ausgang,
+        // Sofort-Freigabe (Schalter, Fenster), Mahlzeitenfundament, Rebound-Evidenz-Ausnahme, Buchungsausgang,
+        // Halte-Anhebung, H8, MEAL-Schwelle und -Bewaffnung des Liveness-Kanals, Guard-Ausnahme und phi_0 des Kontos.
+        .put("tailGuardEnabled", p.tailGuardEnabled)
+        .put("tailFloorMgdl", fin(p.tailFloorMgdl))
+        .put("tailRecoveryU", fin(p.tailRecoveryU))
+        // 2.0 (Stufe 1, K3): fest an, wirksamer Wert.
+        .put("fastRestraintEnabled", true)
+        .put("riseRampLowR", fin(p.riseRampLowR))
+        .put("riseRampHighR", fin(p.riseRampHighR))
+        .put("bolusShareLambda", fin(p.bolusShareLambda))
+        .put("onsetChannelEnabled", p.onsetChannelEnabled)
+        .put("onsetEnvelopeU", fin(p.onsetEnvelopeU))
+        .put("primeEnvelopeU", fin(p.primeEnvelopeU))
+        // v17: der Marker-Prime-Aufschub. Schalter, gepinnter Horizont und
+        // gepinnte Frist - ohne sie ist im Replay nicht trennbar, WELCHER
+        // Aufschub-Regler einen Lauf gefahren hat.
+        .put("deferredPrimeEnabled", p.deferredPrimeEnabled)
+        .put("markerPrimeDescentHorizonMin", fin(p.markerPrimeDescentHorizonMin))
+        .put("deferredPrimeEndMin", p.deferredPrimeEndMin)
+        // v18: der Liveness-Kanal. Seine Mengengrenzen sind CENTRAL-only
+        // die Profilwerte unten; die frueheren Kanal-Deckel sind mit dem
+        // LEGACY-Pfad entfernt.
+        .put("livenessChannelEnabled", p.livenessChannelEnabled)
+        .put("mealPowerMin", p.livenessMealPowerMin)
+        // CENTRAL-only (Legacy-Cleanup 29.08. nachts): policyMode bleibt
+        // als KONSTANTE im Export, damit Viewer und alte Trails eindeutig
+        // interpretierbar bleiben - LEGACY existiert nur noch in
+        // historischen Aufzeichnungen.
+        .put("policyMode", "CENTRAL_PROFILES")
+        .put("correctionExposureLimitU", fin(p.correctionExposureLimitU))
+        .put("mealExposureLimitU", fin(p.mealExposureLimitU))
+        .put("correctionDemandRatioCap", fin(p.correctionDemandRatioCap))
+        .put("mealDemandRatioCap", fin(p.mealDemandRatioCap))
+        .put("zeroLatchEnabled", p.zeroLatchEnabled)
+        .put("zeroLatchCalmExitMin", p.zeroLatchCalmExitMin)
+        .put("zeroLatchCalmDistanceMgdl", fin(p.zeroLatchCalmDistanceMgdl))
+        // Nullphasen-Varianten (beide Default aus): Variante 1 zaehlt
+        // Zyklen mit weggefallenem Schutzgrund, Variante 2 deckelt die
+        // markerlose Korrekturserie im rollierenden Fenster.
+        .put("zeroLatchReasonGoneExitCycles", p.zeroLatchReasonGoneExitCycles)
+        // 2.0 (Stufe 1, K2): der Serien-Deckel ist entfernt. Wirksam ist
+        // "kein Deckel" (0 wie bisher fuer AUS) und damit auch kein Fenster
+        // (null). Die Felder bleiben, damit Leser des Trails sie finden.
+        .put("correctionSeriesCapU", 0.0)
+        .put("correctionSeriesWindowMin", JSONObject.NULL)
+        // Stufenweise Basalrueckkehr (Default aus).
+        .put("partialRecoveryEnabled", p.partialRecoveryEnabled)
+        // v30: die Korrekturpfad-Riegel (V-Reversal + Freigabe-Nachlauf).
+        .put("reversalGuardEnabled", p.reversalGuardEnabled)
+        .put("reversalFallUkf", fin(p.reversalFallUkf))
+        .put("reversalLookbackMin", p.reversalLookbackMin)
+        .put("reversalReboundUkf", fin(p.reversalReboundUkf))
+        .put("reversalConfirmCycles", p.reversalConfirmCycles)
+        .put("correctionRearmEnabled", p.correctionRearmEnabled)
+        .put("rearmHoldMin", p.rearmHoldMin)
+        .put("rearmConfirmCycles", p.rearmConfirmCycles)
+        .put("rearmUpUkf", fin(p.rearmUpUkf))
+        .put("livenessBgMinDayMgdl", fin(p.livenessBgMinDayMgdl))
+        .put("livenessBgMinNightMgdl", fin(p.livenessBgMinNightMgdl))
+        // E-034: nur bei eingeschaltetem Konto - konfiguriert wie eingestellt,
+        // dazu, ob die Erwartung damit gilt.
+        .apply {
+            if (p.expectationAccountEnabled) put(
+                "expectationAccount",
+                JSONObject()
+                    .put("stabilityBgMgdl", fin(p.expectationStabilityBgMgdl))
+                    .put("stabilityMin", p.expectationStabilityMin)
+                    .put("releaseThresholdU", fin(p.expectationReleaseThresholdU))
+                    .put("stabilityFallMgdlPerMin", fin(p.expectationStabilityFallMgdlPerMin))
+                    .put("mealRunningMinR", fin(p.mealRunningMinR))
+                    .put("horizonMin", p.expectationHorizonMin)
+                    .put("curveVersion", app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(p.expectationCurveText)
+                        ?.let { app.aaps.fuse.core.controller.ExpectationAccount.curveVersion(it.values()) } ?: JSONObject.NULL)
+                    .put("expectationValid", p.expectationParams != null),
+            )
+        }
+
+        .put("livenessReArmMin", p.livenessReArmMin)
+        // Ohne diese Zeile waere hinterher nicht belegbar, OB der Schalter in
+        // einem Lauf an war - genau die Luecke, die heute schon zweimal
+        // aufgefallen ist (basalIobU, MarkerAuthorisesRelease). Ein Schalter,
+        // der das Aktuationsverhalten aendert, gehoert in den Trail.
+        .put("endZeroWhenReasonGone", p.endZeroWhenReasonGone)
+        // KI-141 (21.09.2026): drei Stellgroessen, die das Verhalten aendern und
+        // bis hierher im Trail fehlten. Die Frist des Rebound-Sonderrechts steht
+        // seit v12 im Hash, war aber nicht ablesbar - ein Replay musste sie aus
+        // der Restzeit zurueckrechnen. Die beiden Schalter standen weder hier noch
+        // im Hash; MarkerAuthorisesRelease ist die zweite Luecke aus der Notiz
+        // oben, die damals nicht geschlossen wurde.
+        .put("evidenceReboundOverrideMaxMin", p.evidenceReboundOverrideMaxMin)
+        // 2.0 (Stufe 1, K3): fest an, wirksamer Wert.
+        .put("conditionalTailEnabled", true)
+        .put("markerAuthorisesRelease", p.markerAuthorized)
+
+    /**
+     * `null` bei nicht-endlichen Eingaben. [Sha.lossless] WIRFT bei NaN/Inf,
+     * und der Wurf laege innerhalb des `runCatching` des Exports — der Hash
+     * waere danach dauerhaft still weg. Lieber kein Hash und ein benannter
+     * Grund als ein Ersatzwert.
+     */
+
+    /**
+     * DIE ENDKETTE ALS JSON - benannt, damit sie mit einem ECHTEN
+     * Runner-Ergebnis geprueft werden kann.
+     *
+     * Sie stand als Lambda mitten im Export. Ein Test konnte sie deshalb nur
+     * mit einem von Hand gebauten Outcome erreichen - und genau das hat eine
+     * falsche Verdrahtung im Runner verdeckt (Toni 28.08.): recentSpanMin bekam
+     * die Spanne des grossen Fensters, recentNetMgdl den groessten
+     * Teilrueckgang statt des Nettos. Beide Werte waren im JSON korrekt
+     * serialisiert und trotzdem falsch.
+     *
+     * Hier wird NUR serialisiert. Wuerde diese Stelle etwas selbst rechnen,
+     * saehe der Trail etwas anderes als der Regler.
+     */
+    fun upfrontChainJson(c: app.aaps.fuse.plugin.FuseCycleRunner.UpfrontChain): JSONObject =
+                JSONObject()
+                    // Konsolidierung 2.0: ohne Ruhe-Ausgang stehen diese drei auf null - als JSON-null, damit
+                    // die Feldnamen im Trail bleiben.
+                    .put("recoveryMode", c.recoveryMode ?: JSONObject.NULL)
+                    .put("calmTreatment", c.calmTreatment)
+                    .put("recoveryStreak", c.recoveryStreak)
+                    .put("recoveryRequired", c.recoveryRequired)
+                    .put("recoveryDenial", c.recoveryDenial)
+                    .put("recoveryTrackReset", c.recoveryTrackReset ?: JSONObject.NULL)
+                    .put("currentHazard", c.currentHazard ?: JSONObject.NULL)
+                    // Getrennt von `state.reboundSuppressedByMarker`: das dort
+                    // ist die HEURISTIK-Bremse, das hier die Direktdosis-Kette.
+                    .put(
+                        "reboundExemptByAuthority",
+                        c.reboundExemptByAuthority ?: JSONObject.NULL,
+                    )
+                    // DER STABILITAETSNACHWEIS. `stabilisation` traegt die
+                    // Freigabe; `stabilityVerdict` beschreibt das groessere
+                    // Fenster und darf davon abweichen.
+                    .put("stabilisation", c.stabilisation)
+                    .put("stabilityVerdict", c.stabilityVerdict)
+                    .put("stabilityReason", c.stabilityReason)
+                    .put("recentSpanMin", fin(c.recentSpanMin))
+                    // FEHLTE (Toni 28.08.): das Feld wurde gefuellt, aber nie
+                    // geschrieben - und es ist die Groesse, an der "hat es
+                    // aufgehoert" haengt.
+                    .put("recentNetMgdl", fin(c.recentNetMgdl))
+                    .put("recentWorstDropMgdl", fin(c.recentWorstDropMgdl))
+                    .put("recentWorstDropSpanMin", fin(c.recentWorstDropSpanMin))
+                    .put("allowedDropMgdl", fin(c.allowedDropMgdl))
+                    // Der Vertrag als Zahl - wer "innerhalb der Toleranz" als
+                    // "hat aufgehoert" liest, sieht hier, was das kostet.
+                    .put("acceptedSustainedFallMgdlPerMin", fin(c.acceptedSustainedFallMgdlPerMin))
+                    .put("stabilityConfirmedCycles", c.stabilityConfirmedCycles)
+                    .put("descentGateCause", c.descentGateCause)
+                    .put("guardDistanceMgdl", fin(c.guardDistanceMgdl))
+                    .put("normalNeedBeforeMarkerFloorU", fin(c.normalNeedBeforeMarkerFloorU))
+                    .put("upfrontOpenU", fin(c.upfrontOpenU))
+                    .put("calmEligibleU", fin(c.calmEligibleU))
+                    .put("calmShiftedU", fin(c.calmShiftedU))
+                    .put("calmDemandU", fin(c.calmDemandU))
+                    .put("calmDeniedByFinalVerify", c.calmDeniedByFinalVerify)
+                    .put("grantU", fin(c.grantU))
+                    .put("grantSource", c.grantSource)
+                    .put("beforeMarkerFloorU", fin(c.beforeMarkerFloorU))
+                    .put("afterMarkerFloorU", fin(c.afterMarkerFloorU))
+                    .put("markerFloorLiftU", fin(c.markerFloorLiftU))
+                    .put("afterDescentGateU", fin(c.afterDescentGateU))
+                    // ANGEFORDERT - nicht publiziert, nicht bestaetigt. Der
+                    // Name traegt das, und der Viewer darf daraus niemals
+                    // "gegeben" machen.
+                    .put("requestedRtU", fin(c.requestedRtU))
+
+    fun hashOf(p: FuseCycleRunner.Config): String? {
+        val doubles = listOf(
+            p.smbRatio, p.smbRatioRise, p.maxSmbU, p.guardFloorMgdl, p.positiveDescentHorizonMin,
+            p.tailFloorMgdl, p.tailRecoveryU,
+            // Rampe + Abschlag: fehlten bis v1 - zwei Laeufe mit verschiedenen
+            // Rampen bekamen denselben Hash (Audit 07.08.). Version 1->2.
+            p.riseRampLowR, p.riseRampHighR, p.bolusShareLambda, p.onsetEnvelopeU, p.primeEnvelopeU,
+            // Konsolidierung 2.0 (Schritt 5): die Eingaenge der entfernten Einstellungen fehlen - der Hash wechselt
+            // dadurch einmalig. Positionskonstanten frueher entfernter Schalter (Stufe 1) bleiben stehen.
+            // v16: Schwelle und Fenster des Low-Tors. Beide entscheiden, ab
+            // wann eine Zero-TBR als nutzlos gilt - dosierwirksam auf der
+            // TBR-Achse und bis v15 im Fingerprint unsichtbar.
+            p.lowGateMinBenefitMgdl, p.lowGateHorizonMin,
+            // v17: der gepinnte Marker-Horizont des Aufschubs.
+            p.markerPrimeDescentHorizonMin,
+            // v18: der eigene Kanaldeckel des Liveness-Kanals und die
+            // konfigurierbare BG-Schwelle der Druckbedingung.
+            // v24: die vier Liveness-Profil-Caps stehen seit dem
+            // v38-Abschluss NICHT mehr hier, sondern MODUSABHAENGIG in
+            // `modusTeile` (validate haelt sie weiterhin unbedingt endlich).
+            p.livenessBgMinDayMgdl,
+            // v20: die getrennte Nachtschwelle.
+            p.livenessBgMinNightMgdl,
+            // v25: der Ruhe-Abstand des Zero-Latch.
+            p.zeroLatchCalmDistanceMgdl,
+            // v30: die dosierwirksamen Schwellen der Korrekturpfad-Riegel.
+            p.reversalFallUkf,
+            p.reversalReboundUkf,
+            p.rearmUpUkf,
+            // KI-170 (29.09.2026): exportiert und dosierwirksam, aber bis hierher
+            // nicht im Hash - zwei Laeufe mit verschiedenem maxIOB oder
+            // verschiedenen Totbaendern trugen denselben Fingerprint. Der
+            // Kommentar an sharedMaxIobU sagte das seit Fix-Pass 4 selbst.
+            p.sharedMaxIobU,
+            p.nightDeadbandMgdl,
+            p.reboundDeadbandMgdl,
+        )
+        if (doubles.any { !it.isFinite() }) return null
+        // E-034: die Konto-Schluessel NUR bei eingeschaltetem Konto - aus bleibt
+        // der Hash bitgleich (GN-A). Die Kurve geht als gepruefte Werte ein,
+        // nicht als Text: dieselbe Kurve mit anderem Leerraum ist dieselbe
+        // Politik.
+        val kontoZahlen = if (!p.expectationAccountEnabled) emptyList() else listOf(
+            p.expectationStabilityBgMgdl, p.expectationReleaseThresholdU,
+        )
+        if (kontoZahlen.any { !it.isFinite() }) return null
+        val kontoTeile = if (!p.expectationAccountEnabled) emptyList() else listOf(
+            "expectationAccount:on",
+            p.expectationStabilityMin.toString(),
+            p.expectationHorizonMin.toString(),
+            // Konsolidierung 2.0: der Pruefstand-Schalter des Arms EK-S ist entfallen - die Stelle steht als
+            // Konstante seines Standes "aus", damit der Hash positionsgleich bleibt. (Der Zuordnungsarm
+            // EK-RBheute stand nur gesetzt im Hash und entfaellt ersatzlos.)
+            "-",
+        ) + listOfNotNull(
+            // Die Fallgrenze der Stabilitaetsstrecke: nur wenn abweichend -
+            // ein Konto mit Standard behaelt seinen bisherigen Hash.
+            p.expectationStabilityFallMgdlPerMin
+                .takeIf { it != app.aaps.fuse.core.controller.ExpectationAccount.DEFAULT_STABILITY_FALL_MGDL_PER_MIN }
+                ?.let { "stabilityFall:" + Sha.lossless(it) },
+            // Schritt 2: die eigene Schwelle "Mahlzeit laeuft" ebenso nur, wenn gesetzt.
+            p.mealRunningMinR.takeIf { it != app.aaps.fuse.plugin.FuseDoubleKey.MealRunningMinR.defaultValue }?.let { "mealRunning:" + Sha.lossless(it) },
+        ) + kontoZahlen.map { Sha.lossless(it) } + listOf(
+            app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(p.expectationCurveText)
+                ?.values()?.joinToString(",") { Sha.lossless(it) } ?: "curve:none",
+        )
+        // E-034 v2: die fruehe Versorgung nur, wenn sie gilt (Konto UND
+        // Hauptschalter) - sonst bleibt jeder bisherige Hash bitgleich. Die
+        // vier Schalter G1..G4 als eigene Zeichen: jeder ist ein anderer Regler.
+        val frueh = p.earlySupplySettings
+        val fruehTeile = if (!p.expectationAccountEnabled || !p.earlySupplyEnabled) emptyList()
+        else listOf("earlySupply:on") + (
+            if (frueh == null) listOf("earlySupply:invalid")
+            else listOf(frueh.scaleStable, frueh.scaleAfterLow, frueh.budgetMaxU, frueh.initialShare,
+                frueh.maxPortionU, frueh.maxPerPeriodU).map { Sha.lossless(it) } + frueh.periodMin.toString()
+            ) + p.earlySupplySwitches.let { g ->
+            listOf(g.initialLiftsGuard, g.initialLiftsTail, g.guardWithExpectation, g.tailWithExpectation)
+                .joinToString("", prefix = "G1-4:") { if (it) "1" else "0" }
+        }
+        // v38-ABSCHLUSS (A5-Neutralitaet, Toni 29.08.): die Hash-Eingaenge
+        // sind CENTRAL-only die vier Profilwerte (+ die MEAL-Schwelle als
+        // eigener Zustand). Der Konstanten-Marker "legacyProfileCaps:
+        // ignored" bleibt zeichenstabil zum v43-Stand - so entwertet der
+        // Cleanup selbst keine offenen Erwartungen.
+        val modusTeile = listOf(
+            "legacyProfileCaps:ignored",
+            Sha.lossless(p.correctionExposureLimitU),
+            Sha.lossless(p.mealExposureLimitU),
+            Sha.lossless(p.correctionDemandRatioCap),
+            Sha.lossless(p.mealDemandRatioCap),
+        )
+        val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
+            doubles.map { Sha.lossless(it) } +
+            listOf(
+                p.iobThPercent, p.releaseHorizonMin, p.liabilityHorizonMin,
+                p.driveTauMin, p.driveLowerQuantilePct,
+                // v22: das Fenster des Hauptschaetzers - dosierwirksam auf
+                // JEDER Bahn (Guard, Drive, Kennung), s. Journal.
+                p.theilSenWindowMin,
+                // v31: der Wiedereinstieg nach Funkluecke. Mit Schalter
+                // entstehen Entscheidungen, die ohne ihn als "drive not
+                // estimable" gestorben waeren (gemessen: weniger blinde
+                // Zyklen bei vernachlaessigbarer Mehrmenge). AUS und EIN sind zwei
+                // verschiedene Regler.
+                p.signalRejoinEnabled,
+                // 2.0 (Stufe 1, K3): die schnelle Bremsbahn ist fest an. Der
+                // Eingang bleibt als Konstante "true" stehen - zeichengleich mit
+                // dem bisherigen eingeschalteten Stand, also kein Hash-Wechsel.
+                p.tailGuardEnabled, true, p.onsetChannelEnabled,
+                // v3: der Null-Ausgang aendert das Aktuationsverhalten - zwei
+                // Laeufe mit verschiedener Stellung duerfen nicht denselben
+                // Hash tragen.
+                p.endZeroWhenReasonGone,
+                // v12: die Frist des Rebound-Sonderrechts. Zwei Laeufe mit
+                // 120 und 0 Minuten sind verschiedene Regler.
+                p.evidenceReboundOverrideMaxMin,
+                // v17: Schalter und Frist des Marker-Prime-Aufschubs. AUS
+                // und EIN sind zwei verschiedene Regler in BEIDE
+                // Richtungen (haelt zurueck UND liefert nach); eine andere
+                // Frist verschiebt, wann ein offener Rest verfaellt.
+                p.deferredPrimeEnabled,
+                p.deferredPrimeEndMin,
+                // v18: Schalter und Sperre des Liveness-Kanals. AUS und EIN
+                // sind zwei verschiedene Regler; eine andere Sperre bewaffnet
+                // nach Wenden verschieden schnell wieder.
+                p.livenessChannelEnabled,
+                p.livenessReArmMin,
+                // v38/v44: der policyMode ist CENTRAL-only eine Konstante
+                // (zeichenstabil "true" wie der fruehere aktive Modus -
+                // kein unnoetiger Hash-Wechsel fuer zentrale Bestaende).
+                true,
+                // v25: der Zero-Latch (Schalter + Ruhe-Zyklen).
+                p.zeroLatchEnabled,
+                p.zeroLatchCalmExitMin,
+                // v49: beide Nullphasen-Varianten sind dosierwirksam,
+                // sobald sie gesetzt sind - sie gehoeren in den Hash,
+                // sonst saehen zwei Laeufe mit verschiedenen Kandidaten
+                // im Replay gleich aus.
+                p.zeroLatchReasonGoneExitCycles,
+                // 2.0 (Stufe 1, K2): Variante 2 ist entfernt. Der Deckel steht
+                // als wirksame Konstante 0.0 (zeichengleich mit AUS); das
+                // Fenster wirkt ohne Deckel nicht und faellt aus dem Hash.
+                // Folge: der Hash wechselt einmalig, wo bisher ein anderes
+                // Fenster gespeichert war als hier - offene Erwartungen des
+                // Beobachters werden dann wie bei v22/v24/v38 entwertet.
+                0.0,
+                // v50: die Teilbasal-Stufe ist dosierwirksam, sobald sie
+                // an ist - Schalter UND Anteil gehoeren in den Hash.
+                p.partialRecoveryEnabled,
+                p.reversalGuardEnabled,
+                p.reversalLookbackMin,
+                p.reversalConfirmCycles,
+                p.correctionRearmEnabled,
+                p.rearmHoldMin,
+                p.rearmConfirmCycles,
+                // v24: die gepinnte Leistungsfrist ist dosierwirksam - zwei
+                // Laeufe mit 60 und 240 min MEAL-Fenster sind verschiedene
+                // Regler.
+                p.livenessMealPowerMin,
+                // v33: die Dauer des Rebound-Fensters. Dosierwirksam ueber
+                // DREI Kanaele gleichzeitig - Totband, Ratio-Deckel und
+                // Liveness-Sperre enden alle mit dem Fenster. Zwei Laeufe mit
+                // 45 und 120 Minuten sind verschiedene Regler, und ein Lauf
+                // mit laengerem Fenster darf die Erwartungen des kuerzeren
+                // nicht erben.
+                p.reboundWindowMin,
+                // KI-141 (21.09.2026): zwei Schalter, die das Verhalten aendern
+                // und bis hierher nicht im Hash standen - zwei Laeufe mit
+                // verschiedener Stellung trugen denselben Hash, und ein gleicher
+                // Hash belegte ihre Stellung nicht. Bewusst OHNE Anhebung von
+                // RULE_SET_VERSION: das Regelwerk selbst ist unveraendert, und die
+                // Version steckt auch im Fingerprint der Ruhe-Erholung - eine
+                // Anhebung wuerde dort beim Flash einen laufenden Ruhe-Streak
+                // zuruecksetzen, also die Dosierung beruehren. Der Hash wechselt
+                // trotzdem einmalig, weil zwei Eingaenge hinzukommen.
+                // 2.0 (Stufe 1, K3): fest an, Konstante wie bei der Bremsbahn.
+                true,
+                p.markerAuthorized,
+                // KI-170 (29.09.2026): Nachtfenster, beide Totband-Schalter,
+                // Kreditfenster der erklaerten Absorption und die Marker-
+                // Leistungsdauer - alle dosierwirksam, alle bisher nur im
+                // Export. Wie bei KI-141 bewusst OHNE Anhebung von
+                // RULE_SET_VERSION (Fingerprint der Ruhe-Erholung); der Hash
+                // wechselt einmalig.
+                p.nightStartMin,
+                p.nightEndMin,
+                // 2.0 (Stufe 1, K3): beide Totbaender fest an, Konstanten.
+                true,
+                true,
+                p.absorptionCreditWindowMin,
+                p.markerBoostMaxMin,
+            ).map { it.toString() } + modusTeile + kontoTeile + fruehTeile
+        return Sha.of(parts.joinToString("|"))
+    }
+
+    private fun fin(d: Double?): Any = if (d != null && d.isFinite()) d else JSONObject.NULL
+
+    /**
+     * DER TRAIL-BLOCK DES ERWARTUNGSKONTOS (Testkandidat E-034) - die Felder,
+     * die der Pruefplan fuer Mechanismus und Bewertung braucht: Bedarf
+     * (R_mess, phi*Z, R_roh), Budget (A_0, gebucht, Rest, Storno),
+     * Zuordnung (d_mess, d_erw, Direktdosis), Ausnahme, Stabilitaet, Pause,
+     * typisierter Guard-Grund und Kurvenversion.
+     */
+    /** Die festen Ausgangsgrenzen des gemessenen Tiefs (der Produktivpfad nutzt nur die Vorgaben des Observers). */
+    private val LOW_EXIT_GRENZEN = app.aaps.fuse.core.observer.ObserverParams()
+
+    private fun erwartungskontoJson(x: FuseCycleRunner.ErwartungskontoExport): JSONObject {
+        val o = JSONObject()
+            .put("applies", x.gilt)
+            .put("contextMismatch", x.kontextAbweichung)
+            .put("droppedOnLoad", x.verworfenBeimLaden)
+            .put("stableSinceTs", x.stabilSeitTs ?: JSONObject.NULL)
+            .put("floorU", fin(x.bodenU))
+            .put("liftU", fin(x.angehobenU))
+            .put("blockNormal", x.blockNormalpfad?.name ?: JSONObject.NULL)
+            .put("reasonNormal", x.grundNormalpfad?.name ?: JSONObject.NULL)
+            .put("reasonFinal", x.grundEnde?.name ?: JSONObject.NULL)
+            .put("fallback", x.rueckfall ?: JSONObject.NULL)
+        val z = x.zyklus
+        if (z != null) {
+            val s = z.state
+            val e = z.eval
+            o.put("authId", s.authId)
+                .put("windowEndTs", s.windowEndTs)
+                .put("status", e.status)
+                .put("expectationOn", s.expectationOn)
+                .put("curveVersion", if (s.curveValues.isEmpty()) JSONObject.NULL
+                    else app.aaps.fuse.core.controller.ExpectationAccount.curveVersion(s.curveValues))
+                .put("armedThisCycle", z.armiertInDiesemZyklus)
+                .put("startStable", s.startStable)
+                .put("stable", z.stabil)
+                .put("released", s.released)
+                .put("releaseRevoked", e.releaseRevoked)
+                .put("releaseRevokedReason", z.ruecknahmeGrund ?: JSONObject.NULL)
+                .put("paused", z.pausiert)
+                .put("pauseReasons", org.json.JSONArray(z.pausenGruende))
+                // Die am Druck festgehaltene Strecke (Grenze, Dauer, Fallgrenze) - sonst stand die Fallgrenze nur im Hash.
+                .put("stabilityBgMgdl", fin(s.stabilityBgMgdl))
+                .put("stabilityMin", s.stabilityMin)
+                .put("stabilityFallMgdlPerMin", fin(s.stabilityFallMgdlPerMin))
+                .put("frozen", s.frozen)
+                .put("releaseChecked", s.releaseChecked)
+                .put("disturbanceU", fin(s.disturbanceU))
+                .put("disturbanceValid", s.disturbanceValid)
+                // Konsolidierung 2.0: v1-Guard-Ausnahme und Direktdosis sind entfallen - die Felder stehen neutral.
+                .put("guardException", false)
+                .put("phi0", fin(s.phi0))
+                .put("a0U", fin(s.a0U))
+                .put("bookedU", fin(s.bookedU))
+                .put("restU", fin(s.restU))
+                .put("directDoseU", 0.0)
+                .put("coveredByMarkerAuthU", 0.0)
+                .put("cancelledU", fin(s.cancelledU))
+                .put("rMessU", fin(e.rMessU))
+                .put("phiZU", fin(e.phiZU))
+                .put("rRohU", fin(e.rRohU))
+                .put("requestU", fin(e.requestU))
+                .put("restEffU", fin(e.restEffU))
+                .put("deliverableU", fin(app.aaps.fuse.core.controller.ExpectationAccount.deliverableU(e)))
+                .put("expectationShareU", fin(app.aaps.fuse.core.controller.ExpectationAccount.expectationShareU(e)))
+            // E-034 v2: die fruehe Versorgung - nur bei v2-Episoden, sonst bleibt
+            // der Block bitgleich.
+            s.early?.let { f ->
+                fun g(sw: app.aaps.fuse.core.controller.EarlySupply.Switches?) = sw?.let {
+                    listOf(it.initialLiftsGuard, it.initialLiftsTail, it.guardWithExpectation, it.tailWithExpectation)
+                        .joinToString("") { b -> if (b) "1" else "0" }
+                } ?: JSONObject.NULL
+                o.put("earlySupply", JSONObject()
+                    .put("budgetU", fin(s.a0U))
+                    .put("scale", fin(s.phi0))
+                    .put("initialShare", fin(f.initialShare))
+                    .put("maxPortionU", fin(f.maxPortionU))
+                    .put("maxPerPeriodU", fin(f.maxPerPeriodU))
+                    .put("periodMin", f.periodMin)
+                    .put("switchesPinned", g(f.switches))
+                    .put("switchesNow", g(z.fruehSchalter))
+                    .put("withdrawn", f.withdrawn)
+                    // Tief-Sperre (Toni): gesperrt seit, danach alles IOB angerechnet, Bestaetigung, Grund im Zyklus.
+                    .put("lowLocked", s.earlyLowLocked)
+                    .put("lowLockSinceTs", if (s.earlyLowLockSinceTs > 0L) s.earlyLowLockSinceTs else JSONObject.NULL)
+                    .put("afterLow", s.earlyAfterLow)
+                    .put("lowConfirmTs", if (z.bestaetigtNachTiefTs > 0L) z.bestaetigtNachTiefTs else JSONObject.NULL)
+                    .put("lowReason", z.tiefGrund ?: JSONObject.NULL)
+                    .put("initialDone", s.initialDone)
+                    .put("portionsInBookU", fin(s.portions.sumOf { it.amountU }))
+                    .put("demandU", fin(e.early?.demandU ?: Double.NaN))
+                    .put("scaleEff", fin(e.early?.scaleEff ?: Double.NaN))
+                    .put("guardScale", fin(e.early?.guardScale ?: Double.NaN))
+                    .put("initial", e.early?.initial ?: JSONObject.NULL)
+                    .put("periodLeftU", fin(e.early?.periodLeftU ?: Double.NaN))
+                    .put("floorU", fin(x.fruehBodenU))
+                    .put("measuredPassedU", fin(x.fruehGemessenFreiU))
+                    .put("liftGuard", x.fruehHebung?.guardLift ?: JSONObject.NULL)
+                    .put("liftTail", x.fruehHebung?.tailLift ?: JSONObject.NULL)
+                    .put("endReason", x.fruehEndgrund ?: JSONObject.NULL)
+                    // Diagnose der Pruefung MIT Erwartung (G3/G4): wer hat die Portion gesperrt?
+                    .put("lowerWithExpMgdl", fin(x.fruehUntenMitErwartungMgdl))
+                    .put("restraintLowerWithExpMgdl", fin(x.fruehBremseUntenMitErwartungMgdl))
+                    .put("tailHeadroomWithExpU", fin(x.fruehSchwanzMitErwartungU))
+                    .put("tailCapU", fin(x.fruehSchwanzKappeU))
+                    // Schritt 2: laeuft die Mahlzeit (weitere Portionen), die Fortsetzung im Bedarf, am Riegel vorbei.
+                    .put("mealRunning", z.mahlzeitLaeuft)
+                    .put("followUpStableSinceTs", x.folgeStabilSeitTs ?: JSONObject.NULL)
+                    .put("mealRunningMinR", fin(x.mahlzeitLaeuftAbR))
+                    .put("stableMealRunning", z.stabilFolge)
+                    .put("continuationUPerMin", fin(e.early?.continuationUPerMin ?: 0.0))
+                    .put("latchPassedU", fin(x.fruehAmRiegelVorbeiU))
+                    // Graph: erwartete Mahlzeitwirkung und die Untergrenze mit Mahlzeit in jedem Zyklus (dosierneutral).
+                    .put("expectedDriveMgdlPerMin", fin(e.early?.expectedDriveMgdlPerMin ?: 0.0))
+                    .put("guardLowerWithMealMgdl", fin(x.fruehUntenMitMahlzeitMgdl))
+                    // Graph: der Schwanz MIT Mahlzeit in denselben Zyklen (dosierneutral), Felder wie im Schwanz-Block.
+                    .put("tailWithMealHeadroomU", fin(x.fruehSchwanzMitMahlzeit?.headroomU))
+                    .put("tailWithMealIsfMgdlPerU", fin(x.fruehSchwanzMitMahlzeit?.isfTailMgdlPerU))
+                    .put("tailWithMealInvalidReason", x.fruehSchwanzMitMahlzeit?.invalidReason ?: JSONObject.NULL)
+                    // Was die beobachtete Fortsetzung der laufenden Mahlzeit dabei am Horizont beitraegt.
+                    .put("continuationRiseMgdl", fin(x.fruehFortsetzungMgdl)))
+                // KANDIDAT W (Pruefstand): die Wende - nur mit dem Pruefarm W; ohne ihn bleibt der Block bitgleich.
+                z.wende?.let { w ->
+                    o.getJSONObject("earlySupply").put("turn", JSONObject()
+                        .put("active", w.active)
+                        .put("rampFactor", fin(w.rampFactor))
+                        .put("stop", w.stop)
+                        .put("sinceTs", if (w.sinceTs > 0L) w.sinceTs else JSONObject.NULL)
+                        .put("accel5MgdlPerMin", fin(w.accel5MgdlPerMin))
+                        .put("cycleMin", fin(w.cycleMin))
+                        .put("event", w.event ?: JSONObject.NULL))
+                }
+            }
+        }
+        val b = x.buchung
+        if (b != null) {
+            o.put("bookedDirectU", fin(b.direktdosisU))
+                .put("dMessU", fin(b.split?.dMessU ?: 0.0))
+                .put("dErwU", fin(b.split?.dErwU ?: 0.0))
+                .put("violationU", fin(b.split?.violationU ?: 0.0))
+                .put("dNormU", fin(b.split?.dNormU ?: 0.0))
+        }
+        return o
+    }
+
+    /**
+     * Die Nullphasen-Bilanz als Objekt; null = keine Phase. Die drei
+     * Zeitklassen stehen NEBENEINANDER und werden nicht verrechnet - wer
+     * sie zusammenzieht, verwechselt Massnahme, Hysterese und vermeidbare
+     * Haltezeit.
+     */
+    private fun tallyJson(t: EpisodeBudgets.ZeroPhaseTally?): Any =
+        t?.let {
+            JSONObject()
+                .put("sinceTs", it.sinceTs)
+                .put("minutes", fin(it.minutes))
+                .put("omittedU", fin(it.omittedU))
+                .put("reasonAbsentMin", fin(it.reasonAbsentMin))
+                .put("flatAbsentMin", fin(it.flatAbsentMin))
+                .put("gapCappedMin", fin(it.gapCappedMin))
+        } ?: JSONObject.NULL
+
+    private fun putOrGap(o: JSONObject, key: String, v: Long?, gaps: JSONArray, reason: String) {
+        if (v == null) {
+            o.put(key, JSONObject.NULL)
+            gaps.put(JSONObject().put("field", key).put("reason", reason))
+        } else o.put(key, v)
+    }
+
+    /**
+     * WAS VOM ERWARTUNGS-LEDGER IN DEN EXPORT GEHT.
+     *
+     * Als eigene Struktur statt vieler Einzelparameter, damit der Aufrufer
+     * sie an EINER Stelle baut und nicht Zahl fuer Zahl durchreicht - dabei
+     * gehen erfahrungsgemaess einzelne verloren, und ein fehlendes Feld sieht
+     * im Export aus wie eine Aussage.
+     */
+    data class Expectation(
+        val lastResult: String,
+        val openEntries: Int,
+        /** Wie viele abgerechnete Ergebnisse je Kontext - CORRECTION, MEAL,
+         *  EXCLUDED. Die Trennung ist der ganze Zweck des Kontexts. */
+        val byContext: Map<String, Int>,
+        val byVerdict: Map<String, Int>,
+        /** Was IRGENDWANN belegt war. NIE als Dosiernachweis lesen. */
+        val historicalStreakMin: Int,
+        /** Was JETZT gilt - das einzige, was je eine Adaption tragen duerfte. */
+        val current: app.aaps.fuse.core.controller.ExpectationLedger.LambdaEvidence,
+        val stampEpochId: String,
+        val stampSequence: Long,
+        /** Rohergebnisse - schwellenfrei, damit ein spaeterer Sweep nicht
+         *  gegen die heute geratene Marge laeuft. */
+        val samples: List<ExpectationSample>,
+        val writeBytes: Int,
+        val writeDurationMs: Long,
+        /** Wie viele Zyklen gerade auf ihre Buchung warten. */
+        val queueDepth: Int,
+        /** Seit Prozessstart verworfene Zyklen - jeder ist eine Messluecke. */
+        val droppedCycles: Long,
+        /** Stand des ausgewerteten, nachweislich geschriebenen Zustands. */
+        val asOfTs: Long,
+        /** Der Speicher ist voll - die Strecke ist MINDESTENS so lang. */
+        val historyTruncated: Boolean,
+        /** Monoton: wie viele Ergebnisse die Kappung seit Prozessstart
+         *  entfernt hat. Eine gekappte Strecke ist "mindestens N Minuten". */
+        val droppedOutcomesTotal: Long,
+        /** Aeltestes noch gehaltenes Ergebnis - davor ist nichts mehr da. */
+        val oldestRetainedDueTs: Long,
+    )
+
+    /**
+     * EIN ROHERGEBNIS - ohne jede Schwelle.
+     *
+     * `meanErrorMgdl` und `distanceFromSafetyLowerMgdl` sind die beiden
+     * Groessen, aus denen sich jede spaetere Nachweisregel rechnen laesst.
+     * Nur das Urteil daraus zu exportieren hiesse, die heutige - vorlaeufige -
+     * Marge in die Daten einzubacken.
+     */
+    data class ExpectationSample(
+        val dueTs: Long,
+        val context: String,
+        val verdict: String,
+        val meanErrorMgdl: Double?,
+        val distanceFromSafetyLowerMgdl: Double?,
+        val lambda: Double?,
+    )
+}

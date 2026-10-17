@@ -1,0 +1,2869 @@
+package app.aaps.fuse.plugin
+
+import android.content.Context
+import android.os.Environment
+import app.aaps.core.data.model.BS
+import app.aaps.core.data.plugin.PluginType
+import app.aaps.core.interfaces.aps.APS
+import app.aaps.core.interfaces.aps.APSResult
+import app.aaps.core.interfaces.aps.GlucoseStatus
+import app.aaps.core.interfaces.aps.Loop
+import app.aaps.core.interfaces.aps.RT
+import app.aaps.core.interfaces.configuration.Config
+import app.aaps.core.interfaces.constraints.Constraint
+import app.aaps.core.interfaces.constraints.ConstraintsChecker
+import app.aaps.core.interfaces.constraints.PluginConstraints
+import app.aaps.core.interfaces.db.PersistenceLayer
+import app.aaps.core.interfaces.db.ProcessedTbrEbData
+import app.aaps.core.interfaces.di.APS as ApsBucket
+import app.aaps.core.interfaces.di.ApplicationScope
+import app.aaps.core.interfaces.insulin.ConcentrationHelper
+import app.aaps.core.interfaces.iob.IobCobCalculator
+import app.aaps.core.interfaces.logging.AAPSLogger
+import app.aaps.core.interfaces.logging.LTag
+import app.aaps.core.interfaces.notifications.NotificationId
+import app.aaps.core.interfaces.notifications.NotificationManager
+import app.aaps.core.interfaces.overview.FuseOverviewSource
+import app.aaps.core.interfaces.plugin.ActivePlugin
+import app.aaps.core.interfaces.plugin.PluginBase
+import app.aaps.core.interfaces.plugin.PluginBaseWithPreferences
+import app.aaps.core.interfaces.plugin.PluginDescription
+import app.aaps.core.interfaces.profile.ProfileFunction
+import app.aaps.core.interfaces.queue.CommandQueue
+import app.aaps.core.interfaces.resources.TextResolver
+import app.aaps.core.interfaces.rx.bus.RxBus
+import app.aaps.core.interfaces.rx.events.EventAPSCalculationFinished
+import app.aaps.core.interfaces.rx.events.EventRefreshOverview
+import app.aaps.core.interfaces.utils.DateUtil
+import app.aaps.core.interfaces.utils.HardLimits
+import app.aaps.core.keys.DoubleKey
+import app.aaps.core.keys.interfaces.Preferences
+import app.aaps.core.keys.interfaces.TextRef
+import app.aaps.core.ui.CoreUiStrings
+import app.aaps.core.ui.compose.icons.IcPluginOpenAPS
+import app.aaps.fuse.core.controller.ExpectationLedger
+import app.aaps.fuse.core.controller.InterventionStamp
+import app.aaps.fuse.core.controller.MarkerPrompt
+import app.aaps.fuse.core.controller.MarkerReauthorization
+import app.aaps.fuse.core.controller.MarkerRuecknahme
+import app.aaps.fuse.core.controller.MarkerTimeline
+import app.aaps.fuse.plugin.expectation.FuseExpectationRecorder
+import app.aaps.fuse.plugin.expectation.FuseExpectationStore
+import app.aaps.fuse.plugin.export.FuseStateExporter
+import app.aaps.fuse.plugin.export.FuseStateJson
+import app.aaps.fuse.plugin.ledger.FusePatchEpochSource
+import dev.zacsweers.metro.AppScope
+import dev.zacsweers.metro.ContributesIntoMap
+import dev.zacsweers.metro.Inject
+import dev.zacsweers.metro.IntKey
+import dev.zacsweers.metro.SingleIn
+import dev.zacsweers.metro.binding
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import java.io.File
+
+/**
+ * FUSE als AAPS-APS-Plugin.
+ *
+ * Es ist ein VOLLWERTIGES APS, kein Beobachter: was hier installiert wird,
+ * verhaelt sich genauso wie auf dem Produktivgeraet. Die einzige Grenze ist
+ * [FusePumpGate] — eine Startverweigerung gegen JEDE Pumpe ausser der
+ * VirtualPump und dem belegten Medtrum Nano, kein Schalter.
+ *
+ * Was dieses Plugin NICHT tut:
+ *
+ *  - kein `supportsDynamicIsf()`: FUSE liefert dem Rest der App kein variables
+ *    ISF. Ein `true` hier wuerde Bolusrechner und Overview auf `getIsfMgdl()`
+ *    umleiten, und das ist eine Zusage, die Alpha 1 nicht einloest.
+ *  - `PluginConstraints` NUR fuer maxIOB, und das ist eine Korrektur: die erste
+ *    Fassung hat bewusst darauf verzichtet ("FUSE verschaerft keine fremden
+ *    Grenzen"). Der erste Geraetelauf hat gezeigt, wohin das fuehrt —
+ *    `getMaxIOBAllowed()` lieferte `Double.MAX_VALUE`, weil der EINZIGE
+ *    Anwender von `ApsSmbMaxIob` das autoISF-Plugin ist und das abgeschaltet
+ *    wird, sobald FUSE aktiv ist. Damit konnten `MAX_IOB_REACHED` und
+ *    `IOB_TH_REACHED` NIE feuern; bindend blieben nur `smbRatio` und `maxSmbU`.
+ *    Es gab also gar keinen IOB-Deckel. Basal- und Bolusgrenzen bleiben
+ *    unangetastet — die zieht `SafetyPlugin` ungeklammert.
+ *  - kein Persistieren als `AUTO_ISF`: [APSResult.Algorithm.FUSE] ist ein
+ *    eigener Wert. Ein FUSE-Ergebnis unter fremdem Etikett waere im
+ *    Nachhinein nicht mehr von autoISF zu trennen — genau die Sorte
+ *    Kontamination, die jede spaetere Auswertung wertlos macht.
+ */
+/*
+ * v4: Metro statt Dagger. Registriert im @APS-Eimer, den v4 nur in Builds zusammenfuehrt, die regeln - anders
+ * als die OpenAPS-Plugins, die v4 in jedem Build fuehrt. Wie im Fork: ein aktuierender Regler soll in einem
+ * Client- oder PumpControl-Build gar nicht erst entstehen, nicht bloss unsichtbar sein (ContributedPluginsTest).
+ * Reihenfolge 235 - zwischen autoISF (230) und Autotune (240).
+ */
+@ContributesIntoMap(AppScope::class, binding = binding<PluginBase>())
+@ApsBucket
+@IntKey(235)
+@SingleIn(AppScope::class)
+@Inject
+class FusePlugin(
+    aapsLogger: AAPSLogger,
+    override val rh: TextResolver,
+    preferences: Preferences,
+    private val context: Context,
+    private val config: Config,
+    private val rxBus: RxBus,
+    /**
+     * NUR ZUM MESSEN (Scheibe 1): was AAPS mit dem publizierten SMB gemacht hat. `Lazy`, weil FUSE das
+     * aktive APS IST und der Loop dieses ueber `activePlugin` zur Laufzeit sucht - die Richtung der
+     * Abhaengigkeit ist die ungewoehnliche, und ein Zyklus im Graphen faellt erst beim App-Start auf.
+     */
+    private val loop: Lazy<Loop>,
+    private val profileFunction: ProfileFunction,
+    private val activePlugin: ActivePlugin,
+    private val iobCobCalculator: IobCobCalculator,
+    private val constraintsChecker: ConstraintsChecker,
+    private val commandQueue: CommandQueue,
+    private val persistenceLayer: PersistenceLayer,
+    private val processedTbrEbData: ProcessedTbrEbData,
+    private val dateUtil: DateUtil,
+    private val hardLimits: HardLimits,
+    private val apsResultProvider: () -> APSResult,
+    notificationManager: NotificationManager,
+    /** v4 (Vertrag 3): Pumpenwerte kommen in Pumpen-Einheiten; FUSE rechnet in Insulin-Einheiten. */
+    private val ch: ConcentrationHelper,
+    @ApplicationScope private val appScope: CoroutineScope,
+) : PluginBaseWithPreferences(
+    PluginDescription()
+        .mainType(PluginType.APS)
+        .composeContent { plugin -> FuseComposeContent(plugin as FusePlugin, dateUtil, rxBus) }
+        .icon(IcPluginOpenAPS)
+        .pluginName(TextRef.AndroidRes(R.string.fuse))
+        .preferencesVisibleInSimpleMode(false)
+        .showInList { config.APS }
+        .description(TextRef.AndroidRes(R.string.description_fuse)),
+    // Alle Schluessel samt der entfallenen Einstellungen (FuseRetiredKey): nur Registriertes nimmt eine
+    // Sicherung mit. v4: die Liste der Schluessel selbst, nicht ihrer Klassen.
+    ownPreferences = fuseSchluessel,
+    aapsLogger, rh, preferences, notificationManager
+), APS, PluginConstraints, FuseOverviewSource {
+
+    override var lastAPSRun: Long = 0
+    override var lastAPSResult: APSResult? = null
+    override val algorithm = APSResult.Algorithm.FUSE
+
+    /**
+     * Der Observer-Zustand lebt IM Runner und ueberdauert die Zyklen — Phasen,
+     * Peaks und die Aufwaermzeit waeren sonst in jedem Aufruf wieder auf Null.
+     * Deshalb genau eine Instanz je Prozess, angelegt beim ersten Zyklus.
+     */
+    private var runner: FuseCycleRunner? = null
+
+    /** Die laufende Mahlzeit des alten Runners fuer den naechsten Neubau im selben Prozess (Reparatur, Wiederherstellung). */
+    private var mahlzeitUebergabe: FuseCycleRunner.MahlzeitUebergabe? = null
+
+    /** Prozessgebundene Kennung. Sie trennt die Zyklen eines Laufs von denen
+     *  nach einem Neustart und ist der erste Teil der Cycle-Id. */
+    private val sessionId: String by lazy { "fuse-" + dateUtil.now() }
+
+    private val exporter = FuseStateExporter()
+    private var cycleCounter = 0L
+    private var prevWrite: FuseStateJson.PrevWrite? = null
+
+    /** Commitment-Ledger (Audit R95, Fix 3): EINE Instanz je Prozess. Geladen
+     *  VOR dem ersten Zyklus, nach jedem Zyklus synchron persistiert - die
+     *  Episodenbudgets und offenen Commitments ueberleben damit Neustarts. */
+    /**
+     * `var`, damit die Reparatur ihn ERSETZEN kann statt ihn auszuraeumen.
+     *
+     * Ein frisch gebautes Objekt hat jedes Feld auf seinem Anfangswert - per
+     * Konstruktion, ohne dass jemand eine Liste pflegt. Ein Hand-Reset
+     * (`loaded = false; state = ...; recoveryHold = false; ...`) waere genau
+     * die Sorte Aufzaehlung, bei der ein Feld vergessen wird - und das
+     * vergessene waere hier ein gehaltener Zustand, der die Reparatur still
+     * ueberlebt.
+     */
+    private var ledgerAdapter = app.aaps.fuse.plugin.ledger.FuseLedgerAdapter()
+
+    /** Die letzte Ledger-Reparatur, einmal gelesen und danach im Speicher
+     *  gehalten - der Export haengt sie an jeden Zyklus. */
+    private var reparaturCache: app.aaps.fuse.plugin.ledger.FuseLedgerRepair.ResetRecord? = null
+    private var reparaturGelesen = false
+
+    /**
+     * Der vorgemerkte Reparaturauftrag.
+     *
+     * NICHT nur der Objekttausch gehoert an die Zyklusgrenze, sondern auch die
+     * DATEIREPARATUR - sonst schreibt ein gleichzeitig laufender Zyklus seinen
+     * alten Ledger ueber die frisch reparierten Dateien zurueck und belebt
+     * genau die Fehlerzeilen wieder, die den Hold ausgeloest haben
+     * (s. [app.aaps.fuse.plugin.ledger.FuseRepairScheduler]).
+     */
+    private val reparaturAuftrag = app.aaps.fuse.plugin.ledger.FuseRepairScheduler()
+
+    /** Vorgemerkte Wiederherstellung nach unterbrochenem Speichern - verwirft nichts,
+     *  deshalb ohne Pumpensperre; ausgefuehrt an derselben Grenze wie die Reparatur. */
+    private val wiederherstellungsAuftrag = app.aaps.fuse.plugin.ledger.FuseSealRecoveryScheduler()
+    private val holdQuittung = app.aaps.fuse.plugin.ledger.FuseHoldQuittungScheduler()
+
+    /**
+     * Fix 8 (Audit 2d273cb, NEU-BS-07): der Ledger ist ZUSTAND, kein Export -
+     * er liegt deshalb APP-PRIVAT (filesDir), nicht mehr im geteilten
+     * Documents/aapsLogs. Auf dem geteilten Speicher kann jede App mit
+     * All-Files-Zugriff, MTP/PC-Sync oder ein versehentliches Aufraeumen die
+     * Buchhaltung ersetzen oder loeschen - ein syntaktisch gueltiger
+     * Fremdinhalt wuerde zu Buchhaltung. Der Trail bleibt bewusst geteilt
+     * (den LIEST der Viewer); den Ledger liest nur FUSE selbst. Die
+     * Android-Aufloesung passiert ausschliesslich hier, Store und Adapter
+     * bleiben ohne Geraet pruefbar. mkdirs uebernimmt der Store beim
+     * Schreiben bzw. [migrateLedgerDirOnce] beim Umzug.
+     */
+    private fun ledgerDir() = File(context.filesDir, "fuse_ledger")
+
+    /** Eigenes Verzeichnis, getrennt von der Reparaturdomaene des
+     *  Insulinledgers (s. FuseExpectationStore.DIR_NAME). */
+    private fun expectationDir() = FuseExpectationStore.dirIn(context.filesDir)
+        .also { runCatching { if (!it.isDirectory) it.mkdirs() } }
+
+    /** Der Erwartungs-Ledger. REIN BEOBACHTEND - kein Regelpfad liest ihn. */
+    private val expectationRecorder = FuseExpectationRecorder()
+
+    /**
+     * DEN ZYKLUS IN DEN ERWARTUNGS-LEDGER BUCHEN.
+     *
+     * Alles hier drin ist gekapselt und folgenlos fuer die Dosierung: der
+     * Aufrufer prueft keinen Rueckgabewert, und jeder Fehler bleibt im
+     * [FuseExpectationRecorder] stehen. Ein Messbaustein darf einen
+     * Regelzyklus nicht kosten.
+     */
+    private fun buchereWartung(outcome: FuseCycleRunner.Outcome?, sealed: Boolean) {
+        if (!preferences.get(FuseBooleanKey.ExpectationLedgerEnabled)) return
+        // ALLES HIER MUSS SCHNELL SEIN. `submit` legt einen Schnappschuss in
+        // eine begrenzte Schlange und kehrt sofort zurueck; geschrieben wird
+        // auf einem eigenen Thread. Der Loop ruft diese Methode SYNCHRON
+        // innerhalb von `invoke()` auf, und LoopPlugin aktuiert erst nach
+        // dessen Rueckkehr - jede Millisekunde hier ist Verzoegerung an der
+        // Pumpe.
+        runCatching {
+            val o = outcome ?: return@runCatching
+            val stempel = ledgerAdapter.interventionStamp
+            val dir = expectationDir()
+            val bahn = o.prediction
+            val lage = o.expectationSituation?.copy(ledgerSealed = sealed)
+            val proben = o.signal?.let { sig ->
+                o.bgMgdl?.let { bg ->
+                    listOf(
+                        ExpectationLedger.Sample(
+                            // STABILE EPOCHE, nicht die gleitende Fensterkante
+                            // (Toni 22.08.): mit `segmentStartTs` konnten sich
+                            // Entry und Probe per Konstruktion NIE treffen -
+                            // alle 1091 Outcomes des ersten Laufs waren
+                            // UNVERIFIABLE.
+                            ts = sig.sourceTs, mgdl = bg, segmentId = sig.signalEpochTs,
+                            healthy = o.health == app.aaps.fuse.core.observer.Health.READY,
+                            interventionStamp = stempel,
+                            configGeneration = o.configGeneration,
+                            // Die Lage zu DIESEM Messpunkt - sie entscheidet
+                            // spaeter mit, ob die Beobachtung ueberhaupt zaehlt.
+                            context = lage?.let { ExpectationLedger.classify(it).context }
+                                ?: ExpectationLedger.ExpectationContext.EXCLUDED,
+                        ),
+                    )
+                }
+            } ?: emptyList()
+            val angenommen = expectationRecorder.submit(
+                FuseExpectationRecorder.Snapshot(
+                    dir = dir, nowTs = o.computeTs, situation = lage, stamp = stempel,
+                    configGeneration = o.configGeneration,
+                    segmentId = o.signal?.signalEpochTs ?: 0L,
+                    sourceTs = o.signal?.sourceTs ?: o.computeTs,
+                    anchorMgdl = bahn?.bgAtAnchor,
+                    meanPredictedMgdl = bahn?.bgAtHorizonMean,
+                    horizonMin = o.policy?.liabilityHorizonMin ?: 0,
+                    safetyLowerPredictedMgdl = bahn?.bgAtHorizonLower,
+                    lambda = null, samples = proben,
+                ),
+            )
+            if (!angenommen) aapsLogger.debug(
+                LTag.APS, "FUSE expectation: Zyklus verworfen (Rueckstau) - Messluecke, keine Dosisfolge",
+            )
+        }
+    }
+
+    @Volatile private var ledgerMigrationDone = false
+
+    /**
+     * EINMALIGER Umzug vom alten geteilten Verzeichnis - die gesamte Logik
+     * (Fruehausstieg, .migtmp-Kopie mit Rueckleseprobe, Sentinel, .migrated-
+     * Rotation) liegt in [app.aaps.fuse.plugin.ledger.LedgerDirMigration],
+     * damit die Kill-/Fehlerpfade ohne Android testbar sind (Codex R4, N.1).
+     * Hier bleiben nur die Android-Verzeichnisaufloesung und das Prozessflag.
+     *
+     * FAIL-CLOSED (Fix 1a, Re-Audit c750169 REG-03): das Prozessflag wird
+     * erst NACH verifiziertem Abschluss gesetzt - jeder Fehlschlag liefert
+     * false (der naechste invoke versucht erneut), und der Aufrufer setzt
+     * fuer diesen Lauf den Migrations-Hold am Adapter.
+     *
+     * @return true, wenn die Vorgeschichte sicher uebernommen ist oder es
+     * nachweislich nichts zu uebernehmen gibt.
+     */
+    private fun migrateLedgerDirOnce(): Boolean {
+        if (ledgerMigrationDone) return true
+        val ok = runCatching {
+            app.aaps.fuse.plugin.ledger.LedgerDirMigration.migrate(
+                oldDir = File(Environment.getExternalStorageDirectory(), "Documents/aapsLogs"),
+                newDir = ledgerDir(),
+                logError = { aapsLogger.error(LTag.APS, it) },
+                logDebug = { aapsLogger.debug(LTag.APS, it) },
+            )
+        }.getOrElse {
+            aapsLogger.error(LTag.APS, "FUSE ledger migration failed", it)
+            false
+        }
+        if (ok) ledgerMigrationDone = true
+        return ok
+    }
+
+    /** Was der letzte Zyklus gesehen hat — Grundlage des spaeteren
+     *  Zustandsexports und der Fragment-Anzeige. */
+    @Volatile var lastOutcome: FuseCycleRunner.Outcome? = null
+        private set
+
+    /** Ring fuer die Overview-Untergraphen (~25 h bei 1-min-Takt). Bewusst im
+     *  Prozess statt in der DB - nach Neustart beginnt der Graph leer, der
+     *  Trail bleibt die vollstaendige Historie. */
+    private val graphRing = ArrayDeque<app.aaps.core.interfaces.overview.FuseOverviewSource.Point>()
+
+    /** Marker-Druecke des Prozesses + der letzte persistierte (uebersteht
+     *  Neustarts via Preference). */
+    private val markerPressRing = ArrayDeque<Long>()
+
+    /**
+     * Der in DIESEM Prozess beobachtete Markerdruck, 0 = keiner.
+     *
+     * ER IST BEWUSST NICHT PERSISTENT und darf es auch nicht werden: er ist
+     * genau der Beweis, dass der Druck NACH dem letzten Prozessstart lag. Ein
+     * persistierter Wert waere derselbe Preference-Wert unter anderem Namen
+     * und beantwortete die Frage nicht mehr.
+     *
+     * NICHT AUS [markerPressRing] ableiten - der wird beim Warmstart aus dem
+     * Trail nachgefuellt und kennt Druecke aus frueheren Prozessen.
+     *
+     * `@Volatile`, weil der Knopf im UI-Thread schreibt und der Zyklus in
+     * seinem eigenen liest.
+     */
+    @Volatile private var markerPressObservedTs: Long = 0L
+
+    /**
+     * Versuche des Warmstarts. NICHT nur ein Bit, und der Grund ist der Fall,
+     * den die beiden vorigen Anlaeufe uebrig gelassen haben: eine Trail-Datei,
+     * die EXISTIERT, aber noch leer ist - direkt nach einer Neuinstallation,
+     * bevor der erste Zyklus geschrieben hat. Der Lauf gelingt dann formal und
+     * liest nichts, und mit einem Bit waere der Warmstart fuer die ganze
+     * Prozesslebenszeit verbraucht.
+     *
+     * Begrenzt, weil die Datei bis zu 32 MB gross wird: sie in jedem Zyklus
+     * neu zu lesen waere teurer als der Nutzen. Fuenf Versuche decken die
+     * ersten Minuten nach einer Installation ab.
+     */
+    /**
+     * SCHEIBE 1 - NUR MESSEN. Was AAPS mit dem SMB des VORIGEN Zyklus gemacht
+     * hat. Keine Zeile davon aendert eine Dosis oder ein Budget.
+     *
+     * WARUM ES DEN VORIGEN ZYKLUS BETRIFFT: FUSEs `invoke()` kehrt bei
+     * LoopPlugin.kt:484 zurueck, die Constraints laufen bei 504-524, und
+     * `lastRun` wird erst bei 526-537 geschrieben. Waehrend des eigenen Zyklus
+     * beschreibt `lastRun` also noch den Lauf davor. Das ist deterministisch
+     * und keine Zufallsfrage - aber es MUSS im Export dranstehen, sonst liest
+     * jemand die Zahlen als die dieses Zyklus.
+     */
+    @Volatile private var publishedRt: RT? = null
+    @Volatile private var publishedTs: Long = 0L
+    @Volatile private var priorActuation: PriorActuation? = null
+
+    /**
+     * DIE BRUECKE zwischen dem Zyklus, der eine Menge gebucht hat, und dem
+     * naechsten, der prueft, ob sie je hinausging (s. [NotSentProof]).
+     * Zusammen mit [publishedRt] gelesen und gesetzt - vier Felder, ein
+     * Moment.
+     */
+    @Volatile private var publishedProposalId: String? = null
+    @Volatile private var publishedGateStripped = false
+    @Volatile private var publishedGateSealed = false
+    @Volatile private var publishedGatePersistFailed = false
+
+    /** Der im laufenden Zyklus gebildete Entlastungs-Beleg, gebucht im
+     *  events-Block des Publikationsgates. */
+    @Volatile private var notSentClaim: Pair<String, app.aaps.fuse.core.ledger.QueueRejectReason>? = null
+
+    /**
+     * KI-171: DIE ZULETZT PUBLIZIERTEN RT-INSTANZEN MIT IHRER LEDGER-ZEILE.
+     *
+     * AAPS legt eine ohne Pumpenaufruf verworfene SMB mit der Identitaet ihrer
+     * Anforderung ab (`Loop.LastRun.smbNotSent`). Diese Ablage kann Minuten
+     * spaeter kommen (Warteschlange wartet auf Bluetooth) - dann beschreiben
+     * [publishedRt] und [publishedProposalId] laengst einen neueren Zyklus.
+     * Zugeordnet wird deshalb ueber diese Liste, per REFERENZ auf die RT.
+     *
+     * Begrenzt auf [RECENT_PUBLICATIONS_MAX] Publikationen mit Menge. Nicht
+     * persistent: nach einem Neustart fehlt die Zuordnung, und die Zeile
+     * haftet weiter - der konservative Ausgang.
+     */
+    private val recentPublications = ArrayDeque<Pair<RT, String>>()
+
+    /** Eine Stunde bei Minutentakt - laenger als jede Bluetooth-Wartezeit, nach
+     *  der AAPS eine SMB noch als "too old" verwirft. */
+    private val RECENT_PUBLICATIONS_MAX = 60
+
+    /** KI-171: die in diesem Zyklus gebildeten Belege D, gebucht im events-Block. */
+    @Volatile private var pumpNeverCalledClaims: List<Pair<String, app.aaps.fuse.core.ledger.QueueRejectReason>> = emptyList()
+
+    /** KI-171: was dieser Zyklus von den Ablagen sah - reine Messung fuer den Trail. */
+    @Volatile private var pumpNeverCalledTrace: PumpNeverCalledTrace? = null
+
+    /**
+     * KI-171, fuer den Trail: sichtbare Ablagen, zugeordnete Zeilen, die
+     * gebildeten Belege und Zeilen, die schon geschlossen waren.
+     */
+    class PumpNeverCalledTrace(
+        val recordsVisible: Int,
+        val matched: List<String>,
+        val claimed: List<String>,
+        val alreadyClosed: List<String>,
+    )
+
+    /**
+     * Die drei Werte der beobachtbaren Stufe, plus die Herkunft.
+     *
+     * DIE ACHSE IST FUENFTEILIG, nicht vierteilig (Review 11.08.):
+     *
+     *   certifiedU -> fusePublishedU -> aapsConstrainedU -> queueRequestedU -> enactedU
+     *
+     * `constraintsProcessed` wird gespeichert, BEVOR Suspend-, Loop- und
+     * Queue-Pruefungen, die TBR-Ausfuehrung, `applySMBRequest`, das ZWEITE
+     * Intervalltor und `CommandSMBBolus` gelaufen sind. Es ist damit
+     * `aapsConstrainedU` und ausdruecklich NICHT "an die Queue uebergeben".
+     * `queueRequestedU` ist heute nicht beobachtbar.
+     */
+    class PriorActuation(
+        /** `computeTs` des Zyklus, den diese Zahlen beschreiben. */
+        val ofComputeTs: Long,
+        /** Identitaetsprobe bestanden? Bei `false` sind die Zahlen null - ein
+         *  fremder oder veralteter `lastRun` liefert lieber nichts als
+         *  irgendetwas. */
+        val correlated: Boolean,
+        val fusePublishedU: Double?,
+        /** Nach `applyBolusConstraints`, VOR dem ersten Intervalltor. */
+        val afterBolusConstraintsU: Double?,
+        /** Nach dem ersten Intervalltor - dieses nullt, die beiden spaeteren
+         *  Tore lassen die Menge stehen und verweigern nur die Ausfuehrung. */
+        val aapsConstrainedU: Double?,
+        /**
+         * Hat AAPS im Apply-Block seinen Platzhalter gesetzt? `false` heisst:
+         * der Block wurde nie betreten, also ging kein Bolus-Kommando hinaus
+         * (s. [app.aaps.fuse.core.ledger.NotSentProof]). `null` = die
+         * Identitaetsprobe ist durchgefallen, dann gilt nichts als bekannt.
+         */
+        val smbSetByPumpPresent: Boolean?,
+    )
+
+    /**
+     * Liest den Ausgang des VORIGEN Zyklus. Am Anfang des Zyklus, bevor der
+     * eigene Lauf `publishedRt` ueberschreibt.
+     *
+     * Verglichen wird die identitaet der `RT`-INSTANZ aus `lastRun.request`,
+     * nicht die der APSResult-Huelle: `newAndClone()` erzeugt eine neue Huelle,
+     * haelt aber dieselbe `RT`. Ein Zyklus, den LoopPlugin nie verarbeitet hat
+     * (z.B. ein Aufruf ausserhalb), faellt damit sofort durch die Probe.
+     */
+    private fun leseVorigenAusgang() {
+        val erwartet = publishedRt ?: return
+        val lr = runCatching { loop.value.lastRun }.getOrNull()
+        val trifft = lr?.request?.rawData() === erwartet
+        priorActuation = PriorActuation(
+            ofComputeTs = publishedTs,
+            correlated = trifft,
+            fusePublishedU = if (trifft) lr?.request?.smb else null,
+            afterBolusConstraintsU = if (trifft) lr?.constraintsProcessed?.smbConstraint?.value() else null,
+            aapsConstrainedU = if (trifft) lr?.constraintsProcessed?.smb else null,
+            // AUS DERSELBEN LESUNG wie die uebrigen Felder - zwei Lesungen
+            // koennten Zahlen aus verschiedenen Momenten paaren, dieselbe
+            // Falle wie beim Pumpen-Serial.
+            smbSetByPumpPresent = if (trifft) (lr?.smbSetByPump != null) else null,
+        )
+    }
+
+    @Volatile private var graphRingAttempts = 0
+
+    private val GRAPH_RING_MAX_ATTEMPTS = 5
+
+    /** Delegiert an [MarkerTimeline] - die Regel steht dort und ist dort
+     *  auch geprueft; diese Kette war bis 11.08. an keiner Stelle getestet. */
+    override fun fuseMealMarkerTimes(fromTime: Long, endTime: Long): List<Long> =
+        MarkerTimeline.visible(
+            pressRing = synchronized(markerPressRing) { markerPressRing.toList() },
+            armedTs = mealMarkerArmedTs(),
+            fromTime = fromTime,
+            endTime = endTime,
+        )
+
+    /**
+     * RING-WARMSTART (08.08.): die F.DRV/F.GRD-Linien leben im Prozess und
+     * waren nach jedem Flash leer. Beim ersten Zyklus wird der Ring einmalig
+     * aus dem Trail (letzte ~24 h) nachgefuellt - der Trail bleibt die
+     * einzige Wahrheit, keine DB. Fehler sind still-tolerant: ein kaputter
+     * Warmstart darf keinen Zyklus kosten.
+     */
+    /** Einmal je Prozess: juengstes Tief aus dem Trail in den Runner. */
+    private fun warmLastLowOnce() {
+        if (lastLowWarmed) return
+        val f = java.io.File(
+            android.os.Environment.getExternalStorageDirectory(),
+            "Documents/aapsLogs/fuse_state_history.jsonl"
+        )
+        if (!f.exists()) return          // s. warmGraphRingOnce: Flag erst bei Arbeit
+        lastLowWarmed = true
+        runCatching {
+            val ts = f.bufferedReader().useLines { lines ->
+                FuseLowMemory.lastLowTsFromTrail(
+                    lines, System.currentTimeMillis(), preferences.get(FuseIntKey.ReboundWindowMin)
+                )
+            }
+            if (ts > 0L) cycleRunner().primeLastLowTs(ts)
+        }
+    }
+
+    private var lastLowWarmed = false
+
+    private fun warmGraphRingOnce() {
+        if (graphRingAttempts >= GRAPH_RING_MAX_ATTEMPTS) return
+        graphRingAttempts++
+        val f = java.io.File(
+            android.os.Environment.getExternalStorageDirectory(),
+            "Documents/aapsLogs/fuse_state_history.jsonl"
+        )
+        // DAS FLAG ERST, WENN ES ETWAS ZU LESEN GAB (Sweep 11.08.).
+        //
+        // Vorher stand `graphRingWarmed = true` VOR der Arbeit, und der
+        // Ausstieg bei fehlender Datei war ein nichtlokales `return` aus dem
+        // `runCatching`. Beim allerersten Start - Neuinstallation, oder wenn
+        // der erste Zyklus vor dem ersten Trail-Schreibvorgang laeuft - war
+        // der Warmstart damit fuer die gesamte Prozesslebenszeit verbraucht,
+        // ohne je eine Zeile gelesen zu haben. Ein `exists()` je Zyklus
+        // kostet nichts gegen einen dauerhaft leeren Graphen.
+        if (!f.exists()) return
+        runCatching {
+            val cutoff = System.currentTimeMillis() - 25L * 3600_000L
+            val pts = ArrayList<app.aaps.core.interfaces.overview.FuseOverviewSource.Point>()
+            // MARKERDRUCKE aus dem Trail (11.08.). Der Ring lebt im Prozess -
+            // nach jedem Flash blieb genau EIN Marker uebrig, der aus der
+            // Preference. Bei vier Flashes an einem Abend heisst das: der
+            // Graph zerfaellt in Stuecke, obwohl der Trail alles weiss.
+            //
+            // Moeglich ist das erst, seit `state.markerArmedTs` im Datensatz
+            // steht; vorher stand dort nur ein Boolean "Marker aktiv", und aus
+            // dem laesst sich kein Zeitpunkt gewinnen.
+            //
+            // Zurueckgenommene Marker kommen dabei mit - genau wie beim Ring,
+            // und aus demselben Grund: der Graph ist ein Protokoll, kein
+            // Zustandsanzeiger (s. MarkerTimeline).
+            val marks = LinkedHashSet<Long>()
+            f.bufferedReader().useLines { lines ->
+                for (line in lines) {
+                    val j = runCatching { org.json.JSONObject(line) }.getOrNull() ?: continue
+                    val ts = j.optLong("sourceTs", 0L)
+                    if (ts < cutoff) continue
+                    j.optJSONObject("state")?.optLong("markerArmedTs", 0L)
+                        ?.takeIf { it > 0L && it >= cutoff }?.let { marks.add(it) }
+                    val sig = j.optJSONObject("signal") ?: continue
+                    val dec = j.optJSONObject("decision")
+                    val pol = j.optJSONObject("policy")?.optJSONObject("values")
+                    val r = sig.optDouble("rSigned", Double.NaN)
+                    val ukf = sig.optDouble("ukfRatePerMin", Double.NaN)
+                    val act = sig.optDouble("activityAtAnchor", Double.NaN)
+                    val isf = sig.optDouble("isfAtAnchor", Double.NaN)
+                    val fast = if (ukf.isFinite() && act.isFinite() && isf.isFinite()) ukf + act * isf else Double.NaN
+                    val ml = dec?.optDouble("minLowerMgdl", Double.NaN) ?: Double.NaN
+                    val gf = pol?.optDouble("guardFloorMgdl", 70.0) ?: 70.0
+                    val tl = j.optJSONObject("tail")
+                    // Konto (Graph F.DRV/F.GRD): Fenster, erwartete Wirkung, Guard mit Mahlzeit, Zustand. isNull() wie
+                    // unten - optString liefert auf Android fuer JSON-null den Text "null".
+                    val ekJ = j.optJSONObject("expectationAccount")
+                    val ekGilt = ekJ?.optBoolean("applies", false) == true
+                    val ekRueckfall = ekJ?.let { e -> if (e.isNull("fallback")) null else e.optString("fallback", "").takeIf { it.isNotEmpty() } }
+                    val ekStatus = ekJ?.let { e -> if (e.isNull("status")) null else e.optString("status", "").takeIf { it.isNotEmpty() } }
+                    val ekFrueh = ekJ?.optJSONObject("earlySupply")
+                    val tailMargin = tl?.let {
+                        FuseGraphMargin.tailMarginMgdl(
+                            headroomU = it.optDouble("headroomU", Double.NaN),
+                            isfTailMgdlPerU = it.optDouble("isfTailMgdlPerU", Double.NaN),
+                            // isNull() IST HIER PFLICHT: Androids optString gibt
+                            // fuer ein JSON-null den String "null" zurueck, nicht
+                            // den Default (JVM-org.json tut das Gegenteil - ein
+                            // Unit-Test haette den Fehler nie gezeigt, das Geraet
+                            // schon: die ganze Warmstart-Linie war weg).
+                            invalidReason = if (it.isNull("invalidReason")) null
+                            else it.optString("invalidReason", "").takeIf { r -> r.isNotEmpty() },
+                        )
+                    }
+                    pts.add(
+                        app.aaps.core.interfaces.overview.FuseOverviewSource.Point(
+                            timestamp = ts,
+                            driveMgdlPerMin = r.takeIf { it.isFinite() },
+                            fastDriveMgdlPerMin = fast.takeIf { it.isFinite() },
+                            guardMarginMgdl = FuseGraphMargin.guardMarginMgdl(ml, gf),
+                            tailMarginMgdl = tailMargin,
+                            mealWindow = ekJ != null && (ekGilt || FuseGraphMargin.accountStatus(false, ekRueckfall, null) != null),
+                            expectedMealDriveMgdlPerMin = ekFrueh?.optDouble("expectedDriveMgdlPerMin", Double.NaN)
+                                ?.takeIf { ekGilt && it.isFinite() },
+                            guardWithMealMarginMgdl = ekFrueh?.optDouble("guardLowerWithMealMgdl", Double.NaN)
+                                ?.takeIf { it.isFinite() }?.let { FuseGraphMargin.guardMarginMgdl(it, gf) },
+                            tailWithMealMarginMgdl = ekFrueh?.let { e ->
+                                FuseGraphMargin.tailMarginMgdl(
+                                    headroomU = e.optDouble("tailWithMealHeadroomU", Double.NaN).takeIf { it.isFinite() },
+                                    isfTailMgdlPerU = e.optDouble("tailWithMealIsfMgdlPerU", Double.NaN),
+                                    invalidReason = if (e.isNull("tailWithMealInvalidReason")) null
+                                    else e.optString("tailWithMealInvalidReason", "").takeIf { r -> r.isNotEmpty() },
+                                )
+                            },
+                            accountStatus = ekJ?.let { FuseGraphMargin.accountStatus(ekGilt, ekRueckfall, ekStatus) },
+                        )
+                    )
+                }
+            }
+            synchronized(graphRing) {
+                if (graphRing.isEmpty()) {
+                    graphRing.addAll(pts.takeLast(1_500))
+                }
+            }
+            // Nur nachfuellen, nie ueberschreiben: ein Druck, der seit dem
+            // Start passiert ist, steht schon drin und ist der aktuellere.
+            synchronized(markerPressRing) {
+                for (m in marks.sorted()) MarkerTimeline.add(markerPressRing, m)
+            }
+            // ERST WENN WIRKLICH ETWAS GELESEN WURDE (dritter Anlauf,
+            // Review 11.08.). Anlauf eins setzte das Flag vor der Arbeit,
+            // Anlauf zwei hinter `exists()` - beide liessen den Fall stehen,
+            // dass die Datei EXISTIERT und leer ist. Der Lauf gelingt dann
+            // formal, liest nichts, und der Warmstart ist verbraucht.
+            //
+            // Ein leerer Trail ist kein Fehler, sondern der Normalzustand in
+            // den ersten Minuten nach einer Installation. Also: Erfolg heisst
+            // "es kamen Punkte an", und sonst wird es erneut versucht - bis zu
+            // GRAPH_RING_MAX_ATTEMPTS mal, denn die Datei wird bis 32 MB gross.
+            if (pts.isNotEmpty()) graphRingAttempts = GRAPH_RING_MAX_ATTEMPTS
+        }
+    }
+
+    override fun fuseRampLevels(): Pair<Double, Double> =
+        Pair(preferences.get(FuseDoubleKey.RiseRampLowR), preferences.get(FuseDoubleKey.RiseRampHighR))
+
+    override fun fuseGraphPoints(fromTime: Long, endTime: Long): List<app.aaps.core.interfaces.overview.FuseOverviewSource.Point> =
+        synchronized(graphRing) { graphRing.filter { it.timestamp in fromTime..endTime } }
+
+    /**
+     * Derselbe Schluessel wie bei den OpenAPS-Plugins: `ApsSmbMaxIob` ist KEINE
+     * autoISF-Groesse, sondern AAPS' eigene maxIOB-Einstellung. Eine
+     * FUSE-eigene waere hier falsch — eine Sicherheitsgrenze in zwei Zahlen zu
+     * spalten heisst, dass eine davon irgendwann vergessen wird.
+     *
+     * `setIfSmaller`: FUSE VERSCHAERFT nur. Die uebrigen Teilnehmer der Kette
+     * (LGS, BG-Qualitaet, abgelaufene App) schaerfen weiter nach.
+     */
+    override suspend fun applyMaxIOBConstraints(maxIob: Constraint<Double>): Constraint<Double> {
+        if (isEnabled()) {
+            val pref = preferences.get(DoubleKey.ApsSmbMaxIob)
+            maxIob.setIfSmaller(pref, rh.gs(CoreUiStrings.limiting_iob, pref, rh.gs(TextRef.AndroidRes(R.string.fuse_limit_pref))), this)
+            maxIob.setIfSmaller(hardLimits.maxIobSMB(), rh.gs(CoreUiStrings.limiting_iob, hardLimits.maxIobSMB(), rh.gs(TextRef.AndroidRes(R.string.fuse_limit_hard))), this)
+        }
+        return maxIob
+    }
+
+    /**
+     * Mahlzeiten-Marker: TT-UNABHAENGIG, bewusst. Ein TT wuerde Marker und
+     * Zielverschiebung vermischen; dieser Knopf senkt ausschliesslich die
+     * Evidenzschwelle des OnsetChannel und erzeugt selbst keine Dosis.
+     * Zweiter Druck nimmt ihn zurueck; nach MARKER_WINDOW_MIN verfaellt er.
+     */
+    /**
+     * EIN Marker, keine Stufen mehr (11.08.).
+     *
+     * S/M/L waren eine Ankuendigung der MENGE. Genau die kann der Nutzer im
+     * Moment des Knopfdrucks nicht verlaesslich abschaetzen - und FUSE soll
+     * die Mahlzeit ohne Kohlenhydratangabe bedienen; eine dreistufige
+     * Mengenschaetzung ist eine Kohlenhydratangabe mit anderem Namen. Der
+     * Knopf sagt nur noch WANN, und das ist die Information, die der Nutzer
+     * wirklich hat.
+     *
+     * Damit faellt auch der atomare Stempel weg: er band Zeitpunkt und Stufe
+     * aneinander, und ohne Stufe gibt es nur noch einen Wert.
+     */
+    suspend fun toggleMealMarker(
+        now: Long,
+        ohneVorschuss: Boolean = false,
+        /**
+         * Kennung des BEDIENEREIGNISSES. Ein wiederholter oder verspaeteter
+         * Dialog-Rueckruf traegt dieselbe - und darf den Zustand dann NICHT
+         * ein zweites Mal umschalten. Ohne Kennung gilt das bisherige
+         * Umschalten unveraendert.
+         */
+        ereignisId: String? = null,
+        /** Woher der Druck kam - nur fuer Log und Trail ([FuseStateJson.MarkerEvent]). */
+        quelle: String = MarkerRuecknahme.Quelle.UNBEKANNT.text,
+        /** Wahl "nur Erwartung" (Toni): keine Direktdosis, die Huelle traegt das Konto. */
+        nurErwartung: Boolean = false,
+    ): Boolean {
+        // KI-177: UNTER DER LAUFSPERRE. Der Druck aendert Episodenfelder des
+        // Ledgers und schreibt ihn; ohne Sperre konnte er das mitten in einem
+        // Zyklus tun, der denselben Adapter rechnet und speichert. Geschuetzt
+        // ist der GANZE Vorgang (Ereignisordnung, Widerruf, Autorisierung,
+        // Speichern samt Ruecknahme), nicht nur das Schreiben. Die Bedienung
+        // wartet hoechstens bis zum Ende des laufenden Zyklus; eine lange
+        // Wartezeit wird gemeldet, damit sie am Geraet sichtbar ist.
+        val warteBeginn = System.nanoTime()
+        return laufSperre.withLock {
+            val gewartetMs = (System.nanoTime() - warteBeginn) / 1_000_000L
+            if (gewartetMs >= markerWartenMeldenMs)
+                aapsLogger.warn(LTag.APS, "FUSE Marker wartete $gewartetMs ms auf den laufenden Zyklus")
+            toggleMealMarkerUnterSperre(now, ohneVorschuss, ereignisId, quelle, nurErwartung)
+        }
+    }
+
+    /** Der eigentliche Umschaltvorgang. Nur ueber [toggleMealMarker] erreichbar, also nur unter [laufSperre]. */
+    private fun toggleMealMarkerUnterSperre(
+        now: Long, ohneVorschuss: Boolean, ereignisId: String?, quelle: String, nurErwartung: Boolean = false,
+    ): Boolean {
+        val armed = mealMarkerActive(now)
+        val ordnung = MarkerReauthorization.ordnungVon(ereignisId)
+        // VERALTETE RUECKRUFE FALLEN HERAUS. Nur ein echt juengeres
+        // Ereignis wirkt noch; die Folge Start E1 -> Abbruch E2 ->
+        // verspaeteter E1 haette einen blossen Letztvergleich passiert.
+        if (!MarkerReauthorization.ereignisWirkt(ordnung, ledgerAdapter.episodes.lastMarkerEventOrdnung))
+            return armed
+        val vorher = EpisodeAutorisierung(ledgerAdapter.episodes)
+        if (armed) {
+            // Die Beobachtung stirbt mit der Ruecknahme. Bliebe sie stehen,
+            // koennte ein spaeter aus den Preferences gelesener Marker sie
+            // erben - und genau diese Erbschaft soll es nicht geben.
+            markerPressObservedTs = 0L
+            // DIE LINIE IM GRAPHEN FOLGT DEM INSULIN, nicht der Absicht: blieb
+            // der Druck folgenlos, verschwindet er auch aus dem Graphen. Vorher
+            // stand dort eine Mahlzeitenlinie ohne Mahlzeit und ohne Insulin.
+            val geliefert = lastOutcome?.mealStats?.totalU ?: 0.0
+            val zurueckgenommenTs = mealMarkerArmedTs()
+            synchronized(markerPressRing) {
+                MarkerTimeline.retract(markerPressRing, zurueckgenommenTs, geliefert)
+            }
+            // ---- DER WIDERRUF, GESCHRIEBEN AM BEDIENEREIGNIS -------------
+            //
+            // ZUERST der Ledger, DANN die Preferences. Endet der Prozess
+            // dazwischen, steht der Widerruf fest und der Marker gilt beim
+            // naechsten Lesen als zurueckgenommen. Umgekehrt waere die
+            // Autorisierung aus den Preferences verschwunden, ohne dass
+            // irgendwo stuende, dass sie widerrufen wurde - und der
+            // naechste Druck haette keine Marke zu verbrauchen.
+            //
+            // Der Widerruf beendet die AUTORISIERUNG. Er storniert nichts:
+            // bereits abgegebenes Insulin, offene Pumpenauftraege,
+            // Transportreservierungen und `primeSpentU` bleiben stehen.
+            ledgerAdapter.episodes.let { e ->
+                MarkerReauthorization.widerrufe(e.markerAuth, now)?.let { e.markerRevocation = it }
+                e.markerAuth = null
+                if (ordnung != null) e.lastMarkerEventOrdnung = ordnung
+            }
+            persistiereMarkerZustand(vorher)
+            preferences.put(FuseLongKey.MealMarkerArmedTs, 0L)
+            // Die Episoden-Wahl stirbt mit dem Marker - ein spaeterer Druck
+            // beginnt immer bei der vollen Huelle.
+            preferences.put(FuseLongKey.MealMarkerNoPrime, 0L)
+            preferences.put(FuseLongKey.MealMarkerExpectationOnly, 0L)
+            // Der Altbestand-Stempel wird mitgeloescht: bliebe er stehen,
+            // liesse der Lese-Ruecktausch unten einen zurueckgenommenen
+            // Marker wieder auferstehen.
+            preferences.put(FuseLongKey.MealMarkerStamp, 0L)
+            // DIE RUECKNAHME WIRD PROTOKOLLIERT (Toni 04.10.): vorher schrieb
+            // sie weder Log noch Trail, und eine Ruecknahme mitten in der
+            // Mahlzeit war von einem Ablauf nicht zu unterscheiden.
+            aapsLogger.info(
+                LTag.APS,
+                "FUSE Marker zurueckgenommen: quelle=$quelle marker=$zurueckgenommenTs " +
+                    "markerAlterMin=${(now - zurueckgenommenTs) / 60_000L} geliefertU=$geliefert",
+            )
+            markerEreignis("WITHDRAWN", now, quelle, zurueckgenommenTs)
+            // Eine noch offene Vormerkung ist damit erledigt.
+            speichereRuecknahmeVormerkung(null)
+            return false
+        }
+        // ---- DIE NEUE AUTORISIERUNG, IN EINEM SCHRITT -------------------
+        //
+        // Kennung und Verbrauch der Widerrufsmarke werden GEMEINSAM
+        // festgeschrieben. Wuerde erst bewaffnet und spaeter die Marke
+        // zugeordnet, koennte ein Absturz dazwischen eine zweite volle
+        // Huelle erlauben.
+        //
+        // Auch hier Ledger vor Preferences: endet der Prozess dazwischen,
+        // ist die Marke verbraucht, aber kein Marker aktiv - der naechste
+        // Druck bekommt dann KEINE zusaetzliche Huelle. Das ist die
+        // konservative Richtung; die umgekehrte Reihenfolge koennte eine
+        // Huelle zweimal oeffnen.
+        // ---- ABBRUCH UND START SIND NICHT DASSELBE ----------------------
+        //
+        // Beim ABBRUCH gilt: lieber ohne Widerrufsvermerk abbrechen als gar
+        // nicht abbrechen - ein nicht ausgefuehrter Abbruch waere
+        // gefaehrlicher als ein verlorener Huellenanspruch.
+        //
+        // Beim START gilt das Gegenteil. Eine Autorisierung, deren dauerhafte
+        // Speicherung unbestaetigt ist, darf nicht als erfolgreich aktiviert
+        // werden: nach einem Neustart stuende dann ein Marker ohne Kennung
+        // da, und die Wiederholungssperre haette nichts zu vergleichen.
+        //
+        // UND: `persistVerified == false` heisst NICHT "Platte unveraendert".
+        // Der Ledger kann schon geschrieben und erst das Entfernen des
+        // Sicherungsmarkers gescheitert sein. Das Zurueckkopieren des
+        // Speicherzustands beweist also keine Uebereinstimmung - deshalb
+        // wird hier NICHT zurueckkopiert, sondern der vorhandene
+        // Hold-Vertrag gezogen: der Ledger geht in den Haltezustand, und
+        // der Marker wird gar nicht erst aktiviert.
+        val vorDemStart = EpisodeAutorisierung(ledgerAdapter.episodes)
+        ledgerAdapter.episodes.let { e ->
+            val seq = e.markerAuthSeq + 1L
+            val neu = MarkerReauthorization.autorisiere(seq, now, e.markerRevocation)
+            e.markerAuthSeq = seq
+            e.markerAuth = neu.auth
+            neu.revocation?.let { e.markerRevocation = it }
+            if (ordnung != null) e.lastMarkerEventOrdnung = ordnung
+        }
+        if (!persistiereMarkerZustand(vorher = vorDemStart)) {
+            aapsLogger.error(
+                LTag.APS,
+                "FUSE Marker NICHT aktiviert - die Autorisierung ist nicht dauerhaft gespeichert",
+            )
+            // Der vorhandene Hold-Vertrag: `persistVerified` hat den
+            // Ledger bereits gesperrt (`persistFailed`, sticky bis zum
+            // naechsten Erfolg). Der Marker wird zusaetzlich gar nicht erst
+            // aktiviert - die Preferences bleiben unveraendert.
+            //
+            // UND DIE WIDERRUFSMARKE BLEIBT OFFEN. `persistiereMarkerZustand`
+            // hat den Autorisierungsteil zurueckgenommen; ohne das haette
+            // dieser gescheiterte Druck die Marke im Speicher als
+            // "verbraucht" markiert, und der naechste - erfolgreiche - Druck
+            // haette keine neue volle Huelle mehr eroeffnet.
+            return false
+        }
+        preferences.put(FuseLongKey.MealMarkerArmedTs, now)
+        preferences.put(FuseLongKey.MealMarkerNoPrime, if (ohneVorschuss) 1L else 0L)
+        // "Ohne Vorschuss" geht vor: beide zugleich heisst ohne Vorschuss.
+        preferences.put(FuseLongKey.MealMarkerExpectationOnly, if (nurErwartung && !ohneVorschuss) 1L else 0L)
+        // Eine Bestaetigung nach Tief gehoert zur vorigen Mahlzeit (sie zaehlt ohnehin nur ab Marker) - aufraeumen.
+        preferences.put(FuseLongKey.EarlySupplyLowConfirmTs, 0L)
+        // DER EINZIGE ORT, an dem ein Druck als BEOBACHTET gilt. Er steht
+        // absichtlich hier und nicht beim Nachfuellen des Marker-Rings: der
+        // liest den Trail und kennt Druecke von vor zwei Stunden.
+        markerPressObservedTs = now
+        // Auch beim ARMEN raeumen (Sweep 11.08.): bisher tat das nur der
+        // Ruecknahme-Zweig. Ein Stempel aus der Zeit vor dem Umbau ueberlebte
+        // damit beliebig lange und blieb als latenter Ruecktausch liegen -
+        // wirkungslos, solange `armedTs` gesetzt ist, aber scharf in genau
+        // dem Moment, in dem es das nicht ist. Nach dem ersten Druck auf
+        // dieser Version ist der Schluessel endgueltig leer.
+        preferences.put(FuseLongKey.MealMarkerStamp, 0L)
+        synchronized(markerPressRing) { MarkerTimeline.add(markerPressRing, now) }
+        aapsLogger.info(LTag.APS, "FUSE Marker gesetzt: quelle=$quelle marker=$now ohneVorschuss=$ohneVorschuss nurErwartung=$nurErwartung")
+        markerEreignis("ARMED", now, quelle, now)
+        // Eine Vormerkung galt dem alten Marker - der neue beginnt ohne.
+        speichereRuecknahmeVormerkung(null)
+        return true
+    }
+
+    // ---- RUECKNAHME MIT RUECKGAENGIG-FRIST (Toni 04.10.) -------------------
+    //
+    // Ein Tipp auf den laufenden Marker nimmt ihn nicht mehr sofort zurueck,
+    // sondern merkt die Ruecknahme vor; ausgefuehrt wird sie nach der Frist
+    // ueber den gewohnten Umschaltvorgang. Warum aufgeschoben statt
+    // wiederhergestellt: s. [MarkerRuecknahme].
+
+    /** Das letzte Bedienereignis am Marker - fuer den Trail, s. [FuseStateJson.MarkerEvent]. */
+    @Volatile private var letztesMarkerEreignis: FuseStateJson.MarkerEvent? = null
+
+    private fun markerEreignis(typ: String, ts: Long, quelle: String, markerTs: Long, faelligTs: Long? = null) {
+        letztesMarkerEreignis = FuseStateJson.MarkerEvent(typ, ts, quelle, markerTs, faelligTs)
+    }
+
+    private fun ladeRuecknahmeVormerkung(): MarkerRuecknahme.Vormerkung? {
+        val faellig = preferences.get(FuseLongKey.MealMarkerWithdrawDueTs)
+        if (faellig <= 0L) return null
+        return MarkerRuecknahme.Vormerkung(
+            faelligTs = faellig,
+            markerTs = preferences.get(FuseLongKey.MealMarkerWithdrawForTs),
+            ordnung = preferences.get(FuseLongKey.MealMarkerWithdrawOrdnung),
+            quelle = MarkerRuecknahme.Quelle.von(preferences.get(FuseLongKey.MealMarkerWithdrawQuelle)),
+        )
+    }
+
+    private fun speichereRuecknahmeVormerkung(v: MarkerRuecknahme.Vormerkung?) {
+        preferences.put(FuseLongKey.MealMarkerWithdrawDueTs, v?.faelligTs ?: 0L)
+        preferences.put(FuseLongKey.MealMarkerWithdrawForTs, v?.markerTs ?: 0L)
+        preferences.put(FuseLongKey.MealMarkerWithdrawOrdnung, v?.ordnung ?: 0L)
+        preferences.put(FuseLongKey.MealMarkerWithdrawQuelle, v?.quelle?.code ?: 0L)
+    }
+
+    /**
+     * Die Ruecknahme VORMERKEN statt sofort auszufuehren.
+     *
+     * @return Faelligkeit [ms] oder `null`: kein laufender Marker oder ein
+     *         veraltetes Ereignis. Dann darf der Aufrufer NICHT umschalten -
+     *         ein Umschalten ohne laufenden Marker wuerde einen neuen setzen.
+     */
+    suspend fun markerRuecknahmeVormerken(now: Long, ereignisId: String?, quelle: MarkerRuecknahme.Quelle): Long? {
+        val faellig = laufSperre.withLock {
+            val ordnung = MarkerReauthorization.ordnungVon(ereignisId)
+            if (!MarkerReauthorization.ereignisWirkt(ordnung, ledgerAdapter.episodes.lastMarkerEventOrdnung)) return null
+            val bestehend = ladeRuecknahmeVormerkung()
+            val v = MarkerRuecknahme.vormerken(
+                now, mealMarkerArmedTs(), mealMarkerActive(now), ordnung, quelle, bestehend,
+            ) ?: return null
+            if (v !== bestehend) {
+                speichereRuecknahmeVormerkung(v)
+                markerEreignis("WITHDRAWAL_PENDING", now, quelle.text, v.markerTs, v.faelligTs)
+                aapsLogger.info(
+                    LTag.APS,
+                    "FUSE Marker-Ruecknahme vorgemerkt: quelle=${quelle.text} marker=${v.markerTs} faellig=${v.faelligTs}",
+                )
+            }
+            v.faelligTs
+        }
+        // Faellige Vormerkungen fuehrt ein eigener Zeitgeber aus; der Zyklus faengt den Rest (Neustart).
+        // v4: eine Coroutine im App-Bereich statt eines eigenen Ausfuehrers - gehalten, damit onStop sie abbricht.
+        ruecknahmeZeitgeber?.cancel()
+        ruecknahmeZeitgeber = appScope.launch {
+            delay((faellig - now).coerceAtLeast(0L) + RUECKNAHME_NACHLAUF_MS)
+            runCatching { if (faelligeRuecknahme(dateUtil.now())) rxBus.send(EventRefreshOverview("FUSE Marker", true)) }
+        }
+        return faellig
+    }
+
+    /**
+     * Der Zeitgeber der vorgemerkten Ruecknahme. v4: der Einstellungs-Import stoppt die Plugins, schreibt den
+     * Speicher und startet sie neu - ein Zeitgeber, der das Stoppen ueberlebt, schriebe mitten in dieses Fenster.
+     * [onStop] bricht ihn ab; eine dabei faellig gewordene Vormerkung holt der naechste Zyklus nach, wie nach
+     * einem Prozessende.
+     */
+    @Volatile private var ruecknahmeZeitgeber: Job? = null
+
+    override suspend fun onStop() {
+        ruecknahmeZeitgeber?.cancel()
+        ruecknahmeZeitgeber = null
+    }
+
+    /** Die vorgemerkte Ruecknahme aufheben. @return false, wenn keine (mehr) offen war. */
+    suspend fun markerRuecknahmeRueckgaengig(now: Long, quelle: MarkerRuecknahme.Quelle): Boolean {
+        val aufgehoben = laufSperre.withLock {
+            val v = ladeRuecknahmeVormerkung() ?: return false
+            speichereRuecknahmeVormerkung(null)
+            markerEreignis("WITHDRAWAL_UNDONE", now, quelle.text, v.markerTs, v.faelligTs)
+            aapsLogger.info(LTag.APS, "FUSE Marker-Ruecknahme rueckgaengig gemacht: quelle=${quelle.text} marker=${v.markerTs}")
+            true
+        }
+        if (aufgehoben) rxBus.send(EventRefreshOverview("FUSE Marker", true))
+        return aufgehoben
+    }
+
+    /**
+     * Eine faellige Vormerkung ausfuehren oder eine gegenstandslose verwerfen.
+     * Aufgerufen vom Zeitgeber UND zu Beginn jedes Zyklus - der Zyklus deckt
+     * ein Prozessende in der Frist ab.
+     *
+     * @return ob sich am Marker etwas getan hat.
+     */
+    private suspend fun faelligeRuecknahme(now: Long): Boolean = laufSperre.withLock { faelligeRuecknahmeUnterSperre(now) }
+
+    /** Der Teil unter der Sperre - der Zyklus haelt sie schon und ruft diesen direkt (die Sperre ist nicht wiedereintrittsfaehig). */
+    private suspend fun faelligeRuecknahmeUnterSperre(now: Long): Boolean {
+        run {
+            val v = ladeRuecknahmeVormerkung() ?: return false
+            return when (val e = MarkerRuecknahme.pruefe(now, v, mealMarkerArmedTs(), mealMarkerActive(now))) {
+                MarkerRuecknahme.Entscheid.Nichts -> false
+                is MarkerRuecknahme.Entscheid.Verwerfen -> {
+                    speichereRuecknahmeVormerkung(null)
+                    markerEreignis("WITHDRAWAL_DROPPED", now, v.quelle.text, v.markerTs, v.faelligTs)
+                    aapsLogger.info(LTag.APS, "FUSE Marker-Ruecknahme verworfen: grund=${e.grund} marker=${v.markerTs}")
+                    true
+                }
+                is MarkerRuecknahme.Entscheid.Ausfuehren -> {
+                    // Der GEWOHNTE Umschaltvorgang, mit der Ereignisordnung des
+                    // Tipps: ein inzwischen neueres Ereignis laesst ihn verfallen.
+                    // Unter der Sperre: der Umschaltvorgang selbst, nicht die sperrende Fassung.
+                    val laeuftNoch = toggleMealMarkerUnterSperre(
+                        now,
+                        ohneVorschuss = false,
+                        ereignisId = v.ordnung.takeIf { it > 0L }?.let { MarkerReauthorization.ereignisKennung(it) },
+                        quelle = "${v.quelle.text} nach Frist",
+                    )
+                    if (laeuftNoch) {
+                        speichereRuecknahmeVormerkung(null)
+                        markerEreignis("WITHDRAWAL_DROPPED", now, v.quelle.text, v.markerTs, v.faelligTs)
+                        aapsLogger.warn(LTag.APS, "FUSE Marker-Ruecknahme nicht ausgefuehrt: Ereignis veraltet, marker=${v.markerTs}")
+                    }
+                    true
+                }
+            }
+        }
+    }
+
+    /**
+     * Zeitpunkt des Knopfdrucks, 0 = kein Marker.
+     *
+     * `armedTs` ist die Quelle. Der ALTBESTAND-Stempel wird nur noch
+     * herangezogen, wenn `armedTs` leer ist - der Fall tritt genau einmal
+     * auf: ein Marker, der beim Update dieser Version gerade lief.
+     * `stamp / 10` liefert den Zeitpunkt fuer jede der drei alten Stufen.
+     */
+    fun mealMarkerArmedTs(): Long {
+        val ts = preferences.get(FuseLongKey.MealMarkerArmedTs)
+        // DER LEDGER IST DIE WAHRHEIT. Endete der Prozess zwischen dem
+        // Widerruf und dem Leeren der Preference, stuende hier ein Marker,
+        // den es nicht mehr gibt. Der Abgleich raeumt ihn auf, damit ein
+        // widerrufener Marker nicht ueber eine alte Preference wieder
+        // wirksam wird - und repariert die Preference gleich mit.
+        if (ts > 0L && MarkerReauthorization.widerrufen(
+                ts, ledgerAdapter.episodes.markerAuth, ledgerAdapter.episodes.markerRevocation,
+            )
+        ) {
+            preferences.put(FuseLongKey.MealMarkerArmedTs, 0L)
+            preferences.put(FuseLongKey.MealMarkerStamp, 0L)
+            // Auch dieser Weg entfernt einen Marker - er muss im Log stehen.
+            aapsLogger.warn(LTag.APS, "FUSE Marker durch Ledger-Abgleich entfernt: marker=$ts")
+            markerEreignis("RECONCILED", dateUtil.now(), "Ledger-Abgleich", ts)
+            return 0L
+        }
+        if (ts > 0L) return ts
+        val legacy = preferences.get(FuseLongKey.MealMarkerStamp)
+        return if (legacy > 0L) legacy / 10L else 0L
+    }
+
+    /**
+     * Den Marker-Autorisierungszustand festschreiben - MIT Ergebnis.
+     *
+     * `persistVerified` meldet einen Fehlschlag als `false`, nicht als
+     * Ausnahme. Den Rueckgabewert zu ignorieren hiess: die Preferences
+     * wurden trotzdem geaendert, und der Zustand auf der Platte passte
+     * nicht mehr zu dem im Speicher.
+     *
+     * Das Bedienereignis wird deshalb NICHT abgebrochen - der Nutzer hat
+     * gedrueckt, und ein nicht ausgefuehrter Abbruch waere schlimmer als
+     * ein verlorener Huellenanspruch. Stattdessen wird der
+     * Autorisierungsteil im Speicher ZURUECKGENOMMEN, damit beide Seiten
+     * dasselbe sagen: kein Widerruf vermerkt, keine neue Kennung, also
+     * beim naechsten Druck auch KEINE zusaetzliche Huelle. Die
+     * konservative Richtung.
+     */
+    private fun persistiereMarkerZustand(vorher: EpisodeAutorisierung?): Boolean {
+        val ok = runCatching { ledgerAdapter.persistVerified(ledgerDir()) }
+            .onFailure { aapsLogger.error(LTag.APS, "FUSE Marker-Autorisierung nicht geschrieben: $it") }
+            .getOrDefault(false)
+        if (!ok && vorher != null) {
+            // BEIDE WEGE NEHMEN DEN AUTORISIERUNGSTEIL ZURUECK, und beide
+            // Male ist das die konservative Richtung - nur mit
+            // verschiedenen Folgen:
+            //
+            // ABBRUCH: ohne Widerrufsvermerk gibt es spaeter keine
+            //   zusaetzliche Huelle. Der Abbruch selbst wird trotzdem
+            //   ausgefuehrt (der Aufrufer bricht nicht ab).
+            // START: der Marker wird gar nicht aktiviert, und die
+            //   Widerrufsmarke bleibt OFFEN - sonst haette dieser
+            //   gescheiterte Druck sie im Speicher verbraucht und der
+            //   naechste, erfolgreiche, faende keine mehr vor.
+            //
+            // Die Buchhaltung wird in keinem Fall angefasst.
+            aapsLogger.error(
+                LTag.APS,
+                "FUSE Marker-Autorisierung nicht festgeschrieben - Autorisierungsteil " +
+                    "zurueckgenommen, Buchhaltung unveraendert",
+            )
+            vorher.zurueck(ledgerAdapter.episodes)
+        }
+        return ok
+    }
+
+    /** Der Autorisierungsteil des Episodenzustands - fuer die Ruecknahme,
+     *  wenn das Festschreiben scheitert. Nur diese Felder; Buchhaltung,
+     *  Verbrauch und offene Posten werden NIE zurueckgesetzt. */
+    private class EpisodeAutorisierung(e: app.aaps.fuse.plugin.ledger.EpisodeBudgets) {
+        private val seq = e.markerAuthSeq
+        private val auth = e.markerAuth
+        private val revocation = e.markerRevocation
+        private val eventOrdnung = e.lastMarkerEventOrdnung
+        fun zurueck(e: app.aaps.fuse.plugin.ledger.EpisodeBudgets) {
+            e.markerAuthSeq = seq
+            e.markerAuth = auth
+            e.markerRevocation = revocation
+            e.lastMarkerEventOrdnung = eventOrdnung
+        }
+    }
+
+    /**
+     * Eine Ereignis-Ordnung ausgeben - beim ANZEIGEN der Rueckfrage.
+     *
+     * Wird sie erst beim Bestaetigen vergeben, traegt ein spaet
+     * bestaetigter alter Dialog eine ZU NEUE Ordnung und wirkt doch.
+     */
+    fun markerEreignisKennung(): String {
+        val e = ledgerAdapter.episodes
+        e.markerEventSeq += 1L
+        return MarkerReauthorization.ereignisKennung(e.markerEventSeq)
+    }
+
+    /** Die EINE Huelle [U] - fuer den Lieferstand im Tab. S. [toggleMealMarker]. */
+    fun mealMarkerEnvelopeU(): Double = preferences.get(FuseDoubleKey.PrimeEnvelopeU)
+
+    // ---- Der Knopf auf dem Uebersichtsschirm ------------------------------
+
+override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
+
+    // Aus dem LETZTEN Zyklus, nicht neu gerechnet - dieselbe Aussage wie im Trail (expectationAccount.fallback).
+    override fun fuseMarkerOhneKonto(now: Long): Boolean =
+        mealMarkerActive(now) && lastOutcome?.erwartungskonto?.rueckfall != null
+
+    /**
+     * Die Zahlen fuer die Rueckfrage - aus dem LETZTEN Zyklus, nicht neu gerechnet. Ein zweiter Rechenweg fuer
+     * dieselbe Groesse waere eine zweite Wahrheit, und der Dialog wuerde Zahlen zeigen, die der Regler so nie gesehen
+     * hat. Die Groessenordnung nennt das Erwartungskonto ([nurErwartungBisU], dieselbe Regel wie beim Buchen).
+     */
+    override suspend fun fuseMarkerPrompt(now: Long): FuseOverviewSource.MarkerPromptFacts? {
+        val letzter = lastOutcome
+        // FREMDES INSULIN - eigene Abfrage, und das ist hier KEIN Bruch der
+        // Regel oben. Jene verbietet einen zweiten Rechenweg fuer eine
+        // Groesse, die der Regler bereits fuehrt. Manuelles Insulin fuehrt er
+        // gerade NICHT (Auditbefund P0-2) - es gibt keine erste Wahrheit, an
+        // der sich eine zweite reiben koennte.
+        //
+        // Nur `Type.NORMAL`: SMB ist FUSEs eigener Kanal, PRIMING ist Schlauchfuellung und trifft keinen Koerper.
+        // Fehlschlaegt die Abfrage, bleibt der Wert null = UNBEKANNT und der
+        // Dialog behauptet nichts, statt 0,00 U zu zeigen.
+        val fremd = runCatching {
+            persistenceLayer.getBolusesFromTimeToTime(
+                now - MarkerPrompt.FOREIGN_WINDOW_MIN * 60_000L, now, true
+            ).filter { it.isValid && it.type == BS.Type.NORMAL }.sumOf { it.amount }
+        }.getOrNull()
+
+        val fakten = MarkerPrompt.Facts(
+            measuredLow = letzter?.state?.safetyHold == true,
+            foreignBolusU = fremd,
+            // Aus DEMSELBEN Zyklus wie die uebrigen Zahlen - kein zweiter
+            // Rechenweg. Nur wenn die Uhr wirklich knapp wird (Fall 1 des
+            // Audit-Nachtrags: die zweite Mahlzeit erbte den Topf der ersten
+            // und verlor ihn 55 Minuten spaeter mitten im Anstieg).
+            episodeRestMin = letzter?.let { o ->
+                val alter = o.evidenceEpisodeMin ?: return@let null
+                val deckel = o.evidenceEpisodeCapMin
+                (deckel - alter).takeIf { it in 0..MarkerPrompt.EPISODE_WARN_MIN }
+            },
+        )
+        return MarkerPrompt.required(armed = mealMarkerActive(now), facts = fakten)?.let {
+            FuseOverviewSource.MarkerPromptFacts(
+                measuredLow = it.measuredLow,
+                foreignBolusU = it.foreignBolusU,
+                episodeRestMin = it.episodeRestMin,
+                expectationOnlyMaxU = nurErwartungBisU(),
+            )
+        }
+    }
+
+    override suspend fun fuseMarkerToggle(now: Long, ohneVorschuss: Boolean, ereignisId: String?, nurErwartung: Boolean): Boolean =
+        toggleMealMarker(now, ohneVorschuss, ereignisId, quelle = MarkerRuecknahme.Quelle.UEBERSICHT.text, nurErwartung = nurErwartung)
+
+    /** Welche Erwartungskurve gilt (Toni) - dieselbe Regel wie im Regler. */
+    private fun wirksameKurve(): ExpectationCurveText.Wirksam = ExpectationCurveText.wirksam(
+        zeile = preferences.get(FuseStringKey.ExpectationCurve),
+        f30U = preferences.get(FuseDoubleKey.ExpectationCurveAt30U),
+        f60U = preferences.get(FuseDoubleKey.ExpectationCurveAt60U),
+        f90U = preferences.get(FuseDoubleKey.ExpectationCurveAt90U),
+        f120U = preferences.get(FuseDoubleKey.ExpectationCurveAt120U),
+    )
+
+    /**
+     * Bis zu wie viel [U] die Wahl "nur Erwartung" am Marker buchen kann: das Gesamtbudget der fruehen Versorgung
+     * bei stabilem Start - `null`, wenn sie nicht angeboten wird: keine gueltige Kurve, fruehe Versorgung aus oder
+     * Budget 0. Konsolidierung 2.0: der Vorgriff phi_0 des Kontos v1 ist entfallen - ohne fruehe Versorgung bucht das
+     * Konto kein Erwartungsbudget.
+     */
+    private suspend fun nurErwartungBisU(): Double? {
+        val kurve = app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(wirksameKurve().text) ?: return null
+        if (!preferences.get(FuseBooleanKey.EarlySupplyEnabled)) return null
+        return fruehesBudgetU(kurve)
+    }
+
+    /**
+     * E-034 v2: das Gesamtbudget bei stabilem Start, wie der Regler es am
+     * Marker buchen wuerde - mit DEMSELBEN Einheitskern-Bau (aktives Insulin,
+     * Profil-DIA). `null` = keine fruehe Versorgung (Einstellung ungueltig,
+     * kein Profil oder Modell, Budget 0).
+     */
+    private suspend fun fruehesBudgetU(kurve: app.aaps.fuse.core.controller.ExpectationAccount.Curve): Double? {
+        val einstellung = app.aaps.fuse.core.controller.EarlySupply.Settings.of(
+            scaleStable = preferences.get(FuseDoubleKey.EarlySupplyScaleStable),
+            scaleAfterLow = preferences.get(FuseDoubleKey.EarlySupplyScaleAfterLow),
+            budgetMaxU = preferences.get(FuseDoubleKey.EarlySupplyBudgetMaxU),
+            initialShare = preferences.get(FuseDoubleKey.EarlySupplyInitialShare),
+            maxPortionU = preferences.get(FuseDoubleKey.EarlySupplyMaxPortionU),
+            maxPerPeriodU = preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU),
+            periodMin = preferences.get(FuseIntKey.EarlySupplyPeriodMin),
+        ) ?: return null
+        val jetzt = dateUtil.now()
+        val kern = einheitskernJetzt(jetzt) ?: return null
+        return app.aaps.fuse.core.controller.EarlySupply.budgetU(
+            kurve, preferences.get(FuseIntKey.ExpectationHorizonMin), einstellung.scaleStable, einstellung.budgetMaxU,
+            app.aaps.fuse.core.controller.EarlySupply.unitActionOf(kern.kernel),
+        ).takeIf { it > 0.0 }
+    }
+
+    override suspend fun fuseMarkerRuecknahmeVormerken(now: Long, ereignisId: String?): Long? =
+        markerRuecknahmeVormerken(now, ereignisId, MarkerRuecknahme.Quelle.UEBERSICHT)
+
+    override suspend fun fuseMarkerRuecknahmeRueckgaengig(now: Long): Boolean =
+        markerRuecknahmeRueckgaengig(now, MarkerRuecknahme.Quelle.UEBERSICHT)
+
+    override fun fuseMarkerEreignis(): String = markerEreignisKennung()
+
+    /**
+     * E-034 v2 (Toni): die fruehe Versorgung der laufenden Mahlzeit ist durch ein gemessenes Tief gesperrt - und es
+     * gibt ein Budget, das die Bestaetigung wieder freigeben koennte. Ein Konto mit Budget 0 ("Nur Marker", fruehe
+     * Versorgung aus) liefert ohnehin keinen Erwartungsanteil; der Knopf haette dort nichts freizugeben.
+     */
+    fun fruehGesperrtNachTief(now: Long): Boolean =
+        mealMarkerActive(now) &&
+            ledgerAdapter.episodes.expectation?.let { it.early != null && it.earlyLowLocked && it.a0U > 0.0 } == true
+
+    /** Die Sperre ist schon bestaetigt (ab Sperrbeginn) - sie faellt, sobald das Tief vorbei und die Strecke erfuellt ist. */
+    fun fruehNachTiefBestaetigt(): Boolean {
+        val k = ledgerAdapter.episodes.expectation ?: return false
+        val t = preferences.get(FuseLongKey.EarlySupplyLowConfirmTs)
+        return k.earlyLowLocked && t > 0L && t >= k.earlyLowLockSinceTs
+    }
+
+    /**
+     * Toni: "Mahlzeit nach Tief bestaetigen" - die ausdrueckliche Wiederfreigabe. Kein neues Budget; die Sperre faellt
+     * erst, wenn das Tief vorbei und die Strecke erfuellt ist, und die weiteren Portionen rechnen alles IOB an.
+     */
+    fun bestaetigeMahlzeitNachTief(now: Long) {
+        if (fruehGesperrtNachTief(now)) preferences.put(FuseLongKey.EarlySupplyLowConfirmTs, now)
+    }
+
+    fun mealMarkerActive(now: Long): Boolean {
+        val ts = mealMarkerArmedTs()
+        return ts > 0 && now - ts in 0..(app.aaps.fuse.core.controller.OnsetChannel.MARKER_WINDOW_MIN * 60_000L)
+    }
+
+    /**
+     * KEINE PUMPENABHAENGIGE STARTVERWEIGERUNG MEHR (Auditbefund 10.08.2026).
+     *
+     * Hier stand ein `specialEnableCondition`-Override, das den Pumpen-Riegel
+     * zur Aktivierungsbedingung machte: mit einer nicht erlaubten Pumpe liess
+     * FUSE sich gar nicht erst als APS aktivieren. Das klingt sicherer, als es
+     * ist - AAPS behandelt "Plugin nicht verfuegbar" naemlich mit einem
+     * FALLBACK:
+     *
+     *   PluginStore.getTheOneEnabledInArray findet kein aktives APS
+     *     -> getDefaultPlugin(APS) = OpenAPSSMBPlugin wird eingeschaltet
+     *     -> ab da regelt OpenAPS SMB die ECHTE Pumpe, still
+     *   und der naechste ConfigBuilder-Vorgang schreibt FUSE dauerhaft als
+     *   deaktiviert fort (savePref ueber isEnabled()).
+     *
+     * Ausloeser genuegte ein Startzustand, in dem der Medtrum-Treiber sein
+     * Modell noch nicht geladen hat (deviceType 0 -> MEDTRUM_UNTESTED, ueber
+     * eine Coroutine nachgeladen). Aus einer voruebergehenden Unbekanntheit
+     * wurde so ein dauerhafter Reglerwechsel, den niemand angeordnet hat.
+     *
+     * Deshalb: FUSE bleibt AUSGEWAEHLT, und die Pumpenfreigabe liegt
+     * ausschliesslich im Laufzeit-Riegel. Bei geschlossenem Riegel gibt FUSE
+     * keine positive Aktuation ab (FuseRtBuilder), sagt es im Tab und meldet
+     * es mit eigener Dringlichkeit. Ein spaeter doch erkannter Nano wird im
+     * naechsten Zyklus von selbst freigegeben - ohne Bedienhandlung.
+     *
+     * Das Override entfaellt ersatzlos; die Basisklasse liefert `true`.
+     */
+
+    /**
+     * EIN FUSE-LAUF ZUR ZEIT, gleich wer aufruft.
+     *
+     * Zwei Laeufe teilen Ledger, Publikationen und die Felder des Vorzyklus
+     * (`published*`, Belege A bis D) und duerfen sich nie ueberlappen. Die
+     * regulaeren Ausloeser kommen alle ueber `LoopPlugin.invoke`, das
+     * `@Synchronized` ist. `OpenAPSFragment` ruft `activeAPS.invoke` dagegen
+     * direkt, am Lock des Loop vorbei - seine Ansicht gibt es nur, solange ein
+     * OpenAPS-Plugin aktiv ist, bei aktivem FUSE also nicht. Diese Sperre macht
+     * die Zusage unabhaengig davon: ein zweiter Aufrufer wartet, bis der erste
+     * fertig ist.
+     *
+     * Ein eigenes Objekt statt `@Synchronized`, damit niemand, der von aussen
+     * auf dem Plugin synchronisiert, in diese Sperre greift. Im Lauf wird kein
+     * Monitor genommen, der seinerseits auf diese Sperre wartet (vom Loop nur
+     * `lastRun`, ein einfaches Feld); die Reihenfolge ist immer Loop-Lock vor
+     * dieser Sperre.
+     *
+     * SEIT KI-177 AUCH DER MARKER-DRUCK ([toggleMealMarker]): er ist der einzige
+     * Ledger-Schreiber ausserhalb des Zyklus (die Reparatur laeuft schon am
+     * Zyklusanfang, s. FuseRepairScheduler). Er nimmt nur diese Sperre und
+     * darunter hoechstens `markerPressRing` - dieselbe Reihenfolge wie im Lauf,
+     * und der Lauf wartet nie auf die Bedienung.
+     */
+    /*
+     * v4: eine Coroutine-Sperre statt eines Monitors. `invoke()` ist suspend und kann den Thread wechseln -
+     * `synchronized` duerfte keinen Haltepunkt enthalten, und ein Thread-Schloss waere ueber einen
+     * Haltepunkt hinweg falsch. Die Sperre ist NICHT wiedereintrittsfaehig: wer sie haelt, ruft die
+     * "UnterSperre"-Fassungen direkt (der Zyklus die faellige Ruecknahme), nie die sperrenden.
+     */
+    private val laufSperre = Mutex()
+
+    /** Ab dieser Wartezeit auf [laufSperre] meldet der Marker-Druck sich im Log
+     *  (eine Sekunde; ein Zyklus dauert am Geraet deutlich darunter). */
+    private val markerWartenMeldenMs = 1_000L
+
+    /** Der Zeitgeber laeuft knapp NACH der Faelligkeit - vorher waere die Vormerkung noch nicht faellig. */
+    private val RUECKNAHME_NACHLAUF_MS = 200L
+
+    override suspend fun invoke(initiator: String, tempBasalFallback: Boolean) {
+        // v4: der Zyklus liest blockierend (s. FuseCycleRunner.lies) - also auf einem IO-Thread, nie auf dem Hauptthread.
+        laufSperre.withLock { withContext(Dispatchers.IO) { invokeUnterSperre(initiator, tempBasalFallback) } }
+    }
+
+    /** Der eigentliche Lauf. Nur ueber [invoke] erreichbar, also nur unter [laufSperre]. */
+    private suspend fun invokeUnterSperre(initiator: String, tempBasalFallback: Boolean) {
+        aapsLogger.debug(LTag.APS, "invoke from $initiator tempBasalFallback: $tempBasalFallback")
+        // Eine faellige Marker-Ruecknahme VOR dem Lauf: endete der Prozess in
+        // der Frist, holt der erste Zyklus sie nach, statt sie zu verschlucken.
+        // Nie auf Kosten des Zyklus: ein Fehler hier bricht den Lauf nicht ab.
+        runCatching { if (faelligeRuecknahmeUnterSperre(dateUtil.now())) rxBus.send(EventRefreshOverview("FUSE Marker", true)) }
+            .onFailure { aapsLogger.error(LTag.APS, "FUSE Marker-Ruecknahme im Zyklus fehlgeschlagen", it) }
+        lastAPSResult = null
+        // Scheibe 1: den Ausgang des VORIGEN Zyklus lesen, BEVOR dieser Lauf
+        // `publishedRt` ueberschreibt. Reine Messung.
+        leseVorigenAusgang()
+        // DEN ENTLASTUNGS-BELEG BILDEN, solange die published*-Felder noch den
+        // VORIGEN Zyklus beschreiben (gesetzt werden sie erst nach publish).
+        // Reine Messung - gebucht wird erst im events-Block, also VOR dem
+        // verifizierten Persist: eine Freigabe wirkt nie, bevor sie durabel ist.
+        notSentClaim = publishedProposalId
+            ?.takeIf { ledgerAdapter.hasOpenProposal(it) }
+            ?.let { id ->
+                app.aaps.fuse.core.ledger.NotSentProof.reasonFor(
+                    app.aaps.fuse.core.ledger.NotSentProof.Observation(
+                        correlated = priorActuation?.correlated == true,
+                        ledgerPublishedU = ledgerAdapter.publishedAmountOf(id),
+                        gateStripped = publishedGateStripped,
+                        gateSealed = publishedGateSealed,
+                        gatePersistFailed = publishedGatePersistFailed,
+                        aapsConstrainedU = priorActuation?.aapsConstrainedU,
+                        smbSetByPumpPresent = priorActuation?.smbSetByPumpPresent,
+                    )
+                )?.let { grund -> id to grund }
+            }
+
+        // KI-171: BELEG D. AAPS hat eine SMB verworfen, ohne die Pumpe
+        // anzusprechen, und die Ablage traegt die RT-Instanz der Anforderung.
+        // Zugeordnet wird ueber die eigenen Publikationen, per Referenz - der
+        // Beleg kann Zyklen spaeter kommen. Reine Messung wie oben; gebucht
+        // wird im events-Block, zusammen mit notSentClaim.
+        run {
+            val ablagen = runCatching { loop.value.lastRun?.smbNotSent }.getOrNull().orEmpty()
+            val zugeordnet = mutableListOf<String>()
+            val geschlossen = mutableListOf<String>()
+            val belege = mutableListOf<Pair<String, app.aaps.fuse.core.ledger.QueueRejectReason>>()
+            for (a in ablagen) {
+                val id = synchronized(recentPublications) {
+                    recentPublications.firstOrNull { it.first === a.request }?.second
+                } ?: continue
+                if (id in zugeordnet) continue
+                zugeordnet += id
+                // A bis C haben dieselbe Zeile schon: ein zweiter Grund waere ein
+                // Widerspruch im Reducer (PHASE_VIOLATION), also nur einer.
+                if (id == notSentClaim?.first) continue
+                if (!ledgerAdapter.hasOpenProposal(id)) {
+                    geschlossen += id
+                    continue
+                }
+                app.aaps.fuse.core.ledger.NotSentProof.reasonForPumpNeverCalled(
+                    app.aaps.fuse.core.ledger.NotSentProof.PumpNeverCalled(
+                        identityMatched = true,
+                        ledgerPublishedU = ledgerAdapter.publishedAmountOf(id),
+                        requestedU = a.requestedU,
+                    )
+                )?.let { grund -> belege += id to grund }
+            }
+            pumpNeverCalledClaims = belege.toList()
+            pumpNeverCalledTrace = PumpNeverCalledTrace(
+                recordsVisible = ablagen.size,
+                matched = zugeordnet.toList(),
+                claimed = belege.map { it.first },
+                alreadyClosed = geschlossen.toList(),
+            )
+        }
+
+        // ---- EIN Lesen der aktiven Pumpe je Zyklus --------------------------
+        //
+        // Alles Weitere wird HIERAUS abgeleitet: Typ, Emulationsflag,
+        // Epochenauswertung, Pinnung, Riegel. Frueher standen dafuer mehrere
+        // getrennte `activePlugin.activePump`-Zugriffe im Zyklus, und die
+        // koennten - bei einem Pumpenwechsel mitten im Durchlauf - Merkmale aus
+        // verschiedenen Momenten paaren. Genau diese Falle ist beim Serial
+        // schon einmal aufgetreten.
+        //
+        // Der SERIAL bleibt bewusst draussen (s. [FuseActivePump]): er wird
+        // nach einem Prozessstart asynchron nachgeladen und darum so SPAET wie
+        // moeglich gelesen - naemlich erst beim Pinnen.
+        val pumpe = runCatching { activePlugin.activePump }.getOrNull()
+        // v4: Treiber auspacken und Basalrate in Insulin-Einheiten (s. FuseActivePump.of).
+        val roherSnapshot = FuseActivePump.of(pumpe, ch.concentration)
+
+
+        // Ledger VOR dem Lauf restaurieren - NICHT wie warmGraphRingOnce nach
+        // dem Lauf: der Zyklus rechnet mit den restaurierten Commitments und
+        // Episodenbudgets, ein nachtraegliches Laden kaeme eine Dosis zu spaet.
+        // Davor der einmalige Umzug ins app-private Verzeichnis (Fix 8).
+        // FAIL-CLOSED (Fix 1a, REG-03): schlaegt der Umzug fehl, wird NICHT
+        // geladen (loadOnce bliebe sonst auf dem leeren Ziel haengen) und der
+        // Adapter haelt diesen Lauf wie unter recoveryHold an - kein positiver
+        // SMB, solange die Vorgeschichte nicht sicher uebernommen ist. Der
+        // naechste invoke versucht den Umzug erneut.
+        // TIEF-GEDAECHTNIS VOR DEM LAUF (frueherer Vorfall, s. FuseLowMemory).
+        // Hier und nicht bei warmGraphRingOnce: das laeuft NACH dem Zyklus,
+        // und der erste Zyklus nach einem Flash ist genau der, in dem der
+        // Rebound-Schutz fehlte. Ein Lesefehler bleibt folgenlos - dann gilt
+        // wieder der alte Zustand, nie ein erfundener.
+        warmLastLowOnce()
+
+        if (migrateLedgerDirOnce()) {
+            // ---- REPARATUR: hier und NUR hier ------------------------------
+            //
+            // Die Stelle ist genau gewaehlt. Davor steht die Verzeichnis-
+            // umstellung, damit die Reparatur nicht in ein Verzeichnis greift,
+            // das gleich noch Dateien bekommt. Danach kommt `loadOnce` - der
+            // frische Adapter laedt also im SELBEN Zyklus die reparierte
+            // (leere) Generation, ohne Zwischenzustand.
+            //
+            // Und vor allem: hier hat noch kein Zyklus dieses Prozesses
+            // gerechnet oder geschrieben. Genau daran scheiterte der erste
+            // Entwurf, der die Dateien vom UI-Thread aus umraeumte.
+            fuehreReparaturAus(roherSnapshot)
+            // Dieselbe Grenze: DATEIEN, vor dem Laden, kein Zyklus dieses
+            // Durchlaufs hat gerechnet oder geschrieben.
+            fuehreWiederherstellungAus()
+            ledgerAdapter.noteMigrationDone()
+            // B3: der PUMPENKONTEXT gehoert zum Laden. Die Migration braucht
+            // ihn, weil eine v1-Zeile gar keinen Pin hat - ob sie gefahrlos
+            // als Altbestand weiterbinden darf, haengt daran, welche Pumpe
+            // heute laeuft. Ohne ihn kaeme immer "unbekannt" an, und jede
+            // offene Altzeile ginge auch auf der VirtualPump in den Hold:
+            // fail-closed, aber unnoetig blockierend.
+            runCatching {
+                ledgerAdapter.loadOnce(ledgerDir(), sessionId, dateUtil.now(), roherSnapshot) {
+                    aapsLogger.error(LTag.APS, it)
+                }
+            }.onFailure { aapsLogger.error(LTag.APS, "FUSE ledger load failed", it) }
+            // ---- HOLD-QUITTUNG: hier und NUR hier ---------------------------
+            //
+            // NACH `loadOnce`, anders als die Reparatur eine Handvoll Zeilen
+            // weiter oben. Der Unterschied ist nicht Geschmack: die Reparatur
+            // arbeitet auf DATEIEN und muss vor dem Laden laufen, die Quittung
+            // arbeitet auf dem GELADENEN Zustand. Liefe sie davor, traefe sie
+            // im ersten Zyklus eines Prozesses einen leeren Zustand, wuerde
+            // mangels Zeile mit einem NEUEN `UNKNOWN_PROPOSAL` abgewiesen und
+            // von `loadOnce` anschliessend ueberschrieben. Und das ist nicht
+            // der Randfall: ein Hold ueberlebt den Neustart, die Quittung wird
+            // also typischerweise NACH einem Neustart erteilt.
+            fuehreHoldQuittungAus()
+        } else {
+            ledgerAdapter.noteMigrationFailed()
+        }
+
+        // `LoopPlugin.invoke` hat try/finally OHNE catch: eine Ausnahme von hier
+        // wuerde den gesamten Loop-Durchlauf abbrechen — inklusive der Schritte
+        // nach dem APS-Aufruf. Deshalb faengt FUSE selbst und liefert ein
+        // Ergebnis, das nichts anfordert, aber den Grund traegt.
+        // B3: die aktuelle PATCH-EPOCHE fuer diesen Zyklus bestimmen, BEVOR
+        // gebunden oder publiziert wird.
+        //
+        // GENAU EINE Abfrage, und KEIN Rueckfall auf einen aelteren
+        // Datensatz: `getLastTherapyRecordUpToNow` liefert den neuesten
+        // gueltigen Wechsel. Passt der nicht zur aktiven Pumpe, ist die Epoche
+        // unbekannt - auf einen aelteren passenden auszuweichen waere die
+        // Behauptung, seither sei nichts geschehen, und genau das ist
+        // unbekannt.
+        // Die Epoche geht IN den Snapshot, statt daneben zu leben: danach
+        // gibt es genau EINE Groesse, die den Pumpenzustand dieses Zyklus
+        // beschreibt, und niemand kann versehentlich zwei Teile aus
+        // verschiedenen Momenten paaren.
+        val aktivePumpe = roherSnapshot.withPatchEpoch(
+            FusePatchEpochSource.current(persistenceLayer, roherSnapshot, dateUtil.now())
+        )
+        val patchEpoch = aktivePumpe.patchEpoch!!
+        // EIN Kontext aus EINEM Snapshot: Epoche, Emulationsnachweis und
+        // Identitaet koennen so gar nicht mehr auseinanderlaufen.
+        ledgerAdapter.observeBindingContext(
+            app.aaps.fuse.plugin.ledger.LedgerPumpBindingContext(
+                virtualPump = aktivePumpe.virtualPump,
+                pumpTypeName = aktivePumpe.pumpTypeName,
+                serialHash = aktivePumpe.serialHash,
+                patchEpochTs = patchEpoch.epochTs,
+            )
+        )
+
+        // DIE VORHER-KOPIE ENTSTEHT HIER, VOR DEM LAUF - nicht im Outcome.
+        //
+        // Der Runner setzt den Evidenzbestand auf den Folgestand, damit der
+        // Persist ihn mitnimmt. Wirft er DANACH, ist `outcome` null: der
+        // veraenderte Zustand steht im Ledger, und die Ruecknahme-Adresse waere
+        // mit dem Outcome verlorengegangen (Toni 12.08.). Genau der Pfad, auf
+        // dem FUSE am wenigsten weiss, haette dann als einziger keine
+        // Ruecknahme gehabt.
+        //
+        // `EvidenceStock.State` ist eine Datenklasse ohne veraenderliche
+        // Felder - die Referenz ist die Kopie.
+        val evidenzVorLauf = ledgerAdapter.episodes.evidenceState
+        // Bis das Publikationsgate den Persist bestaetigt hat, gilt der im
+        // Runner geschriebene Folgestand als UNVERSIEGELT. Wirft irgendetwas
+        // zwischen run() und sealCycleState (GraphRing, RT-Bau, commitmentOf),
+        // liefe der naechste Zyklus sonst auf Evidenz, die nie auf Platte
+        // stand - genau das Loch, das der Ein-Zyklus-Verzug schliessen soll
+        // (Audit 15.08., P2). Das finally unten rollt dann zurueck.
+        var sealEntschieden = false
+        try {
+
+        val outcome = try {
+            cycleRunner().run(tempBasalFallback, aktivePumpe)
+        } catch (e: Exception) {
+            aapsLogger.error(LTag.APS, "FUSE cycle failed", e)
+            // SUB-02 Rest (Codex Re-Review 603a15a): eine Ausnahme umgeht das
+            // interne abort() und liesse den Puls-Uebertrag stehen - eine
+            // Zusage aus einem Zyklus, der nie zu Ende gerechnet wurde.
+            runCatching { cycleRunner().discardSubStepCarry() }
+            null
+        }
+        warmGraphRingOnce()
+        lastOutcome = outcome
+        outcome?.let { o ->
+            val ts = o.sourceTs ?: o.computeTs
+            val sig = o.signal
+            synchronized(graphRing) {
+                if (graphRing.lastOrNull()?.timestamp != ts) {
+                    graphRing.addLast(
+                        app.aaps.core.interfaces.overview.FuseOverviewSource.Point(
+                            timestamp = ts,
+                            driveMgdlPerMin = sig?.rSigned?.takeIf { it.isFinite() },
+                            fastDriveMgdlPerMin = sig?.let { (it.ukfRatePerMin + it.activityAtAnchor * it.isfAtAnchor).takeIf { v -> v.isFinite() } },
+                            guardMarginMgdl = FuseGraphMargin.guardMarginMgdl(o.decision.minLowerMgdl, o.policy?.guardFloorMgdl ?: 70.0),
+                            // Schwanz-Kante in mg/dl - Regeln s. FuseGraphMargin
+                            // (der unphysiologische Ausgang hat KEINEN ISF-Nenner,
+                            // sperrt aber; er gehoert auf den unteren Anschlag).
+                            tailMarginMgdl = o.decision.tail?.let { t ->
+                                FuseGraphMargin.tailMarginMgdl(t.headroomU, t.isfTailMgdlPerU, t.invalidReason)
+                            },
+                            // Konto: dieselben Regeln wie im Warmstart oben (FuseGraphMargin).
+                            mealWindow = o.erwartungskonto?.let { it.gilt || it.rueckfall != null } == true,
+                            expectedMealDriveMgdlPerMin = o.erwartungskonto?.takeIf { it.gilt }
+                                ?.zyklus?.eval?.early?.expectedDriveMgdlPerMin?.takeIf { it.isFinite() },
+                            guardWithMealMarginMgdl = o.erwartungskonto?.fruehUntenMitMahlzeitMgdl
+                                ?.let { FuseGraphMargin.guardMarginMgdl(it, o.policy?.guardFloorMgdl ?: 70.0) },
+                            tailWithMealMarginMgdl = o.erwartungskonto?.fruehSchwanzMitMahlzeit?.let { t ->
+                                FuseGraphMargin.tailMarginMgdl(t.headroomU, t.isfTailMgdlPerU, t.invalidReason)
+                            },
+                            accountStatus = o.erwartungskonto?.let {
+                                FuseGraphMargin.accountStatus(it.gilt, it.rueckfall, it.zyklus?.eval?.status)
+                            },
+                        )
+                    )
+                    while (graphRing.size > 1_500) graphRing.removeFirst()
+                }
+            }
+        }
+
+        val rt = if (outcome == null) {
+            // C7c (Codex-Adjudication D-Tabelle C7 / Frage 2, K2 Punkt 10):
+            // hier stand `tbr = null` - eine bereits laufende POSITIVE TBR lief
+            // damit ungehindert weiter, obwohl der Abbruch-Vertrag (F-P0-07)
+            // genau das verhindern soll. Der Ausnahmepfad ist der Pfad, auf dem
+            // FUSE am wenigsten weiss; er darf nicht der einzige sein, der die
+            // Aktuatoren unberuehrt laesst. Jetzt gilt DERSELBE Vertrag wie in
+            // runner.abort(), aus DERSELBEN Implementierung.
+            // EINE Uhrlesung fuer Klassifikation und RT: zwei Lesungen waeren
+            // zwei verschiedene Momentaufnahmen in derselben Entscheidung.
+            val abortTs = dateUtil.now()
+            val abortTbr = FuseAbortTbr.evaluate(processedTbrEbData, profileFunction, abortTs)
+            if (abortTbr.alarm)
+                aapsLogger.error(LTag.APS, "FUSE exception path: running TBR not classifiable - no intervention")
+            FuseAbortTbr.abortRt(
+                nowMs = abortTs,
+                gate = aktivePumpe.gate,
+                outcome = abortTbr,
+            )
+        } else {
+            FuseRtBuilder.build(
+                // deliverAt aus der WANDUHR, nicht aus dem Zyklusanfang: der Loop
+                // verwirft einen Mikrobolus, dessen deliverAt mehr als etwa eine
+                // Minute zurueckliegt. Ein langsamer Zyklus wuerde seinen eigenen
+                // SMB verfallen lassen.
+                nowMs = dateUtil.now(),
+                bgMgdl = outcome.bgMgdl,
+                targetMgdl = outcome.targetMgdl,
+                iobU = outcome.iobU,
+                decision = outcome.decision,
+                tbr = outcome.tbr,
+                gate = outcome.gate,
+                profileIsfMgdlPerU = outcome.isfMgdlPerU,
+                targetSource = outcome.targetSource,
+                signal = outcome.signal,
+                band = outcome.band,
+                methodId = outcome.band?.let { app.aaps.fuse.core.signal.PairSlopeBand.methodId(preferences.get(FuseIntKey.DriveLowerQuantilePct), preferences.get(FuseIntKey.TheilSenWindowMin)) },
+                minMeanMgdl = outcome.prediction?.minMeanBg,
+                predictorRejected = outcome.predictorRejected,
+                predictorReason = outcome.predictorReason,
+                markerFallbackUsed = outcome.markerFallbackUsed,
+            )
+        }
+        outcome?.let { if (it.abortReason != null) rt.reason.append(" | abort=").append(it.abortReason) }
+
+        // Die Cycle-Id ist zugleich die proposalId des Ledgers - sie entsteht
+        // deshalb HIER und nicht erst im Export.
+        val cycleId = sessionId + "#" + (++cycleCounter)
+
+        // Ledger-Verdrahtung + PUBLIKATIONS-GATING (Audit R95 Fix 3; Audit
+        // 2d273cb REG-01a): erst der NEUE Vorschlag (nur wenn das RT wirklich
+        // units traegt - das Gate hat sie sonst schon gefiltert), dann
+        // Identitaeten binden, Vollsicht abgleichen, aufraeumen - und dann
+        // MUSS ein VERIFIZIERTER Persist liegen, BEVOR der Loop das RT sieht.
+        // Schlaegt der Persist fehl oder wirft ein Ledger-Schritt, publiziert
+        // das Gate das RT OHNE SMB (Safety-TBR bleibt): ein Commitment, das
+        // nicht auf Platte steht, existiert nach einem Kill nicht mehr, und
+        // die Huelle stuende ein zweites Mal zur Verfuegung. persistFailed
+        // haelt zusaetzlich kuenftige Zyklen ueber view().hold zu.
+        // B0a (Codex-Gegenpruefung F3): OHNE Behandlungs-Vollsicht wird nicht
+        // dosiert - und dann auch nicht gebucht.
+        //
+        // `FuseCycleRunner` liefert `treatmentView = runCatching{…}.getOrNull()`;
+        // eine scheiternde Datenbankabfrage soll den Zyklus nicht kosten. Fuer
+        // eine MENGE reicht das aber nicht: ohne Vollsicht laufen Bindung,
+        // Reconciliation und prune nicht, und der C5-Anker des Vorschlags
+        // (`latestBolusTs`) waere unbekannt. Der bisherige Code hat an dieser
+        // Stelle `?: 0L` eingesetzt - eine 0 ist aber kein unbekannter
+        // Zeitstempel, sondern der aelteste denkbare, und sie hat den C5-Guard
+        // der spaeteren Bindung fuer genau diese Zeile entwertet.
+        //
+        // WARUM NICHT EINFACH `onPublished` UNTER `treatmentView?.let`
+        // VERSCHIEBEN: dann entstuende keine Zeile, das Gate sah aber weiterhin
+        // fehlerfreie Ereignisse und einen gelungenen Persist - und haette die
+        // Menge publiziert. Genau deshalb traegt das Gate seit dem Vorcommit
+        // einen expliziten Commitment: hier wird ausgesprochen, dass NICHTS
+        // gebucht wird, und das Gate entfernt daraufhin units und deliverAt.
+        // Die Safety-TBR bleibt.
+        val expected = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.commitmentOf(
+            units = rt.units,
+            treatmentViewPresent = outcome?.treatmentView != null,
+            proposalId = cycleId,
+            // B3: nur bei einer PATCHPUMPE, nicht bei "realer Pumpe".
+            //
+            // Das ist die praezisere Bedingung UND die richtige Schichtung:
+            // die Epoche ist eine Eigenschaft von PATCHPUMPEN, nicht von
+            // realen Pumpen. Auf `FusePumpGate` abzustellen wuerde B3 an den
+            // Pumpenriegel koppeln, obwohl beide verschiedene Fragen
+            // beantworten - der Riegel sagt, WOGEGEN aktuiert werden darf, die
+            // Epoche, OB ein Bolus derselben Patchgeneration angehoert. Eine
+            // kuenftige nicht-Patch-Realpumpe braucht keine Epoche, und eine
+            // Patchpumpe braucht sie auch dann, wenn der Riegel sich aendert.
+            //
+            // Gegen die VirtualPump gibt es keine Patches; dort waere die
+            // Epoche immer unbekannt und die Sperre haette den
+            // Entwicklungspfad stillgelegt.
+            //
+            // Und "VirtualPump" ist NICHT am Typnamen zu erkennen: dort ist er
+            // eine Preference und steht auf dem Testgeraet auf MEDTRUM_NANO
+            // (s. [FuseActivePump]). Deshalb steht das Klassenmerkmal in der
+            // Bedingung VOR der Typpruefung - und die Bedingung selbst steht
+            // drueben am Zustand, wo sie einzeln pruefbar ist.
+            realPumpEpochUnknown = aktivePumpe.realPumpEpochUnknown,
+            // Ohne Identitaet entstuende ein Pin, der als Wildcard jeden
+            // typgleichen Bolus bindet. An der VirtualPump ist das noetig
+            // (leerer Serial nach dem Prozessstart), an einer echten Pumpe
+            // ein Freibrief.
+            realPumpIdentityUnknown = aktivePumpe.realPumpIdentityUnknown,
+        )
+
+        val publication = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.publish(
+            rt = rt,
+            adapter = ledgerAdapter,
+            dir = ledgerDir(),
+            expected = expected,
+            // WAS DIESER ZYKLUS TATSAECHLICH HINAUSGIBT.
+            //
+            // Die Menge aus dem RT (nicht aus der Entscheidung): das Gate
+            // stempelt, was PUBLIZIERT wird. Und `tbrChanged` aus dem Runner,
+            // der als einziger beides kennt - die laufende Sicht und die neue
+            // Anforderung. Fehlt ein Outcome (Abbruch vor dem Lauf), ist
+            // beides unbekannt und der Stempel zaehlt es als Eingriff; das
+            // ist die konservative Richtung.
+            published = InterventionStamp.Published(
+                smbU = rt.units,
+                tbrChanged = outcome?.tbrChanged,
+            ),
+            events = {
+                // ZUERST die Vorgaengerzeile entlasten (s. NotSentProof): auch
+                // ein Abbruchzyklus ohne eigenen Vorschlag muss das koennen,
+                // deshalb bewusst AUSSERHALB von outcome?.let und VOR der
+                // Buchung der neuen Menge.
+                //
+                // KI-171: dazu die Belege D - aeltere Zeilen, fuer die AAPS
+                // inzwischen "Pumpe nie angesprochen" abgelegt hat. Dieselbe
+                // Buchung, derselbe Weg; eine Zeile hoechstens einmal. Fuer eine
+                // aeltere Zeile findet revokeSettled keine Ablage mehr - die
+                // Episodenzaehler bleiben dann belastet (konservativ), frei wird
+                // die Haftung.
+                (listOfNotNull(notSentClaim) + pumpNeverCalledClaims).distinctBy { it.first }.forEach { (id, grund) ->
+                    if (ledgerAdapter.hasOpenProposal(id)) {
+                        ledgerAdapter.onProvenNotSent(id, grund)
+                        if (pumpNeverCalledClaims.any { it.first == id })
+                            aapsLogger.debug(LTag.APS, "FUSE KI-171: Haftung $id entlastet - AAPS hat die Pumpe nie angesprochen")
+                    }
+                    // UND DIE EPISODENZAEHLER MIT (Toni 19.08., P0).
+                    //
+                    // Die Ledger-Zeile allein reicht nicht: primeSpentU,
+                    // mealDeliveries, evidenceCommittedU und onsetSpentU
+                    // stehen daneben und zaehlten
+                    // bisher die PUBLIZIERTE Menge - also die vor dem
+                    // AAPS-Intervalltor. In einem echten Fall hiess das: die ganze Huelle in der
+                    // Buchfuehrung, zwei Schritte weniger in der Pumpendatenbank. FUSE hielt
+                    // die Huelle fuer geliefert, meldete WINDOW_OVER und holte
+                    // die fehlenden zwei Schritte nie nach.
+                    //
+                    // Bewusst NEBEN onProvenNotSent und mit demselben Beweis:
+                    // zwei Buecher ueber denselben Vorgang muessen gemeinsam
+                    // korrigiert werden, sonst driften sie genau hier
+                    // auseinander.
+                    //
+                    // `revokeSettled` liefert einen TYPISIERTEN Ausgang; der
+                    // Grund des Beweises spielt fuer die Menge keine Rolle.
+                    // (Konsolidierung 2.0: Phase und Phase-B-Uebertrag des
+                    // Fundaments sind entfallen.)
+                    val zurueck = ledgerAdapter.revokeSettled(id)
+                    if (zurueck.amountU > 0.0) aapsLogger.debug(
+                        LTag.APS,
+                        "FUSE: Episodenzaehler um ${zurueck.amountU} U zurueckgedreht " +
+                            "($grund, $id, " +
+                            // OB DIE HUELLE MITGING: bei einer Buchung aus einer
+                            // anderen oder unbewiesenen Autorisierung wird global
+                            // vollstaendig zurueckgedreht, die laufende Huelle
+                            // aber nicht entlastet.
+                            (if (zurueck.fundamentEntlastet) "Huelle entlastet)"
+                            else "Huelle NICHT entlastet - fremde Autorisierung)"),
+                    )
+                }
+                notSentClaim = null
+                pumpNeverCalledClaims = emptyList()
+                outcome?.let { o ->
+                    // Gebucht wird NUR, wenn das Gate diese Zeile auch
+                    // ERWARTET - sonst entstuende eine Haftung fuer eine Menge,
+                    // die nie hinausgeht (Phantom-Commitment). Die Bedingung
+                    // wird deshalb aus `expected` abgeleitet und nicht ein
+                    // zweites Mal unabhaengig formuliert.
+                    if (expected is app.aaps.fuse.plugin.ledger.LedgerPublicationGate.Commitment.Proposal &&
+                        rt.units != null && o.treatmentView != null
+                    ) {
+                        // Fix 3 (Re-Audit 6.3): die JETZT aktive Pumpe wird an
+                        // den Vorschlag gepinnt - ein spaeter gleich grosser
+                        // SMB einer ANDEREN (z.B. frisch gewechselten) Pumpe
+                        // darf die Zeile nicht binden. Ableitung wie
+                        // LedgerFacts aus dem BS-Datensatz: PumpType.name und
+                        // Sha des Serials. runCatching je Teil: eine zickende
+                        // Pumpen-API degradiert nur zur Alt-Bindung (ohne
+                        // Pinnung), sie wirft den Ledger-Schritt nicht ab.
+                        // EINMAL gelesen und an BEIDE Stellen gegeben: die
+                        // kanonische Serialform haengt seit der Codex-
+                        // Gegenpruefung (F7) vom Pumpentyp ab. Zwei getrennte
+                        // Lesungen koennten einen Typ mit einem Serial aus
+                        // einem anderen Moment paaren. Typ und Klassenmerkmal
+                        // stammen jetzt aus dem Zyklusanfang - derselbe
+                        // Lesevorgang, der auch die Epoche bestimmt hat.
+                        val pumpTypeName = aktivePumpe.pumpTypeName
+                        ledgerAdapter.onPublished(
+                            proposalId = cycleId,
+                            unitsU = rt.units!!,
+                            decisionTs = o.computeTs,
+                            // Kein `?: 0L` mehr: gebucht wird nur MIT
+                            // Vollsicht, der C5-Anker ist also immer echt.
+                            latestBolusTs = o.treatmentView.latestBolusTs,
+                            bolusStepU = o.state?.pumpIncrementU ?: Double.NaN,
+                            pumpTypeName = pumpTypeName,
+                            // LEER IST NICHT "EIN ANDERES GERAET" (Live-Befund,
+                            // s. LedgerFacts.serialHashOf): direkt nach
+                            // einem Prozessstart liefert serialNumber() den
+                            // leeren String, weil InstanceId auf die
+                            // asynchrone Firebase-Antwort wartet. Ohne diese
+                            // Regel wird der leere Serial als Identitaet
+                            // gepinnt, und der Sekunden spaeter mit dem echten
+                            // Serial gebuchte Bolus passt nie mehr auf die
+                            // eigene Zeile.
+                            // AUS DEM SNAPSHOT, nicht aus einer zweiten Lesung
+                            // (P0, Codex 10.08.): sonst koennten
+                            // Publikationspruefung und Pin verschiedene
+                            // Identitaeten verwenden - Snapshot sagt "Serial
+                            // bekannt, SMB erlaubt", und der Pin bekommt
+                            // Sekunden spaeter einen leeren oder anderen.
+                            pumpSerialHash = aktivePumpe.serialHash,
+                            // Die EMULATION wird mitgepinnt, nicht spaeter aus
+                            // dem Typnamen rekonstruiert: eine umgestellte
+                            // VirtualPump-Preference wuerde sonst alte Zeilen
+                            // rueckwirkend umdeuten.
+                            virtualPump = aktivePumpe.virtualPump,
+                        )
+                    }
+                    o.treatmentView?.let { v ->
+                        ledgerAdapter.bindIdentities(v.boluses)
+                        ledgerAdapter.onCycleSnapshot(v.facts, v.snapshotHash, o.computeTs)
+                        ledgerAdapter.prune(o.computeTs, v.diaHours)
+                    }
+                }
+            },
+            onError = { aapsLogger.error(LTag.APS, "FUSE ledger update failed", it) },
+        )
+        // ---- SEAL_CYCLE_STATE: der Zustand ist versiegelt - oder nicht ----
+        //
+        // `publish` fuehrt den Persist UNBEDINGT aus, auch ohne Vorschlag,
+        // nach einem Wurf und in jedem Abbruchzyklus. Was bisher fehlte, war
+        // die KONSEQUENZ auf der Zustandsseite: der Runner hat den
+        // Evidenzbestand bereits auf den Folgestand gesetzt, damit der Persist
+        // ihn mitnimmt. Ist der gescheitert, darf dieser Folgestand nicht im
+        // Speicher weiterleben - sonst rechnete der naechste Zyklus auf
+        // Evidenz, die nie auf Platte stand, und der Ein-Zyklus-Verzug waere
+        // ausgerechnet im Fehlerfall wirkungslos.
+        //
+        // Zurueckrollen statt "UNKNOWN markieren": der vorige Stand IST
+        // bekannt und belegt. Ihn zu verwerfen waere strenger als noetig und
+        // wuerde eine gesicherte Episode wegen eines Schreibfehlers verlieren.
+        sealEntschieden = true
+        if (ledgerAdapter.sealCycleState(publication.sealed, evidenzVorLauf))
+            aapsLogger.error(
+                LTag.APS,
+                "FUSE SEAL_CYCLE_STATE fehlgeschlagen - Evidenzbestand auf den versiegelten Stand zurueckgerollt",
+            )
+
+        val publishRt = publication.rt
+        if (!publication.allowed && rt.units != null)
+            aapsLogger.error(LTag.APS, "FUSE SMB stripped from published RT: ${publication.reason}")
+
+        // DIE RESERVIERUNG AUFLOESEN (11.08.). Der Runner hat die Episodenbudgets
+        // gegen das PUMPEN-Gate belastet, bevor dieses hier gelaufen ist. Erst
+        // jetzt steht fest, was wirklich hinausgeht.
+        //
+        // `publishRt.units` ist die publizierte Menge NACH dem Gate: hat es die
+        // Zeile entfernt, steht dort null, und die Reservierung wird freigegeben.
+        // Wird dieser Punkt nie erreicht (Ausnahme davor, Prozessende), bleibt
+        // die Belastung stehen - der gewollte UNKNOWN-Ausgang.
+        // Die cycleId geht MIT: nur ueber sie kann ein Nicht-Sende-Beweis im
+        // Folgezyklus genau diese Buchung wiederfinden (s.
+        // EpisodeBudgets.Settled).
+        outcome?.let { o ->
+            ledgerAdapter.resolveReservation(o.computeTs, publishRt.units ?: 0.0, proposalId = cycleId)
+        }
+
+
+        // Fuer die Messung im NAECHSTEN Zyklus merken: die RT-Instanz selbst,
+        // nicht ihre Zahlen - sie ist der Identitaetsschluessel.
+        publishedRt = publishRt
+        publishedTs = outcome?.computeTs ?: 0L
+        // Im selben Atemzug: der Zustand, den der NAECHSTE Zyklus als Beleg
+        // liest. `stripped` heisst, das Gate hat eine vorhandene Menge
+        // entfernt; ohne Siegel gilt der Beschluss als nicht festgeschrieben.
+        publishedProposalId = cycleId.takeIf { ledgerAdapter.hasOpenProposal(it) }
+        publishedGateStripped = !publication.allowed && rt.units != null
+        publishedGateSealed = publication.sealed
+        publishedGatePersistFailed = !publication.sealed
+        // KI-171: dieselbe RT-Instanz mit ihrer Zeile merken, damit ein spaeter
+        // Nie-gesendet-Beleg aus AAPS sie noch findet. Nur mit offener Zeile und
+        // publizierter Menge - ohne Menge gibt es keine SMB, die AAPS verwerfen
+        // koennte.
+        publishedProposalId?.let { id ->
+            if ((publishRt.units ?: 0.0) > 0.0) synchronized(recentPublications) {
+                recentPublications.addLast(publishRt to id)
+                while (recentPublications.size > RECENT_PUBLICATIONS_MAX) recentPublications.removeFirst()
+            }
+        }
+
+        // MEALSTATS NACH der Aufloesung neu rechnen (Review 11.08.). Der Runner
+        // hat sie VOR dem Publikationsgate gebildet; wurde die Reservierung
+        // gerade zurueckgedreht, zeigte der eingefrorene Stand eine Menge, die
+        // es nicht mehr gibt. Das trifft nicht den naechsten Regelzyklus - der
+        // liest die Budgets ohnehin frisch -, aber Trail und Schirm GENAU
+        // dieses Zyklus, also die Zahlen, an denen die Mahlzeit ausgewertet
+        // wird. Dieselbe Funktion wie im Runner, keine zweite Fassung.
+        val exportOutcome = outcome?.let { o ->
+            // ---- DIE ENDGUELTIGE MENGE KOMMT VON HIER, NICHT AUS DEM RUNNER --
+            //
+            // Die Kette ist Runner -> applyBlock -> Pumpen-Gate ->
+            // PUBLIKATIONS-GATE -> APSResult. Der Runner bildet
+            // `smbActuatedU` VOR dem letzten Tor; entfernt das
+            // Publikations-Gate die Zeile danach, uebergibt FUSE gar keinen
+            // SMB an AAPS - der Export zeigte trotzdem eine positive Menge,
+            // und das Widget daneben "FREI".
+            //
+            // `publishRt.units` ist die Zahl, die AAPS tatsaechlich bekommt.
+            // "AN AAPS UEBERGEBEN" heisst weiterhin NICHT "von der Pumpe
+            // bestaetigt" - das ist die naechste Grenze und eine andere Zahl.
+            // Die Entscheidung selbst steht in [FuseFinalDelivery] - hier
+            // nur der Aufruf. `invoke()` hat keinen Testrahmen; als reine
+            // Funktion ist der Vertrag pruefbar, und es gibt keine zweite
+            // Fassung derselben Regel.
+            val endstand = FuseFinalDelivery.bestimme(
+                runnerActuatedU = o.smbActuatedU,
+                runnerFinalBlock = o.smbFinalBlock,
+                publishedUnits = publishRt.units,
+                gateAllowed = publication.allowed,
+                angeforderteZeileVorhanden = rt.units != null,
+                gateReason = publication.reason,
+            )
+            // ---- AUCH DIE HUELLENZAHLEN GEHOEREN HIERHER ------------------
+            //
+            // Der Runner bildet sie VOR dem Publikations-Gate. Dreht das Gate
+            // die Reservierung zurueck, sinken die Mahlzeitlieferungen wieder -
+            // die eingefrorene Fassung meldete dann eine Menge als verbraucht,
+            // die nie hinausging.
+            //
+            // DIESELBE Funktion wie im Runner, nur ein zweites Mal auf den
+            // jetzt gueltigen Ledger angewandt. `envelopeCfgU` ist die
+            // eingestellte Huelle dieses Zyklus; fehlt sie, gibt es auch
+            // keine belastbaren Zahlen und die Zeile bleibt beim Vorstand.
+            val huellenStand = o.envelopeCfgU?.let {
+                FuseCycleRunner.envelopeUseOf(ledgerAdapter.episodes, it)
+            }
+            o.copy(
+                mealStats = FuseCycleRunner.mealStatsOf(
+                    ledgerAdapter.episodes,
+                    o.state?.markerArmedTs ?: 0L,
+                    o.computeTs,
+                ),
+                smbActuatedU = endstand.actuatedU,
+                smbFinalBlock = endstand.finalBlock,
+                envelopeU = huellenStand?.envelopeU ?: o.envelopeU,
+                envelopeSpentU = huellenStand?.spentU ?: o.envelopeSpentU,
+            )
+        }
+
+        lastAPSResult = apsResultProvider().with(publishRt).also { r ->
+            // Fixvertrag 30.08.: ohne iobData fehlt dem DeviceStatus der
+            // openaps.iob-Block (LoopPlugin liest lastRun.request?.iob), und
+            // Nightscout faellt auf eine EIGENE Rechnung aus den Bolus-
+            // Treatments zurueck (Befund: mehrere Einheiten bei echtem Netto nahe null -
+            // Bolus-Assistent unbrauchbar). Hier steht das im Zyklus
+            // gerechnete typisierte IobTotal - keine zweite Semantik aus
+            // RT.IOB.
+            outcome?.iobTotal?.takeIf { it.valid }?.let { r.iobData = arrayOf(it) }
+        }
+        lastAPSRun = dateUtil.now()
+        aapsLogger.debug(LTag.APS, "FUSE result: ${publishRt.reason}")
+        rxBus.send(EventAPSCalculationFinished())
+
+        // DER ERWARTUNGS-LEDGER - REIN BEOBACHTEND, UND ERST JETZT.
+        //
+        // Er stand zunaechst VOR dieser Uebergabe (Toni 18.08.: "Die
+        // SMB-Abgabezeit wird davon nicht negativ beeinflusst?"). Das war
+        // falsch: er kann die Menge zwar nicht mehr aendern, haette ihre
+        // ABGABE aber um die Dauer eines vollstaendigen Schreibvorgangs mit
+        // fsync verzoegert - auf Android realistisch 100-300 ms. Ein
+        // Beobachter darf nicht zwischen der Entscheidung und ihrer
+        // Ausfuehrung stehen.
+        //
+        // HIER ist er gefahrlos: `lastAPSResult` steht, das Ereignis ist
+        // gesendet, AAPS kann aktuieren. Der Erwartungs-Ledger ist vom
+        // Publikationsvertrag unabhaengig - den Eingriffsstempel hat das Gate
+        // laengst versiegelt, hier werden nur die eigenen Erwartungen
+        // fortgeschrieben. Stirbt der Prozess dazwischen, fehlt EINE Messung;
+        // kein Nachweis wird falsch, weil die Erwartung dann gar nicht erst
+        // existiert.
+        //
+        // WARUM ER TROTZDEM NACH dem Publikations-Gate stehen muss: erst dort
+        // steht der Stempel fest, unter dem die Prognose dieses Zyklus gilt.
+        // Beide Bedingungen zusammen ergeben genau dieses Fenster.
+        buchereWartung(outcome, publication.sealed)
+
+        // Auch der Schirm bekommt den korrigierten Stand - er zeigt dieselben
+        // Mahlzeitenzahlen wie der Trail.
+        exportOutcome?.let { lastOutcome = it }
+
+        // NACH den Buchungen dieses Zyklus - der Hold kann genau hier entstanden
+        // sein. Davor gemeldet, waere die Meldung eine Generation zu spaet.
+        meldeLedgerHold(aktivePumpe)
+        meldePumpenRiegel(aktivePumpe)
+
+        exportState(
+            exportOutcome, publishRt, cycleId,
+            // B0c: der Befund des Gates als DATEN in den Trail, nicht als Text
+            // im Grund. `treatmentViewPresent` kommt vom Zyklus selbst - das
+            // Gate erfaehrt es nur mittelbar ueber den Commitment, und eine
+            // zweite Ableitung waere eine zweite Wahrheit.
+            FuseStateJson.PublicationGate(
+                allowed = publication.allowed,
+                reason = publication.reason,
+                treatmentViewPresent = outcome?.treatmentView != null,
+            ),
+            // B3: die Diagnose neben dem Sperrgrund. Der Grund steht im
+            // Publikationsgate, das WARUM steht hier - kein Datensatz,
+            // Handeintrag, fremde Pumpe und unlesbare aktive Pumpe sind vier
+            // Ursachen mit vier verschiedenen Massnahmen.
+            FuseStateJson.PatchEpoch(
+                epochTs = patchEpoch.epochTs,
+                known = patchEpoch.known,
+                reason = patchEpoch.reason.name,
+                // Ohne diese Angabe liest sich `known=false / NO_EVENT` an der
+                // VirtualPump wie ein Defekt - dort ist es der Normalzustand.
+                applicable = aktivePumpe.realPatchPump,
+            ),
+        )
+        } finally {
+            // Der EINE Ausgang fuer jeden Wurf zwischen run() und dem
+            // Publikationsgate: der Folgestand des Evidenzbestands hat den
+            // Persist nie erreicht und darf im Speicher nicht weiterleben.
+            // sealCycleState(false, ...) ist idempotent - im Normalfall ist
+            // `sealEntschieden` laengst true und hier passiert nichts.
+            if (!sealEntschieden && ledgerAdapter.sealCycleState(sealed = false, before = evidenzVorLauf))
+                aapsLogger.error(
+                    LTag.APS,
+                    "FUSE: Ausnahme vor dem Versiegeln - Evidenzbestand auf den versiegelten Stand zurueckgerollt",
+                )
+        }
+    }
+
+    /**
+     * Der Zustandsexport — R89 macht ihn zur Installationsvoraussetzung.
+     *
+     * Er steht am ENDE von invoke() und laeuft auf JEDEM Pfad, auch dem
+     * Ausnahmepfad. Gerade dort will man ihn: ein Zyklus, der nichts
+     * entschieden hat, ist die interessanteste Zeile im Trail.
+     *
+     * Vollstaendig in runCatching: der Export ist Beobachtung und darf den
+     * Regler unter keinen Umstaenden anhalten. Selbst ein Fehler im
+     * Datensatzbau bleibt hier.
+     */
+    private fun exportState(
+        outcome: FuseCycleRunner.Outcome?,
+        rt: RT,
+        cycleId: String,
+        publicationGate: FuseStateJson.PublicationGate,
+        patchEpoch: FuseStateJson.PatchEpoch,
+    ) {
+        runCatching {
+            val start = System.nanoTime()
+            val o = outcome ?: return
+            val json = FuseStateJson.record(
+                cycleId = cycleId,
+                outcome = o,
+                rt = rt,
+                policy = o.policy,
+                build = FuseStateJson.Build(config.VERSION_NAME, config.HEAD, config.COMMITTED),
+                buildStartNs = start,
+                prev = prevWrite,
+                nowNs = System::nanoTime,
+                // Die Sicht NACH den Buchungen dieses Zyklus - genau der
+                // Zustand, mit dem der naechste Zyklus rechnen wird.
+                ledger = FuseStateJson.LedgerSnapshot(ledgerAdapter.revision, ledgerAdapter.state, ledgerAdapter.lastPersistStats, ledgerAdapter.view()),
+                publicationGate = publicationGate,
+                // B3: die Diagnose neben dem Sperrgrund. Der Grund steht im
+                // Publikationsgate, das WARUM steht hier.
+                patchEpoch = patchEpoch,
+                // Einmal von der Platte, danach aus dem Speicher: ein
+                // Dateizugriff je Zyklus fuer eine Zeile, die sich fast nie
+                // aendert, waere Verschwendung - aber weglassen darf man sie
+                // nicht, sonst sieht ein reparierter Ledger wie ein
+                // unbenutzter aus.
+                ledgerReset = letzteReparatur(),
+            priorActuation = priorActuation,
+            pumpNeverCalled = pumpNeverCalledTrace,
+            // Der Erwartungs-Ledger. `runCatching`, weil ein Messbaustein den
+            // Export eines Regelzyklus nicht kosten darf - fehlt der Block,
+            // sagt das genau so viel wie eine Zahl darin.
+            expectation = runCatching {
+                expectationRecorder.exportSnapshot(
+                    nowTs = outcome.computeTs,
+                    stamp = ledgerAdapter.interventionStamp,
+                    configGeneration = outcome.configGeneration,
+                    segmentId = outcome.signal?.signalEpochTs ?: 0L,
+                    situation = outcome.expectationSituation?.copy(ledgerSealed = publishedGateSealed),
+                    minSafetyMarginMgdl = ExpectationLedger.EXPORT_SAFETY_MARGIN_MGDL,
+                )
+            }.getOrNull(),
+            markerEvent = letztesMarkerEreignis,
+            )
+            // Die Android-Aufloesung des Verzeichnisses passiert AUSSCHLIESSLICH
+            // hier — der Schreiber selbst kennt kein Environment und bleibt
+            // damit ohne Geraet pruefbar.
+            val dir = File(Environment.getExternalStorageDirectory(), "Documents/aapsLogs")
+            when (val r = exporter.append(dir, json.toString())) {
+                is FuseStateExporter.Result.Written -> {
+                    prevWrite = FuseStateJson.PrevWrite(r.writeMs, r.bytes)
+                    if (r.rotated) aapsLogger.debug(LTag.APS, "FUSE state trail rotated")
+                }
+
+                is FuseStateExporter.Result.Failed  -> {
+                    // NICHT stumm: ein Export, der nicht schreibt, ist der Fall,
+                    // in dem man spaeter vergeblich nach Daten sucht.
+                    prevWrite = null
+                    aapsLogger.error(LTag.APS, "FUSE state export failed: " + r.reason)
+                }
+            }
+        }.onFailure { aapsLogger.error(LTag.APS, "FUSE state export threw", it) }
+    }
+
+    /**
+     * Der Ledger-Zustand fuer den Schirm - eine eigene Groesse neben Health.
+     *
+     * LIEST `view()`, NICHT `state` (Audit-Befund S1, 10.08.2026). Gesperrt
+     * wird ueber `LedgerView.hold`, und das ist eine ODER-Verknuepfung aus vier
+     * Quellen. `state.holdActuation` ist nur EINE davon; die anderen drei -
+     * `persistFailed`, `recoveryHold`, `migrationPending` - stoppten die Abgabe
+     * lautlos, waehrend hier "Ledger frei" stand. Ausgerechnet `recoveryHold`
+     * ueberlebt einen Neustart und ist der Zustand, fuer den es den
+     * Reparaturweg ueberhaupt gibt.
+     */
+    fun ledgerInfo(): FuseScreenModel.LedgerInfo {
+        val s = ledgerAdapter.state
+        val v = ledgerAdapter.view()
+        val offen = s.openEntries
+        val (sperrend, hinweise) = fehlerNachWirkung(s)
+        return FuseScreenModel.LedgerInfo(
+            hold = v.hold,
+            holdReason = v.holdReason,
+            holdGeneration = s.holdGeneration,
+            activeErrors = sperrend,
+            openEntries = offen.size,
+            grossLiabilityU = offen.sumOf { it.grossLiabilityU },
+            transportCommitmentU = v.transportCommitmentU,
+            lastRepairTs = letzteReparatur()?.ts,
+            holdSources = v.holdSources,
+            nonBlockingErrors = hinweise,
+            ausweg = letzterLedgerAusweg,
+        )
+    }
+
+    /** Aktive Fehler getrennt nach sperrend (`FAIL_CLOSED_ERRORS`) und nur begleitend. */
+    private fun fehlerNachWirkung(s: app.aaps.fuse.core.ledger.LedgerState): Pair<Map<String, Int>, Map<String, Int>> {
+        val (sperrend, hinweise) = s.errors.filter { it.active }
+            .partition { it.error in app.aaps.fuse.core.ledger.LedgerState.FAIL_CLOSED_ERRORS }
+        return sperrend.groupingBy { it.error.name }.eachCount() to hinweise.groupingBy { it.error.name }.eachCount()
+    }
+
+    /** Der zuletzt bestimmte Wegweiser - im Zyklus gebildet, wo die Pumpe bekannt ist. */
+    @Volatile private var letzterLedgerAusweg: String? = null
+
+    /** Profilwert fuer die kompakte Betriebssicht. Die Reglerwerte Ziel und
+     * ISF kommen weiter aus dem Outcome; nur das dort nicht enthaltene
+     * planmaessige Basal wird aus demselben aktiven Profil gelesen. */
+    suspend fun dashboardProfileInfo(now: Long): FuseDashboardModel.ProfileInfo =
+        FuseDashboardModel.ProfileInfo(
+            scheduledBasalUPerH = runCatching { profileFunction.getProfile(now)?.getBasal(now) }.getOrNull(),
+        )
+
+    /**
+     * DER LEDGER-HOLD MUSS SICH MELDEN.
+     *
+     * Er kappt den Kandidaten auf 0,00 U - FUSE rechnet weiter, zeigt
+     * insulinReq und Bahn, und gibt nichts ab. Auf dem Schirm stand das bis zum
+     * 10.08.2026 nur zwanzig Zeilen tief als `candidate:LEDGER_HOLD`, waehrend
+     * die Kopfzeile `Health READY` sagte. Ein Regler, der still aufhoert zu
+     * dosieren, ist die gefaehrlichste Sorte Fehler, weil nichts passiert -
+     * und genau deshalb faellt er ohne Alarm tagelang nicht auf.
+     *
+     * EINMAL je Befund, nicht je Zyklus: eine Meldung pro Minute waere nach
+     * einer Stunde Tapete, und Tapete liest niemand. Die REGEL dazu steht in
+     * [FuseHoldAlarm], wo sie pruefbar ist - beide Fehler, die der Audit hier
+     * gefunden hat, lagen genau in dieser ungepruften Ecke.
+     */
+    private val holdAlarm = FuseHoldAlarm.Zustand()
+
+    /**
+     * Der Riegel-Alarm - eigener Kanal, eigener Zustand.
+     *
+     * Seit die pumpenabhaengige Startverweigerung entfallen ist, bleibt FUSE
+     * bei unzulaessiger Pumpe ausgewaehlt und regelt einfach nicht. Ohne
+     * Meldung waere das von "FUSE haelt gerade nichts fuer noetig" nicht zu
+     * unterscheiden.
+     */
+    private val gateAlarm = FuseHoldAlarm.Zustand()
+
+    /**
+     * DER GESCHLOSSENE RIEGEL MUSS SICH MELDEN.
+     *
+     * Frueher konnte FUSE mit unzulaessiger Pumpe gar nicht erst aktiviert
+     * werden - dafuer wechselte AAPS still auf OpenAPS SMB. Jetzt bleibt FUSE
+     * ausgewaehlt und gibt nichts ab; das ist die richtige Richtung, aber nur
+     * mit Ansage.
+     *
+     * Der Schluessel ist der GRUND, nicht eine Generation: derselbe
+     * Zustandsautomat wie beim Ledger-Hold, damit ein wechselnder Befund
+     * (unbekanntes Modell -> Fremdpumpe) erneut meldet und eine Aufloesung die
+     * Meldung zurueckzieht.
+     */
+    private suspend fun meldePumpenRiegel(pumpe: FuseActivePump) {
+        // v4: EINE Lesung der laufenden TBR fuer Kennung und Text - die Lesung ist suspend, und der
+        // Textbauer unten ist kein Coroutine-Rumpf. Im Fork waren es zwei Lesungen desselben Moments.
+        val laufende = runCatching {
+            FuseAbortTbr.evaluate(processedTbrEbData, profileFunction, dateUtil.now())
+        }.getOrNull()
+        gateAlarm.verarbeite(
+            hold = !pumpe.gate.allowed,
+            // Die laufende TBR gehoert in den SCHLUESSEL: faengt waehrend
+            // eines geschlossenen Riegels eine fremde TBR an zu laufen, ist das
+            // ein NEUER Befund und muss sich erneut melden.
+            kennung = FuseHoldAlarm.Kennung(
+                if (laufende?.request != null) 1L else 0L,
+                pumpe.gate.verdict.name,
+            ),
+            ursachen = emptyMap(),
+            textBauer = { _, _ ->
+                // DIE LAUFENDE TBR GEHOERT IN DIE MELDUNG (Auditbefund 10.08.2026).
+                //
+                // Bei geschlossenem Riegel filtert FuseRtBuilder ALLE VIER
+                // Aktuatorfelder - auch einen Abbruch. Laeuft in dem Moment eine
+                // FREMDE positive TBR (Automation, Handeintrag), liefert sie bis
+                // zu ihrem Ende weiter Insulin, und FUSE kann sie nicht mehr
+                // beenden. "FUSE gibt nichts aus" liest sich dann wie "es
+                // passiert nichts" - waehrend zusaetzliches Insulin laeuft.
+                //
+                // GEGEN eine unbewiesene Pumpe zu aktuieren waere der schlechtere
+                // Tausch: das ist genau die Pumpe, der der Riegel nicht traut.
+                // Also bleibt die Sperre, und die Meldung sagt, was sie kostet.
+                val zusatz = when {
+                    laufende?.request != null ->
+                        " ACHTUNG: eine laufende erhoehte TBR kann NICHT mehr abgebrochen werden " +
+                            "und laeuft bis zu ihrem Ende weiter."
+
+                    laufende?.alarm == true   ->
+                        " ACHTUNG: eine laufende Abgabe ist nicht klassifizierbar und wird nicht angetastet."
+
+                    else                      -> ""
+                }
+                "FUSE gibt keine Pumpenanforderung aus - weder SMB noch TBR: " +
+                    "${pumpe.gate.reason}.$zusatz FUSE bleibt ausgewaehlt; sobald eine erlaubte " +
+                    "Pumpe aktiv ist, regelt es von selbst weiter."
+            },
+            melden = { text ->
+                runCatching {
+                    // v4: Kennung mit eigener Stufe (still, s. NotificationId); dieselbe Kennung ersetzt die alte Karte.
+                    notificationManager.post(NotificationId.FUSE_PUMP_GATE_BLOCKED, text)
+                }.onFailure { aapsLogger.error(LTag.APS, "FUSE Riegel-Meldung fehlgeschlagen", it) }.isSuccess
+            },
+            zuruecknehmen = {
+                runCatching { notificationManager.dismiss(NotificationId.FUSE_PUMP_GATE_BLOCKED) }
+                aapsLogger.info(LTag.APS, "FUSE Pumpen-Riegel wieder offen - Meldung zurueckgenommen")
+            },
+        )
+    }
+
+    /**
+     * Eine vorgemerkte Hold-Quittung ausfuehren - NACH `loadOnce`.
+     *
+     * Das Gedaechtnis der Meldung wird nur vergessen, wenn der Hold
+     * TATSAECHLICH gefallen ist. Eine Quittung kann abgewiesen werden (veraltete
+     * Generation) oder nur einen von mehreren Fehlern loesen; und `view().hold`
+     * ist zusammengesetzt - `persistFailed`, `recoveryHold` und
+     * `migrationPending` sperren weiter, ganz ohne Fehlerzeile. Wer hier
+     * blind vergaesse, naehme eine URGENT-Warnung zurueck, waehrend FUSE
+     * weiterhin nichts abgibt.
+     */
+    private fun fuehreHoldQuittungAus() {
+        val ergebnis = runCatching {
+            holdQuittung.runIfDue { auftrag ->
+                ledgerAdapter.quittiereHold(
+                    proposalId = auftrag.proposalId,
+                    by = auftrag.by,
+                    reason = auftrag.reason,
+                    errors = auftrag.errors,
+                    expectedHoldGeneration = auftrag.expectedHoldGeneration,
+                )
+            }
+        }.onFailure { aapsLogger.error(LTag.APS, "FUSE Hold-Quittung fehlgeschlagen", it) }.getOrNull()
+        if (ergebnis == null) return
+        val nochGesperrt = runCatching { ledgerAdapter.view().hold }.getOrDefault(true)
+        aapsLogger.warn(
+            LTag.APS,
+            "FUSE Hold-Quittung ausgefuehrt: Zeile frei=$ergebnis, Sperre steht noch=$nochGesperrt",
+        )
+        if (!nochGesperrt) holdAlarm.vergessen()
+    }
+
+    /**
+     * @param pumpe der Zyklus-Snapshot - KEINE zweite Pumpenlesung. Der
+     *   Wegweiser im Meldungstext haengt daran, ob die Reparatur an dieser
+     *   Pumpe ueberhaupt zulaessig waere.
+     */
+    private fun meldeLedgerHold(pumpe: FuseActivePump) {
+        val s = ledgerAdapter.state
+        // `view()` und nicht `state`: die Sperre ist zusammengesetzt (S1).
+        val v = ledgerAdapter.view()
+        // URSACHE UND BEGLEITINFO GETRENNT (15.09.): am Geraet stand der nicht
+        // sperrende SNAPSHOT_EPOCH_REBASED als einzige "Ursache", der Seal-Marker fehlte.
+        val (sperrend, hinweise) = fehlerNachWirkung(s)
+        // DER WEGWEISER MUSS STIMMEN - je Sperrquelle (FuseHoldAlarm.ausweg). Hier
+        // ist der einzige Ort, an dem Fehler, Quellen und Pumpe zusammen bekannt sind.
+        val quittierbar = runCatching { ledgerAdapter.quittierbareHoldFehler() }.getOrNull().orEmpty()
+        val darfReparieren = pumpe.repairAllowed == true
+        val ausweg = if (v.hold) FuseHoldAlarm.ausweg(v.holdSources, quittierbar.isNotEmpty(), darfReparieren) else null
+        letzterLedgerAusweg = ausweg
+        val a = holdAlarm.verarbeite(
+            hold = v.hold,
+            // Die Quellen gehoeren zur Kennung: kommt eine hinzu oder faellt eine weg,
+            // meldet sich der Hold mit dem neuen Befund.
+            kennung = FuseHoldAlarm.Kennung(s.holdGeneration, v.holdSources.takeIf { it.isNotEmpty() }?.joinToString(" + ") ?: v.holdReason),
+            ursachen = sperrend,
+            textBauer = { _, _ -> FuseHoldAlarm.befund(v.holdSources, sperrend, hinweise) + (ausweg ?: "") },
+            melden = { text ->
+                // ATOMAR ersetzen statt Zuruecknehmen + Melden: die beiden
+                // Einzelereignisse laufen ueber ZWEI Rx-Streams ohne
+                // Reihenfolgegarantie. Wird das Melden zuerst verarbeitet,
+                // scheitert es an der belegten Kennung, und das spaetere
+                // Zuruecknehmen raeumt die alte Meldung weg - uebrig bleibt
+                // GAR KEINE Warnung.
+                runCatching {
+                    notificationManager.post(NotificationId.FUSE_LEDGER_HOLD, text)
+                }.onFailure { aapsLogger.error(LTag.APS, "FUSE Hold-Meldung fehlgeschlagen", it) }.isSuccess
+            },
+            zuruecknehmen = {
+                // Reines Entfernen - hier ist nichts zu ordnen, es folgt kein
+                // Hinzufuegen. Ohne dies bliebe die Meldung stehen und belegte
+                // die Kennung; der naechste Hold faende sie besetzt (S2).
+                runCatching { notificationManager.dismiss(NotificationId.FUSE_LEDGER_HOLD) }
+                aapsLogger.info(LTag.APS, "FUSE Ledger-Hold aufgeloest - Meldung zurueckgenommen")
+            },
+        )
+        if (a is FuseHoldAlarm.Aktion.Melden)
+            aapsLogger.warn(LTag.APS, "FUSE LEDGER HOLD ${a.kennung}: ${a.text}")
+    }
+
+    /**
+     * Einen vorgemerkten Reparaturauftrag ausfuehren - am Zyklusanfang.
+     *
+     * Der Adapter wird NUR nach [FuseLedgerRepair.Result.Done] ersetzt. Nach
+     * einer Verweigerung bleibt alles wie es war, inklusive Hold: die Lage
+     * kann sich zwischen Zustimmung und Ausfuehrung geaendert haben, und dann
+     * ist "nichts tun" die richtige Antwort, nicht "trotzdem tauschen".
+     */
+    private fun fuehreReparaturAus(pumpe: FuseActivePump) {
+        val r = runCatching { reparaturAuftrag.runIfDue(
+                ledgerDir(), dateUtil.now(),
+                // NACHWEIS, nicht Abwesenheit des Gegenteils: `realPump`
+                // ist auch bei unbekannter, untested- und Fremdpumpe false
+                // und haette die Reparatur dort erlaubt (P0).
+                provenVirtualPump = pumpe.repairAllowed,
+            ) }
+            .getOrElse {
+                aapsLogger.error(LTag.APS, "FUSE Reparatur warf - Hold bleibt", it)
+                null
+            } ?: return
+        when (r) {
+            is app.aaps.fuse.plugin.ledger.FuseLedgerRepair.Result.Done   -> {
+                // NEUBAU statt Ausraeumen: ein frisches Objekt hat jedes Feld
+                // auf seinem Anfangswert, per Konstruktion. Ein Hand-Reset
+                // waere die Sorte Aufzaehlung, bei der ein Feld vergessen wird
+                // - und das vergessene waere hier der gehaltene Zustand.
+                //
+                // Der Runner faellt mit, weil er den Adapter bei seiner
+                // Konstruktion eingefangen hat; ein alter Runner haette weiter
+                // auf den alten Ledger gebucht.
+                // Toni: eine Reparatur mitten in der Mahlzeit bucht kein neues Konto - die Vollmacht bleibt
+                // sichtbar, die Mahlzeit laeuft im Rueckfall. Der neue Runner uebernimmt sie vom alten.
+                mahlzeitUebergabe = runner?.mahlzeitUebergabe()
+                ledgerAdapter = app.aaps.fuse.plugin.ledger.FuseLedgerAdapter()
+                runner = null
+                // Der Befund ist weg - die alte Meldung darf nicht stehen
+                // bleiben und die Kennung belegen (S2).
+                holdAlarm.vergessen()
+                runCatching { notificationManager.dismiss(NotificationId.FUSE_LEDGER_HOLD) }
+                reparaturGelesen = false
+                aapsLogger.warn(
+                    LTag.APS,
+                    "FUSE LEDGER REPARIERT (${r.record.reason}): verworfen " +
+                        "${r.record.discarded.grossLiabilityU} U brutto / " +
+                        "${r.record.discarded.openEntries} offene Zeilen, " +
+                        "Quarantaene ${r.quarantined.joinToString()}, " +
+                        "frische Generation=${r.freshLedgerWritten}"
+                )
+                // Bei `false` liegt keine lesbare Generation mehr - der
+                // Sentinel macht daraus gleich einen Verlust-Hold. Das ist
+                // fail-closed und richtig, muss aber im Log stehen, sonst
+                // wundert sich jemand ueber einen Hold direkt nach der
+                // Reparatur.
+                if (!r.freshLedgerWritten) aapsLogger.error(
+                    LTag.APS,
+                    "FUSE: leere Nachfolgegeneration NICHT geschrieben - der naechste Start haelt wieder"
+                )
+            }
+
+            is app.aaps.fuse.plugin.ledger.FuseLedgerRepair.Result.Refused -> {
+                aapsLogger.warn(LTag.APS, "FUSE Reparatur abgelehnt: ${r.why} - Zustand unveraendert")
+                runCatching {
+                    // EIGENE Kennung: im Hold-Slot haette diese Meldung die naechste Hold-Warnung verschluckt
+                    // und den Hold unsichtbar gemacht (S2).
+                    notificationManager.post(
+                        NotificationId.FUSE_REPAIR_REFUSED,
+                        "FUSE-Reparatur nicht ausgefuehrt: ${r.why}. Der bisherige Zustand bleibt unveraendert.",
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * WIEDERHERSTELLUNG NACH UNTERBROCHENEM SPEICHERN ausfuehren - nur vorgemerkt,
+     * nur mit technischem Nachweis ([app.aaps.fuse.plugin.ledger.FuseLedgerSealRecovery]).
+     * Nach `Done` wird der Adapter NEU gebaut und laedt im selben Zyklus den
+     * wiederhergestellten Stand; nach einer Verweigerung bleibt alles, inklusive Hold.
+     */
+    private fun fuehreWiederherstellungAus() {
+        val r = runCatching { wiederherstellungsAuftrag.runIfDue(ledgerDir(), dateUtil.now()) }
+            .getOrElse {
+                aapsLogger.error(LTag.APS, "FUSE Wiederherstellung warf - Hold bleibt", it)
+                null
+            } ?: return
+        when (r) {
+            is app.aaps.fuse.plugin.ledger.FuseLedgerSealRecovery.Result.Done    -> {
+                // Dieselbe Uebergabe wie nach einer Reparatur - traegt der wiederhergestellte Stand die Vollmacht
+                // selbst, bleibt sie wirkungslos.
+                mahlzeitUebergabe = runner?.mahlzeitUebergabe()
+                ledgerAdapter = app.aaps.fuse.plugin.ledger.FuseLedgerAdapter()
+                runner = null
+                holdAlarm.vergessen()
+                runCatching { notificationManager.dismiss(NotificationId.FUSE_LEDGER_HOLD) }
+                aapsLogger.warn(
+                    LTag.APS,
+                    "FUSE LEDGER WIEDERHERGESTELLT (${r.record.reason}): Quelle ${r.record.source}, rev=${r.record.revision}, " +
+                        "sha256=${r.record.sha256.take(12)}, offene Zeilen ${r.record.openEntries}, " +
+                        "Bruttohaftung ${r.record.grossLiabilityU} U - nichts verworfen, fortgesetzt=${r.resumed}"
+                )
+            }
+
+            is app.aaps.fuse.plugin.ledger.FuseLedgerSealRecovery.Result.Refused -> {
+                aapsLogger.warn(LTag.APS, "FUSE Wiederherstellung abgelehnt: ${r.why} - Zustand unveraendert")
+                runCatching {
+                    notificationManager.post(
+                        NotificationId.FUSE_REPAIR_REFUSED,
+                        "FUSE-Wiederherstellung nicht ausgefuehrt: ${r.why}. Der Hold bleibt unveraendert.",
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Was eine Ledger-Bedienhandlung VOR der Zustimmung zeigt (v4: der Bildschirm ist Compose, die Lage und
+     * die Texte bleiben hier, wortgleich wie in den Fork-Dialogen).
+     *
+     * @param vormerken `null` = nichts vorzumerken (nur ein Hinweis). Sonst die Handlung NACH der Zustimmung;
+     *   sie merkt nur vor (ausgefuehrt wird am naechsten Zyklusanfang) und liefert den Hinweistext danach.
+     */
+    class LedgerAktionLage(val titel: String, val text: String, val vormerken: (() -> String)?)
+
+    /** Die Bedienhandlung: zeigt den Nachweis VOR der Zustimmung; ohne Nachweis gibt es nichts vorzumerken. */
+    fun wiederherstellungLage(): LedgerAktionLage {
+        val lage = runCatching { app.aaps.fuse.plugin.ledger.FuseLedgerSealRecovery.inspect(ledgerDir()) }.getOrNull()
+        val kandidaten = lage?.candidates?.joinToString("\n") { "  $it" }.orEmpty()
+        val diagnose = lage?.diagnostics.orEmpty()
+        if (lage == null || !lage.recoverable) {
+            return LedgerAktionLage(
+                "Wiederherstellung",
+                "Nicht moeglich: ${lage?.why ?: "Lage nicht feststellbar"}.\n\n" +
+                    (if (kandidaten.isNotEmpty()) "Vorgefundene Generationen:\n$kandidaten\n\n" else "") +
+                    (if (diagnose.isNotEmpty()) "Strukturvergleich (rein lesend):\n$diagnose\n\n" else "") +
+                    "Ohne technischen Nachweis bleibt der Hold bestehen - eine Zustimmung ersetzt den Nachweis nicht.",
+                null,
+            )
+        }
+        return LedgerAktionLage(
+            "Nach unterbrochenem Speichern wiederherstellen?",
+            "Nachweis: ${lage.why}\n\n" +
+                "Uebernommen wird genau dieser Stand - NICHTS wird verworfen:\n" +
+                "  offene Zeilen      ${lage.openEntries ?: "unbekannt"}\n" +
+                "  Bruttohaftung      ${lage.grossLiabilityU?.let { "%.2f U".format(it) } ?: "unbekannt"}\n\n" +
+                "Vorgefundene Generationen:\n$kandidaten\n\n" +
+                "Strukturvergleich (rein lesend):\n$diagnose\n\n" +
+                "Offene Buchungen und der Genau-einmal-Riegel bleiben erhalten und werden regulaer " +
+                "abgeglichen. Es wird nichts gesendet. Der Vorgang wird dauerhaft protokolliert.",
+        ) {
+            val angenommen = wiederherstellungsAuftrag.request(
+                app.aaps.fuse.plugin.ledger.FuseLedgerSealRecovery.RecoveryRequest(
+                    by = "Bediener (FUSE-Einstellungen)",
+                    reason = lage.why,
+                )
+            )
+            if (!angenommen) "Es steht bereits eine Wiederherstellung aus - sie wird beim naechsten Zyklus ausgefuehrt."
+            else "Vorgemerkt. Ausgefuehrt wird sie zu Beginn des naechsten Zyklus; der Nachweis wird dabei " +
+                "ERNEUT geprueft. Fehlt er dann, passiert nichts und der Hold bleibt."
+        }
+    }
+
+    private fun letzteReparatur(): app.aaps.fuse.plugin.ledger.FuseLedgerRepair.ResetRecord? {
+        if (!reparaturGelesen) {
+            reparaturCache = runCatching {
+                app.aaps.fuse.plugin.ledger.FuseLedgerRepair.lastReset(ledgerDir())
+            }.getOrNull()
+            reparaturGelesen = true
+        }
+        return reparaturCache
+    }
+
+    /**
+     * DIE REPARATUR-BEDIENHANDLUNG.
+     *
+     * Sie steht hier und nicht im Reparaturweg selbst, weil nur das Plugin die
+     * beiden Dinge tun kann, die danach noetig sind: den Adapter ERSETZEN und
+     * den zwischengespeicherten Zyklus-Runner fallenlassen. Beides durch
+     * Neubau, nicht durch Ausraeumen - ein neues Objekt hat jedes Feld auf
+     * seinem Anfangswert, und niemand muss eine Liste pflegen.
+     *
+     * Der Dialog zeigt VORHER, was verworfen wird. "Wirklich?" allein waere
+     * keine Zustimmung zu einer Menge Haftung.
+     */
+    fun ledgerReparaturLage(): LedgerAktionLage {
+        val repair = app.aaps.fuse.plugin.ledger.FuseLedgerRepair
+        val dir = ledgerDir()
+        val lage = runCatching { repair.inspect(dir) }.getOrNull()
+        if (lage == null || !lage.repairable) {
+            return LedgerAktionLage(
+                "Ledger-Reparatur",
+                "Nicht noetig: ${lage?.why ?: "Lage nicht feststellbar"}.\n\n" +
+                    "Dieser Weg ist kein 'Ledger leeren' fuer den Alltag - er oeffnet nur einen " +
+                    "Hold, aus dem es sonst keinen Ausgang gibt.",
+                null,
+            )
+        }
+        val d = lage.discarded
+        fun u(v: Double?) = v?.let { "%.2f U".format(it) } ?: "unbekannt"
+        val was = if (!d.stateReadable) "Der bisherige Ledger ist NICHT LESBAR - was offen war, laesst sich nicht beziffern."
+        else buildString {
+            append("Verworfen wird:\n")
+            append("  offene Zeilen      ${d.openEntries ?: "unbekannt"}\n")
+            append("  Bruttohaftung      ${u(d.grossLiabilityU)}\n")
+            append("  Transportmenge     ${u(d.transportCommitmentU)}\n")
+            append("  aktive Fehler      ")
+            append(if (d.activeErrors.isEmpty()) "keine" else d.activeErrors.entries.joinToString { "${it.key}x${it.value}" })
+        }
+        return LedgerAktionLage(
+            "Ledger reparieren?",
+            "Grund: ${lage.why}\n\n$was\n\n" +
+                "Der bisherige Ledger wird NICHT geloescht, sondern in Quarantaene gelegt " +
+                "(.reset.<Zeitstempel>). Die Reparatur wird dauerhaft protokolliert und erscheint " +
+                "danach in jedem Export.\n\n" +
+                "NUR ausfuehren, wenn die offene Haftung nachweislich gegenstandslos ist.",
+        ) {
+            // HIER WIRD NICHTS AUSGEFUEHRT - nur vorgemerkt. Die Dateireparatur gehoert an dieselbe
+            // Grenze wie der Objekttausch: an den naechsten Zyklusanfang (s. FuseRepairScheduler).
+            // Der GRUND wandert im Auftrag mit - ihn spaeter neu zu bilden waere ein anderes Protokoll
+            // als die erteilte Zustimmung.
+            val angenommen = reparaturAuftrag.request(
+                app.aaps.fuse.plugin.ledger.FuseLedgerRepair.RepairRequest(
+                    by = "Bediener (FUSE-Einstellungen)",
+                    reason = lage.why,
+                )
+            )
+            if (!angenommen) "Es steht bereits eine Reparatur aus - sie wird beim naechsten Zyklus ausgefuehrt."
+            else "Vorgemerkt. Ausgefuehrt wird sie zu Beginn des NAECHSTEN Zyklus (bis zu eine Minute) - " +
+                "bis dahin zeigt der Tab noch den Hold.\n\n" +
+                "Das ist Absicht: mitten in einem laufenden Zyklus an den Ledgerdateien zu " +
+                "arbeiten koennte den alten Zustand wieder herstellen.\n\n" +
+                "Die Lage wird vor der Ausfuehrung ERNEUT geprueft; hat sie sich inzwischen " +
+                "geaendert, passiert nichts."
+        }
+    }
+
+    /**
+     * DIE HOLD-QUITTUNG - der zweite Ausgang, neben der Reparatur.
+     *
+     * Er ist der SANFTE: er nimmt einer benannten Zeile ihre Fehler, statt eine
+     * frische Generation zu schreiben. Haftung, Prime-Huelle, Mahlzeitenhistorie
+     * und der Genau-einmal-Riegel bleiben unangetastet - genau die Dinge, die
+     * die Reparatur verwirft und derentwegen sie an einer echten Pumpe
+     * verweigert wird. Deshalb darf die Quittung dort laufen.
+     *
+     * ANGEBOTEN WIRD NUR, WAS WIRKLICH QUITTIERBAR IST (s.
+     * [app.aaps.fuse.plugin.ledger.FuseLedgerAdapter.quittierbareHoldFehler]).
+     * Eine Quittung auf eine Zeile, die es nicht gibt, erzeugt einen NEUEN
+     * fail-closed-Fehler und erhoeht die Generation - der Bedienfehler machte
+     * die Lage schlechter statt besser.
+     */
+    fun holdQuittungLage(): LedgerAktionLage {
+        val v = runCatching { ledgerAdapter.view() }.getOrNull()
+        val offen = runCatching { ledgerAdapter.quittierbareHoldFehler() }.getOrNull().orEmpty()
+        if (v?.hold != true) return LedgerAktionLage("Hold quittieren", "Es steht kein Ledger-Hold an - nichts zu quittieren.", null)
+        if (offen.isEmpty()) {
+            // WICHTIG ehrlich zu sein: die Sperre kann aus Gruenden kommen, die gar keine Fehlerzeile haben
+            // (persistFailed, recoveryHold, migrationPending) - dann ist die Quittung strukturell kein Weg.
+            return LedgerAktionLage(
+                "Hold quittieren",
+                "Grund: ${v.holdReason ?: "unbekannt"}\n\n" +
+                    "Zu diesem Hold gibt es KEINEN quittierbaren Fehler. Entweder sperrt ein " +
+                    "Grund ohne Fehlerzeile (Persistenz, Wiederherstellung, Migration), oder die " +
+                    "aktiven Fehler sind harte Widersprueche - die brauchen eine Reparatur, " +
+                    "keine Unterschrift.",
+                null,
+            )
+        }
+        // Alle quittierbaren Fehler EINER Zeile: der Reducer loest den Latch nur, wenn danach kein aktiver
+        // Fehler dieser Zeile mehr steht - eine Teilquittung sieht aus wie Wirkungslosigkeit.
+        val zeile = offen.first().proposalId!!
+        val fehlerDerZeile = offen.filter { it.proposalId == zeile }
+        val arten = fehlerDerZeile.map { it.error }.toSet()
+        val gen = runCatching { ledgerAdapter.holdGeneration }.getOrDefault(-1L)
+        val liste = fehlerDerZeile.joinToString("\n") { "  ${it.error.name}: ${it.lastDetail} (${it.occurrences}x)" }
+        return LedgerAktionLage(
+            "Hold quittieren?",
+            "Grund der Sperre: ${v.holdReason ?: "unbekannt"}\n\n" +
+                "Quittiert werden diese Fehler der Zeile $zeile:\n$liste\n\n" +
+                "Die Quittung nimmt der Zeile ihre Fehler. Haftung, Mahlzeiten-Huelle und der " +
+                "Genau-einmal-Riegel bleiben erhalten - anders als bei der Reparatur.\n\n" +
+                "Sie wird dauerhaft protokolliert (mit Grund) und erscheint in jedem Export.\n\n" +
+                "NUR quittieren, wenn der Fehler nachweislich gegenstandslos ist - etwa weil " +
+                "eine geloeschte Behandlung ihn ausgeloest hat.",
+        ) {
+            val angenommen = holdQuittung.request(
+                app.aaps.fuse.plugin.ledger.FuseHoldQuittungScheduler.Auftrag(
+                    proposalId = zeile,
+                    by = "Bediener (FUSE-Einstellungen)",
+                    reason = v.holdReason ?: "quittiert",
+                    errors = arten,
+                    // Der Stand JETZT - hat er sich bis zur Ausfuehrung geaendert, weist der Reducer die
+                    // Quittung ab. Der Bediener hat dann eine andere Lage gesehen als die, die gilt.
+                    expectedHoldGeneration = gen,
+                )
+            )
+            if (!angenommen) "Es steht bereits eine Quittung aus - sie wird beim naechsten Zyklus ausgefuehrt."
+            else "Vorgemerkt. Ausgefuehrt wird sie zu Beginn des NAECHSTEN Zyklus (bis zu eine Minute).\n\n" +
+                "Das ist Absicht: mitten in einem laufenden Zyklus am Ledger zu arbeiten wuerde " +
+                "die Quittung spurlos verlieren.\n\n" +
+                "Aendert sich die Lage bis dahin, wird sie abgewiesen und der Hold bleibt."
+        }
+    }
+
+    /** Die aktuelle Ledger-Sperre fuer den Systembereich - ALLE Quellen, nicht nur die erste. */
+    fun ledgerSperreText(): String {
+        val v = runCatching { ledgerAdapter.view() }.getOrNull()
+        return when {
+            v == null -> "nicht lesbar"
+            !v.hold   -> "keine"
+            else      -> v.holdSources.joinToString(" + ").ifEmpty { v.holdReason ?: "Grund unbekannt" } +
+                (letzterLedgerAusweg?.let { "\n" + it.trim() } ?: "")
+        }
+    }
+
+    /** Die letzte Reparatur fuer den Systembereich. */
+    fun letzteReparaturText(): String =
+        letzteReparatur()?.let { "%s - %s".format(dateUtil.dateAndTimeString(it.ts), it.reason) } ?: "keine"
+
+    private fun cycleRunner(): FuseCycleRunner =
+        runner ?: FuseCycleRunner(
+            iobCobCalculator = iobCobCalculator,
+            profileFunction = profileFunction,
+            activePlugin = activePlugin,
+            constraintsChecker = constraintsChecker,
+            commandQueue = commandQueue,
+            preferences = preferences,
+            persistenceLayer = persistenceLayer,
+            processedTbrEbData = processedTbrEbData,
+            dateUtil = dateUtil,
+            ledger = ledgerAdapter,
+            // Prozessgebundene Kennung: sie trennt die Ereignisse eines Laufs von
+            // denen nach einem Neustart. `dateUtil.now()` und nicht ein Zufall,
+            // damit sie in einem Export sortierbar bleibt.
+            sessionId = "fuse-${dateUtil.now()}",
+            // Der Wiedereinstieg nach Funkluecke wird MIT PARAMETERN gebaut
+            // und vom Schalter [FuseBooleanKey.SignalRejoinEnabled] je Zyklus
+            // torgesteuert. Waere die Politik hier OFF, taete der Schalter
+            // nichts; waere sie ohne Schalter scharf, gaebe es keinen
+            // Rueckweg ohne Neubau. Beides ist Absicht so getrennt.
+            rejoinPolicy = app.aaps.fuse.core.signal.RejoinPolicy.enabled(),
+            markerPressObserved = { markerPressObservedTs },
+            mahlzeitVorNeubau = mahlzeitUebergabe.also { mahlzeitUebergabe = null },
+        ).also { runner = it }
+
+    /**
+     * Der app-weite Glukosestatus. Sobald FUSE aktives APS ist, haengen Overview,
+     * Wear und Automations hieran — `null` waere kein "FUSE nutzt das nicht",
+     * sondern ein stiller Ausfall in halb AAPS. Siehe [FuseGlucoseStatus].
+     */
+    override fun getGlucoseStatusData(allowOldData: Boolean): GlucoseStatus? =
+        FuseGlucoseStatus.of(
+            readings = iobCobCalculator.ads.getBgReadingsDataTableCopy(),
+            nowMs = dateUtil.now(),
+            allowOldData = allowOldData,
+        )
+
+    // v4: kein configuration()/applyConfiguration() mehr - die Sicherung traegt die registrierten
+    // Schluessel selbst (ownPreferences, samt der entfallenen).
+
+    /** Die Schluessel beider Bloecke, deren Zusammenfassung gemeinsam neu entsteht. */
+    internal val kontoUndFruehSchluessel: List<String> by lazy {
+        listOf(
+            FuseDoubleKey.ExpectationCurveAt30U.key, FuseDoubleKey.ExpectationCurveAt60U.key,
+            FuseDoubleKey.ExpectationCurveAt90U.key, FuseDoubleKey.ExpectationCurveAt120U.key,
+            FuseDoubleKey.ExpectationStabilityBgMgdl.key, FuseIntKey.ExpectationStabilityMin.key,
+            FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.key, FuseDoubleKey.ExpectationReleaseThresholdU.key,
+            FuseDoubleKey.MealRunningMinR.key,
+            FuseIntKey.ExpectationHorizonMin.key, FuseStringKey.ExpectationCurve.key,
+            FuseBooleanKey.EarlySupplyEnabled.key, FuseDoubleKey.EarlySupplyBudgetMaxU.key,
+            FuseDoubleKey.EarlySupplyScaleStable.key, FuseDoubleKey.EarlySupplyScaleAfterLow.key,
+            FuseDoubleKey.EarlySupplyInitialShare.key, FuseDoubleKey.EarlySupplyMaxPortionU.key,
+            FuseDoubleKey.EarlySupplyMaxPerPeriodU.key, FuseIntKey.EarlySupplyPeriodMin.key,
+            FuseBooleanKey.EarlySupplyInitialLiftsGuard.key, FuseBooleanKey.EarlySupplyInitialLiftsTail.key,
+            FuseBooleanKey.EarlySupplyGuardWithExpectation.key, FuseBooleanKey.EarlySupplyTailWithExpectation.key,
+        )
+    }
+
+    /** Die kompakte Zeile eines Feldes; `null` = Framework-Zusammenfassung bleibt. */
+    internal fun fruehZusammenfassung(key: String, l: FruehVersorgungText.Lage): String? {
+        fun d(k: FuseDoubleKey) = preferences.get(k)
+        fun z(v: Double, stellen: Int) = String.format(java.util.Locale.GERMANY, "%.${stellen}f", v)
+        return when (key) {
+            FuseDoubleKey.ExpectationCurveAt30U.key -> FruehVersorgungText.kurvenpunkt(0, l)
+            FuseDoubleKey.ExpectationCurveAt60U.key -> FruehVersorgungText.kurvenpunkt(1, l)
+            FuseDoubleKey.ExpectationCurveAt90U.key -> FruehVersorgungText.kurvenpunkt(2, l)
+            FuseDoubleKey.ExpectationCurveAt120U.key -> FruehVersorgungText.kurvenpunkt(3, l)
+            FuseDoubleKey.ExpectationStabilityBgMgdl.key ->
+                z(d(FuseDoubleKey.ExpectationStabilityBgMgdl), 0) + " mg/dl - darunter gilt der Start als 'nach Tief', das Delta darueber nicht"
+            FuseIntKey.ExpectationStabilityMin.key -> preferences.get(FuseIntKey.ExpectationStabilityMin).let { n ->
+                if (n <= 0) "0 min - Freigabe im ersten stabilen Zyklus (nach Neustart, Tief oder unruhigem Start)"
+                else "$n min am Stueck ueber der Grenze, ohne deutliches Fallen und Sperre - Freigabe nach Neustart, Tief oder unruhigem Start"
+            }
+            FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.key ->
+                z(d(FuseDoubleKey.ExpectationStabilityFallMgdlPerMin), 1) + " mg/dl/min - schnelleres Fallen haelt die Anfangsportion und bei laufender Mahlzeit die weiteren Portionen auf"
+            FuseDoubleKey.MealRunningMinR.key -> d(FuseDoubleKey.MealRunningMinR).let { s ->
+                if (s > 0.0) z(s, 2) + " mg/dl/min - nur Folgeportionen im Mahlzeitfenster; SMB-Rampe unberuehrt"
+                else "0 - wie Rampe unten (" + z(d(FuseDoubleKey.RiseRampLowR), 2) + " mg/dl/min)"
+            }
+            FuseDoubleKey.ExpectationReleaseThresholdU.key ->
+                z(d(FuseDoubleKey.ExpectationReleaseThresholdU), 2) + " U - zeigt sich bis +30 min weniger, friert der Rest ein"
+            FuseIntKey.ExpectationHorizonMin.key -> "${preferences.get(FuseIntKey.ExpectationHorizonMin)} min"
+            FuseStringKey.ExpectationCurve.key -> when {
+                l.ecken.any { it != 0.0 } -> "Ueberstimmt - die vier Kurvenwerte haben Vorrang"
+                preferences.get(FuseStringKey.ExpectationCurve).isBlank() -> "Leer - nur fuer Pruefstand und Forschung"
+                else -> "Gilt (keine Kurvenwerte gesetzt)"
+            }
+            FuseBooleanKey.EarlySupplyEnabled.key -> FruehVersorgungText.hauptschalter(l)
+            FuseDoubleKey.EarlySupplyBudgetMaxU.key -> FruehVersorgungText.budgetMax(d(FuseDoubleKey.EarlySupplyBudgetMaxU), l)
+            FuseDoubleKey.EarlySupplyScaleStable.key -> FruehVersorgungText.skalierer(d(FuseDoubleKey.EarlySupplyScaleStable), false, l)
+            FuseDoubleKey.EarlySupplyScaleAfterLow.key -> FruehVersorgungText.skalierer(d(FuseDoubleKey.EarlySupplyScaleAfterLow), true, l)
+            FuseDoubleKey.EarlySupplyInitialShare.key -> FruehVersorgungText.anfangsanteil(d(FuseDoubleKey.EarlySupplyInitialShare), l)
+            FuseDoubleKey.EarlySupplyMaxPortionU.key -> FruehVersorgungText.portion(d(FuseDoubleKey.EarlySupplyMaxPortionU), l)
+            FuseDoubleKey.EarlySupplyMaxPerPeriodU.key -> FruehVersorgungText.jeZeitraum(
+                d(FuseDoubleKey.EarlySupplyMaxPerPeriodU), preferences.get(FuseIntKey.EarlySupplyPeriodMin), d(FuseDoubleKey.EarlySupplyMaxPortionU),
+            )
+            FuseIntKey.EarlySupplyPeriodMin.key -> "${preferences.get(FuseIntKey.EarlySupplyPeriodMin)} min - das gleitende Fenster fuer 'je Zeitraum'"
+            FuseBooleanKey.EarlySupplyInitialLiftsGuard.key -> FruehVersorgungText.G1
+            FuseBooleanKey.EarlySupplyInitialLiftsTail.key -> FruehVersorgungText.G2
+            FuseBooleanKey.EarlySupplyGuardWithExpectation.key -> FruehVersorgungText.G3
+            FuseBooleanKey.EarlySupplyTailWithExpectation.key -> FruehVersorgungText.G4
+            else -> null
+        }
+    }
+
+    /** Einheitswirkung des Insulinmodells, gemerkt je Insulindefinition (derselbe Kernbau wie im Regler). */
+    private var fruehWirkungCache: Pair<String, (Double) -> Double>? = null
+
+    /** Die Insulindefinition des Profils als Schluessel - aendert sie sich, gilt die gemerkte Wirkung nicht mehr. */
+    private suspend fun fruehModellSchluessel(): String? {
+        val iCfg = runCatching { profileFunction.getProfile(dateUtil.now())?.iCfg }.getOrNull()?.takeIf { it.isUsable } ?: return null
+        return "${iCfg.insulinEndTime}|${iCfg.insulinPeakTime}|${iCfg.concentration}"
+    }
+
+    /**
+     * v4 (Vertrag 3): der Einheitskern aus DERSELBEN Insulindefinition wie im Regler - der des Profils.
+     * `null` = kein Profil oder keine echte Definition. Die Mischungspruefung des Zyklus gilt hier nicht:
+     * das ist eine Vorschau fuer Bildschirm und Rueckfrage, keine Dosis.
+     */
+    private suspend fun einheitskernJetzt(jetzt: Long): app.aaps.fuse.core.insulin.KernelOutcome.Ok? {
+        val iCfg = runCatching { profileFunction.getProfile(jetzt)?.iCfg }.getOrNull()?.takeIf { it.isUsable } ?: return null
+        return runCatching {
+            app.aaps.fuse.core.insulin.UnitInsulinKernelBuilder.build(
+                sampler = AapsUnitInsulinSampler(iCfg, jetzt),
+                deliveryTs = jetzt,
+                model = app.aaps.fuse.core.predictor.InsulinModelProvenance(
+                    insulinType = "ICFG:" + iCfg.insulinEndTime + ":" + iCfg.insulinPeakTime + ":" + iCfg.concentration,
+                    diaHours = iCfg.dia,
+                    peakMin = iCfg.peak,
+                    codeProvenance = FuseCycleRunner.INSULIN_SOURCE,
+                ),
+                insulinPluginId = FuseCycleRunner.INSULIN_SOURCE,
+            )
+        }.getOrNull() as? app.aaps.fuse.core.insulin.KernelOutcome.Ok
+    }
+
+    private suspend fun fruehEinheitswirkung(): ((Double) -> Double)? {
+        val schluessel = fruehModellSchluessel() ?: return null
+        fruehWirkungCache?.takeIf { it.first == schluessel }?.let { return it.second }
+        val kern = einheitskernJetzt(dateUtil.now()) ?: return null
+        val wirkung = app.aaps.fuse.core.controller.EarlySupply.unitActionOf(kern.kernel)
+        fruehWirkungCache = schluessel to wirkung
+        return wirkung
+    }
+
+    /** Gemerkte Lage je Eingabestand - ein Aufbau des Bildschirms rechnet sie einmal, nicht je Feld. */
+    private var fruehLageCache: Pair<String, FruehVersorgungText.Lage>? = null
+
+    /** Die Lage fuer die Zusammenfassungen, aus den JETZT gespeicherten Werten. */
+    internal suspend fun fruehLage(): FruehVersorgungText.Lage {
+        // Alle Eingaben der Lage, getypt gelesen (preferences.get(String) liefert die Schluesseldefinition, nicht den Wert).
+        val stand = listOf<Any>(
+            preferences.get(FuseBooleanKey.EarlySupplyEnabled),
+            preferences.get(FuseDoubleKey.ExpectationCurveAt30U), preferences.get(FuseDoubleKey.ExpectationCurveAt60U),
+            preferences.get(FuseDoubleKey.ExpectationCurveAt90U), preferences.get(FuseDoubleKey.ExpectationCurveAt120U),
+            preferences.get(FuseStringKey.ExpectationCurve), preferences.get(FuseIntKey.ExpectationHorizonMin),
+            preferences.get(FuseDoubleKey.EarlySupplyScaleStable), preferences.get(FuseDoubleKey.EarlySupplyScaleAfterLow),
+            preferences.get(FuseDoubleKey.EarlySupplyBudgetMaxU), preferences.get(FuseDoubleKey.EarlySupplyInitialShare),
+            preferences.get(FuseDoubleKey.EarlySupplyMaxPortionU), preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU),
+            preferences.get(FuseIntKey.EarlySupplyPeriodMin), preferences.get(FuseDoubleKey.MealExposureLimitU),
+            fruehModellSchluessel() ?: "-",
+        ).joinToString("|")
+        fruehLageCache?.takeIf { it.first == stand }?.let { return it.second }
+        return fruehLageNeu().also { fruehLageCache = stand to it }
+    }
+
+    private suspend fun fruehLageNeu(): FruehVersorgungText.Lage {
+        val ecken = listOf(
+            FuseDoubleKey.ExpectationCurveAt30U, FuseDoubleKey.ExpectationCurveAt60U,
+            FuseDoubleKey.ExpectationCurveAt90U, FuseDoubleKey.ExpectationCurveAt120U,
+        ).map { preferences.get(it) }
+        val kurve = app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(wirksameKurve().text)
+        val horizont = preferences.get(FuseIntKey.ExpectationHorizonMin)
+        val wirkung = fruehEinheitswirkung()
+        val eckenGesetzt = ecken.any { it != 0.0 }
+        val rollen = (0..3).map { i ->
+            if (wirkung == null || !eckenGesetzt) null
+            else app.aaps.fuse.core.controller.EarlySupply.cornerRole(ecken.toDoubleArray(), i, horizont, wirkung)
+        }
+        // Die Wirkung von +0,1 U am bestimmenden Punkt - exakt aus den Eckwerten, wie der Regler sie liest.
+        fun bedarfAus(e: DoubleArray): Double? = wirkung?.let { w ->
+            app.aaps.fuse.core.controller.ExpectationAccount.Curve.ausEckwerten(e[0], e[1], e[2], e[3])
+                ?.let { app.aaps.fuse.core.controller.EarlySupply.need(it, horizont, w)?.rawU }
+        }
+        val bedarfJetzt = if (eckenGesetzt) bedarfAus(ecken.toDoubleArray()) else null
+        val jeZehntel = (0..3).map { i ->
+            if (bedarfJetzt == null || rollen[i] != app.aaps.fuse.core.controller.EarlySupply.CornerRole.Binding) null
+            else bedarfAus(ecken.toDoubleArray().also { it[i] += 0.1 })?.let { it - bedarfJetzt }
+        }
+        return FruehVersorgungText.Lage(
+            // Das Konto gilt mit gueltiger Kurve - dieselbe Regel wie im Regler.
+            kontoAn = kurve != null,
+            fruehAn = preferences.get(FuseBooleanKey.EarlySupplyEnabled),
+            ecken = ecken,
+            kurveGueltig = kurve != null,
+            rollen = rollen,
+            bedarf = if (kurve == null || wirkung == null) null else app.aaps.fuse.core.controller.EarlySupply.need(kurve, horizont, wirkung),
+            bedarfJeZehntelU = jeZehntel,
+            einstellung = app.aaps.fuse.core.controller.EarlySupply.Settings.of(
+                scaleStable = preferences.get(FuseDoubleKey.EarlySupplyScaleStable),
+                scaleAfterLow = preferences.get(FuseDoubleKey.EarlySupplyScaleAfterLow),
+                budgetMaxU = preferences.get(FuseDoubleKey.EarlySupplyBudgetMaxU),
+                initialShare = preferences.get(FuseDoubleKey.EarlySupplyInitialShare),
+                maxPortionU = preferences.get(FuseDoubleKey.EarlySupplyMaxPortionU),
+                maxPerPeriodU = preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU),
+                periodMin = preferences.get(FuseIntKey.EarlySupplyPeriodMin),
+            ),
+            expositionU = preferences.get(FuseDoubleKey.MealExposureLimitU),
+        )
+    }
+
+    /** Die Einstellungen (v4: Compose-Baum, s. [FuseSettings]). */
+    override fun getPreferenceScreenContent() = FuseSettings.content(this)
+}

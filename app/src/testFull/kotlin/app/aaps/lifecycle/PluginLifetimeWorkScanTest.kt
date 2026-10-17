@@ -61,6 +61,9 @@ class PluginLifetimeWorkScanTest {
         "LoopPlugin#onStart" to "the two appScope collectors are kept in `collectors` and cancelled in onStop",
         "InsightPlugin#serviceConnection" to
             "the lastDataTime collector is held in lastDataTimeJob and cancelled in onStop and on service disconnect",
+        // Fork (FUSE)
+        "FusePlugin#markerRuecknahmeVormerken" to
+            "the withdrawal timer is held in ruecknahmeZeitgeber and onStop cancels it; a withdrawal that falls due meanwhile is done by the next cycle",
     )
 
     /**

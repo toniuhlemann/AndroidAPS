@@ -241,7 +241,19 @@ enum class NotificationId(
     // The End Scene dialog does not show the result, so without this nothing said so. IMPORTANT: it changes
     // insulin delivery until the user activates a profile, but nothing is delivered wrongly now.
     // Appended at the END for the same reason as above.
-    SCENE_PROFILE_NOT_RESTORED(IMPORTANT, AUTOMATION);
+    SCENE_PROFILE_NOT_RESTORED(IMPORTANT, AUTOMATION),
+
+    // Fork (FUSE): the ledger holds - FUSE calculates on but delivers nothing. Its own id: a shared one would
+    // be replaced by the next card, and this is the case where FUSE gives NOTHING. IMPORTANT, not URGENT: in
+    // v4 URGENT is the sound alarm, and the hold stays silent as in the fork. Appended at the END (ordinals).
+    FUSE_LEDGER_HOLD(IMPORTANT, LOOP),
+
+    // Fork (FUSE): the pump gate is closed - FUSE stays selected and asks the pump for nothing. Silent, as above.
+    FUSE_PUMP_GATE_BLOCKED(IMPORTANT, LOOP),
+
+    // Fork (FUSE): a requested ledger repair or recovery was refused; the state is unchanged. Its own id, so it
+    // can never take the place of the hold card.
+    FUSE_REPAIR_REFUSED(NORMAL, LOOP);
 
     companion object {
 

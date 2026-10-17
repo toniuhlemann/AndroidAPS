@@ -1,0 +1,539 @@
+package app.aaps.fuse.plugin.ledger
+
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+import java.io.File
+
+/**
+ * DIE BUCHFUEHRUNG ZAEHLT NUR, WAS DIE PUMPE AUCH BEKOMMEN HAT
+ * (Toni 19.08., P0).
+ *
+ * DER BEFUND. FUSE forderte 20 x 0,15 U an, die Pumpendatenbank zeigte
+ * 2,70 U. AAPS hatte zwei Schritte am Intervalltor verworfen ("SMB requested
+ * but still in 1 min interval"), weil eine verspaetet fertig gewordene
+ * Pumpenabgabe den Abstand unter die erlaubten 45 s drueckte.
+ *
+ * Die Episodenzaehler standen trotzdem auf 3,00 U. FUSE hielt die Huelle
+ * fuer vollstaendig geliefert, meldete ab T+20 `WINDOW_OVER` und holte die
+ * fehlenden 0,30 U nie nach - der Evidenzbestand galt als mit 3 U bezahlt,
+ * obwohl 2,70 U flossen.
+ *
+ * WARUM DIE RESERVIERUNG DAS NICHT AUFFANGEN KONNTE. Sie wird aufgeloest,
+ * sobald die PUBLIKATION feststeht - und das ist VOR dem AAPS-Constraint.
+ * Der wird erst im naechsten Zyklus sichtbar, ueber `priorActuation` und
+ * [app.aaps.fuse.core.ledger.NotSentProof].
+ *
+ * DIE FEHLERRICHTUNG BLEIBT KONSERVATIV. Zurueckgedreht wird ausschliesslich
+ * mit BEWEIS; ein unklarer Pumpenausgang bleibt als geliefert gebucht. "Zu
+ * viel gebucht" laesst FUSE spaeter zu wenig nachliefern, die umgekehrte
+ * Richtung liesse es zu viel geben.
+ */
+class ConstraintRevokeTest {
+
+    private val ts = 1_786_000_000_000L
+    private val ID = "s#42"
+
+    /** Ein Zyklus, dessen 0,15 U durch das Publikationsgate gingen. */
+    private fun nachPublikation(
+        menge: Double = 0.15,
+        prime: Boolean = true,
+        onset: Boolean = true,
+        meal: Boolean = true,
+        schonGebucht: Double = 0.45,
+    ): FuseLedgerAdapter {
+        val a = FuseLedgerAdapter()
+        val e = a.episodes
+        e.primeSpentU = schonGebucht + menge
+        e.onsetSpentU = schonGebucht + menge
+        e.evidenceCommittedU = schonGebucht + menge
+        if (meal) e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, menge))
+        e.pendingReservation = EpisodeBudgets.Reservation(
+            computeTs = ts, amountU = menge, prime = prime, onset = onset,
+            mealTs = if (meal) ts else 0L,
+        )
+        // Das Publikationsgate hat die Menge durchgelassen.
+        a.resolveReservation(ts, publishedU = menge, proposalId = ID)
+        return a
+    }
+
+    // ---- Der Anlassfall ----------------------------------------------------
+
+    /**
+     * DAS AAPS-INTERVALLTOR HAT DIE MENGE VERWORFEN - alle fuenf Zaehler
+     * gehen zurueck.
+     */
+    @Test
+    fun `ein bewiesenes Nicht-Senden dreht alle Episodenzaehler zurueck`() {
+        val a = nachPublikation()
+        assertNotNull(a.episodes.settled, "die Buchung MUSS einen Zyklus ueberleben")
+
+        val zurueck = a.revokeSettled(ID)
+
+        assertEquals(0.15, zurueck.amountU, 1e-9, "genau die publizierte Menge")
+        assertEquals(0.45, a.episodes.primeSpentU, 1e-9)
+        assertEquals(0.45, a.episodes.onsetSpentU, 1e-9)
+        assertEquals(0.45, a.episodes.evidenceCommittedU, 1e-9)
+        // Die Widerrufs-Revision rueckt ATOMAR mit der Absenkung vor (Toni
+        // 29.08.) - nur sie erlaubt EvidenceStock den Rebase statt UNKNOWN.
+        assertEquals(1L, a.episodes.evidenceCommitmentRevision)
+        assertEquals(0, a.episodes.mealDeliveries.size, "und der Eintrag verschwindet")
+        assertNull(a.episodes.settled, "danach gibt es nichts mehr zurueckzudrehen")
+    }
+
+    /**
+     * DER ECHTE ZYKLUSABLAUF - und er sieht anders aus als mein erster Test
+     * (Toni 19.08.).
+     *
+     * MEINE ERSTE FASSUNG WAR EINE ATTRAPPE. Sie rief `resolveReservation`
+     * und `revokeSettled` unmittelbar nacheinander im selben
+     * Schleifendurchlauf. Produktiv laeuft es umgekehrt herum:
+     *
+     *   Zyklus n    buche -> resolveReservation(n)
+     *   Zyklus n+1  buche (NEUE Zeile!) -> DANN revokeSettled(n)
+     *
+     * Der Unterschied ist der ganze Punkt: zum Zeitpunkt des Zurueckdrehens
+     * steht in `mealDeliveries` bereits ein NEUER Eintrag. Ein Test, der das
+     * nicht nachstellt, kann den Fehler nicht finden, gegen den er gebaut ist.
+     *
+     * DESHALB WIEDERHOLT SICH HIER DER sourceTs. Genau dann trifft ein
+     * `indexOfLast { it.ts == mealTs }` die falsche - die neue - Zeile. Die
+     * Mengen sind unterschiedlich, damit eine Verwechslung im Ergebnis
+     * sichtbar wird statt sich wegzukuerzen.
+     */
+    @Test
+    fun `im echten Folgezyklus-Ablauf trifft das Zurueckdrehen die richtige Zeile`() {
+        val a = FuseLedgerAdapter()
+        val e = a.episodes
+
+        // --- Zyklus 1: 0,15 U, sourceTs = ts. Publikation geht durch.
+        e.primeSpentU += 0.15
+        e.evidenceCommittedU += 0.15
+        e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, 0.15))
+        e.pendingReservation = EpisodeBudgets.Reservation(
+            computeTs = ts, amountU = 0.15, prime = true, onset = false,
+            mealTs = ts,
+        )
+        a.resolveReservation(ts, publishedU = 0.15, proposalId = "s#1")
+
+        // --- Zyklus 2: DERSELBE sourceTs (wiederholter Punkt), aber 0,05 U.
+        // Der Runner bucht ZUERST, der Beweis fuer Zyklus 1 kommt DANACH.
+        e.primeSpentU += 0.05
+        e.evidenceCommittedU += 0.05
+        e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, 0.05))
+        e.pendingReservation = EpisodeBudgets.Reservation(
+            computeTs = ts + 60_000L, amountU = 0.05, prime = true, onset = false,
+            mealTs = ts,
+        )
+
+        // JETZT der Beweis fuer Zyklus 1 - waehrend die neue Zeile schon steht.
+        val zurueck = a.revokeSettled("s#1")
+
+        assertEquals(0.15, zurueck.amountU, 1e-9, "es MUSS die Menge aus Zyklus 1 sein")
+        assertEquals(
+            1, e.mealDeliveries.size,
+            "genau eine Zeile bleibt - die aus Zyklus 2",
+        )
+        assertEquals(
+            0.05, e.mealDeliveries.single().amountU, 1e-9,
+            "und es MUSS die NEUE sein (0,05), nicht die verworfene alte (0,15). " +
+                "Mit indexOfLast ueber den Zeitstempel stuende hier 0,15.",
+        )
+        assertEquals(0.05, e.primeSpentU, 1e-9)
+    }
+
+    /**
+     * DER GANZE ABLAUF DES ANLASSFALLS: 20 Schritte, zwei davon verworfen - jetzt
+     * in der ECHTEN Reihenfolge.
+     *
+     * Am Ende muessen 2,70 U in den Buechern stehen, dieselbe Zahl wie in der
+     * Pumpendatenbank. Vor dem Fix standen dort 3,00 U.
+     */
+    @Test
+    fun `nach zwei verworfenen von zwanzig Schritten stehen 2,70 U`() {
+        val a = FuseLedgerAdapter()
+        val e = a.episodes
+        val verworfen = setOf(7, 13)
+        // Der Beweis eines Zyklus kommt IM NAECHSTEN an.
+        var offenerBeweis: String? = null
+
+        for (i in 0 until 20) {
+            val id = "s#$i"
+            val zyklus = ts + i * 60_000L
+
+            // (1) Der Runner bucht die neue Menge.
+            e.primeSpentU += 0.15
+            e.evidenceCommittedU += 0.15
+            e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(zyklus, 0.15))
+            e.pendingReservation = EpisodeBudgets.Reservation(
+                computeTs = zyklus, amountU = 0.15, prime = true, onset = false,
+                mealTs = zyklus,
+            )
+
+            // (2) DANN erst wird der Vorgaenger entlastet - so wie im Plugin,
+            // wo notSentClaim VOR der neuen Buchung gebildet, aber im
+            // events-Block gebucht wird.
+            offenerBeweis?.let { a.revokeSettled(it) }
+            offenerBeweis = null
+
+            // (3) Und die Publikation dieses Zyklus wird aufgeloest.
+            a.resolveReservation(zyklus, publishedU = 0.15, proposalId = id)
+            if (i in verworfen) offenerBeweis = id
+        }
+        // Der Beweis des letzten verworfenen Zyklus kommt noch an.
+        offenerBeweis?.let { a.revokeSettled(it) }
+
+        assertEquals(2.70, e.primeSpentU, 1e-9, "die Huelle ist NICHT ausgeschoepft")
+        assertEquals(2.70, e.evidenceCommittedU, 1e-9, "und der Bestand nicht bezahlt")
+        assertEquals(18, e.mealDeliveries.size, "zwei Eintraege sind verschwunden")
+        assertEquals(2.70, e.mealDeliveries.sumOf { it.amountU }, 1e-9)
+    }
+
+    /**
+     * DIE KENNUNG UEBERLEBT DEN CODEC - und NUR das.
+     *
+     * MEIN ERSTER KOMMENTAR HIER WAR SACHLICH FALSCH (Toni 19.08.). Er
+     * behauptete, ohne die Kennung in der Datei faende ein Beweis "nach einem
+     * Neustart" den Eintrag nicht mehr - und suggerierte damit, MIT ihr ginge
+     * es. Das stimmt nicht, aus zwei unabhaengigen Gruenden:
+     *
+     *   (1) DIE REIHENFOLGE. Produktiv wird ZUERST persistiert
+     *       (LedgerPublicationGate.persistVerified) und erst DANACH in
+     *       resolveReservation die Kennung nachgetragen. Zum Zeitpunkt des
+     *       Persists steht sie also noch gar nicht im Eintrag - sie erreicht
+     *       die Datei erst mit dem NAECHSTEN Persist.
+     *
+     *   (2) `settled` IST NICHT PERSISTENT, ausdruecklich. Nach einem
+     *       Neustart gibt es also gar nichts, was einen Beweis noch
+     *       zuordnen koennte - unabhaengig davon, was in der Datei steht.
+     *
+     * NACH EINEM ECHTEN NEUSTART GEHT DIE ENTLASTUNG VERLOREN, und das ist
+     * der gewollte Ausgang: die Buchung bleibt stehen, FUSE liefert spaeter
+     * zu wenig statt zu viel. Der Test unten haelt genau das fest.
+     *
+     * WOZU DIE KENNUNG IN DER DATEI DANN TAUGT - und hier stand schon wieder
+     * eine zu starke Behauptung (Toni 19.08.): "ein Beweis findet den Eintrag
+     * dann auch nach einem zwischenzeitlichen Laden". Auch das stimmt nicht.
+     * Ein Laden IST ein Prozessstart, und danach ist `settled` weg - die
+     * Kennung wird gar nicht mehr gesucht.
+     *
+     * Fuer die ENTLASTUNG taugt sie in der Datei also nicht. Sie taugt fuer
+     * zweierlei anderes, und beides ist real:
+     *
+     *   die EINDEUTIGKEIT bleibt ueber Ladevorgaenge erzwungen, sodass eine
+     *   spaeter nachgetragene Kennung nicht mit einer alten kollidieren kann;
+     *
+     *   und im Trail steht, welche Mahlzeitenzeile zu welchem Zyklus gehoerte -
+     *   ohne das waere eine Abweichung zwischen Buchfuehrung und
+     *   Pumpendatenbank spaeter nicht mehr aufzuloesen. Genau diese Frage hat
+     *   den ganzen Block ausgeloest.
+     */
+    @Test
+    fun `die Buchungskennung ueberlebt den Codec-Rundlauf`() {
+        val a = nachPublikation()
+        assertEquals(ID, a.episodes.mealDeliveries.single().proposalId, "nachgetragen")
+
+        val zurueck = LedgerCodec.decodeEpisodes(
+            org.json.JSONObject(LedgerCodec.encodeEpisodes(a.episodes).toString())
+        )
+        assertEquals(ID, zurueck.mealDeliveries.single().proposalId, "und im Codec erhalten")
+    }
+
+    /**
+     * NACH EINEM NEUSTART GIBT ES KEINE ENTLASTUNG MEHR - konservativ.
+     *
+     * `settled` ist nicht persistent. Ein Beweis, der nach dem Neustart
+     * eintrifft, findet nichts mehr zuzuordnen und darf auch nichts finden:
+     * er koennte sonst eine Menge entlasten, deren Umstaende dieser Prozess
+     * gar nicht kennt.
+     *
+     * Die Fehlrichtung ist die richtige - die Buchung bleibt stehen, FUSE
+     * liefert spaeter zu wenig statt zu viel.
+     */
+    @Test
+    fun `nach einem Neustart bleibt die Buchung stehen`(@TempDir dir: File) {
+        // MEINE ERSTE FASSUNG WAR EINE ATTRAPPE (Toni 19.08.): sie kopierte
+        // den Zustand von Hand in einen neuen Adapter - und vergass dabei
+        // onsetSpentU. Ein Test, der die Einigkeit der fuenf Buecher pruefen
+        // soll, machte sie in seinem eigenen Aufbau uneinig.
+        //
+        // Jetzt der ECHTE Weg: persistVerified -> neuer Adapter -> loadOnce.
+        val vor = FuseLedgerAdapter()
+        vor.loadOnce(dir, "s1", ts)
+        // Konsolidierung 2.0: die Fundament-Autorisierung samt ihrem Bezahlstand ist entfallen.
+        vor.episodes.primeSpentU = 0.60
+        vor.episodes.onsetSpentU = 0.60
+        vor.episodes.evidenceCommittedU = 0.60
+        vor.episodes.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, 0.15))
+        vor.episodes.pendingReservation = EpisodeBudgets.Reservation(
+            computeTs = ts, amountU = 0.15, prime = true, onset = true,
+            mealTs = ts,
+        )
+        vor.resolveReservation(ts, publishedU = 0.15, proposalId = ID)
+        assertNotNull(vor.episodes.settled, "vor dem Neustart ist die Ablage da")
+        assertTrue(vor.persistVerified(dir), "schreiben muss gelingen")
+
+        // Der Neustart.
+        val nach = FuseLedgerAdapter()
+        nach.loadOnce(dir, "s2", ts + 60_000L)
+
+        assertNull(nach.episodes.settled, "ein Neustart hat keine offene Ablage")
+        assertEquals(0.0, nach.revokeSettled(ID).amountU, 1e-9, "und damit nichts zurueckzudrehen")
+
+        // ALLE VIER Buecher, einzeln geprueft (Konsolidierung 2.0: der Fundament-Bezahlstand ist entfallen).
+        assertEquals(0.60, nach.episodes.primeSpentU, 1e-9, "primeSpentU")
+        assertEquals(0.60, nach.episodes.onsetSpentU, 1e-9, "onsetSpentU")
+        assertEquals(0.60, nach.episodes.evidenceCommittedU, 1e-9, "evidenceCommittedU")
+        assertEquals(
+            0.15, nach.episodes.mealDeliveries.single().amountU, 1e-9,
+            "mealDeliveries - die fuenf Buecher bleiben einig",
+        )
+    }
+
+    /**
+     * OHNE AUFFINDBARE MAHLZEITENZEILE WIRD GAR NICHTS ENTLASTET
+     * (Toni 19.08.).
+     *
+     * Wuerde erst am Ende gesucht, stuenden vier Zaehler bereits gesenkt da -
+     * vier Buecher korrigiert, eines nicht. Genau das Auseinanderlaufen,
+     * gegen das dieser Block gebaut ist.
+     */
+    @Test
+    fun `ohne auffindbare Mahlzeitenzeile bleibt alles stehen`() {
+        val a = nachPublikation()
+        // Der Widerspruch: die Ablage nennt eine Zeile, die es nicht mehr gibt.
+        a.episodes.mealDeliveries.clear()
+
+        assertEquals(0.0, a.revokeSettled(ID).amountU, 1e-9, "keine Teilentlastung")
+        assertEquals(0.60, a.episodes.primeSpentU, 1e-9)
+        assertEquals(0.60, a.episodes.onsetSpentU, 1e-9)
+        assertEquals(0.60, a.episodes.evidenceCommittedU, 1e-9)
+    }
+
+    /**
+     * UND SCHON DIE ABLAGE ENTSTEHT NICHT, wenn die Kennung nicht nachgetragen
+     * werden konnte. Der Fall oben ist damit die zweite Verteidigungslinie -
+     * die erste steht in `resolveReservation`.
+     */
+    @Test
+    fun `ohne nachtragbare Zeile entsteht keine Ablage`() {
+        val a = FuseLedgerAdapter()
+        a.episodes.primeSpentU = 0.15
+        // Die Reservierung nennt eine Mahlzeitenzeile - aber es gibt keine.
+        a.episodes.pendingReservation = EpisodeBudgets.Reservation(
+            computeTs = ts, amountU = 0.15, prime = true, onset = false,
+            mealTs = ts,
+        )
+        a.resolveReservation(ts, publishedU = 0.15, proposalId = ID)
+
+        assertNull(a.episodes.settled, "ohne nachgetragene Kennung keine Ablage")
+        assertEquals(0.0, a.revokeSettled(ID).amountU, 1e-9)
+        assertEquals(0.15, a.episodes.primeSpentU, 1e-9, "die Belastung bleibt stehen")
+    }
+
+    // ---- Die Grenzen des Zurueckdrehens ------------------------------------
+
+    /** Eine fremde Zeile fasst nichts an. */
+    @Test
+    fun `ein fremder Vorschlag dreht nichts zurueck`() {
+        val a = nachPublikation()
+        assertEquals(0.0, a.revokeSettled("s#fremd").amountU, 1e-9)
+        assertEquals(0.60, a.episodes.primeSpentU, 1e-9, "unveraendert")
+        assertNotNull(a.episodes.settled, "und die Buchung bleibt zuordenbar")
+    }
+
+    /** Zweimal zurueckdrehen gibt nicht zweimal frei. */
+    @Test
+    fun `das Zurueckdrehen ist idempotent`() {
+        val a = nachPublikation()
+        a.revokeSettled(ID)
+        assertEquals(0.0, a.revokeSettled(ID).amountU, 1e-9)
+        assertEquals(0.45, a.episodes.primeSpentU, 1e-9)
+        // Auch die Revision rueckt nur EINMAL vor: der zweite Aufruf senkt
+        // nichts, also darf er auch keine neue Widerrufs-Erlaubnis erzeugen.
+        assertEquals(1L, a.episodes.evidenceCommitmentRevision)
+    }
+
+    /**
+     * NUR EIN ZYKLUS WEIT. Die naechste Aufloesung ueberschreibt die Ablage -
+     * mehr braucht es nicht, weil `priorActuation` genau den vorigen Zyklus
+     * beschreibt. Ein aelterer Beweis findet nichts mehr und darf auch nichts
+     * finden: er koennte sonst eine Menge entlasten, die inzwischen von einem
+     * anderen Zyklus stammt.
+     */
+    @Test
+    fun `eine neue Buchung ueberschreibt die vorige Ablage`() {
+        val a = nachPublikation()
+        a.episodes.pendingReservation = EpisodeBudgets.Reservation(
+            computeTs = ts + 60_000L, amountU = 0.10, prime = true, onset = false,
+            mealTs = 0L,
+        )
+        a.resolveReservation(ts + 60_000L, publishedU = 0.10, proposalId = "s#43")
+
+        assertEquals(0.0, a.revokeSettled(ID).amountU, 1e-9, "die alte Zeile ist nicht mehr zuordenbar")
+        assertEquals(0.10, a.revokeSettled("s#43").amountU, 1e-9, "die neue schon")
+    }
+
+    /**
+     * OHNE proposalId ENTSTEHT KEINE ABLAGE.
+     *
+     * Dann gibt es keine Zuordnung und damit auch keine spaetere Entlastung.
+     * Das ist der konservative Ausgang: die Buchung bleibt stehen.
+     */
+    @Test
+    fun `ohne Vorschlagskennung gibt es nichts zurueckzudrehen`() {
+        val a = FuseLedgerAdapter()
+        a.episodes.primeSpentU = 0.15
+        a.episodes.pendingReservation = EpisodeBudgets.Reservation(
+            computeTs = ts, amountU = 0.15, prime = true, onset = false, mealTs = 0L,
+        )
+        a.resolveReservation(ts, publishedU = 0.15)
+        assertNull(a.episodes.settled)
+        assertEquals(0.0, a.revokeSettled(ID).amountU, 1e-9)
+        assertEquals(0.15, a.episodes.primeSpentU, 1e-9, "die Belastung bleibt stehen")
+    }
+
+    /**
+     * EINE VOM GATE ENTFERNTE MENGE LEGT KEINE ABLAGE AN.
+     *
+     * Sie wurde schon von `resolveReservation` zurueckgedreht - eine zweite
+     * Entlastung ueber denselben Vorgang wuerde doppelt abziehen.
+     */
+    @Test
+    fun `eine vom Gate entfernte Menge hinterlaesst keine Ablage`() {
+        val a = nachPublikation(menge = 0.15).also { adapter ->
+            adapter.episodes.settled = null
+        }
+        // Neuer Zyklus, diesmal vom Publikationsgate entfernt.
+        a.episodes.pendingReservation = EpisodeBudgets.Reservation(
+            computeTs = ts + 60_000L, amountU = 0.15, prime = true, onset = false,
+            mealTs = 0L,
+        )
+        a.episodes.primeSpentU += 0.15
+        val vorher = a.episodes.primeSpentU
+        a.resolveReservation(ts + 60_000L, publishedU = 0.0, proposalId = "s#44")
+
+        assertNull(a.episodes.settled, "vom Gate entfernt = nichts mehr zurueckzudrehen")
+        assertEquals(vorher - 0.15, a.episodes.primeSpentU, 1e-9, "schon hier zurueckgedreht")
+        assertEquals(0.0, a.revokeSettled("s#44").amountU, 1e-9, "und kein zweites Mal")
+    }
+
+    // Konsolidierung 2.0: die Probe "nur Phase B dreht den Fundament-Zaehler zurueck" ist mit dem Fundament entfallen.
+
+    /**
+     * DIE GEFUNDENE ZEILE MUSS DIE MENGE EXAKT TRAGEN (Toni 19.08.).
+     *
+     * BEIDE Richtungen sind ein Widerspruch, und die zweite hatte ich zuerst
+     * falsch: "groessere Zeile wird gekuerzt, der Rest stammt aus einem
+     * anderen Vorgang" widerspricht der stabilen Identitaet, die dieser Block
+     * gerade erzwingt - eine Vorschlagskennung gehoert genau EINEM Zyklus.
+     * Der stehen gebliebene Rest waere eine Phantomlieferung, die niemand
+     * mehr zuordnen kann.
+     *
+     * Im gueltigen Zustand sind beide Groessen gleich: resolveReservation hat
+     * die Zeile schon auf die tatsaechlich publizierte Menge gebracht.
+     */
+    @Test
+    fun `eine abweichende Mahlzeitenzeile entlastet gar nicht`() {
+        for (zeilenmenge in listOf(0.05, 0.25)) {
+            val a = nachPublikation()
+            val z = a.episodes.mealDeliveries.single()
+            a.episodes.mealDeliveries.clear()
+            a.episodes.mealDeliveries.addLast(
+                EpisodeBudgets.MealDelivery(z.ts, zeilenmenge, z.proposalId),
+            )
+
+            assertEquals(0.0, a.revokeSettled(ID).amountU, 1e-9, "$zeilenmenge: keine Teilentlastung")
+            assertEquals(0.60, a.episodes.primeSpentU, 1e-9, "$zeilenmenge")
+            assertEquals(0.60, a.episodes.onsetSpentU, 1e-9, "$zeilenmenge")
+            assertEquals(0.60, a.episodes.evidenceCommittedU, 1e-9, "$zeilenmenge")
+            assertEquals(
+                zeilenmenge, a.episodes.mealDeliveries.single().amountU, 1e-9,
+                "$zeilenmenge: und die Zeile bleibt unangetastet",
+            )
+        }
+    }
+
+    /**
+     * RUNDUNGSRAUSCHEN IST KEINE ABWEICHUNG.
+     *
+     * Ohne diese Gegenprobe waere die Regel mit einem exakten Ungleichheits-
+     * vergleich erfuellbar - und dann scheiterte die Entlastung an der
+     * letzten Nachkommastelle einer Gleitkommarechnung.
+     */
+    @Test
+    fun `Rundungsrauschen laesst die Entlastung zu`() {
+        val a = nachPublikation()
+        val z = a.episodes.mealDeliveries.single()
+        a.episodes.mealDeliveries.clear()
+        a.episodes.mealDeliveries.addLast(
+            EpisodeBudgets.MealDelivery(z.ts, 0.15 + 5e-10, z.proposalId),
+        )
+        assertEquals(0.15, a.revokeSettled(ID).amountU, 1e-9, "innerhalb 1e-9 wird entlastet")
+        assertTrue(a.episodes.mealDeliveries.isEmpty(), "und die Zeile verschwindet GANZ")
+    }
+
+    // ---- Die Kennung ist eine erzwungene Invariante (Toni 19.08.) ---------
+
+    /**
+     * EINE "STABILE IDENTITAET", DIE LEER, UNBEGRENZT LANG ODER DOPPELT SEIN
+     * DARF, IST KEINE.
+     *
+     * Besonders die Eindeutigkeit ist keine Kosmetik: [revokeSettled] sucht
+     * mit `indexOfFirst { it.proposalId == ... }`. Bei einer doppelten
+     * Kennung traefe es die erste - also moeglicherweise die falsche Zeile,
+     * und damit genau der Fehler, gegen den die Identitaet eingefuehrt wurde.
+     */
+    @Test
+    fun `eine unbrauchbare Buchungskennung macht die Generation ungueltig`() {
+        val faelle = listOf<Pair<String, (org.json.JSONArray) -> Unit>>(
+            "leer" to { arr -> arr.getJSONArray(0).put(2, "") },
+            "nur Leerzeichen" to { arr -> arr.getJSONArray(0).put(2, "   ") },
+            "zu lang" to { arr -> arr.getJSONArray(0).put(2, "x".repeat(65)) },
+            "doppelt" to { arr -> arr.getJSONArray(1).put(2, arr.getJSONArray(0).getString(2)) },
+        )
+        for ((name, brich) in faelle) {
+            val e = EpisodeBudgets()
+            e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, 0.15, "s#1"))
+            e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts + 60_000L, 0.10, "s#2"))
+            val o = LedgerCodec.encodeEpisodes(e)
+            brich(o.getJSONArray("mealDeliveries"))
+            org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException::class.java,
+                { LedgerCodec.decodeEpisodes(org.json.JSONObject(o.toString())) },
+                "$name MUSS die Generation verwerfen",
+            )
+        }
+    }
+
+    /** Und die Gegenprobe: zwei verschiedene Kennungen sind der Normalfall. */
+    @Test
+    fun `zwei verschiedene Buchungskennungen sind gueltig`() {
+        val e = EpisodeBudgets()
+        e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts, 0.15, "s#1"))
+        e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts + 60_000L, 0.10, "s#2"))
+        val zurueck = LedgerCodec.decodeEpisodes(
+            org.json.JSONObject(LedgerCodec.encodeEpisodes(e).toString())
+        )
+        assertEquals(listOf("s#1", "s#2"), zurueck.mealDeliveries.map { it.proposalId })
+    }
+
+    /**
+     * MEHRERE EINTRAEGE OHNE KENNUNG bleiben zulaessig - `null` ist keine
+     * Identitaet, sondern ihr Fehlen. Altbestand aus Dateien vor dem 19.08.
+     * besteht genau daraus.
+     */
+    @Test
+    fun `mehrere Eintraege ohne Kennung sind zulaessig`() {
+        val e = EpisodeBudgets()
+        repeat(3) { e.mealDeliveries.addLast(EpisodeBudgets.MealDelivery(ts + it * 60_000L, 0.10)) }
+        val zurueck = LedgerCodec.decodeEpisodes(
+            org.json.JSONObject(LedgerCodec.encodeEpisodes(e).toString())
+        )
+        assertEquals(3, zurueck.mealDeliveries.size)
+        assertTrue(zurueck.mealDeliveries.all { it.proposalId == null })
+    }
+}

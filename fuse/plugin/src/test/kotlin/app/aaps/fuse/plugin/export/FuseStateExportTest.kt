@@ -1,0 +1,1563 @@
+package app.aaps.fuse.plugin.export
+
+import app.aaps.core.interfaces.aps.APSResult
+import app.aaps.core.interfaces.aps.RT
+import app.aaps.fuse.core.controller.FuseController
+import app.aaps.fuse.core.controller.TailLiability
+import app.aaps.fuse.core.controller.TurnResponseShadow
+import app.aaps.fuse.core.observer.ActivityValidity
+import app.aaps.fuse.core.observer.Health
+import app.aaps.fuse.core.signal.PairSlopeBand
+import app.aaps.fuse.core.signal.SignalWindow
+import app.aaps.fuse.plugin.FuseCycleRunner
+import app.aaps.fuse.plugin.FusePumpGate
+import app.aaps.fuse.plugin.FuseSignalSource
+import org.json.JSONObject
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+import java.io.File
+
+class FuseStateExportTest {
+
+    private val BUILD = FuseStateJson.Build("3.4.2.5+fuse1.0.2-toni", "abc1234", true)
+
+    private val cfg = FuseCycleRunner.Config(
+        smbRatio = 0.2, smbRatioRise = 0.35, sharedMaxIobU = 7.0, riseRampLowR = 0.5, riseRampHighR = 2.0, bolusShareLambda = 1.0, onsetChannelEnabled = true, onsetEnvelopeU = 1.5, primeEnvelopeU = 1.2, maxSmbU = 0.3, guardFloorMgdl = 70.0, lowGateMinBenefitMgdl = 5.0, zeroLatchEnabled = false, zeroLatchCalmExitMin = 20, zeroLatchReasonGoneExitCycles = 0, partialRecoveryEnabled = false, zeroLatchCalmDistanceMgdl = 30.0, reversalGuardEnabled = false, reversalFallUkf = 2.0, reversalLookbackMin = 20, reversalReboundUkf = 1.0, reversalConfirmCycles = 2, correctionRearmEnabled = false, rearmHoldMin = 5, rearmConfirmCycles = 2, rearmUpUkf = 0.3, lowGateHorizonMin = 120.0, positiveDescentHorizonMin = 30.0, deferredPrimeEnabled = false, markerPrimeDescentHorizonMin = 60.0, deferredPrimeEndMin = 120, livenessChannelEnabled = false, livenessMealPowerMin = 120, correctionExposureLimitU = 3.0, mealExposureLimitU = 7.0, correctionDemandRatioCap = 0.20, mealDemandRatioCap = 0.35, livenessBgMinDayMgdl = 140.0, livenessBgMinNightMgdl = 160.0, livenessReArmMin = 10, iobThPercent = 100,
+        releaseHorizonMin = 30, liabilityHorizonMin = 120, driveTauMin = 60, signalRejoinEnabled = false, theilSenWindowMin = 18, absorptionCreditWindowMin = 60, markerBoostMaxMin = 45, evidenceReboundOverrideMaxMin = 120, nightStartMin = 1380, nightEndMin = 420, nightDeadbandMgdl = 45.0, reboundDeadbandMgdl = 25.0, reboundWindowMin = 45,
+        driveLowerQuantilePct = 50, tailGuardEnabled = false, markerAuthorized = false, tailFloorMgdl = 70.0, tailRecoveryU = 0.0, endZeroWhenReasonGone = true,
+    )
+
+    private fun signal() = FuseSignalSource.Signal(
+        sourceTs = 1_700_000_000_000L, rawBg = 132.0, q1 = 130.0, rSigned = 0.8,
+        ukfRatePerMin = 1.1, ukfLearnedR = 2.2, rawSlopePerMin = 1.4, activityAtAnchor = 0.01, isfAtAnchor = 90.0,
+        adjusted = app.aaps.fuse.core.signal.BgiAdjustedSeries.adjust(emptyList()), measured = app.aaps.fuse.core.signal.MeasuredGlucose.EMPTY, activity = ActivityValidity.VALID,
+        samplesUsed = 19, rawSeriesSize = 200, gapBeforeMin = 1.0, stepFromLastMgdl = -1.0, stepRateActualMgdlPerMin = -1.0, postGapIndex = 18, q1Outlier = false,
+        boundedBy = SignalWindow.Bound.NONE, windowFromTs = 1_699_988_120_000L, segmentStartTs = 1_699_988_120_000L, rejoin = app.aaps.fuse.core.signal.SignalRejoin.strict(), fullMaturityTs = 0L, signalEpochTs = 1_699_900_000_000L,
+    )
+
+    private fun step() = app.aaps.fuse.core.observer.ObserverStep(
+        accepted = true, health = Health.READY, healthReasons = emptySet(),
+        safetyReasons = emptySet(), phase = app.aaps.fuse.core.observer.Phase.RISE_ACTIVE,
+        transition = app.aaps.fuse.core.observer.Transition(
+            type = app.aaps.fuse.core.observer.TransitionType.RISE_CONFIRMED,
+            from = app.aaps.fuse.core.observer.Phase.CANDIDATE,
+            to = app.aaps.fuse.core.observer.Phase.RISE_ACTIVE,
+            reasons = setOf("confirmed"), triggerSourceTs = 1_700_000_000_000L,
+            triggerComputeTs = 1_700_000_030_000L, candidateId = "c1", eventId = "e1",
+        ),
+        candidateId = "c1", eventId = "e1",
+        livePeak = app.aaps.fuse.core.observer.Peak(1_700_000_000_000L, 150.0),
+        quietAccumMin = 0.0, confirmCount = 2, carryDurMin = 0.0, resetCauses = emptySet(),
+    )
+
+    private fun outcome(
+        abort: String? = null,
+        policy: FuseCycleRunner.Config? = cfg,
+        signal: FuseSignalSource.Signal? = signal(),
+        tail: TailLiability.Report? = null,
+        step: app.aaps.fuse.core.observer.ObserverStep? = step(),
+        episodeId: Long = 0L,
+        committedU: Double = 0.0,
+        episodeMin: Int? = null,
+        phase: String? = null,
+        stockMgdl: Double? = null,
+        reason: String? = null,
+        capMin: Int = 360,
+        denial: String? = null,
+        shadow: TurnResponseShadow.Report? = null,
+        upfrontChain: FuseCycleRunner.UpfrontChain? = null,
+    ) = FuseCycleRunner.Outcome(
+        tbrChanged = false,
+        decision = FuseController.Decision(
+            0.15, FuseController.TbrAction.KEEP_CURRENT, FuseController.Block.NONE,
+            1.4, 180.0, 95.0, "smbRatio", tail, if (tail != null) 0.05 else 0.0,
+        ),
+        tbr = null, prediction = null, sourceTs = signal?.sourceTs, computeTs = 1_700_000_030_000L,
+        health = Health.READY, gate = FusePumpGate.Result(FusePumpGate.Verdict.ALLOWED, "VirtualPumpPlugin"),
+        reason = "KEEP", alarm = false, bgMgdl = 130.0, targetMgdl = 97.0, targetSource = "profile",
+        signal = signal, band = PairSlopeBand.Estimate(0.8, 0.4, 153),
+        discount = app.aaps.fuse.core.predictor.DriveDiscount.apply(0.8, 0.4, 0.01, 85.0, 1.0),
+        onset = app.aaps.fuse.core.controller.OnsetChannel.Result(false, false, null, 1.5, "R_CONFIRMED"),
+        prime = app.aaps.fuse.core.controller.PrimeRelease.Plan(false, 0.0, 1.2, "NO_MARKER"),
+        candidate = null, candidateGap = null, computeDurationMs = 7L, mealStats = null, policy = policy,
+        state = null, step = step, sensorEpoch = 1_699_000_000_000L, calibrationEpoch = 0L,
+        isfMgdlPerU = 85.0, iobU = 1.2, abortReason = abort,
+        evidenceEpisodeId = episodeId, evidenceCommittedU = committedU, evidenceEpisodeMin = episodeMin,
+        evidenceEpisodeCapMin = capMin,
+        evidencePhase = phase, evidenceStockMgdl = stockMgdl, evidenceReason = reason,
+        evidenceEpisodeDenial = denial,
+        turnResponseShadow = shadow,
+        upfrontChain = upfrontChain,
+    )
+
+    private fun rt(units: Double? = 0.15) = RT(
+        algorithm = APSResult.Algorithm.FUSE, timestamp = 1_700_000_030_000L,
+        rate = null, duration = null, units = units, deliverAt = units?.let { 1_700_000_030_000L },
+    )
+
+    private fun record(
+        o: FuseCycleRunner.Outcome = outcome(),
+        r: RT = rt(),
+        gate: FuseStateJson.PublicationGate? = null,
+    ) = FuseStateJson.record("s#1", o, r, o.policy, BUILD, 0L, null, publicationGate = gate) { 5_000_000L }
+
+    /** Viewer-Vertrag (Toni 29.08. spaet): der typisierte SMB-Status und
+     *  die Quellen-Trennung stehen WOERTLICH im Export - kein Anzeiger
+     *  raet aus Reason-Texten. */
+    @Test
+    fun `der typisierte SMB-Status steht im Export`() {
+        val j = record(outcome().copy(
+            smbState = "STOP", smbStopReason = "EXPOSURE",
+            smbRequestedU = 0.55, smbCappedU = 0.0, smbPublishedU = 0.0,
+            exposureRequestedSource = "LIVENESS", exposureFinalSource = "NONE",
+        ))
+        val smb = j.getJSONObject("smb")
+        assertEquals("STOP", smb.getString("state"))
+        assertEquals("EXPOSURE", smb.getString("stopReason"))
+        assertEquals(0.55, smb.getDouble("requestedU"), 1e-9)
+        assertEquals(0.0, smb.getDouble("cappedU"), 1e-9)
+        assertEquals(0.0, smb.getDouble("publishedU"), 1e-9)
+        // Der voll gekappte Liveness-Vorschlag: Absicht LIVENESS, final NONE
+        // - der exposure-Block existiert auch ohne Sicht-Zahlen (Fallback).
+        val exp = j.getJSONObject("exposure")
+        assertEquals("NONE", exp.getString("source"))
+        assertEquals("LIVENESS", exp.getString("requestedSource"))
+    }
+
+    @Test
+    fun `Wende-Shadow exportiert die Klassifikation ohne Sammler`() {
+        val classification = TurnResponseShadow.Classification(
+            phase = TurnResponseShadow.Phase.TURNING_DOWN,
+            reason = TurnResponseShadow.Reason.DOWN_CONFIRMED,
+            slowDriveMgdlPerMin = 2.81,
+            fastDriveMgdlPerMin = 2.69,
+            delta1MgdlPerMin = -0.19,
+            delta2MgdlPerMin = -0.25,
+            delta3MgdlPerMin = -0.30,
+            upwardMeanDriveMgdlPerMin = null,
+            adaptiveRestraintTauMin = 50,
+        )
+        // 2.0 (Stufe 1, K1): die Sammler sind entfernt - der Block traegt die
+        // Klassifikation, enabled ist fest false, die Listen bleiben leer.
+        val report = TurnResponseShadow.Report(classification)
+
+        val j = record(outcome(shadow = report)).getJSONObject("turnResponseShadow")
+        assertTrue(j.getBoolean("dosageNeutral"))
+        assertEquals("TURNING_DOWN", j.getString("phase"))
+        assertEquals(50, j.getInt("adaptiveRestraintTauMin"))
+        assertEquals(-0.25, j.getDouble("delta2MgdlPerMin"), 1e-9)
+        assertFalse(j.getBoolean("enabled"))
+        assertEquals(0.0, j.getDouble("computeDurationMs"), 0.0)
+        assertEquals(0, j.getJSONArray("variants").length())
+        assertEquals(0, j.getJSONArray("downVariants").length())
+    }
+
+    @Test
+    fun `Abbruch vor der Bahn benennt den fehlenden Shadow statt einen zu erfinden`() {
+        val j = record(outcome(shadow = null))
+        val gaps = j.getJSONArray("gaps")
+        assertTrue((0 until gaps.length()).map { gaps.getJSONObject(it) }
+            .any { it.getString("field") == "turnResponseShadow" && it.getString("reason") == "NO_SHADOW_THIS_CYCLE" })
+    }
+
+    /**
+     * IOBTH NIE VERSTECKEN - AUCH IM ABBRUCHZYKLUS (Toni 17.08.).
+     *
+     * abort() setzt `state = null`, kennt die beiden Grenzen aber und legt
+     * sie in outcome.iobThU/maxIobU. Der AAPS-Tab hatte den Rueckfall
+     * (FuseDashboardModel), der Export nicht - am Geraet standen die Grenzen,
+     * in der Datei, die der Viewer liest, fehlten sie. Der uebrige Testaufbau
+     * verdeckte das strukturell: er baut state=null MIT gesetztem
+     * isfMgdlPerU, eine Kombination, die abort() nie erzeugt, und prueft die
+     * Grenzen nicht.
+     */
+    @Test
+    fun `die IOB-Grenzen ueberleben den Abbruchzyklus im Export`() {
+        val o = outcome(abort = "drive not estimable (1 samples)")
+            .copy(iobThU = 8.0, maxIobU = 8.0)
+        val state = record(o).getJSONObject("state")
+        assertEquals(8.0, state.getDouble("iobThU"), 1e-9, "iobTH nie verstecken - auch nicht im Export")
+        assertEquals(8.0, state.getDouble("maxIobU"), 1e-9)
+    }
+
+    // ---- B0c: das Publikationsgate im Trail ------------------------------
+
+    /**
+     * Der Befund des Publikationsgates muss als DATEN im Datensatz stehen.
+     * Vorher lebte der Grund einer Zurueckhaltung nur im `rt.reason`-Text, den
+     * der Export gar nicht ausgibt: ein Zyklus, in dem eine gerechnete Menge
+     * NICHT hinausging, sah aus wie einer, der keine gerechnet hat.
+     */
+    @Test
+    fun `der Befund des Publikationsgates steht im Datensatz`() {
+        val j = record(
+            r = rt(units = null),
+            gate = FuseStateJson.PublicationGate(
+                allowed = false,
+                reason = app.aaps.fuse.plugin.ledger.LedgerPublicationGate.REASON_TREATMENT_VIEW_UNAVAILABLE,
+                treatmentViewPresent = false,
+            ),
+        )
+        val g = j.getJSONObject("publicationGate")
+        assertFalse(g.getBoolean("allowed"))
+        assertEquals(
+            app.aaps.fuse.plugin.ledger.LedgerPublicationGate.REASON_TREATMENT_VIEW_UNAVAILABLE,
+            g.getString("reason"),
+        )
+        assertFalse(g.getBoolean("treatmentViewPresent"))
+    }
+
+    /** Der Regelfall: freigegeben, kein Grund, Vollsicht vorhanden. */
+    @Test
+    fun `ein freigegebener Zyklus nennt keinen Grund und hat die Vollsicht`() {
+        val j = record(gate = FuseStateJson.PublicationGate(allowed = true, reason = null, treatmentViewPresent = true))
+        val g = j.getJSONObject("publicationGate")
+        assertTrue(g.getBoolean("allowed"))
+        assertEquals(JSONObject.NULL, g.get("reason"))
+        assertTrue(g.getBoolean("treatmentViewPresent"))
+    }
+
+    /** Und wer den Befund nicht meldet, bekommt eine Luecke - keine erfundene
+     *  Freigabe. */
+    @Test
+    fun `ohne gemeldetes Publikationsgate steht eine Luecke im Datensatz`() {
+        val j = record()
+        assertFalse(j.has("publicationGate"))
+        val gaps = j.getJSONArray("gaps")
+        val fields = (0 until gaps.length()).map { gaps.getJSONObject(it).getString("field") }
+        assertTrue(fields.contains("publicationGate"))
+    }
+
+    // ---- Der wichtigste Test: nichts wird vorgetaeuscht -------------------
+
+    /**
+     * Ein Datensatz, der vollstaendig AUSSIEHT, wuerde als Freigabe gelesen.
+     * Fehlt die Ledger-Sicht (alter Aufrufer, Adapterfehler), muss das
+     * Gegenteil in den Daten stehen — nicht in einer Fussnote.
+     */
+    @Test
+    fun `ohne Ledger-Sicht erklaert sich der Datensatz fuer unvollstaendig`() {
+        val j = record()
+        assertFalse(j.getBoolean("r89Complete"))
+        assertEquals(JSONObject.NULL, j.get("ledger"))
+        val gaps = j.getJSONArray("gaps")
+        val fields = (0 until gaps.length()).map { gaps.getJSONObject(it).getString("field") }
+        val reasons = (0 until gaps.length()).map { gaps.getJSONObject(it).getString("reason") }
+        assertTrue(fields.contains("ledger.grossLiabilityU"))
+        assertTrue(fields.contains("ledger.accountedU"))
+        assertTrue(fields.contains("ledger.residualU"))
+        assertTrue(reasons.contains(FuseStateJson.GAP_NO_LEDGER))
+    }
+
+    /** Seit v7 (R95 Fix 3): MIT Ledger-Sicht steht die R89-Mengenbilanz im
+     *  Datensatz, die Luecken entfallen, r89Complete kippt auf true. */
+    @Test
+    fun `mit Ledger-Sicht steht die Mengenbilanz im Datensatz`() {
+        val lcfg = app.aaps.fuse.core.ledger.LedgerConfig(bolusStepU = 0.05)
+        val state = app.aaps.fuse.core.ledger.LedgerReducer.reduceAll(
+            app.aaps.fuse.core.ledger.LedgerState(),
+            listOf(
+                app.aaps.fuse.core.ledger.LedgerEvent.Proposed("s#1", 0.30, 1_700_000_000_000L, 0L),
+                app.aaps.fuse.core.ledger.LedgerEvent.AmountObserved(
+                    "s#1", app.aaps.fuse.core.ledger.AmountStage.RT_PUBLISHED, 0.30
+                ),
+            ),
+            lcfg,
+        )
+        val j = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            ledger = FuseStateJson.LedgerSnapshot(revision = 2L, state = state),
+        ) { 5_000_000L }
+
+        assertTrue(j.getBoolean("r89Complete"))
+        val l = j.getJSONObject("ledger")
+        assertEquals(2L, l.getLong("revision"))
+        assertEquals(0.30, l.getDouble("transportCommitmentU"), 1e-12)
+        assertEquals(0.30, l.getDouble("grossLiabilityU"), 1e-12)
+        assertEquals(0.0, l.getDouble("accountedU"), 1e-12)
+        assertEquals(0.30, l.getDouble("residualU"), 1e-12)
+        assertFalse(l.getBoolean("hold"))
+        val open = l.getJSONArray("openEntries")
+        assertEquals(1, open.length())
+        assertEquals("s#1", open.getJSONObject(0).getString("proposalId"))
+        assertEquals("PUBLISHED", open.getJSONObject(0).getString("phase"))
+        assertFalse(gapReasons(j).contains(FuseStateJson.GAP_NO_LEDGER))
+    }
+
+    /** Aktive Fehler muessen im Trail stehen - ein Hold ohne sichtbaren Grund
+     *  wirkt wie ein defektes FUSE. */
+    @Test
+    fun `ein aktiver Ledger-Fehler steht mit Hold im Datensatz`() {
+        val lcfg = app.aaps.fuse.core.ledger.LedgerConfig(bolusStepU = 0.05)
+        val state = app.aaps.fuse.core.ledger.LedgerReducer.reduce(
+            app.aaps.fuse.core.ledger.LedgerState(),
+            // Ereignis zu einer nie vorgeschlagenen Id -> UNKNOWN_PROPOSAL.
+            app.aaps.fuse.core.ledger.LedgerEvent.AmountObserved(
+                "ghost", app.aaps.fuse.core.ledger.AmountStage.RT_PUBLISHED, 0.10
+            ),
+            lcfg,
+        )
+        val l = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            ledger = FuseStateJson.LedgerSnapshot(1L, state),
+        ) { 5_000_000L }.getJSONObject("ledger")
+
+        assertTrue(l.getBoolean("hold"))
+        assertEquals(1L, l.getLong("holdGeneration"))
+        val errs = l.getJSONArray("activeErrors")
+        assertEquals(1, errs.length())
+        assertEquals("UNKNOWN_PROPOSAL", errs.getJSONObject(0).getString("error"))
+        assertTrue(errs.getJSONObject(0).getBoolean("blocking")) { "UNKNOWN_PROPOSAL sperrt" }
+    }
+
+    /** Diagnosekorrektur 15.09.: `hold` ist die zusammengesetzte Sperre - ein
+     *  Seal-Hold exportierte bisher `hold: false`. Begleitfehler als nicht sperrend markiert. */
+    @Test
+    fun `der Export fuehrt die zusammengesetzte Sperre mit allen Quellen`() {
+        val lcfg = app.aaps.fuse.core.ledger.LedgerConfig(bolusStepU = 0.05)
+        val state = app.aaps.fuse.core.ledger.LedgerState()
+        assertFalse(state.holdActuation) { "Vorbedingung: der Zustand selbst sperrt nicht" }
+        val view = app.aaps.fuse.plugin.ledger.LedgerView(
+            hold = true, transportCommitmentU = 0.0, holdReason = "LEDGER_PERSIST_FAILED",
+            holdSources = listOf("LEDGER_PERSIST_FAILED", "LEDGER_RECOVERY_HOLD:SEAL_PENDING"),
+        )
+        val j = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            ledger = FuseStateJson.LedgerSnapshot(1L, state, view = view),
+        ) { 5_000_000L }
+        val l = j.getJSONObject("ledger")
+        assertTrue(l.getBoolean("hold"))
+        assertFalse(l.getBoolean("holdActuation"))
+        assertEquals("LEDGER_PERSIST_FAILED", l.getString("holdReason"))
+        assertEquals("LEDGER_RECOVERY_HOLD:SEAL_PENDING", l.getJSONArray("holdSources").getString(1))
+        assertEquals(5, j.getInt("schemaVersion"))
+
+        // Ohne uebergebene Sicht: Rueckfall auf den Zustand, keine erfundenen Quellen.
+        val ohne = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            ledger = FuseStateJson.LedgerSnapshot(1L, state),
+        ) { 5_000_000L }.getJSONObject("ledger")
+        assertFalse(ohne.getBoolean("hold"))
+        assertTrue(ohne.isNull("holdSources"))
+    }
+
+    /**
+     * Toni 04.10.: eine Marker-Ruecknahme muss im Trail stehen. NO_MARKER
+     * allein unterscheidet sie nicht von einem Ablauf oder vom Zustand vor
+     * jedem Marker.
+     */
+    @Test
+    fun `das letzte Marker-Ereignis steht im Datensatz und fehlt ohne Ereignis`() {
+        val e = FuseStateJson.MarkerEvent("WITHDRAWN", 1_700_000_000_000L, "Uebersicht", 1_699_999_000_000L)
+        val m = FuseStateJson.record("s#1", outcome(), rt(), cfg, BUILD, 0L, null, markerEvent = e) { 5_000_000L }
+            .getJSONObject("markerEvent")
+        assertEquals("WITHDRAWN", m.getString("type"))
+        assertEquals(1_700_000_000_000L, m.getLong("ts"))
+        assertEquals("Uebersicht", m.getString("source"))
+        assertEquals(1_699_999_000_000L, m.getLong("markerTs"))
+        assertTrue(m.isNull("dueTs"))
+        val vorgemerkt = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            markerEvent = e.copy(type = "WITHDRAWAL_PENDING", dueTs = 1_700_000_010_000L),
+        ) { 5_000_000L }.getJSONObject("markerEvent")
+        assertEquals(1_700_000_010_000L, vorgemerkt.getLong("dueTs"))
+        // Ohne Ereignis seit Prozessstart: kein Block und keine Luecke.
+        assertFalse(record().has("markerEvent"))
+    }
+
+    /** Die vier Felder, ueber die AAPS ueberhaupt aktuiert (R89). */
+    @Test
+    fun `die vier Aktuatorfelder stehen vollstaendig im Datensatz`() {
+        val j = record().getJSONObject("rt")
+        for (k in listOf("rate", "duration", "units", "deliverAt")) assertTrue(j.has(k)) { "$k fehlt" }
+        assertEquals(0.15, j.getDouble("units"), 1e-12)
+        // null heisst "nichts angefordert" und nicht "unbekannt".
+        assertEquals(JSONObject.NULL, j.get("rate"))
+    }
+
+    /**
+     * Eintritt erfuellt, Stufe trotzdem nie aktiv - und der Trail konnte
+     * nicht sagen, ob der Guard keine Rate erlaubte oder die Suche an einer
+     * Datenluecke scheiterte. Beides muss unterscheidbar sein.
+     */
+    @Test
+    fun `Datenluecke und Guard-Null der Teilratensuche sind im Trail unterscheidbar`() {
+        val luecke = record(outcome().copy(
+            partialRecoveryStreak = 7, partialRecoveryActive = false,
+            partialRecoverySearchRateUPerH = 0.0, partialRecoverySearchReject = "INVALID_INPUT",
+            partialRecoverySearchLimit = "ABLEHNUNG",
+        )).getJSONObject("basalGap")
+        assertEquals("INVALID_INPUT", luecke.getString("partialRecoverySearchReject"))
+        assertEquals("ABLEHNUNG", luecke.getString("partialRecoverySearchLimit"))
+        assertEquals(7, luecke.getInt("partialRecoveryStreak"))
+
+        val guard = record(outcome().copy(
+            partialRecoveryStreak = 7, partialRecoveryActive = false,
+            partialRecoverySearchRateUPerH = 0.0, partialRecoverySearchReject = null,
+            partialRecoverySearchLimit = "KEINE_RATE", partialRecoveryBindingOffsetMin = 41,
+            partialRecoveryBaselineMinLowerMgdl = 72.5,
+        )).getJSONObject("basalGap")
+        assertEquals(JSONObject.NULL, guard.get("partialRecoverySearchReject"))
+        assertEquals("KEINE_RATE", guard.getString("partialRecoverySearchLimit"))
+        assertEquals(41, guard.getInt("partialRecoveryBindingOffsetMin"))
+        assertEquals(72.5, guard.getDouble("partialRecoveryBaselineMinLowerMgdl"), 1e-9)
+
+        // Stufe aus: die Suche laeuft nicht, die Felder sagen das - nicht 0.
+        val aus = record(outcome()).getJSONObject("basalGap")
+        assertEquals(JSONObject.NULL, aus.get("partialRecoverySearchRateUPerH"))
+        assertEquals(JSONObject.NULL, aus.get("partialRecoverySearchReject"))
+    }
+
+    @Test
+    fun `Entscheidung, Blockgrund und bindende Grenze sind benannt`() {
+        val d = record().getJSONObject("decision")
+        assertEquals("NONE", d.getString("block"))
+        assertEquals("smbRatio", d.getString("bindingLimit"))
+        assertEquals("KEEP_CURRENT", d.getString("tbr"))
+        assertEquals(0.15, d.getDouble("smbU"), 1e-12)
+    }
+
+    @Test
+    fun `das Gate-Verdikt steht mit Pumpenklasse im Datensatz`() {
+        val g = record().getJSONObject("gate")
+        assertEquals("ALLOWED", g.getString("verdict"))
+        assertTrue(g.getBoolean("allowed"))
+        assertEquals("VirtualPumpPlugin", g.getString("pumpClass"))
+    }
+
+    /**
+     * B3: die DIAGNOSE der Patch-Epoche steht neben dem Sperrgrund.
+     *
+     * Der Sperrgrund allein (`REAL_PUMP_EPOCH_UNKNOWN` im publicationGate)
+     * sagt nur DASS gesperrt wurde. Warum die Epoche fehlt - kein Datensatz,
+     * Handeintrag, fremde Pumpe, aktive Pumpe unlesbar - sind vier Ursachen
+     * mit vier verschiedenen Massnahmen.
+     */
+    @Test
+    fun `die Patch-Epoche steht mit Grund im Datensatz`() {
+        val j = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            patchEpoch = FuseStateJson.PatchEpoch(epochTs = null, known = false, reason = "NO_EVENT"),
+        ) { 5_000_000L }
+        val p = j.getJSONObject("patchEpoch")
+        assertFalse(p.getBoolean("known"))
+        assertEquals("NO_EVENT", p.getString("reason"))
+        assertFalse(p.has("epochTs")) { "unbekannt heisst KEIN Zeitstempel, nicht 0" }
+
+        val bekannt = FuseStateJson.record(
+            "s#2", outcome(), rt(), cfg, BUILD, 0L, null,
+            patchEpoch = FuseStateJson.PatchEpoch(1_700_000_000_000L, true, "MATCHING_PUMP_IDENTITY"),
+        ) { 5_000_000L }
+        assertEquals(1_700_000_000_000L, bekannt.getJSONObject("patchEpoch").getLong("epochTs"))
+    }
+
+    /**
+     * OHNE `applicable` IST DER DATENSATZ IRREFUEHREND.
+     *
+     * An der VirtualPump steht dort `known=false, reason=NO_EVENT` - und das
+     * SIEHT aus wie eine fehlende Epoche, obwohl es dort gar keine geben kann
+     * (kein CANNULA_CHANGE, keine Patches). Wer den Trail liest, wuerde einen
+     * Defekt suchen, den es nicht gibt; schlimmer noch, er koennte die Sperre
+     * fuer wirksam halten, wo sie gar nicht greift.
+     *
+     * Der unbekannte Fall bekommt ausdruecklich `null` und nicht "weggelassen":
+     * "aktive Pumpe nicht lesbar" ist eine Aussage und muss von "dieser Build
+     * kennt das Feld noch nicht" unterscheidbar bleiben.
+     */
+    @Test
+    fun `die Zustaendigkeit der Epoche steht im Datensatz`() {
+        fun feld(applicable: Boolean?) = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            patchEpoch = FuseStateJson.PatchEpoch(null, false, "NO_EVENT", applicable),
+        ) { 5_000_000L }.getJSONObject("patchEpoch")
+
+        assertEquals(false, feld(false).getBoolean("applicable")) {
+            "auf der Emulation ist die Epoche keine Kategorie - genau das muss dastehen"
+        }
+        assertEquals(true, feld(true).getBoolean("applicable"))
+        val unbekannt = feld(null)
+        assertTrue(unbekannt.has("applicable")) { "unbekannt ist eine Aussage, kein fehlendes Feld" }
+        assertTrue(unbekannt.isNull("applicable"))
+    }
+
+    /** Wer sie nicht meldet, bekommt eine LUECKE - keine erfundene Epoche. */
+    @Test
+    fun `ohne gemeldete Patch-Epoche steht eine Luecke im Datensatz`() {
+        val j = record()
+        assertFalse(j.has("patchEpoch"))
+        val gaps = j.getJSONArray("gaps")
+        val fields = (0 until gaps.length()).map { gaps.getJSONObject(it).getString("field") }
+        assertTrue(fields.contains("patchEpoch"))
+    }
+
+    /**
+     * `allowed` und `realPump` sind die Felder, an denen sich ein Auswerter
+     * festmachen soll - nicht am Namen des Verdikts.
+     *
+     * Das ist kein Stilhinweis, sondern eine Lehre aus diesem Wechsel: der
+     * frueher einzige Wert "ALLOWED" heisst jetzt "ALLOWED", weil eine
+     * zweite Erlaubnis dazugekommen ist. Jeder Leser, der auf die Zeichenkette
+     * geprueft hat, war in dem Moment still falsch. Die booleschen Felder
+     * ueberstehen solche Erweiterungen.
+     */
+    @Test
+    fun `Auswerter koennen sich auf allowed und realPump stuetzen`() {
+        val g = record().getJSONObject("gate")
+        assertTrue(g.has("allowed"))
+        assertTrue(g.has("realPump"))
+        assertFalse(g.getBoolean("realPump"))
+    }
+
+    /** Fehlt die Pumpe, ist `pumpClass` der Sentinel "none" und KEIN
+     *  Klassenname — wer danach sucht, sucht sonst vergeblich. */
+    @Test
+    fun `ohne Pumpe ist pumpClass der Sentinel none`() {
+        val o = outcome().copy(gate = FusePumpGate.evaluate(null))
+        assertEquals("none", record(o).getJSONObject("gate").getString("pumpClass"))
+    }
+
+    // ---- Politik ---------------------------------------------------------
+
+    /** Konsolidierung 2.0: H8 und seine Einstellung sind entfallen - nicht mehr in Politik und Hash; der Trail-Block
+     *  behaelt seine Feldnamen neutral (Horizonte 0), Antriebe und Rampe bleiben. */
+    @Test
+    fun `H8 - frueher MEAL-Horizont in Politik, Hash und Trail`() {
+        val h = FuseStateJson.hashOf(cfg)!!
+        val werte = FuseStateJson.policyValues(cfg)
+        assertFalse(werte.has("earlyAdaptiveMealHorizonMin"))
+        assertFalse(werte.has("earlyAdaptiveMealHorizonConfiguredMin"))
+        val early = record(outcome()).getJSONObject("liveness").getJSONObject("earlyAdaptiveMeal")
+        assertEquals(0, early.getInt("horizonMin"))
+        assertFalse(early.getBoolean("eligible"))
+        assertFalse(early.getBoolean("selected"))
+        assertFalse(early.has("active"), "kein mehrdeutiges active mehr")
+        assertTrue(early.isNull("source"))
+        // Rampe: Aenderung von Unter- oder Oberkante bewegt den Politik-Hash, und der
+        // Trail traegt die im Zyklus verwendeten Werte (Nichtstandardwerte).
+        assertTrue(FuseStateJson.hashOf(cfg.copy(riseRampLowR = 0.8)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(riseRampHighR = 4.0)) != h)
+        val mitRampe = outcome().copy(
+            earlyAdaptiveMeal = app.aaps.fuse.plugin.FuseCycleRunner.EarlyAdaptiveMealDiagnosis(
+                horizonMin = 8, riseRampLowR = 0.8, riseRampHighR = 2.2, ratioDriveMgdlPerMin = 1.3,
+            ),
+        )
+        val trail = record(mitRampe).getJSONObject("liveness").getJSONObject("earlyAdaptiveMeal")
+        assertEquals(0.8, trail.getDouble("riseRampLowR"), 0.0)
+        assertEquals(2.2, trail.getDouble("riseRampHighR"), 0.0)
+        assertEquals(1.3, trail.getDouble("ratioDriveMgdlPerMin"), 0.0)
+    }
+
+    /** KI-141 (21.09.2026): die Frist des Rebound-Sonderrechts und die beiden
+     *  Schalter stehen im Export; die Schalter bewegen den Hash, die
+     *  Regelsatzversion bleibt. Ohne das belegte ein gleicher Hash die Stellung
+     *  der Schalter nicht, und ein Replay musste die Frist zurueckrechnen.
+     *  2.0 (Stufe 1, K3): der bedingte Tail ist fest an und steht nur noch als
+     *  wirksamer Wert im Export; geprueft bleiben Marker-Freigabe und Frist. */
+    @Test
+    fun `KI-141 - Rebound-Frist und zwei Schalter in Export und Hash`() {
+        // Produktionsvoreinstellungen - der Test prueft, dass beide Richtungen zaehlen.
+        assertFalse(app.aaps.fuse.plugin.FuseBooleanKey.MarkerAuthorisesRelease.defaultValue)
+
+        val werte = FuseStateJson.policyValues(cfg)
+        assertEquals(cfg.evidenceReboundOverrideMaxMin, werte.getInt("evidenceReboundOverrideMaxMin"))
+        // 2.0 (Stufe 1, K3): der bedingte Tail ist fest an; der Export traegt den wirksamen Wert.
+        assertTrue(werte.getBoolean("conditionalTailEnabled"))
+        assertEquals(cfg.markerAuthorized, werte.getBoolean("markerAuthorisesRelease"))
+        // Der Export gibt den WIRKSAMEN Wert wieder, nicht nur die Voreinstellung.
+        val umgelegt = FuseStateJson.policyValues(
+            cfg.copy(markerAuthorized = !cfg.markerAuthorized,
+                     evidenceReboundOverrideMaxMin = cfg.evidenceReboundOverrideMaxMin + 15))
+        assertTrue(umgelegt.getBoolean("conditionalTailEnabled"))
+        assertEquals(!cfg.markerAuthorized, umgelegt.getBoolean("markerAuthorisesRelease"))
+        assertEquals(cfg.evidenceReboundOverrideMaxMin + 15, umgelegt.getInt("evidenceReboundOverrideMaxMin"))
+
+        val h = FuseStateJson.hashOf(cfg)!!
+        val mitMarker = FuseStateJson.hashOf(cfg.copy(markerAuthorized = !cfg.markerAuthorized))!!
+        assertTrue(mitMarker != h, "Marker-Freigabe muss den Hash bewegen")
+        // Die Frist bewegte den Hash schon vorher; das bleibt so.
+        assertTrue(FuseStateJson.hashOf(cfg.copy(evidenceReboundOverrideMaxMin = cfg.evidenceReboundOverrideMaxMin + 15)) != h)
+        // Regelsatzversion bewusst unveraendert (Fingerprint der Ruhe-Erholung).
+        assertEquals(55, FuseStateJson.RULE_SET_VERSION)
+    }
+
+    /**
+     * KI-170 (29.09.2026): exportierte, dosierwirksame Politikwerte, die bis
+     * hierher NICHT im Hash standen. Jede Zeile ist eine Mutationsprobe - fehlt
+     * ein Wert im Hash, bleibt er gleich und der Test faellt. Der konfigurierte
+     * H8-Horizont bleibt bewusst draussen (s. H8-Test oben), die Regelsatz-
+     * version bleibt (Fingerprint der Ruhe-Erholung).
+     */
+    @Test
+    fun `KI-170 - Nachtfenster, Totbaender, maxIOB und Markerfenster bewegen den Hash`() {
+        val h = FuseStateJson.hashOf(cfg)!!
+        val proben = mapOf(
+            "sharedMaxIobU" to cfg.copy(sharedMaxIobU = cfg.sharedMaxIobU + 1.0),
+            "nightStartMin" to cfg.copy(nightStartMin = cfg.nightStartMin - 60),
+            "nightEndMin" to cfg.copy(nightEndMin = cfg.nightEndMin + 60),
+            "nightDeadbandMgdl" to cfg.copy(nightDeadbandMgdl = cfg.nightDeadbandMgdl + 10.0),
+            "reboundDeadbandMgdl" to cfg.copy(reboundDeadbandMgdl = cfg.reboundDeadbandMgdl + 10.0),
+            "absorptionCreditWindowMin" to cfg.copy(absorptionCreditWindowMin = cfg.absorptionCreditWindowMin + 15),
+            "markerBoostMaxMin" to cfg.copy(markerBoostMaxMin = cfg.markerBoostMaxMin + 15),
+        )
+        val hashes = proben.mapValues { (_, c) -> FuseStateJson.hashOf(c)!! }
+        for ((name, wert) in hashes) assertTrue(wert != h, "$name muss den Politik-Hash bewegen")
+        assertEquals(hashes.size, hashes.values.toSet().size, "die Schluessel duerfen sich im Hash nicht gegenseitig vertreten")
+        // 2.0 (Stufe 1, K3): beide Totbaender sind fest an; der Export traegt den wirksamen Wert.
+        val werte = FuseStateJson.policyValues(cfg)
+        assertTrue(werte.getBoolean("nightDeadbandEnabled"))
+        assertTrue(werte.getBoolean("reboundDeadbandEnabled"))
+        assertEquals(55, FuseStateJson.RULE_SET_VERSION)
+    }
+
+    /** KI-171: der Trail zeigt, was ein Zyklus von den AAPS-Ablagen sah - und
+     *  ohne Messung steht ein ausdrueckliches null, keine leere Behauptung. */
+    @Test
+    fun `KI-171 - der Trail fuehrt sichtbare, zugeordnete und entlastete Zeilen`() {
+        val o = outcome()
+        val mit = FuseStateJson.record(
+            "s#1", o, rt(), o.policy, BUILD, 0L, null,
+            pumpNeverCalled = app.aaps.fuse.plugin.FusePlugin.PumpNeverCalledTrace(
+                recordsVisible = 2, matched = listOf("s#0", "s#-1"),
+                claimed = listOf("s#0"), alreadyClosed = listOf("s#-1"),
+            ),
+        ) { 5_000_000L }
+        val t = mit.getJSONObject("pumpNeverCalled")
+        assertEquals(2, t.getInt("recordsVisible"))
+        assertEquals(listOf("s#0", "s#-1"), (0 until t.getJSONArray("matched").length()).map { t.getJSONArray("matched").getString(it) })
+        assertEquals("s#0", t.getJSONArray("claimed").getString(0))
+        assertEquals("s#-1", t.getJSONArray("alreadyClosed").getString(0))
+        assertTrue(record().isNull("pumpNeverCalled"))
+    }
+
+    /** H8-Diagnose (Review 18.09.): Eignung, Auswahl und Kanalangebot stehen
+     *  getrennt im Trail; geeignet ohne Auswahl traegt keine Quelle, und eine
+     *  gewaehlte Bahn kann ein Kanalangebot von 0 haben. */
+    @Test
+    fun `H8 - Trail trennt Eignung, Auswahl und Kanalangebot`() {
+        fun trail(d: app.aaps.fuse.plugin.FuseCycleRunner.EarlyAdaptiveMealDiagnosis) =
+            record(outcome().copy(earlyAdaptiveMeal = d)).getJSONObject("liveness").getJSONObject("earlyAdaptiveMeal")
+        val nurGeeignet = trail(
+            app.aaps.fuse.plugin.FuseCycleRunner.EarlyAdaptiveMealDiagnosis(
+                horizonMin = 8, eligible = true, selected = false,
+                earlyReleaseMeanMgdl = 118.0, productionReleaseMeanMgdl = 126.0, effectiveReleaseMeanMgdl = 126.0,
+                candidateAfterHeadroomU = 0.1,
+            ),
+        )
+        assertTrue(nurGeeignet.getBoolean("eligible"))
+        assertFalse(nurGeeignet.getBoolean("selected"))
+        assertTrue(nurGeeignet.isNull("source"))
+        assertEquals(0.1, nurGeeignet.getDouble("candidateAfterHeadroomU"), 0.0)
+        val gewaehltGesperrt = trail(
+            app.aaps.fuse.plugin.FuseCycleRunner.EarlyAdaptiveMealDiagnosis(
+                horizonMin = 8, eligible = true, selected = true,
+                earlyReleaseMeanMgdl = 140.0, productionReleaseMeanMgdl = 126.0, effectiveReleaseMeanMgdl = 140.0,
+                candidateAfterHeadroomU = 0.0, source = "EARLY_ADAPTIVE_MEAL_H8",
+            ),
+        )
+        assertTrue(gewaehltGesperrt.getBoolean("eligible"))
+        assertTrue(gewaehltGesperrt.getBoolean("selected"))
+        assertEquals("EARLY_ADAPTIVE_MEAL_H8", gewaehltGesperrt.getString("source"))
+        assertEquals(0.0, gewaehltGesperrt.getDouble("candidateAfterHeadroomU"), 0.0)
+    }
+
+    @Test
+    fun `der Politik-Hash aendert sich mit jeder Stellgroesse`() {
+        val h = FuseStateJson.hashOf(cfg)!!
+        assertTrue(FuseStateJson.hashOf(cfg.copy(smbRatio = 0.21)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(driveTauMin = 61)) != h)
+        // v22: W18 und W10 sind verschiedene Schaetzer - MUTATIONSPROBE fuer
+        // das Fenster im Fingerprint (Vertragspunkt 4).
+        assertTrue(FuseStateJson.hashOf(cfg.copy(signalRejoinEnabled = false, theilSenWindowMin = 10)) != h)
+        // v33: die Rebound-Dauer ist dosierwirksam und MUSS den Hash
+        // bewegen - sonst erbte ein 120-Minuten-Lauf die Erwartungen
+        // eines 45-Minuten-Laufs.
+        assertTrue(FuseStateJson.hashOf(cfg.copy(reboundWindowMin = 120)) != h)
+        // v44 (CENTRAL-only): die vier Profilwerte und die gepinnte Frist
+        // - jede einzeln eine Mutationsprobe fuer den Fingerprint.
+        assertTrue(FuseStateJson.hashOf(cfg.copy(correctionExposureLimitU = 2.5)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(mealExposureLimitU = 6.0)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(correctionDemandRatioCap = 0.15)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(mealDemandRatioCap = 0.30)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(livenessMealPowerMin = 60)) != h)
+        // v25: der Zero-Latch - Schalter, Ruhe-Zyklen und Ruhe-Abstand.
+        assertTrue(FuseStateJson.hashOf(cfg.copy(zeroLatchEnabled = true)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(zeroLatchCalmExitMin = 30)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(zeroLatchCalmDistanceMgdl = 40.0)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(tailGuardEnabled = true)) != h)
+        assertEquals(h, FuseStateJson.hashOf(cfg.copy()))
+    }
+
+    /**
+     * DIE REGELSTANDS-IDENTITAET DES MAHLZEITENFUNDAMENTS (Codex 19.08.,
+     * Flash-Blocker).
+     *
+     * DER BEFUND. Die drei Einstellungen wurden EXPORTIERT, gingen aber nicht
+     * in `hashOf()` ein. Damit trugen Laeufe mit sichtbar verschiedenem
+     * Regelverhalten denselben `configGeneration`:
+     *
+     *     Fundament AUS  gegen  EIN
+     *     80/20          gegen  75/25
+     *     Phase-B-Ende 60       gegen 45
+     *
+     * WARUM DAS MEHR IST ALS UNORDNUNG: der Erwartungs-Ledger trennt seine
+     * Strecken nach genau diesem Hash. Zwei verschieden dosierende Regler
+     * unter einer Kennung heisst, dass ihre Ergebnisse in denselben Topf
+     * fallen - und die Feldauswertung danach eine Mischung misst, die es als
+     * Regler nie gab. Ein Schema-Bump behebt das NICHT; er beschreibt die
+     * Datei, nicht den Regler.
+     *
+     * JEDES FELD EINZELN, nicht die drei zusammen: nur so faellt auf, wenn
+     * genau eines wieder aus dem Hash herausfaellt.
+     */
+    /**
+     * DIESELBE REGEL FUER DEN WIEDEREINSTIEG NACH FUNKLUECKE (Review
+     * 25.08. abends, P1).
+     *
+     * Er war zuerst nur eine Einstellung, die im Zyklus gelesen wurde -
+     * exportiert je Zyklus, aber nicht in der Kennung. Damit trugen zwei
+     * messbar verschiedene Regler denselben `configGeneration`: mit
+     * Schalter entstehen Entscheidungen, die ohne ihn als "drive not
+     * estimable" gestorben waeren (gemessen: weniger blinde Zyklen und
+     * etwas mehr Insulin ueber einen Tag). Der Erwartungs-Ledger trennt seine
+     * Strecken nach genau diesem Hash - ihre Ergebnisse waeren in
+     * denselben Topf gefallen.
+     */
+    @Test
+    fun `der Wiedereinstiegs-Schalter aendert den Politik-Hash`() {
+        val aus = FuseStateJson.hashOf(cfg.copy(signalRejoinEnabled = false))!!
+        val ein = FuseStateJson.hashOf(cfg.copy(signalRejoinEnabled = true))!!
+        assertTrue(aus != ein, "AUS und EIN sind zwei verschiedene Regler")
+        // Und er steht auch in den ausgeschriebenen Politikwerten - der
+        // Hash allein sagt nicht, WAS sich unterschied.
+        val werte = FuseStateJson.policyValues(cfg.copy(signalRejoinEnabled = true))
+        assertTrue(werte.toString().contains("signalRejoinEnabled"))
+    }
+
+    @Test
+    fun `der positive Abwaerts-Horizont aendert Politik und Export`() {
+        val h30 = FuseStateJson.hashOf(cfg.copy(positiveDescentHorizonMin = 30.0))!!
+        val h45 = FuseStateJson.hashOf(cfg.copy(positiveDescentHorizonMin = 45.0))!!
+        assertTrue(h30 != h45, "30 und 45 Minuten sind verschiedene Endriegel")
+        assertEquals(30.0, FuseStateJson.policyValues(cfg).getDouble("positiveDescentHorizonMin"), 1e-9)
+    }
+
+    /**
+     * DIE ZWEI STELLGROESSEN DES LOW-TORS (v16, Review 22.08.).
+     *
+     * Beide entscheiden, ab wann eine Zero-TBR als nutzlos gilt - also WANN
+     * der Basalpfad wieder freigibt. Bis v15 fehlten sie in Hash UND
+     * policyValues: zwei Laeufe mit 5 und 20 mg/dl Schwelle trugen denselben
+     * Regelstand, und der Trail konnte nicht einmal ZEIGEN, welche Werte
+     * galten - genau die Luecke, gegen die der Fingerprint gebaut ist.
+     */
+    @Test
+    fun `Schwelle und Fenster des Low-Tors aendern Politik und Export`() {
+        val h = FuseStateJson.hashOf(cfg)!!
+        assertTrue(
+            FuseStateJson.hashOf(cfg.copy(lowGateMinBenefitMgdl = 20.0)) != h,
+            "5 und 20 mg/dl Nutzenschwelle sind verschiedene Regler",
+        )
+        assertTrue(
+            FuseStateJson.hashOf(cfg.copy(lowGateHorizonMin = 60.0)) != h,
+            "120 und 60 Minuten Nutzenfenster sind verschiedene Regler",
+        )
+        assertEquals(5.0, FuseStateJson.policyValues(cfg).getDouble("lowGateMinBenefitMgdl"), 1e-9)
+        assertEquals(120.0, FuseStateJson.policyValues(cfg).getDouble("lowGateHorizonMin"), 1e-9)
+    }
+
+    /**
+     * DIE DREI STELLGROESSEN DES MARKER-PRIME-AUFSCHUBS (v17, Punkt 6).
+     * Schalter, gepinnter Horizont und gepinnte Frist sind dosierwirksam in
+     * BEIDE Richtungen (zurueckhalten UND nachliefern) - Laeufe mit
+     * verschiedenen Stellungen duerfen nie denselben Regelstand tragen.
+     */
+    @Test
+    fun `die Aufschub-Stellgroessen aendern Politik und Export`() {
+        val h = FuseStateJson.hashOf(cfg)!!
+        assertTrue(
+            FuseStateJson.hashOf(cfg.copy(deferredPrimeEnabled = true)) != h,
+            "AUS und EIN sind zwei verschiedene Regler",
+        )
+        assertTrue(
+            FuseStateJson.hashOf(cfg.copy(markerPrimeDescentHorizonMin = 90.0)) != h,
+            "60 und 90 Minuten Marker-Horizont sind verschiedene Riegel",
+        )
+        assertTrue(
+            FuseStateJson.hashOf(cfg.copy(deferredPrimeEndMin = 60)) != h,
+            "120 und 60 Minuten Frist verfallen verschieden",
+        )
+        val pv = FuseStateJson.policyValues(cfg)
+        assertEquals(false, pv.getBoolean("deferredPrimeEnabled"))
+        assertEquals(60.0, pv.getDouble("markerPrimeDescentHorizonMin"), 1e-9)
+        assertEquals(120, pv.getInt("deferredPrimeEndMin"))
+    }
+
+    /** Der Aufschub steht IMMER als Objekt im Trail - auch der Verfall. */
+    @Test
+    fun `der Aufschub-Block traegt Zustand Freigabe und Verfall`() {
+        val j = record(
+            outcome().copy(
+                deferredPrimeOpenU = 0.85,
+                deferredPrimePinnedForTs = 111L,
+                deferredPrimeDeadlineTs = 222L,
+                deferredPrimeHorizonMin = 60,
+                deferredPrimeWithheldU = 0.15,
+                deferredPrimeReleasedU = 0.05,
+                deferredPrimeDenial = null,
+                deferredPrimeLapseReason = "EXPIRED",
+                deferredPrimeLapseU = 0.40,
+                deferredPrimeLapseTs = 333L,
+            ),
+        ).getJSONObject("deferredPrime")
+        assertEquals(0.85, j.getDouble("openU"), 1e-9)
+        assertEquals(111L, j.getLong("pinnedForTs"))
+        assertEquals(222L, j.getLong("deadlineTs"))
+        assertEquals(60, j.getInt("horizonMin"))
+        assertEquals(0.15, j.getDouble("withheldU"), 1e-9)
+        assertEquals(0.05, j.getDouble("releasedU"), 1e-9)
+        assertTrue(j.isNull("denial"))
+        assertEquals("EXPIRED", j.getString("lapseReason"))
+        assertEquals(0.40, j.getDouble("lapseU"), 1e-9)
+        assertEquals(333L, j.getLong("lapseTs"))
+    }
+
+    /**
+     * UND DIE VERSION SELBST: der Bump auf 11 gehoert zur Aenderung.
+     *
+     * Ohne ihn traegt ein Lauf VOR dem Fundament-Umbau denselben Regelstand
+     * wie einer danach, obwohl beide verschieden dosieren - die drei Felder
+     * allein trennen nur Stellungen INNERHALB der neuen Bauform, nicht die
+     * Bauform gegen die alte.
+     */
+    @Test
+    fun `die Regelstandsversion traegt jede dosierwirksame Aenderung`() {
+        // v11 Mahlzeitenfundament, v12 die Frist des Rebound-Sonderrechts,
+        // v13 der restartfeste Wiederfreigabe-Riegel nach gemessenem Fallen,
+        // v14 der Sicherheitsaufschub, v15 der getrennte positive Horizont,
+        // v16 die zwei Low-Tor-Stellgroessen im Fingerprint, v17 der
+        // Marker-Prime-Aufschub (Punkt 6), v18 der Liveness-Kanal
+        // (mengenbasierter Zusatzkanal gegen den Tail-Deadlock),
+        // v19 die streaknullende Re-Arm-Sperre (drei frische Druckzyklen
+        // nach der Pause - live zaehlte er waehrend der Sperre weiter),
+        // v20 die getrennte Tag-/Nacht-Druckschwelle des Liveness-Kanals,
+        // v21 der magnitudensensitive Wende-Exit (bestaetigte Wende statt
+        // zweier beliebig kleiner Rueckgaenge), v26 die Liveness-Basis-Ratio
+        // nach Profil (MEAL traegt die R-Rampe selbst statt der
+        // fenster-gegateten effectiveSmbRatio - der unsichtbare
+        // Fall mit Korrekturanteil spaet nach dem Marker), v27 Tonis Korrektur dazu:
+        // BEIDE Profile rampen, der Profilunterschied ist allein der
+        // M-/K-Deckel (v26 liess den K-Deckel nie skalieren), v28 der
+        // Phase-A-Sofortanteil nach iLet-Prinzip (Default 0,00 bitgleich;
+        // typisierte Quelle MEAL_UPFRONT, nicht maxSmb-zerteilt,
+        // exactly-once als Bilanz auf den beweiskorrigierten Zaehlern),
+        // v29 die Zwei-Zyklen-Zuendung des Zero-Latch-Fall-Verdikts (ein
+        // einzelner Grenzzyklus/Sensorzacken verriegelt keine lange Null
+        // mehr; MEASURED_LOW weiter sofort).
+        // v30 die Korrekturpfad-Riegel (V-Reversal-Schutz + Freigabe-
+        // Nachlauf nach Zero-Latch-/Nachtende, beide Default AUS, nur im
+        // reinen Korrekturkontext - Anlass war ein Pflichtfall am Morgen).
+        // v31 der Wiedereinstieg nach Funkluecke (4x3-Rejoin, Default AUS).
+        // v32 DER RUHE-AUSGANG AUS PHASE A. Dosierwirksam im Modus
+        // CALM_BATCH: der zurueckgehaltene Sofortanteil verlaesst dann nach
+        // N bestaetigten Ruhezyklen den HISTORISCHEN Latch - aktuelle
+        // Gefahren bleiben absolut. Anlass ist eine Mahlzeit am Abend:
+        // mehrere Einheiten blieben die ganze Phase A blockiert, obwohl das gemessene
+        // Abwaertsrisiko seit mehreren Zyklen vorbei war. Default AUS.
+        // v33 DIE EINSTELLBARE REBOUND-FENSTERDAUER. Die Frage, die dieser
+        // Test erzwingt - ist die Aenderung wirklich dosierwirksam? - hat
+        // hier eine dreifache Antwort: das Fenster beendet NICHT nur das
+        // Totband, sondern gleichzeitig den SMB-Ratio-Deckel auf
+        // smbRatioCorrection und die Liveness-Sperre. Im gemessenen Fall
+        // sprang die Ratio im Zyklus nach Fensterende auf mehr als das Doppelte
+        // und der SMB auf ein Mehrfaches. Default 45 ist bitgleich
+        // zum bisherigen Verhalten, aber 45 und 120 sind zwei verschiedene
+        // Regler - und ihre Erwartungen duerfen sich nicht vermischen.
+        // DIESER TEST IST ABSICHTLICH STUR: er faellt bei jedem Bump um und
+        // zwingt damit zu der Frage, ob die Aenderung wirklich dosierwirksam
+        // war - ein stiller Bump waere so wertlos wie ein vergessener.
+        // v34 DIE ENTKOPPLUNG DER PHASE-A-DIREKTDOSIS VOM ZERO-LATCH.
+        // Dosierwirksam ohne jeden Zweifel: derselbe Zustand, der bei einem
+        // Fruehstueck eine Viertelstunde lang mehrere autorisierte Einheiten
+        // zurueckhielt, gibt sie danach frei - der historische Basalschutz
+        // ist kein Grund mehr gegen eine angekuendigte Mahlzeit. Aktuelle
+        // Gefahren sind unveraendert absolut.
+        // v35 DER FREIGABEVERTRAG DES SOFORTANTEILS. Die Frage, die dieser
+        // Test erzwingt - wirklich dosierwirksam? - beantwortet der
+        // Fruehstuecksfall: dieselben Einheiten wandern um eine Viertelstunde nach vorn,
+        // auf 25 Sekunden nach dem Marker. Der Nachweis auf der
+        // gemessenen Reihe ersetzt zwei Nulltoleranzen, das gemessene Tief
+        // bekommt ein eigenes Gefahrenfeld, und das 120-Minuten-Basalverdikt
+        // weicht dem am Marker gepinnten Abwaertsrisiko-Vertrag.
+        // v36 DER TYPISIERTE WIDERRUF-REBASE. Dosierwirksam ueber die
+        // Evidenzphase: der Anlassfall stand ab einem Ledger-Widerruf bis Datenende in
+        // UNKNOWN/EXCLUDED_LAGE, obwohl die Markervollmacht lief - mit
+        // Revision waere der Widerruf ein Rebase gewesen und der Kanal
+        // verfuegbar geblieben.
+        // v37 M2: das Bewaffnungstor liest underlyingNormalBlock - ein
+        // Foundation-Schritt kann die Bewaffnung nicht mehr um den
+        // Streak-3-Zyklus verschieben (zweimal live gemessen).
+        // v38 A4: policyMode + vier zentrale Profilkandidaten in Config/
+        // Validierung/policyValues/Hash - Default LEGACY, kein Konsument
+        // vor Schritt B.
+        // v39 M1: MEAL-Druckschwelle unter Markervollmacht - unkonfiguriert
+        // Altpfad, gesetzt dosierwirksam (die gemessenen Schwellenloecher).
+        // v40 M3: MealArmCycles - Default 3 bitgleich, gesetzt auf 1
+        // bewaffnet der erste Druckzyklus unter der Vollmacht.
+        // v41 B1: die verbindliche Endpruefung (ExposureGate, Block
+        // EXPOSURE_LIMIT) - dosierwirksam nur im Modus CENTRAL_PROFILES.
+        // v42 B2: effectiveDemandRatio = min(Basis, Kontext-Cap) fuer
+        // NORMAL (Kandidat demandRatioCap) und LIVENESS (Kontext-Cap
+        // ERSETZT die Alt-Caps, kein min(alt, neu)); Kontextblock vor der
+        // State-Konstruktion (Fallback pflegt die Markerfrist mit) -
+        // dosierwirksam nur im Modus CENTRAL_PROFILES.
+        // v43 P1-Fix: der Liveness-Kanaldeckel ist im Zentralmodus die
+        // Kontextgrenze; die Legacy-Prozentdeckel sind dort wirkungslos
+        // (vorher versteckte Parallelarchitektur ausserhalb des Hashs).
+        // v44 CENTRAL-only: LEGACY-Pfad, Modusschalter und die sechs
+        // Liveness-Cap-Keys entfernt; vier Profilwerte mit echten
+        // Startsatz-Defaults; policyMode = Export-Konstante.
+        // v45 P1 Mahlzeiten-Fall: die MEAL-/Evidenz-Entwaffnung des Rebound-
+        // Totbands gilt auch im harten Liveness-Tor (reboundRaw sperrt nur
+        // noch ohne geltendes Sonderrecht) - dieselbe typisierte Rechnung,
+        // keine neuen Keys, kein Backup-/Migrationsbedarf.
+        // v46 P0 (gemessener Livefall): Episodenstatistik bucht bis zur
+        // MEAL-Deadline (DosingContext.mealAuthorized) statt nur 90 min -
+        // dosierneutral, nur mealStats/mealDeliveries.
+        // v47 Schritt B: Basalluecken-Kontext (basalGap-Block), rein
+        // beobachtend - beim Druck gelatcht, unsichere Groessen null.
+        // v48 Messgrundlage der Nullphasen, rein beobachtend:
+        // scheduledBasalUph je Zyklus, overcoverageMarginMgdl auch ohne
+        // Verdikt, zeroTally/lastZeroTally (drei Zeitklassen, restartfest).
+        // Kein Dosierpfad liest die Felder; die Verdikte sind unveraendert.
+        // v49 zwei schaltbare Nullphasen-Varianten (beide Default aus):
+        // Grund-Weg-Ausgang des Zero-Latch und Serien-Deckel des
+        // markerlosen Korrekturpfads - beide im Hash, beide im Bericht.
+        // v50 stufenweise Basalrueckkehr (Default aus): dritter
+        // Aktuationszustand PARTIAL_RECOVERY zwischen ZERO und RELEASED,
+        // Rate immer unter Profilbasal, SMB waehrenddessen hart 0.
+        // v51 Rebound-Evidenz-Ausnahme am Liveness-Tor (Default aus): das
+        // rohe Rebound-Veto faellt dort auch bei verbrauchtem Kredit, wenn
+        // Vollmacht, Sonderrechts-Pin und -Frist, Tief vor dem Druck,
+        // Evidenzbestand und stabile Rohreihe tragen.
+        // v52 buchungsbedingter Ausgang ohne neue Wiederanlaufsperre (Default aus).
+        // v53 Halte-Anhebung des Stoerungsterms im Liveness-Bedarf (Default aus).
+        // v54 MEAL-Bindung und Messbestaetigung der Halte-Anhebung (Default aus).
+        // v55 frueher adaptiver MEAL-Bedarf H8 (Default 0 = aus).
+        assertEquals(55, FuseStateJson.RULE_SET_VERSION)
+        assertTrue(
+            FuseStateJson.hashOf(cfg)!!.isNotEmpty(),
+            "und der Hash bleibt berechenbar",
+        )
+    }
+
+    /** CENTRAL-only: alle vier Profilwerte bewegen
+     *  den Hash einzeln - zwei Laeufe mit verschiedener Politik tragen nie
+     *  denselben Fingerprint. */
+    @Test
+    fun `jeder Profilwert bewegt den Policy-Hash`() {
+        val basis = FuseStateJson.hashOf(cfg)
+        org.junit.jupiter.api.Assertions.assertNotEquals(basis, FuseStateJson.hashOf(cfg.copy(correctionExposureLimitU = 2.5)))
+        org.junit.jupiter.api.Assertions.assertNotEquals(basis, FuseStateJson.hashOf(cfg.copy(mealExposureLimitU = 6.0)))
+        org.junit.jupiter.api.Assertions.assertNotEquals(basis, FuseStateJson.hashOf(cfg.copy(correctionDemandRatioCap = 0.15)))
+        org.junit.jupiter.api.Assertions.assertNotEquals(basis, FuseStateJson.hashOf(cfg.copy(mealDemandRatioCap = 0.30)))
+    }
+
+    @Test
+    fun `Rohgefahr und dosierwirksamer Abwaertsriegel bleiben im Trail getrennt`() {
+        val j = record(
+            outcome().copy(
+                descentRiskActive = false,
+                descentRiskDenial = "NOT_FALLING",
+                descentLatchActive = true,
+                descentLatchReason = "WAITING_CONFIRMATION",
+                descentRecoveryCycles = 2,
+                descentLatchedAtTs = 1_700_000_000_000L,
+            ),
+        )
+
+        assertFalse(j.getBoolean("descentRiskActive"), "das Rohsignal ist bereits frei")
+        assertTrue(j.getBoolean("descentLatchActive"), "der wirksame Riegel bleibt noch zu")
+        assertEquals("WAITING_CONFIRMATION", j.getString("descentLatchReason"))
+        assertEquals(2, j.getInt("descentRecoveryCycles"))
+        assertEquals(1_700_000_000_000L, j.getLong("descentLatchedAtTs"))
+    }
+
+    /**
+     * Die Luecke aus dem Audit 07.08.: bis v1 standen genau diese Knoepfe NICHT
+     * im Hash - zwei Laeufe mit voellig verschiedenen Rampen bekamen dieselbe
+     * Politik-Signatur. Der Test prueft die Knoepfe EINZELN, damit ein
+     * kuenftiges Config-Feld ohne Hash-Eintrag hier wieder auffaellt.
+     */
+    @Test
+    fun `Rampe und Abschlag stehen im Politik-Hash`() {
+        val h = FuseStateJson.hashOf(cfg)!!
+        assertTrue(FuseStateJson.hashOf(cfg.copy(riseRampLowR = 0.6)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(riseRampHighR = 2.5)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(bolusShareLambda = 0.0)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(onsetEnvelopeU = 2.0)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(onsetChannelEnabled = false)) != h)
+        assertTrue(FuseStateJson.hashOf(cfg.copy(primeEnvelopeU = 0.8)) != h)
+    }
+
+    /** `Sha.lossless` WIRFT bei NaN. Der Wurf laege im runCatching des Exports
+     *  — der Hash waere danach dauerhaft still weg. Also: kein Hash, aber ein
+     *  benannter Grund. */
+    @Test
+    fun `ein nicht-endlicher Wert ergibt keinen Hash und einen Grund`() {
+        val kaputt = cfg.copy(smbRatio = Double.NaN)
+        org.junit.jupiter.api.Assertions.assertNull(FuseStateJson.hashOf(kaputt))
+        val j = record(outcome(policy = kaputt))
+        assertEquals(JSONObject.NULL, j.getJSONObject("policy").get("hash"))
+        assertTrue(gapReasons(j).contains(FuseStateJson.GAP_HASH_NOT_FINITE))
+    }
+
+    /** Bricht der Zyklus vor dem Lesen der Einstellungen ab, gibt es keine
+     *  Politik. Ein still nachgelesener Hash waere die Politik eines anderen
+     *  Zeitpunkts. */
+    @Test
+    fun `ohne gelesene Politik steht der Grund im Datensatz`() {
+        val j = record(outcome(abort = "no profile", policy = null, signal = null))
+        assertEquals("none", j.getJSONObject("policy").getString("source"))
+        assertTrue(gapReasons(j).contains(FuseStateJson.GAP_POLICY_NOT_READ))
+    }
+
+    /** Die handgepflegte Regelwerksversion muss sich als solche zu erkennen
+     *  geben, sonst liest eine Auswertung einen unveraenderten Wert als Beweis. */
+    @Test
+    fun `die Regelwerksversion ist als handgepflegt markiert`() {
+        assertTrue(record().getJSONObject("policy").getBoolean("ruleSetVersionIsManual"))
+    }
+
+    // ---- Abbruchpfade ----------------------------------------------------
+
+    @Test
+    fun `ein Abbruchzyklus wird geschrieben und traegt seinen Grund`() {
+        val j = record(outcome(abort = "signal: no raw glucose values", signal = null))
+        assertEquals("signal: no raw glucose values", j.getString("abortReason"))
+        assertEquals(JSONObject.NULL, j.get("sourceTs"))
+        assertTrue(gapReasons(j).contains("NO_SIGNAL_THIS_CYCLE"))
+    }
+
+    @Test
+    fun `Signal und Fenstergrenze stehen im Datensatz`() {
+        val s = record().getJSONObject("signal")
+        assertEquals(130.0, s.getDouble("q1"), 1e-12)
+        assertEquals(19, s.getInt("samplesUsed"))
+        assertEquals("NONE", s.getString("boundedBy"))
+    }
+
+    @Test
+    fun `der Schwanzbericht traegt seinen Unvollstaendigkeitsvermerk`() {
+        val t = TailLiability.evaluate(TailLiability.Input(120.0, 0.5, 85.0, 70.0, 0.0))
+        val j = record(outcome(tail = t)).getJSONObject("tail")
+        assertEquals(TailLiability.COMPLETENESS_STAGE1, j.getString("completeness"))
+        assertEquals(TailLiability.SOURCE_BASELINE, j.getString("lowerBgAtHSource"))
+    }
+
+    /** Die Schreibdauer ist erst NACH dem Schreiben bekannt — sie steht
+     *  zwangslaeufig im naechsten Datensatz. Der erste hat sie nie, und das
+     *  darf nicht als 0 gelesen werden. */
+    @Test
+    fun `die Schreibmetrik hinkt um eins und sagt das`() {
+        val erster = record()
+        assertEquals(JSONObject.NULL, erster.getJSONObject("export").get("prevWriteMs"))
+        assertTrue(gapReasons(erster).contains(FuseStateJson.GAP_METRICS_LAG))
+
+        val zweiter = FuseStateJson.record(
+            "s#2", outcome(), rt(), cfg, BUILD, 0L, FuseStateJson.PrevWrite(3L, 1800)
+        ) { 5_000_000L }
+        assertEquals(3L, zweiter.getJSONObject("export").getLong("prevWriteMs"))
+        assertFalse(gapReasons(zweiter).contains(FuseStateJson.GAP_METRICS_LAG))
+    }
+
+    // ---- Schreiben -------------------------------------------------------
+
+    @Test
+    fun `jeder Zyklus haengt genau eine Zeile an`(@TempDir dir: File) {
+        val ex = FuseStateExporter()
+        repeat(3) { i -> assertTrue(ex.append(dir, """{"n":$i}""") is FuseStateExporter.Result.Written) }
+        val f = File(dir, FuseStateExporter.FILE_NAME)
+        assertEquals(3, f.readLines().size)
+        assertEquals("""{"n":2}""", f.readLines().last())
+    }
+
+    @Test
+    fun `die Schreibdauer und die Groesse werden gemessen`(@TempDir dir: File) {
+        var t = 0L
+        val r = FuseStateExporter().append(dir, "{}") { t += 7_000_000L; t }
+        r as FuseStateExporter.Result.Written
+        assertEquals(7L, r.writeMs)
+        assertEquals(3, r.bytes)   // "{}" + \n
+    }
+
+    @Test
+    fun `bei Ueberschreiten der Grenze wird rotiert, nicht geloescht`(@TempDir dir: File) {
+        val ex = FuseStateExporter(maxBytes = 20L, generations = 2)
+        ex.append(dir, "aaaaaaaaaaaaaaaaaaaaaaaa")     // > 20 Byte
+        val zweite = ex.append(dir, "b") as FuseStateExporter.Result.Written
+        assertTrue(zweite.rotated)
+        assertTrue(File(dir, "${FuseStateExporter.FILE_NAME}.1").exists())
+        assertEquals("b", File(dir, FuseStateExporter.FILE_NAME).readText().trim())
+    }
+
+    /** Der Export darf niemals werfen — er ist Beobachtung, nicht Regelung. */
+    @Test
+    fun `ein unbeschreibbares Ziel meldet sich, statt zu werfen`(@TempDir dir: File) {
+        val blockiert = File(dir, "datei-statt-verzeichnis")
+        blockiert.writeText("x")
+        val r = FuseStateExporter().append(File(blockiert, "unter"), "{}")
+        assertTrue(r is FuseStateExporter.Result.Failed)
+        assertNotNull((r as FuseStateExporter.Result.Failed).reason)
+    }
+
+    /** Drei Ratenmaasse muessen nebeneinander im Trail stehen - sonst laesst
+     *  sich die Traegheit des 18-min-Medians nie beziffern. */
+    @Test
+    fun `alle drei Ratenmaasse stehen im Datensatz`() {
+        val s = record().getJSONObject("signal")
+        assertEquals(0.8, s.getDouble("rSigned"), 1e-12)
+        assertEquals(1.1, s.getDouble("ukfRatePerMin"), 1e-12)
+        assertEquals(1.4, s.getDouble("rawSlopePerMin"), 1e-12)
+    }
+
+    // ---- Observer: die Grundlage der spaeteren Nachrechnung ---------------
+
+    @Test
+    fun `der Observer-Zustand steht vollstaendig im Datensatz`() {
+        val obs = record().getJSONObject("observer")
+        assertEquals("RISE_ACTIVE", obs.getString("phase"))
+        assertEquals("e1", obs.getString("eventId"))
+        assertEquals("c1", obs.getString("candidateId"))
+        assertEquals(150.0, obs.getDouble("livePeakValue"), 1e-12)
+        assertEquals(2, obs.getInt("confirmCount"))
+        assertEquals(1_699_000_000_000L, obs.getLong("sensorEpoch"))
+    }
+
+    /** Der ANKER einer Episode: `triggerSourceTs` des Confirms. Ohne ihn ist
+     *  spaeter nicht bestimmbar, wogegen bewertet werden soll. */
+    @Test
+    fun `der Uebergang traegt den Ankerzeitpunkt`() {
+        val tr = record().getJSONObject("observer").getJSONObject("transition")
+        assertEquals("RISE_CONFIRMED", tr.getString("type"))
+        assertEquals(1_700_000_000_000L, tr.getLong("triggerSourceTs"))
+        assertEquals("e1", tr.getString("eventId"))
+    }
+
+    @Test
+    fun `ohne Observer-Schritt steht der Grund statt eines leeren Geruests`() {
+        val j = record(outcome(abort = "no profile", policy = null, signal = null, step = null))
+        assertFalse(j.has("observer"))
+        assertTrue(gapReasons(j).contains("NO_STEP_THIS_CYCLE"))
+    }
+
+    /** Ohne Build-Hash ist ein Geraetelauf keinem Commit zuzuordnen. */
+    @Test
+    fun `der Build steht mit Hash und Sauberkeitsflag im Datensatz`() {
+        val b = record().getJSONObject("build")
+        assertEquals("3.4.2.5+fuse1.0.2-toni", b.getString("versionName"))
+        assertEquals("abc1234", b.getString("head"))
+        assertTrue(b.getBoolean("committed"))
+    }
+
+    private fun gapReasons(j: JSONObject): List<String> {
+        val g = j.getJSONArray("gaps")
+        return (0 until g.length()).map { g.getJSONObject(it).getString("reason") }
+    }
+    /**
+     * DIE PERSIST-TELEMETRIE MUSS IM TRAIL STEHEN.
+     *
+     * Bis zum 12.08. las sie ausschliesslich der Store-Test - am Geraet war
+     * nicht feststellbar, ob der fsync ueberhaupt laeuft, was er kostet oder
+     * ob ein Schreibvorgang GESCHEITERT ist. Genau der Fehlerfall ist der
+     * teure: der Ledger meldet dann keine Durabilitaet, und niemand sieht es.
+     */
+    @Test
+    fun `die Persist-Telemetrie steht im Ledgerblock`() {
+        val stats = app.aaps.fuse.plugin.ledger.FuseLedgerStore.PersistStats(
+            bytes = 53_676, totalMs = 12, fileSyncMs = 7, dirSyncMs = 3,
+            outcome = app.aaps.fuse.plugin.ledger.FuseLedgerStore.PersistOutcome.OK,
+        )
+        val l = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            ledger = FuseStateJson.LedgerSnapshot(1L, app.aaps.fuse.core.ledger.LedgerState(), stats),
+        ) { 5_000_000L }.getJSONObject("ledger").getJSONObject("persist")
+
+        assertEquals("OK", l.getString("outcome"))
+        assertEquals(53_676, l.getInt("bytes"))
+        assertEquals(12L, l.getLong("totalMs"))
+        assertEquals(7L, l.getLong("fileSyncMs"))
+        assertEquals(3L, l.getLong("dirSyncMs"))
+    }
+
+    /** Ein GESCHEITERTER Schreibvorgang muss ebenso exportieren - sonst haette
+     *  ausgerechnet der interessante Fall keine Zahlen. */
+    @Test
+    fun `auch ein gescheiterter Persist steht im Trail`() {
+        val stats = app.aaps.fuse.plugin.ledger.FuseLedgerStore.PersistStats(
+            bytes = 100, totalMs = 4, fileSyncMs = 0, dirSyncMs = 0,
+            outcome = app.aaps.fuse.plugin.ledger.FuseLedgerStore.PersistOutcome.DIR_SYNC_FAILED,
+        )
+        val l = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            ledger = FuseStateJson.LedgerSnapshot(1L, app.aaps.fuse.core.ledger.LedgerState(), stats),
+        ) { 5_000_000L }.getJSONObject("ledger").getJSONObject("persist")
+
+        assertEquals("DIR_SYNC_FAILED", l.getString("outcome"))
+    }
+
+    /** Ohne Schreibvorgang in diesem Prozess: `null`, nicht Nullen. Eine 0 ms
+     *  saehe aus wie ein blitzschneller fsync. */
+    @Test
+    fun `ohne Schreibvorgang steht null statt Nullen`() {
+        val l = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            ledger = FuseStateJson.LedgerSnapshot(1L, app.aaps.fuse.core.ledger.LedgerState()),
+        ) { 5_000_000L }.getJSONObject("ledger")
+        assertTrue(l.isNull("persist"))
+    }
+    /**
+     * DIE EPISODENZAHLEN FUER DEN VIEWER (Toni 12.08.).
+     *
+     * Ohne sie kann der Viewer die Zeile "Episode 287 min - DORMANT - FUSE
+     * gesamt 5,10 U - Deckel 360" nicht bauen, ohne selbst zu rechnen - und
+     * jede zweite Rechnung ueber dieselbe Groesse ist eine zweite Wahrheit.
+     * Der DECKEL wandert deshalb mit: staende er im Viewer, veraltete er dort
+     * beim naechsten Umbau still.
+     */
+    @Test
+    fun `Episodenalter Bezahlung und Deckel stehen im Datensatz`() {
+        val j = FuseStateJson.record(
+            "s#1", outcome(episodeId = 1_700_000_000_000L, committedU = 5.10, episodeMin = 287),
+            rt(), cfg, BUILD, 0L, null,
+        ) { 5_000_000L }
+
+        val e = j.getJSONObject("evidenceEpisode")
+        assertEquals(1_700_000_000_000L, e.getLong("id"))
+        assertEquals(287, e.getInt("ageMin"))
+        assertEquals(5.10, e.getDouble("committedU"), 1e-9)
+        assertEquals(
+            app.aaps.fuse.core.controller.EvidenceStock.Config().maxEpisodeMin,
+            e.getInt("capMin"),
+        )
+    }
+
+    /**
+     * OHNE EPISODE IST DER BLOCK NULL - nicht eine alte Menge neben einem
+     * fehlenden Anker.
+     *
+     * Genau das stand vorher da: nach dem Ablauf blieb der Ledger-Zaehler
+     * erhalten, waehrend `evidenceEpisodeId=0` und das Alter `null` waren. Wer
+     * nur auf die Menge sieht, liest eine laufende Episode.
+     */
+    @Test
+    fun `ohne Episode ist der Block null`() {
+        val j = FuseStateJson.record("s#1", outcome(committedU = 5.10), rt(), cfg, BUILD, 0L, null) { 5_000_000L }
+        assertTrue(j.isNull("evidenceEpisode")) { "kein Anker, kein Block" }
+    }
+
+    /**
+     * PHASE UND GRUND SIND EINE BENANNTE LUECKE, wenn ein frueher Abbruch den
+     * verdrahteten Kern in diesem Zyklus nicht erreicht - keine erfundene
+     * Angabe. "DORMANT" einzutragen waere im Export nicht von einer echten
+     * Messung unterscheidbar.
+     */
+    @Test
+    fun `ohne Auswertung in diesem Zyklus stehen Phase und Grund als Luecke`() {
+        val j = FuseStateJson.record(
+            "s#1", outcome(episodeId = 1_700_000_000_000L, episodeMin = 5), rt(), cfg, BUILD, 0L, null,
+        ) { 5_000_000L }
+
+        val e = j.getJSONObject("evidenceEpisode")
+        assertTrue(e.isNull("phase"))
+        assertTrue(e.isNull("stockMgdl"))
+        assertTrue(gapReasons(j).contains(FuseStateJson.GAP_EVIDENCE_NOT_EVALUATED)) {
+            "die Luecke muss BENANNT sein, nicht bloss leer"
+        }
+    }
+
+    /** Und mit laufendem Kern steht sie da. */
+    @Test
+    fun `mit Phase steht sie im Block und die Luecke entfaellt`() {
+        val j = FuseStateJson.record(
+            "s#1",
+            outcome(
+                episodeId = 1_700_000_000_000L, episodeMin = 42,
+                phase = "DORMANT", stockMgdl = 0.0, reason = "NO_RISE",
+            ),
+            rt(), cfg, BUILD, 0L, null,
+        ) { 5_000_000L }
+
+        val e = j.getJSONObject("evidenceEpisode")
+        assertEquals("DORMANT", e.getString("phase"))
+        assertEquals("NO_RISE", e.getString("reason"))
+        assertEquals(0.0, e.getDouble("stockMgdl"), 1e-12)
+        assertFalse(gapReasons(j).contains(FuseStateJson.GAP_EVIDENCE_NOT_EVALUATED))
+    }
+    /**
+     * DER DECKEL DES ZYKLUS, NICHT DER DEFAULT.
+     *
+     * Der Export erzeugte ihn frueher selbst ueber `EvidenceStock.Config()`.
+     * Bei einem Replay mit abweichendem Deckel haette der Datensatz 360
+     * behauptet, waehrend 17 gelaufen ist - der Export beschriebe eine andere
+     * Regel als die gepruefte.
+     */
+    @Test
+    fun `der Deckel im Datensatz ist der des Zyklus`() {
+        val j = FuseStateJson.record(
+            "s#1", outcome(episodeId = 1_700_000_000_000L, episodeMin = 3, capMin = 17),
+            rt(), cfg, BUILD, 0L, null,
+        ) { 5_000_000L }
+        assertEquals(17, j.getJSONObject("evidenceEpisode").getInt("capMin"))
+    }
+
+    /** Id und Widerruf stehen NUR im Block - sonst gaebe es zwei Wahrheiten
+     *  ueber dieselbe Episode. */
+    @Test
+    fun `Episodenidentitaet steht nicht mehr doppelt im Datensatz`() {
+        val j = FuseStateJson.record(
+            "s#1", outcome(episodeId = 1_700_000_000_000L, episodeMin = 3), rt(), cfg, BUILD, 0L, null,
+        ) { 5_000_000L }
+        assertFalse(j.has("evidenceEpisodeId")) { "gehoert in den Block" }
+        assertFalse(j.has("evidenceCreditRevoked")) { "gehoert in den Block" }
+        assertTrue(j.getJSONObject("evidenceEpisode").has("creditRevoked"))
+    }
+
+    /** Der GRUND bleibt aussen - im Block waere er unerreichbar, weil es dann
+     *  keine Episode gibt. */
+    @Test
+    fun `der Ablehnungsgrund steht ausserhalb des Blocks`() {
+        val j = FuseStateJson.record("s#1", outcome(denial = "MARKER_STALE"), rt(), cfg, BUILD, 0L, null) { 5_000_000L }
+        assertTrue(j.isNull("evidenceEpisode"))
+        assertEquals("MARKER_STALE", j.getString("evidenceEpisodeDenial"))
+    }
+
+    // ---- Mahlzeitenfundament (Punkt 12, Toni 18.08.) ----------------------
+
+    // Konsolidierung 2.0: das Fundament ist entfallen. Der Block steht bis Schritt 5 mit seinen Feldnamen und den
+    // Werten "kein Fundament"; die Wertproben der Phasen, Uebertraege und Sollgroessen sind mit ihm entfallen.
+
+    /** Der Abschnitt aus dem ECHTEN Export - nicht aus einer nachgebauten Serialisierung. */
+    private fun fundament(o: FuseCycleRunner.Outcome = outcome()) =
+        record(o).getJSONObject("mealFoundation")
+
+    /**
+     * UEBERTRAGEN UND VERFALLEN SIND ZWEI GROESSEN (Review 25.08. spaet,
+     * Punkt 3). Mit UNTERSCHIEDLICHEN Werten geprueft - stuenden beide
+     * auf demselben Wert, waere eine Verwechslung im Export unsichtbar.
+     */
+    @Test
+    fun `Uebertrag und Verfall stehen getrennt im Export`() {
+        val o = fundament(
+            outcome().copy(
+                phaseAUpfrontTransferredU = 2.40,
+                phaseAUpfrontLapsedU = 0.20,
+            )
+        )
+        assertEquals(2.40, o.getDouble("phaseAUpfrontTransferredU"), 1e-9)
+        assertEquals(0.20, o.getDouble("phaseAUpfrontLapsedU"), 1e-9)
+        // Und andersherum, damit keine Vertauschung durchrutscht.
+        val v = fundament(
+            outcome().copy(
+                phaseAUpfrontTransferredU = 0.20,
+                phaseAUpfrontLapsedU = 2.40,
+            )
+        )
+        assertEquals(0.20, v.getDouble("phaseAUpfrontTransferredU"), 1e-9)
+        assertEquals(2.40, v.getDouble("phaseAUpfrontLapsedU"), 1e-9)
+    }
+
+    /** TONIS FELDLISTE, Feld fuer Feld (Punkt 12) - bis Schritt 5 bleibt jedes Feld im Trail, neutral belegt. */
+    @Test
+    fun `der Fundament-Block traegt jedes Feld`() {
+        val o = fundament()
+        for (feld in listOf(
+            "totalBudgetU", "phaseABudgetU", "phaseBBudgetU",
+            "armedTs", "effectiveHandoverTs", "latchedHandoverTs", "endTs",
+            "phase",
+            "deliveredSinceHandoverU",
+            "confirmedNotSentPhaseAU", "deliveredPhaseAU",
+            "effectiveCarryU", "descentDeferredPhaseAU", "descentCarryEligibility",
+            "manualBolusAfterMarkerU", "effectiveDescentCarryU", "phaseBAllowanceU",
+            "plannedTotalU", "backlogU", "dueU", "remainingInWindowU", "binding",
+            "effectiveWindowMin", "effectiveRateUPerMin",
+            "phaseAUpfrontShare", "phaseAUpfrontPlannedU", "phaseARemainderU",
+            "phaseAUpfrontRequestedU", "phaseAUpfrontPublishedU",
+            "phaseAUpfrontConfirmedU", "phaseAUpfrontPendingU",
+            "phaseAUpfrontState", "phaseAUpfrontProposalId",
+            "phaseAUpfrontTransferredU", "phaseAUpfrontLapsedU",
+            "preFoundationSmbU", "preFoundationBlock", "foundationLiftU",
+        )) {
+            assertTrue(o.has(feld), "$feld fehlt im Export")
+        }
+        // confirmed wird NICHT behauptet: FUSE fuehrt keine
+        // Pumpenbestaetigungs-Buchfuehrung je Menge.
+        assertTrue(o.isNull("phaseAUpfrontConfirmedU"))
+    }
+
+    /**
+     * OHNE FUNDAMENT STEHT DER ABSCHNITT TROTZDEM DA - mit den Werten "kein Fundament".
+     *
+     * `armed: false` ist eine Aussage; ein fehlender Abschnitt waere von "der Zyklus kam nicht so weit" nicht zu
+     * unterscheiden. Die manuelle Deckung steht wie bisher ohne Autorisierung auf 0, im Abbruch unbekannt.
+     */
+    @Test
+    fun `ohne Fundament steht armed false statt nichts`() {
+        val o = fundament()
+        assertFalse(o.getBoolean("armed"))
+        assertEquals("NONE", o.getString("phase"))
+        assertEquals(0.0, o.getDouble("totalBudgetU"), 1e-9)
+        assertEquals(0.0, o.getDouble("dueU"), 1e-9)
+        assertEquals(0.0, o.getDouble("foundationLiftU"), 1e-9)
+        assertEquals("NO_DEFERRED", o.getString("descentCarryEligibility"))
+        assertEquals(0.0, o.getDouble("manualBolusAfterMarkerU"), 1e-9)
+        assertTrue(o.isNull("binding"))
+        assertTrue(fundament(outcome(abort = "signal: test")).isNull("manualBolusAfterMarkerU"))
+    }
+
+    /**
+     * DIE ENDKETTE DES SOFORTANTEILS MUSS IM TRAIL STEHEN.
+     *
+     * Sie existierte lange NUR im `Outcome`. Der Replay liest den direkt,
+     * also waren alle Tests dazu gruen - auf dem Geraet fehlte die
+     * Telemetrie aber vollstaendig: kein Ruhemodus, kein Streak, kein
+     * Grant, keine MarkerFloor-Anhebung, keine Endmenge. Aufgefallen ist es
+     * erst, als der Viewer sie lesen sollte.
+     *
+     * Der Test prueft ausserdem die Benennung: `requestedRtU` heisst
+     * ANGEFORDERT. Wer daraus "gegeben" macht, hat drei verschiedene
+     * Wahrheiten zu einer verschmolzen.
+     */
+    @Test
+    fun `der Trail traegt die Endkette des Sofortanteils`() {
+        val kette = FuseCycleRunner.UpfrontChain(
+            recoveryMode = "CALM_RECOVERED",
+            calmTreatment = "CALM_BATCH",
+            recoveryStreak = 3,
+            recoveryTrackReset = "NONE",
+            recoveryRequired = 3,
+            recoveryDenial = null,
+            currentHazard = "none",
+            guardDistanceMgdl = 7.9,
+            normalNeedBeforeMarkerFloorU = 0.0,
+            upfrontOpenU = 3.6,
+            calmEligibleU = 0.0,
+            calmShiftedU = 0.0,
+            calmDemandU = 0.0,
+            descentGateCause = "HISTORICAL_LATCH",
+            calmDeniedByFinalVerify = null,
+            grantU = 3.6,
+            grantSource = "MEAL_UPFRONT",
+            beforeMarkerFloorU = 0.0,
+            afterMarkerFloorU = 3.6,
+            markerFloorLiftU = 3.6,
+            afterDescentGateU = 3.6,
+            requestedRtU = 3.6,
+            stabilisation = "WITHIN_TOLERANCE",
+            stabilityVerdict = "STABLE",
+            stabilityReason = "OK",
+            // ABSICHTLICH ALLE VERSCHIEDEN: waeren zwei gleich, bliebe eine
+            // Verwechslung von grossem Fenster und juengstem Abschnitt
+            // unsichtbar - genau so ist sie im Runner entstanden.
+            recentSpanMin = 5.3,
+            recentNetMgdl = -0.7,
+            recentWorstDropMgdl = -1.4,
+            recentWorstDropSpanMin = 2.1,
+            allowedDropMgdl = 2.21,
+            acceptedSustainedFallMgdlPerMin = 2.0 / 4.5,
+            stabilityConfirmedCycles = 3,
+            // Getrennt von der Heuristik-Bremse: hier steht, ob die
+            // ausdrueckliche Autorisierung die DIREKTDOSIS traegt.
+            reboundExemptByAuthority = true,
+        )
+        val c = record(outcome(upfrontChain = kette)).optJSONObject("upfrontChain")
+        assertNotNull(c, "die Endkette fehlt im Trail")
+        assertEquals("CALM_RECOVERED", c!!.optString("recoveryMode"))
+        assertEquals("CALM_BATCH", c.optString("calmTreatment"))
+        assertEquals(3, c.optInt("recoveryStreak"))
+        // Der Trail muss die beiden Aussagen getrennt tragen: die
+        // Heuristik-Bremse steht in `state.reboundSuppressedByMarker`,
+        // die Direktdosis-Kette hier.
+        assertTrue(c.optBoolean("reboundExemptByAuthority")) { c.toString() }
+        assertEquals("HISTORICAL_LATCH", c.optString("descentGateCause"))
+        assertEquals("MEAL_UPFRONT", c.optString("grantSource"))
+        assertEquals(3.6, c.optDouble("requestedRtU"), 1e-9)
+        assertEquals(3.6, c.optDouble("markerFloorLiftU"), 1e-9)
+        assertEquals(3.6, c.optDouble("upfrontOpenU"), 1e-9)
+        // DER STABILITAETSNACHWEIS steht im Trail - ohne ihn ist am Geraet
+        // nicht erkennbar, welcher Abschnitt sperrt und wie lange noch.
+        assertEquals("WITHIN_TOLERANCE", c.optString("stabilisation"))
+        assertEquals("STABLE", c.optString("stabilityVerdict"))
+        assertEquals(5.3, c.optDouble("recentSpanMin"), 1e-9)
+        assertEquals(-0.7, c.optDouble("recentNetMgdl"), 1e-9)
+        assertEquals(-1.4, c.optDouble("recentWorstDropMgdl"), 1e-9)
+        assertEquals(2.1, c.optDouble("recentWorstDropSpanMin"), 1e-9)
+        assertEquals(2.21, c.optDouble("allowedDropMgdl"), 1e-9)
+        assertEquals(3, c.optInt("stabilityConfirmedCycles"))
+        // Der Vertrag als Zahl - damit "innerhalb der Toleranz" nicht als
+        // "hat aufgehoert" gelesen wird.
+        assertEquals(2.0 / 4.5, c.optDouble("acceptedSustainedFallMgdlPerMin"), 1e-9)
+        // Es gibt KEIN Feld, das "gegeben" behauptet.
+        assertFalse(c.keys().asSequence().any { it.contains("delivered", true) }) {
+            "die Endkette darf keine Liefermenge vortaeuschen: " +
+                c.keys().asSequence().toList()
+        }
+    }
+
+    /**
+     * Konsolidierung 2.0: ohne Ruhe-Ausgang stehen Ruhemodus, Track-Reset und
+     * Gefahrenliste auf null - die Feldnamen bleiben als JSON-null im Trail,
+     * damit Leser sie weiter finden.
+     */
+    @Test
+    fun `ohne Ruhe-Ausgang bleiben die Feldnamen der Endkette als null im Trail`() {
+        val kette = FuseCycleRunner.UpfrontChain(
+            recoveryMode = null, calmTreatment = null, recoveryStreak = 0, recoveryTrackReset = null,
+            recoveryRequired = 0, recoveryDenial = null, currentHazard = null,
+            guardDistanceMgdl = null, normalNeedBeforeMarkerFloorU = 0.0, upfrontOpenU = 0.0,
+            calmEligibleU = 0.0, calmShiftedU = 0.0, calmDemandU = 0.0, descentGateCause = "NONE",
+            calmDeniedByFinalVerify = null, grantU = 0.0, grantSource = null, beforeMarkerFloorU = 0.0,
+            afterMarkerFloorU = 0.0, markerFloorLiftU = 0.0, afterDescentGateU = 0.0, requestedRtU = 0.0,
+            stabilisation = "UNDETERMINED", stabilityVerdict = "UNDETERMINED", stabilityReason = "TOO_FEW_POINTS",
+            recentSpanMin = 0.0, recentNetMgdl = 0.0, recentWorstDropMgdl = 0.0, recentWorstDropSpanMin = 0.0,
+            allowedDropMgdl = 0.0, acceptedSustainedFallMgdlPerMin = 2.0 / 4.5, stabilityConfirmedCycles = 0,
+            reboundExemptByAuthority = null,
+        )
+        val c = record(outcome(upfrontChain = kette)).optJSONObject("upfrontChain")
+        assertNotNull(c, "die Endkette fehlt im Trail")
+        for (feld in listOf("recoveryMode", "recoveryTrackReset", "currentHazard")) {
+            assertTrue(c!!.has(feld) && c.isNull(feld)) { "$feld muss als JSON-null stehen: ${c.opt(feld)}" }
+        }
+        assertEquals(0, c!!.optInt("recoveryStreak", -1))
+    }
+
+    /**
+     * DER AUFNAHMENACHWEIS DER TRANSPORTMENGE steht im Trail (03.10.2026):
+     * ohne ihn waere ein entlasteter Zyklus von einem doppelt zaehlenden nicht
+     * zu unterscheiden.
+     */
+    @Test
+    fun `der Aufnahmenachweis steht im Export`() {
+        val j = record(outcome().copy(
+            transportSicht = FuseCycleRunner.TransportSicht(
+                app.aaps.fuse.plugin.ledger.TransportAufnahme.Ergebnis(mapOf("p1" to 0.3), 2, "VERAENDERT"), 0.2,
+            ),
+        )).getJSONObject("transportInclusion")
+        assertEquals(2, j.getInt("candidates"))
+        assertEquals(1, j.getInt("proven"))
+        assertEquals(0.3, j.getDouble("provenU"), 1e-12)
+        assertEquals("VERAENDERT", j.getString("reason"))
+        assertEquals(0.2, j.getDouble("modelledU"), 1e-12)
+        // Ohne Grund steht null, kein leerer Text.
+        val leer = record(outcome().copy(
+            transportSicht = FuseCycleRunner.TransportSicht(app.aaps.fuse.plugin.ledger.TransportAufnahme.Ergebnis.LEER, 0.0),
+        )).getJSONObject("transportInclusion")
+        assertTrue(leer.isNull("reason"))
+        assertEquals(0, leer.getInt("candidates"))
+        // Vor dem Nachweis abgebrochen: kein Abschnitt.
+        assertTrue(record(outcome()).optJSONObject("transportInclusion") == null)
+    }
+}

@@ -261,6 +261,9 @@ dependencies {
     implementation(project(":database:persistence"))
     implementation(project(":pump:virtual"))
     implementation(project(":workflow"))
+    // Fork: the FUSE controller. An Android library (not multiplatform), so it cannot sit in the shell's
+    // commonMain list with the other plugins; it self-registers into the APS plugin bucket like they do.
+    implementation(project(":fuse:plugin"))
 
     // Pump drivers — only for full + pumpcontrol flavors. Derived from the :pump:* modules included
     // in settings.gradle (single source of truth) minus one exception:

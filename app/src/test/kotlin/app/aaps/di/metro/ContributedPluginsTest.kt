@@ -108,7 +108,9 @@ class ContributedPluginsTest {
 
     @Test
     fun `only a looping build gets storage, signature verifier and objectives`() {
-        assertThat(testRoot().contributedApsPlugins.keys).containsExactly(820, 830, 840)
+        // Fork: and FUSE (235). An actuating controller has no place in a client or pump control build - it
+        // must not even be created there, not merely be hidden.
+        assertThat(testRoot().contributedApsPlugins.keys).containsExactly(235, 820, 830, 840)
     }
 
     @Test
