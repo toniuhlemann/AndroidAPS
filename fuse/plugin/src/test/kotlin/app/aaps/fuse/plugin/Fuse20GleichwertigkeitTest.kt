@@ -1,7 +1,9 @@
 package app.aaps.fuse.plugin
 
 import app.aaps.core.data.model.BS
+import app.aaps.core.data.model.EPS
 import app.aaps.core.data.model.GV
+import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.data.model.ICfg
 import app.aaps.core.data.model.IDs
 import app.aaps.core.data.model.SourceSensor
@@ -555,9 +557,28 @@ class Fuse20GleichwertigkeitTest : TestBaseWithProfile() {
         gate = FusePumpGate.Result(FusePumpGate.Verdict.ALLOWED, "TestPump"),
     )
 
+    /**
+     * v4: DIESELBEN mg/dl-ZAHLEN WIE AUF DER BASIS.
+     *
+     * v4 rechnet mmol/l mit 18,01559 in mg/dl um (`Constants.MMOLL_TO_MGDL`), der Fork mit 18,0. Das Testprofil
+     * ist in mmol/l - FUSE bekaeme auf v4 also andere Ziele und ISF als auf der Basis (103,59 statt 103,5), und GN
+     * verglich die Konstante statt FUSE. Der Pruefstand gibt FUSE deshalb dasselbe Profil in mg/dl, mit genau den
+     * Werten, die die Basis aus dem mmol-Profil rechnet (x 18,0, Prozent 100 -> Faktor 1). Fuer ein Profil in
+     * mg/dl spielt die Konstante keine Rolle.
+     */
+    private fun wieAufDerBasis(eps: EPS): EPS {
+        check(eps.glucoseUnit == GlucoseUnit.MMOL) { "das Testprofil ist nicht mehr in mmol/l - Umrechnung pruefen" }
+        val forkFaktor = 18.0
+        return eps.copy(
+            glucoseUnit = GlucoseUnit.MGDL,
+            isfBlocks = eps.isfBlocks.map { it.copy(amount = it.amount * forkFaktor) },
+            targetBlocks = eps.targetBlocks.map { it.copy(lowTarget = it.lowTarget * forkFaktor, highTarget = it.highTarget * forkFaktor) },
+        )
+    }
+
     @BeforeEach
     fun setup() = runBlocking<Unit> {
-        rigProfil = ProfileSealed.EPS(effectiveProfileSwitch.copy(iCfg = insulin), activePlugin)
+        rigProfil = ProfileSealed.EPS(wieAufDerBasis(effectiveProfileSwitch.copy(iCfg = insulin)), activePlugin)
         whenever(activePlugin.activePump).thenReturn(testPumpPlugin)
         testPumpPlugin.pumpDescription.bolusStep = 0.05
 
