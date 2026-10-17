@@ -38,7 +38,15 @@ data class NSTemporaryTarget(
         ACTIVITY("Activity"),
         EATING_SOON("Eating Soon"),
         AUTOMATION("Automation"),
-        WEAR("Wear")
+        WEAR("Wear"),
+        // Fork (IOB-Action viewer): must mirror TT.Reason, so a target posted by the viewer is read
+        // with its own reason and not as CUSTOM.
+        PEAK_STOP("Peak-Stop"),
+        CORRECTION("Korrektur"),
+        REBOUND("Rebound-Schutz"),
+        BRAKE("Bremse"),
+        MEAL("Mahlzeit"),
+        LOW_PROTECT("Tief-Schutz")
         ;
 
         companion object {

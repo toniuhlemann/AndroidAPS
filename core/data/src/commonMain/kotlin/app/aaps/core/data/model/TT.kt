@@ -39,7 +39,16 @@ data class TT(
         ACTIVITY("Activity"),
         EATING_SOON("Eating Soon"),
         AUTOMATION("Automation"),
-        WEAR("Wear")
+        WEAR("Wear"),
+        // Fork (IOB-Action viewer): the reasons the companion app sets. Added at the end, so the
+        // existing names stay. The database stores the name, Nightscout the text, so the text must
+        // stay what the viewer posts and what NSTemporaryTarget.Reason holds.
+        PEAK_STOP("Peak-Stop"),
+        CORRECTION("Korrektur"),
+        REBOUND("Rebound-Schutz"),
+        BRAKE("Bremse"),
+        MEAL("Mahlzeit"),
+        LOW_PROTECT("Tief-Schutz")
         ;
 
         companion object {

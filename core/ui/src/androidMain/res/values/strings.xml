@@ -1232,4 +1232,12 @@
     <string name="units_sec">sec</string>
     <string name="units_years">y</string>
     <string name="prefs_range_title">Range for visualization</string>
+    <!-- Fork (IOB-Action viewer): temp target reasons set by the companion app. The text is the
+         name the viewer shows and posts, so it is the same in every language. -->
+    <string name="tt_reason_peak_stop" translatable="false">Peak-Stop</string>
+    <string name="tt_reason_correction" translatable="false">Korrektur</string>
+    <string name="tt_reason_rebound" translatable="false">Rebound-Schutz</string>
+    <string name="tt_reason_brake" translatable="false">Bremse</string>
+    <string name="tt_reason_meal" translatable="false">Mahlzeit</string>
+    <string name="tt_reason_low_protect" translatable="false">Tief-Schutz</string>
 </resources>

@@ -143,6 +143,12 @@ private fun TT.Reason?.toDescription(): TextRef? = when (this) {
     TT.Reason.ACTIVITY     -> CoreUiStrings.activity
     TT.Reason.AUTOMATION   -> CoreUiStrings.automation
     TT.Reason.WEAR         -> CoreUiStrings.wear
+    TT.Reason.PEAK_STOP    -> CoreUiStrings.tt_reason_peak_stop
+    TT.Reason.CORRECTION   -> CoreUiStrings.tt_reason_correction
+    TT.Reason.REBOUND      -> CoreUiStrings.tt_reason_rebound
+    TT.Reason.BRAKE        -> CoreUiStrings.tt_reason_brake
+    TT.Reason.MEAL         -> CoreUiStrings.tt_reason_meal
+    TT.Reason.LOW_PROTECT  -> CoreUiStrings.tt_reason_low_protect
     null                   -> null
 }
 

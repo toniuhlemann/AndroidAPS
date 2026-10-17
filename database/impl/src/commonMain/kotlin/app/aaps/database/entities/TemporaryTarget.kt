@@ -45,7 +45,15 @@ data class TemporaryTarget(
         ACTIVITY,
         EATING_SOON,
         AUTOMATION,
-        WEAR
+        WEAR,
+        // Fork (IOB-Action viewer). Stored by name, added at the end. A fork database already
+        // holds these names, so reading it without them would crash in the converter.
+        PEAK_STOP,
+        CORRECTION,
+        REBOUND,
+        BRAKE,
+        MEAL,
+        LOW_PROTECT
         ;
     }
 }

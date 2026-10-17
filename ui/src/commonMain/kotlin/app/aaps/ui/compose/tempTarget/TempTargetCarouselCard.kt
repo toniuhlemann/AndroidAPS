@@ -243,7 +243,13 @@ private fun getTTReasonColor(reason: TT.Reason): Color {
         TT.Reason.HYPOGLYCEMIA -> colors.ttHypoglycemia
         TT.Reason.CUSTOM,
         TT.Reason.AUTOMATION,
-        TT.Reason.WEAR         -> colors.ttCustom
+        TT.Reason.WEAR,
+        TT.Reason.PEAK_STOP,
+        TT.Reason.CORRECTION,
+        TT.Reason.REBOUND,
+        TT.Reason.BRAKE,
+        TT.Reason.MEAL,
+        TT.Reason.LOW_PROTECT -> colors.ttCustom
     }
 }
 
@@ -258,6 +264,12 @@ private fun getTTReasonStringRes(reason: TT.Reason): TextRef {
         TT.Reason.CUSTOM       -> CoreUiStrings.custom
         TT.Reason.AUTOMATION   -> CoreUiStrings.automation
         TT.Reason.WEAR         -> CoreUiStrings.wear
+        TT.Reason.PEAK_STOP    -> CoreUiStrings.tt_reason_peak_stop
+        TT.Reason.CORRECTION   -> CoreUiStrings.tt_reason_correction
+        TT.Reason.REBOUND      -> CoreUiStrings.tt_reason_rebound
+        TT.Reason.BRAKE        -> CoreUiStrings.tt_reason_brake
+        TT.Reason.MEAL         -> CoreUiStrings.tt_reason_meal
+        TT.Reason.LOW_PROTECT  -> CoreUiStrings.tt_reason_low_protect
     }
 }
 
@@ -271,6 +283,12 @@ private fun getTTReasonIcon(reason: TT.Reason): ImageVector {
         TT.Reason.HYPOGLYCEMIA -> IcTtHypo
         TT.Reason.CUSTOM,
         TT.Reason.AUTOMATION,
-        TT.Reason.WEAR         -> IcTtManual
+        TT.Reason.WEAR,
+        TT.Reason.PEAK_STOP,
+        TT.Reason.CORRECTION,
+        TT.Reason.REBOUND,
+        TT.Reason.BRAKE,
+        TT.Reason.MEAL,
+        TT.Reason.LOW_PROTECT -> IcTtManual
     }
 }

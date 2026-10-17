@@ -11,6 +11,12 @@ fun TemporaryTarget.Reason.fromDb(): TT.Reason =
         TemporaryTarget.Reason.EATING_SOON  -> TT.Reason.EATING_SOON
         TemporaryTarget.Reason.AUTOMATION   -> TT.Reason.AUTOMATION
         TemporaryTarget.Reason.WEAR         -> TT.Reason.WEAR
+        TemporaryTarget.Reason.PEAK_STOP    -> TT.Reason.PEAK_STOP
+        TemporaryTarget.Reason.CORRECTION   -> TT.Reason.CORRECTION
+        TemporaryTarget.Reason.REBOUND      -> TT.Reason.REBOUND
+        TemporaryTarget.Reason.BRAKE        -> TT.Reason.BRAKE
+        TemporaryTarget.Reason.MEAL         -> TT.Reason.MEAL
+        TemporaryTarget.Reason.LOW_PROTECT  -> TT.Reason.LOW_PROTECT
     }
 
 fun TT.Reason.toDb(): TemporaryTarget.Reason =
@@ -21,6 +27,12 @@ fun TT.Reason.toDb(): TemporaryTarget.Reason =
         TT.Reason.EATING_SOON  -> TemporaryTarget.Reason.EATING_SOON
         TT.Reason.AUTOMATION   -> TemporaryTarget.Reason.AUTOMATION
         TT.Reason.WEAR         -> TemporaryTarget.Reason.WEAR
+        TT.Reason.PEAK_STOP    -> TemporaryTarget.Reason.PEAK_STOP
+        TT.Reason.CORRECTION   -> TemporaryTarget.Reason.CORRECTION
+        TT.Reason.REBOUND      -> TemporaryTarget.Reason.REBOUND
+        TT.Reason.BRAKE        -> TemporaryTarget.Reason.BRAKE
+        TT.Reason.MEAL         -> TemporaryTarget.Reason.MEAL
+        TT.Reason.LOW_PROTECT  -> TemporaryTarget.Reason.LOW_PROTECT
     }
 
 fun TemporaryTarget.fromDb(): TT =

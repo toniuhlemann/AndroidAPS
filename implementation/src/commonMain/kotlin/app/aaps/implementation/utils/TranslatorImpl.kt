@@ -245,6 +245,12 @@ class TranslatorImpl internal constructor(
         TT.Reason.ACTIVITY     -> rh.gs(CoreUiStrings.activity)
         TT.Reason.AUTOMATION   -> rh.gs(CoreUiStrings.automation)
         TT.Reason.WEAR         -> rh.gs(CoreUiStrings.wear)
+        TT.Reason.PEAK_STOP    -> rh.gs(CoreUiStrings.tt_reason_peak_stop)
+        TT.Reason.CORRECTION   -> rh.gs(CoreUiStrings.tt_reason_correction)
+        TT.Reason.REBOUND      -> rh.gs(CoreUiStrings.tt_reason_rebound)
+        TT.Reason.BRAKE        -> rh.gs(CoreUiStrings.tt_reason_brake)
+        TT.Reason.MEAL         -> rh.gs(CoreUiStrings.tt_reason_meal)
+        TT.Reason.LOW_PROTECT  -> rh.gs(CoreUiStrings.tt_reason_low_protect)
 
         else                   -> rh.gs(CoreUiStrings.unknown)
     }
