@@ -39,31 +39,31 @@ class ValueOverlayPolicyTest {
     }
 
     @Test fun `Teil-Nutzlast - ein einzelnes Gewicht genuegt`() {
-        assertThat(P.areWeightsAllowed(mapOf(P.F_ACCE to 230L))).isTrue()
-        assertThat(P.areWeightsAllowed(mapOf(P.F_DURA to 800L))).isTrue()
-        assertThat(P.areWeightsAllowed(mapOf(P.F_ACCE to 230L, P.F_PP to 30L, P.F_DURA to 800L))).isTrue()
+        assertThat(P.areWeightsAllowed(mapOf(P.F_ACCE to 170L))).isTrue()
+        assertThat(P.areWeightsAllowed(mapOf(P.F_DURA to 600L))).isTrue()
+        assertThat(P.areWeightsAllowed(mapOf(P.F_ACCE to 170L, P.F_PP to 50L, P.F_DURA to 600L))).isTrue()
     }
 
     @Test fun `leere Nutzlast und unbekannte Felder werden abgelehnt`() {
         assertThat(P.areWeightsAllowed(emptyMap())).isFalse()
         assertThat(P.areWeightsAllowed(mapOf("gibtsNicht" to 100L))).isFalse()
         // ein gueltiges Feld heilt ein ungueltiges nicht
-        assertThat(P.areWeightsAllowed(mapOf(P.F_ACCE to 230L, "gibtsNicht" to 100L))).isFalse()
+        assertThat(P.areWeightsAllowed(mapOf(P.F_ACCE to 170L, "gibtsNicht" to 100L))).isFalse()
     }
 
     @Test fun `Skalierung ist verlustfrei fuer die feinsten UI-Schritte`() {
-        listOf(0.01, 0.03, 0.1, 0.15, 0.23, 0.8, 1.0, 2.0, 3.0).forEach { v ->
+        listOf(0.01, 0.05, 0.1, 0.15, 0.17, 0.6, 1.0, 2.0, 3.0).forEach { v ->
             assertThat(P.unscaled(P.scaled(v))).isWithin(1e-9).of(v)
         }
     }
 
     @Test fun `Toleranzvergleich ueberlebt den Float-Rundtrip aus den Prefs`() {
-        // Reale Werte aus dem Config-Export: als Float gespeichert, als Double gelesen.
-        assertThat(P.sameValue(0.23, 0.23000000417232513)).isTrue()
-        assertThat(P.sameValue(0.8, 0.800000011920929)).isTrue()
-        assertThat(P.sameValue(0.03, 0.029999999329447746)).isTrue()
+        // Synthetische Werte: als Float gespeichert, als Double gelesen.
+        assertThat(P.sameValue(0.17, 0.17000000178813934)).isTrue()
+        assertThat(P.sameValue(0.6, 0.6000000238418579)).isTrue()
+        assertThat(P.sameValue(0.05, 0.05000000074505806)).isTrue()
         // ein echter Unterschied bleibt einer
-        assertThat(P.sameValue(0.23, 0.24)).isFalse()
+        assertThat(P.sameValue(0.17, 0.18)).isFalse()
     }
 
     @Test fun `Policy-Hashes sind stabil, verschieden und tragen die Grenzen`() {

@@ -8,7 +8,7 @@ import kotlin.math.roundToLong
 /**
  * Grenzen und Draht-Format fuer die Double-wertigen Capabilities (SMBRATIO, WEIGHTS).
  *
- * DREI BEFUNDE AUS DER GRENZEN-PRUEFUNG (25.07.), die dieses Modul so aussehen lassen:
+ * DREI BEFUNDE AUS DER GRENZEN-PRUEFUNG, die dieses Modul so aussehen lassen:
  *
  * 1. **Preferences klemmen NICHT.** `PreferencesImpl.put` schreibt `sp.putDouble(key, value)`
  *    ohne `coerceIn`, `get` liest ungeklemmt zurueck. Die min/max der Key-Definitionen sind
@@ -21,8 +21,8 @@ import kotlin.math.roundToLong
  *    ist 0.2 real erreichbar. Diese Policy baut das NICHT nach: Grenzen kommen aus dem Key,
  *    der Kanal darf hier also weniger als die Automation.
  *
- * 3. **Float-Rundung.** Gewichte liegen als Float in den Prefs: aus 0.23 wird beim Lesen
- *    0.23000000417232513. Tausendstel sind deshalb ausschliesslich DRAHT- und POLICY-Format
+ * 3. **Float-Rundung.** Gewichte liegen als Float in den Prefs: aus 0.17 wird beim Lesen
+ *    0.17000000178813934. Tausendstel sind deshalb ausschliesslich DRAHT- und POLICY-Format
  *    (keine Doubles in HMAC/Room). Die Basis wird als ROHER Double erfasst und zurueck-
  *    geschrieben, und der Fremdschreiber-Vergleich laeuft mit Toleranz statt auf Gleichheit —
  *    dieselbe Lehre, die `ActionSetPpWeight` schon als Kommentar traegt.
@@ -36,7 +36,7 @@ object ValueOverlayPolicy {
      * Float-Rundungstoleranz fuer den Basis-/Fremdschreiber-Vergleich.
      *
      * Befund 10 des Reviews: 0.0005 war ein halber DRAHT-Schritt, nicht eine Float-Toleranz.
-     * Der Rundtrip-Fehler, der die Toleranz ueberhaupt begruendet (0.23 -> 0.23000000417),
+     * Der Rundtrip-Fehler, der die Toleranz ueberhaupt begruendet (0.17 -> 0.17000000179),
      * liegt bei ~1e-8 — die alte Schwelle war fuenf Groessenordnungen zu gross und haette eine
      * echte Fremdaenderung von exakt 0.0005 als "unveraendert" durchgehen lassen. 1e-6 deckt
      * den Rundtrip mit zwei Groessenordnungen Reserve und laesst keine Luecke.

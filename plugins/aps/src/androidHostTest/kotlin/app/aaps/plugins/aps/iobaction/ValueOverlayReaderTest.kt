@@ -15,14 +15,15 @@ import org.junit.jupiter.api.Test
 class ValueOverlayReaderTest {
 
     private val base = mapOf(
-        ValueOverlayPolicy.F_ACCE to 0.23,
-        ValueOverlayPolicy.F_BRAKE to 0.08,
-        ValueOverlayPolicy.F_PP to 0.03,
-        ValueOverlayPolicy.F_DURA to 0.80,
-        ValueOverlayPolicy.F_LOW to 0.70,
-        ValueOverlayPolicy.F_HIGH to 0.20,
+        // synthetic base values
+        ValueOverlayPolicy.F_ACCE to 0.17,
+        ValueOverlayPolicy.F_BRAKE to 0.12,
+        ValueOverlayPolicy.F_PP to 0.05,
+        ValueOverlayPolicy.F_DURA to 0.60,
+        ValueOverlayPolicy.F_LOW to 0.55,
+        ValueOverlayPolicy.F_HIGH to 0.35,
     )
-    private val baseRatio = 0.20
+    private val baseRatio = 0.45
 
     private fun snapshot(
         ratio: Double? = null,
@@ -52,14 +53,15 @@ class ValueOverlayReaderTest {
         assertThat(ValueOverlayReader.ratio(s, baseRatio)).isEqualTo(baseRatio)
     }
 
-    @Test fun `die echten Live-Werte gehen unveraendert durch`() {
-        // Float-Rundtrip-Werte aus Tonis Config-Export — Bit fuer Bit identisch zurueck.
-        val live = mapOf(
-            ValueOverlayPolicy.F_ACCE to 0.23000000417232513,
-            ValueOverlayPolicy.F_DURA to 0.800000011920929,
-            ValueOverlayPolicy.F_PP to 0.029999999329447746,
+    @Test fun `Float-Rundtrip-Werte gehen unveraendert durch`() {
+        // Werte, die einmal als Float gespeichert waren (keine "runden" Doubles, synthetisch)
+        // — Bit fuer Bit identisch zurueck.
+        val roundTrip = mapOf(
+            ValueOverlayPolicy.F_ACCE to 0.17f.toDouble(),
+            ValueOverlayPolicy.F_DURA to 0.6f.toDouble(),
+            ValueOverlayPolicy.F_PP to 0.05f.toDouble(),
         )
-        live.forEach { (f, v) ->
+        roundTrip.forEach { (f, v) ->
             assertThat(ValueOverlayReader.weight(null, f, v)).isEqualTo(v)
             assertThat(ValueOverlayReader.weight(snapshot(), f, v)).isEqualTo(v)
         }
@@ -100,14 +102,14 @@ class ValueOverlayReaderTest {
     }
 
     @Test fun `ein Overlay mit dem Basiswert ist vom Nicht-Overlay ununterscheidbar - und das ist gewollt`() {
-        val s = snapshot(weights = mapOf(ValueOverlayPolicy.F_DURA to 0.80))
-        assertThat(ValueOverlayReader.weight(s, ValueOverlayPolicy.F_DURA, 0.80)).isEqualTo(0.80)
+        val s = snapshot(weights = mapOf(ValueOverlayPolicy.F_DURA to 0.60))
+        assertThat(ValueOverlayReader.weight(s, ValueOverlayPolicy.F_DURA, 0.60)).isEqualTo(0.60)
     }
 
     @Test fun `Overlay 0 wird NICHT als fehlend gelesen`() {
         // Klassische Falle: 0.0 ist ein gueltiger Gewichtswert (alle Keys erlauben min 0).
         // Ein Null-Check statt eines Map-Lookups haette hier die Basis geliefert.
         val s = snapshot(weights = mapOf(ValueOverlayPolicy.F_BRAKE to 0.0))
-        assertThat(ValueOverlayReader.weight(s, ValueOverlayPolicy.F_BRAKE, 0.08)).isEqualTo(0.0)
+        assertThat(ValueOverlayReader.weight(s, ValueOverlayPolicy.F_BRAKE, 0.12)).isEqualTo(0.0)
     }
 }

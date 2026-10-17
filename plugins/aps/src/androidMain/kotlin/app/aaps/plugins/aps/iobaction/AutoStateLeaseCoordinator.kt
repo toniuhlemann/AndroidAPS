@@ -15,11 +15,11 @@ import java.util.concurrent.atomic.AtomicReference
  * SCHLANKER als [AutoIsfValueLeaseCoordinator], aber NICHT ohne dessen Sicherheitsnetze — das
  * war der Fehler der ersten Fassung. Richtig bleibt: ein Automation-State ist keine Preference
  * im APS-Hotpath, also braucht er keine SP-Basis-Generation und keine sperrfreie CAS-Leseschleife.
- * FALSCH war der Schluss, damit ganz ohne Gates und ohne Herzschlag auszukommen (Review 25.07.,
+ * FALSCH war der Schluss, damit ganz ohne Gates und ohne Herzschlag auszukommen (Review,
  * Befunde 3 und 4): Master-Schalter, Capability-Schalter und Validate-only beendeten eine
  * laufende Lease nicht, und die TTL lief nur, solange der Viewer selbst anrief. Gates kommen
  * jetzt aus DERSELBEN Beobachtung wie beim Wert-Overlay, und enforce() wird von AUSSERHALB des
- * APS-Laufs getrieben: KeepAliveWorker (15 min), der 60-s-Herzschlag in MainApp und jeder
+ * APS-Laufs getrieben: KeepAliveWorker, der Herzschlag in MainApp und jeder
  * Kommando-/Statusaufruf. Frueher stand hier "der APS-Lauf treibt enforce() von innen" — das
  * war einmal so und wurde bewusst entfernt, weil es den Dosier-Thread an ein Lock gekoppelt
  * hat, das ueber eine Room-Transaktion gehalten wird (siehe MainApp). Die Frist laeuft damit
@@ -49,10 +49,10 @@ import java.util.concurrent.atomic.AtomicReference
 class AutoStateLeaseCoordinator(
     private val automationState: AutomationStateInterface,
     /**
-     * Befund 3/4 des Reviews vom 25.07.: dieser Koordinator hatte KEINE Gate-Logik. Master-
+     * Befund 3/4 des Reviews: dieser Koordinator hatte KEINE Gate-Logik. Master-
      * Schalter, Capability-Schalter und Validate-only beendeten eine laufende Lease nicht — und
-     * ein abgeschalteter Kanal blockierte zusaetzlich das CLEAR, der State blieb also bis zu
-     * 12h eingefroren OHNE Weg zurueck. Die Gates kommen jetzt aus DERSELBEN Beobachtung wie
+     * ein abgeschalteter Kanal blockierte zusaetzlich das CLEAR, der State blieb also bis zum
+     * Lease-Ende eingefroren OHNE Weg zurueck. Die Gates kommen jetzt aus DERSELBEN Beobachtung wie
      * beim Wert-Overlay; zwei getrennte Gate-Leser wuerden auseinanderlaufen.
      */
     private val gateSource: AutoIsfValueLeaseCoordinator,
@@ -125,7 +125,7 @@ class AutoStateLeaseCoordinator(
     private val pendingTerminals = ConcurrentLinkedQueue<PendingTerminal>()
 
     /**
-     * Review 26.07. (Befund 4 / H2): der GRUND des letzten Lease-Endes, ueberlebend.
+     * Review (Befund 4 / H2): der GRUND des letzten Lease-Endes, ueberlebend.
      *
      * [pendingTerminals] wird geleert, sobald der Dienst die Room-Zeile terminalisiert hat — der
      * Grund ist dann weg, und der Status meldet nur noch NONE. Damit kann ein unbeaufsichtigter
@@ -204,7 +204,7 @@ class AutoStateLeaseCoordinator(
                 currentState(),
             )
         }
-        // Review 26.07. (Befund 3): fuer die Wert-Nachpruefung nach dem Commit muss festgehalten
+        // Review (Befund 3): fuer die Wert-Nachpruefung nach dem Commit muss festgehalten
         // werden, WAS zu diesem Zeitpunkt stehen sollte. captureBase liest bei einer
         // Verlaengerung absichtlich nicht neu, kann die Frage also nicht beantworten.
         val runningBefore = published.get()?.takeIf { it.stateName == stateName }
@@ -236,7 +236,7 @@ class AutoStateLeaseCoordinator(
                 pendingTerminal(room.leaseId, room.leaseVersion, (unsafeNowReason ?: AutoIsfOverrideState.DISABLED).name)
                 return@withGateLock ArmedResult(room, currentState())
             }
-            // Review 26.07. (Befund 3): WERT-Nachpruefung, unmittelbar vor dem Schreiben und
+            // Review (Befund 3): WERT-Nachpruefung, unmittelbar vor dem Schreiben und
             // unter demselben Lock. Zwischen gateSnapshot und hier liegt die komplette
             // Room-Transaktion, also I/O — und AutomationStateService.setState synchronisiert
             // auf SICH SELBST, nicht auf diesen Lock. Ein Griff des Nutzers in den AAPS-Screen
@@ -267,7 +267,7 @@ class AutoStateLeaseCoordinator(
                 // Der State liess sich nicht schreiben (existiert nicht / Wert ungueltig). Die
                 // Room-Zeile ist bereits committet, also SOFORT terminalisieren statt eine
                 // Lease zu fuehren, die nichts haelt.
-                // Review 26.07. (Befund 8): bei einer VERLAENGERUNG steht unser Wert aus der
+                // Review (Befund 8): bei einer VERLAENGERUNG steht unser Wert aus der
                 // vorigen Runde noch — und die Lease, die ihn gehalten hat, ist gleich weg. Ohne
                 // Rueckstellung bliebe er OHNE FRIST stehen, also genau der Zustand, den dieser
                 // Koordinator ausschliessen soll. Der Zweig zwoelf Zeilen hoeher macht es
@@ -353,7 +353,7 @@ class AutoStateLeaseCoordinator(
         return buildMap {
             put("serverAutoStatePolicyHash", LocalCommandAutoStatePolicy.hash())
             put("autoStateLeaseState", if (p == null) STATE_NONE else STATE_ACTIVE)
-            // Review 26.07. (Befund 4 / H2): OHNE den Grund kann ein Aufrufer "von Hand
+            // Review (Befund 4 / H2): OHNE den Grund kann ein Aufrufer "von Hand
             // entzogen" nicht von "abgelaufen/neu gestartet" unterscheiden — und die beiden
             // muessen entgegengesetzt behandelt werden.
             lastTerminalReason.get()?.let { put("autoStateLastTerminalReason", it) }
@@ -383,7 +383,7 @@ class AutoStateLeaseCoordinator(
      * der State (dieselbe Regel wie beim Ablauf).
      */
     fun restoreAfterProcessRestart(stateName: String, ourValue: String, baseValue: String?): RestartRestore {
-        // Review 26.07. (Befund 5): frueher ein Boolean, und der kollabierte drei verschiedene
+        // Review (Befund 5): frueher ein Boolean, und der kollabierte drei verschiedene
         // Ausgaenge auf "false" — kein Rueckweg vorhanden, gehoert inzwischen jemand anderem,
         // und Schreiben fehlgeschlagen. Nur der letzte ist ein Fehler; die ersten beiden sind
         // erledigte Faelle. Der Aufrufer muss das unterscheiden koennen, sonst quittiert er den

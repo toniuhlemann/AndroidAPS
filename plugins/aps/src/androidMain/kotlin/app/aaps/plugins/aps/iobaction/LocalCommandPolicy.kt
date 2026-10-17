@@ -3,17 +3,17 @@ package app.aaps.plugins.aps.iobaction
 import java.security.MessageDigest
 
 /**
- * LocalCommandChannel — Policy-Matrix (Spec v1.3 §6 / v1.4 §4; Vollaudit 20.07. abends):
+ * LocalCommandChannel — Policy-Matrix (Spec v1.3 §6 / v1.4 §4; Vollaudit):
  * geschlossene Positivliste der Auto-Executor-TT-ZIELE.
  *
- * ENTWICKLUNG DER MATRIX (beide Live-Erkenntnisse vom ersten ARMED-Abend):
- *  1. Dauern raus (Incident TT90): Dauern sind Live-Tuning-Knoepfe der Viewer-TtConfig
- *     (90/12→10, 76/5→10, 88/40→60) — gepinnte Dauern verwarfen legitime Engine-TTs
+ * ENTWICKLUNG DER MATRIX (beide Erkenntnisse aus dem ersten scharfen Betrieb):
+ *  1. Dauern raus: Dauern sind Tuning-Knoepfe der Viewer-TtConfig — gepinnte Dauern
+ *     verwarfen legitime Engine-TTs
  *     terminal (REJECTED_POLICY ohne NS-Fallback = Therapie-Luecke). Dauer bleibt durch
  *     die Protokoll-Bounds begrenzt und Teil der signierten Payload.
  *  2. Reasons raus (Vollaudit): Reason-Strings entstehen aus Titeln/Locks und kreuzen
- *     sich bei RENEWALS mit jedem aktiven Ziel (z.B. TT90-Renewal unter "Schutz:
- *     nahe-Low" → LOW_PROTECT(90); Brems-TT140 in der Nacht → LOW_PROTECT(140)) — das
+ *     sich bei RENEWALS mit jedem aktiven Ziel (z.B. Renewal eines Korrektur-
+ *     oder Brems-Ziels unter einem Schutz-Titel → LOW_PROTECT mit diesem Ziel) — das
  *     Kreuzprodukt ist nicht pinbar, und ein Reason ist ANZEIGE-Metadatum (Treatments),
  *     keine Sicherheitseigenschaft. Der Parser validiert ihn weiterhin als Enum.
  *
@@ -26,7 +26,7 @@ import java.security.MessageDigest
  */
 object LocalCommandPolicy {
 
-    /** Erlaubte TT-Ziele (mg/dl) — Stand tt-decision-rules + Engine-Vollaudit 20.07.2026:
+    /** Erlaubte TT-Ziele (mg/dl) — Stand tt-decision-rules + Engine-Vollaudit:
      *  72/74/78 manuelle L/M/S-Boost-Brücken · 76 Meal · 88 Welle · 90 Korrektur ·
      *  101 Soft-Protect/Peak-Stop · 120/130/140 Bremsen (140 auch Rebound) · 141/161 Hard-Protect. */
     val TARGETS: List<Int> = listOf(72, 74, 76, 78, 88, 90, 101, 120, 130, 140, 141, 161)

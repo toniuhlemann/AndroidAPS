@@ -16,11 +16,11 @@ class ValueLeaseOverlayTest {
 
     private lateinit var c: AutoIsfValueLeaseCoordinator
     private var base = 50
-    private var ratio = 0.2
+    private var ratio = 0.4
     private val weights = mutableMapOf(
-        ValueOverlayPolicy.F_ACCE to 0.23000000417232513,   // echter Float-Rundtrip aus den Prefs
-        ValueOverlayPolicy.F_DURA to 0.800000011920929,
-        ValueOverlayPolicy.F_PP to 0.029999999329447746,
+        ValueOverlayPolicy.F_ACCE to 0.17000000178813934,   // Float-Rundtrip wie aus den Prefs (synthetisch)
+        ValueOverlayPolicy.F_DURA to 0.6000000238418579,
+        ValueOverlayPolicy.F_PP to 0.05000000074505806,
     )
     private var gates = AutoIsfValueLeaseCoordinator.Gates(
         channelEnabled = true,
@@ -88,12 +88,12 @@ class ValueLeaseOverlayTest {
     }
 
     @Test fun `Float-Rundtrip der Basis loest KEIN FOREIGN_MODIFIED aus`() {
-        // Die Basis steht auf 0.23000000417232513; ohne Toleranzvergleich wuerde die Lease
+        // Die Basis steht auf 0.17000000178813934; ohne Toleranzvergleich wuerde die Lease
         // sofort als fremdveraendert gelten und dauerhaft latchen.
         setWeights(ValueOverlayPolicy.F_ACCE to 0.4)
         assertThat(c.snapshot().weightsState).isEqualTo(AutoIsfOverrideState.ACTIVE)
         // minimal andere Float-Repraesentation derselben Zahl
-        weights[ValueOverlayPolicy.F_ACCE] = 0.23000000417232515
+        weights[ValueOverlayPolicy.F_ACCE] = 0.17000000178813937
         assertThat(c.snapshot().weightsState).isEqualTo(AutoIsfOverrideState.ACTIVE)
     }
 
@@ -103,7 +103,7 @@ class ValueLeaseOverlayTest {
         assertThat(c.snapshot().weightsState).isEqualTo(AutoIsfOverrideState.FOREIGN_MODIFIED)
         assertThat(c.snapshot().weightOverrides).isEmpty()
         // zuruecksetzen belebt NICHT
-        weights[ValueOverlayPolicy.F_ACCE] = 0.23000000417232513
+        weights[ValueOverlayPolicy.F_ACCE] = 0.17000000178813934
         assertThat(c.snapshot().weightsState).isEqualTo(AutoIsfOverrideState.FOREIGN_MODIFIED)
     }
 
@@ -159,7 +159,7 @@ class ValueLeaseOverlayTest {
         assertThat(pt.reason).isEqualTo(AutoIsfOverrideState.EXPIRED.name)
     }
 
-    // Selbstreview 25.07.: der frueher hier stehende read-modify-write auf der Slot-Map konnte
+    // Selbstreview: der frueher hier stehende read-modify-write auf der Slot-Map konnte
     // einen Widerruf verlieren, der lockfrei aus dem LESE-Pfad kam. Folge waere eine abgelaufene
     // Lease gewesen, die wieder aktiv erscheint — Verletzung der Latch-Invariante.
     @Test fun `ein Kommando auf Capability B loescht keinen Widerruf von Capability A`() {
@@ -237,9 +237,9 @@ class ValueLeaseOverlayTest {
     // Befund 10: die Toleranz muss den Float-Rundtrip decken, aber keine echte Aenderung.
     @Test fun `Toleranz deckt den Rundtrip, nicht einen halben Draht-Schritt`() {
         setWeights(ValueOverlayPolicy.F_ACCE to 0.4)
-        weights[ValueOverlayPolicy.F_ACCE] = 0.23000000417232515      // Rundtrip
+        weights[ValueOverlayPolicy.F_ACCE] = 0.17000000178813937      // Rundtrip
         assertThat(c.snapshot().weightsState).isEqualTo(AutoIsfOverrideState.ACTIVE)
-        weights[ValueOverlayPolicy.F_ACCE] = 0.23000000417232513 + 0.0005   // echte Aenderung
+        weights[ValueOverlayPolicy.F_ACCE] = 0.17000000178813934 + 0.0005   // echte Aenderung
         assertThat(c.snapshot().weightsState).isEqualTo(AutoIsfOverrideState.FOREIGN_MODIFIED)
     }
 }

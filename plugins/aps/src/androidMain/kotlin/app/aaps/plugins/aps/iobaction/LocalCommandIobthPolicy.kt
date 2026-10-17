@@ -6,9 +6,9 @@ import java.security.MessageDigest
 /**
  * Capability-Matrix A1 — IOBTH-Policy (Spec v1.1 §5 + R8-F7 "Policy-Hash PRO Capability").
  *
- * PREFERENCE-PARITAET statt erfundener Zahlen (Tonis Grundsatz 21.07., zweifach
- * nachgeschaerft): Erst war {60,70,80,90} gepinnt (seine INITIALE Button-Liste — Tuning,
- * nicht Substanz), dann eine 90er-Kappe (MEINE erfundene Zahl). Beides falsch. Die einzige
+ * PREFERENCE-PARITAET statt erfundener Zahlen (Tonis Grundsatz, zweifach nachgeschaerft):
+ * Erst war die INITIALE Button-Liste des Viewers gepinnt (Tuning, nicht Substanz), dann eine
+ * selbst erfundene Kappe. Beides falsch. Die einzige
  * nicht-erfundene Wahrheit ueber diesen Regler ist seine bestehende Preference-Definition:
  * der Kanal darf EXAKT das, was der Regler selbst kann — Grenzen werden aus
  * [IntKey.ApsAutoIsfIobThPercent] ABGELEITET, nicht dupliziert. Aendert ein kuenftiger
@@ -16,7 +16,7 @@ import java.security.MessageDigest
  * Kohorte (gewollt; der Test-Pin macht es laut).
  *
  * TTL bleibt kanal-eigene Substanz (der Regler kennt keine Laufzeit): [30..720] min
- * Schritt 1 — untere Grenze gegen Flatter-Leases, obere = 12h-Sicherheitsdeckel, aus
+ * Schritt 1 — untere Grenze gegen Flatter-Leases, obere = Sicherheitsdeckel, aus
  * v1.1 §5 uebernommen und von R9-F3 als kanonische Bereichsform verlangt.
  *
  * Kanonische Form (UTF-8, keine Whitespaces): ["IOBTH",[min,max,1],[30,720,1]]

@@ -303,7 +303,7 @@ class AutoIsfValueLeaseCoordinatorTest {
         assertThat(c.peekPendingTerminal()).isNull()
     }
 
-    // ---- Capability-Trennung (25.07.): Schalter duerfen sich nicht gegenseitig erschlagen ----
+    // ---- Capability-Trennung: Schalter duerfen sich nicht gegenseitig erschlagen ----
 
     // Vor der Trennung galt `unsafe = !channel || !iobth || vo` fuer JEDE Lease dieses
     // Koordinators. Ein AUS des iobTH-Schalters haette damit auch eine Ratio-/Weights-Lease

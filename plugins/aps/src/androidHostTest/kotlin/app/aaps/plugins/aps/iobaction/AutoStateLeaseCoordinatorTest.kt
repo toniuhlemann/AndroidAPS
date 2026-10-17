@@ -208,7 +208,7 @@ class AutoStateLeaseCoordinatorTest {
         assertThat(st.writes.size).isEqualTo(after)
     }
 
-    // ---- Review-Befunde vom 25.07., je ein Nachweis ----
+    // ---- Review-Befunde, je ein Nachweis ----
 
     // Befund 2: Verlaengern darf die Basis NICHT neu erfassen, sonst wird der ueberlagerte Wert
     // zur "Basis" und der State kehrt nie zum Original zurueck. Bei 30-min-TTL der Normalfall.
@@ -390,7 +390,7 @@ class AutoStateLeaseCoordinatorTest {
         assertThat(st.values["MEAL_ACTIVE"]).isEqualTo("false")
     }
 
-    // ---- Review 26.07. ----
+    // ---- Review, zweite Runde ----
 
     // Befund 3: das gefaehrlichste der Runde. Zwischen Gate-Pruefung und Schreiben liegt die
     // Room-Transaktion; AutomationStateService synchronisiert auf sich selbst, nicht auf

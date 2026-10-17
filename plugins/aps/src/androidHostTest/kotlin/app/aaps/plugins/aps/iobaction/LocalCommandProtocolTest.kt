@@ -161,19 +161,19 @@ class LocalCommandProtocolTest {
         assertThat(LocalCommandProtocol.MUTATION_BUILD_PRESENT).isTrue()
     }
 
-    // --- Policy-Matrix: geschlossene ZIEL-Liste, Dauer nur Bounds (Vollaudit 20.07.) ---
+    // --- Policy-Matrix: geschlossene ZIEL-Liste, Dauer nur Bounds (Vollaudit) ---
     @Test fun policyCanonicalAndHash() {
         assertThat(LocalCommandPolicy.canonical()).isEqualTo("[72,74,76,78,88,90,101,120,130,140,141,161]")
         assertThat(LocalCommandPolicy.hash())
             .isEqualTo("29c93bf81f998d324f9af40cd59006a2168b7238d3a7e99750bfc81caa53ee62")
-        // Renewal-Kreuzfaelle vom ersten ARMED-Abend: Reason ist Metadatum, Ziel entscheidet.
-        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.LOW_PROTECT, 90, 10)).isTrue()   // TT90-Renewal unter "Schutz"
-        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.LOW_PROTECT, 140, 15)).isTrue()  // Brems-TT in der Nacht gehalten
-        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.CORRECTION, 90, 10)).isTrue()    // Live-Dauer 10 statt Default 12
-        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 88, 60)).isTrue()          // Welle mit Live-Dauer 60
-        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 72, 60)).isTrue()          // manueller L-Boost
-        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 74, 60)).isTrue()          // manueller M-Boost
-        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 78, 60)).isTrue()          // manueller S-Boost
+        // Renewal-Kreuzfaelle: Reason ist Metadatum, Ziel entscheidet. Dauern synthetisch, nur Bounds.
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.LOW_PROTECT, 90, 20)).isTrue()   // Korrektur-Ziel unter Schutz-Titel
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.LOW_PROTECT, 140, 25)).isTrue()  // Brems-Ziel unter Schutz-Titel
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.CORRECTION, 90, 35)).isTrue()    // Dauer frei innerhalb der Bounds
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 88, 45)).isTrue()          // Welle
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 72, 50)).isTrue()          // manueller L-Boost
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 74, 50)).isTrue()          // manueller M-Boost
+        assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 78, 50)).isTrue()          // manueller S-Boost
         // Fremde Ziele bleiben verboten …
         assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 100, 30)).isFalse()
         assertThat(LocalCommandPolicy.isAllowed(LocalCommandProtocol.ReasonKey.MEAL, 73, 30)).isFalse()
@@ -206,7 +206,7 @@ class LocalCommandProtocolTest {
             """"expectedState":"$state","expectedLeaseId":"$leaseId","expectedLeaseVersion":$leaseVer}"""
 
     @Test fun iobthPolicyPinned() {
-        // PREFERENCE-PARITAET (21.07., Tonis Grundsatz): Grenzen ABGELEITET aus
+        // PREFERENCE-PARITAET (Tonis Grundsatz): Grenzen ABGELEITET aus
         // IntKey.ApsAutoIsfIobThPercent (10..100) — keine erfundenen Zahlen im Kanal.
         // Der Hash-Pin macht eine kuenftige Upstream-Aenderung der Preference-Grenzen
         // LAUT (Test rot = bewusste neue Kohorte dokumentieren).
@@ -215,7 +215,7 @@ class LocalCommandProtocolTest {
             .isEqualTo("152260fe4e890d847c903cdacf6533696f4b873c7899fc7ba11ce86ca60639af")
         assertThat(LocalCommandIobthPolicy.PERCENT_MIN).isEqualTo(app.aaps.core.keys.IntKey.ApsAutoIsfIobThPercent.min)
         assertThat(LocalCommandIobthPolicy.PERCENT_MAX).isEqualTo(app.aaps.core.keys.IntKey.ApsAutoIsfIobThPercent.max)
-        assertThat(LocalCommandIobthPolicy.isAllowed(55, 60)).isTrue()    // Tonis 55er — ohne Flash
+        assertThat(LocalCommandIobthPolicy.isAllowed(47, 60)).isTrue()    // ausserhalb jeder Button-Liste — ohne Flash
         assertThat(LocalCommandIobthPolicy.isAllowed(95, 720)).isTrue()   // alles was der Regler kann
         assertThat(LocalCommandIobthPolicy.isAllowed(101, 60)).isFalse()  // mehr als der Regler: nie
         assertThat(LocalCommandIobthPolicy.isAllowed(9, 60)).isFalse()

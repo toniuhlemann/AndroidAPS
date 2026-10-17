@@ -49,7 +49,7 @@ class AutoIsfValueLeaseCoordinator(
 ) : EffectiveAutoIsfSettingsProvider, AutoIsfValueLeaseInvalidator {
 
     /**
-     * Gates JE CAPABILITY (25.07.). Vorher galt `unsafe = !channel || !iobth || vo` fuer ALLES,
+     * Gates JE CAPABILITY. Vorher galt `unsafe = !channel || !iobth || vo` fuer ALLES,
      * was dieser Koordinator fuehrt — mit einer zweiten Capability haette ein Ausschalten des
      * iobTH-Schalters auch deren Lease widerrufen UND ueber den Generations-Bump dauerhaft
      * gelatcht. Die Schalter im AAPS-Einstellungsscreen waeren nur scheinbar unabhaengig gewesen.
@@ -115,8 +115,8 @@ class AutoIsfValueLeaseCoordinator(
      * Generische Wert-Lease fuer die Double-wertigen Capabilities (SMBRATIO, WEIGHTS).
      *
      * [setScaled] traegt Tausendstel (Draht-/Room-Format, keine Doubles im HMAC), [baseRaw]
-     * dagegen den ROHEN Preference-Double — Gewichte liegen als Float in den Prefs, aus 0.23
-     * wird 0.23000000417232513. Wuerde die Basis gerundet gespeichert, schluege der
+     * dagegen den ROHEN Preference-Double — Gewichte liegen als Float in den Prefs, aus 0.17
+     * wird 0.17000000178813934. Wuerde die Basis gerundet gespeichert, schluege der
      * Fremdschreiber-Vergleich sofort und dauerhaft an, und das Zurueckschreiben wuerde den
      * Wert bei jedem Lease-Zyklus minimal verschieben.
      */
