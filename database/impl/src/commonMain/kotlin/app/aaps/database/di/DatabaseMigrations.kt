@@ -338,8 +338,8 @@ private val migration35to36 = object : Migration(35, 36) {
     }
 }
 
-/** Every migration, in order. Passed to the Room builder by each platform. */
-internal val databaseMigrations: Array<Migration> = arrayOf(
+/** The upstream migrations, in order. */
+internal val upstreamDatabaseMigrations: Array<Migration> = arrayOf(
     migration22to23,
     migration23to24,
     migration24to25,
@@ -355,3 +355,12 @@ internal val databaseMigrations: Array<Migration> = arrayOf(
     migration34to35,
     migration35to36,
 )
+
+/**
+ * Every migration. Passed to the Room builder by each platform.
+ *
+ * Fork: the upstream steps plus one direct step from each of 31..36 to the fork version, see
+ * `ForkDatabaseMigration`. Room takes the longest step it has, so from 31 on only the direct steps run,
+ * and they call the upstream steps themselves where the database still needs them.
+ */
+internal val databaseMigrations: Array<Migration> = upstreamDatabaseMigrations + forkDatabaseMigrations(upstreamDatabaseMigrations)

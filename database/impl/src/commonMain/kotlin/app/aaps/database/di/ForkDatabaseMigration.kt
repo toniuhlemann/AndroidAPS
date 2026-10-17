@@ -1,0 +1,109 @@
+package app.aaps.database.di
+
+import androidx.room.migration.Migration
+import androidx.sqlite.SQLiteConnection
+import androidx.sqlite.execSQL
+import app.aaps.database.DATABASE_VERSION
+import app.aaps.database.entities.TABLE_AUTOISF_VALUES
+import app.aaps.database.entities.TABLE_BOLUSES
+import app.aaps.database.entities.TABLE_LOCAL_COMMAND_OUTCOME
+import app.aaps.database.entities.TABLE_LOCAL_COMMAND_OWNERSHIP
+import app.aaps.database.entities.TABLE_LOCAL_COMMAND_VALUE_LEASE
+import app.aaps.database.entities.TABLE_TOTAL_DAILY_DOSES
+
+/*
+ * Fork database: upstream 36 plus the fork tables (autoIsfValues and the three local command tables).
+ *
+ * The fork and upstream both used the numbers 32 to 34, for different content:
+ *  - fork 32 = upstream 31 + autoIsfValues (autoISF 3.2.x)
+ *  - fork 33 = fork 32 + localCommandOutcome + localCommandOwnership
+ *  - fork 34 = fork 33 + localCommandValueLease
+ *  - upstream 32 = 31 + totalDailyDoses.carbInsulin, 33 = new bolus and profile switch layout with the
+ *    insulin curve on every row, 34 = index clean up, 35 = calibrationEntries, 36 = sensor names.
+ * A fork database at 34 is therefore NOT an upstream 34. Room alone would run upstream 34 -> 35 -> 36
+ * on it, the schema check would fail on `boluses`, and the app would not start (seen on a test phone).
+ *
+ * So every start version from 31 to 36 gets ONE direct migration to the fork version. Room always
+ * takes the longest step it has, so these replace the upstream chain from 31 on. Each of them finds
+ * out which line the database belongs to, runs the upstream steps that are still missing, and then
+ * makes sure the fork tables exist. Fork tables that are already there are kept as they are, with
+ * their data.
+ *
+ * Which line: upstream 32 and later always have `totalDailyDoses.carbInsulin`, the fork never added it.
+ * A database at 32, 33 or 34 without that column is a fork database and sits on upstream 31.
+ *
+ * The insulin curve of old boluses and profile switches: the upstream step 32 -> 33 writes the
+ * placeholder (-1) into every row, and MainApp stamps the real curve from the old preferences on the
+ * next start, exactly as for an upstream 3.4 database. That works the same for a fork database,
+ * because the fork kept the upstream 3.4 preference layout.
+ */
+
+/** Upstream schema version the fork version builds on. */
+internal const val UPSTREAM_DATABASE_VERSION = 36
+
+/** The direct migrations 31..36 -> fork version. Pass the upstream steps; they are run inside. */
+internal fun forkDatabaseMigrations(upstream: Array<Migration>): Array<Migration> =
+    (31..UPSTREAM_DATABASE_VERSION).map { from -> ForkAwareMigration(from, upstream) }.toTypedArray()
+
+private class ForkAwareMigration(from: Int, private val upstream: Array<Migration>) : Migration(from, DATABASE_VERSION) {
+
+    override fun migrate(connection: SQLiteConnection) {
+        var version = upstreamVersionOf(connection, startVersion)
+        while (version < UPSTREAM_DATABASE_VERSION) {
+            val step = upstream.singleOrNull { it.startVersion == version && it.endVersion == version + 1 }
+                ?: error("Fork migration: no upstream step $version -> ${version + 1}")
+            step.migrate(connection)
+            version++
+        }
+        createForkTables(connection)
+    }
+}
+
+/**
+ * The upstream version this database really has.
+ *
+ * Fails instead of guessing when the content fits neither line: a migration that guesses wrong can
+ * lose treatment history, and a failed migration leaves the database untouched.
+ */
+internal fun upstreamVersionOf(connection: SQLiteConnection, startVersion: Int): Int {
+    if (startVersion !in 32..34) return startVersion
+    val hasCarbInsulin = hasColumn(connection, TABLE_TOTAL_DAILY_DOSES, "carbInsulin")
+    if (hasCarbInsulin) return startVersion
+    // Fork line. It never rebuilt the bolus table, so the upstream 33 columns must be missing too.
+    check(!hasColumn(connection, TABLE_BOLUSES, "concentration")) {
+        "Fork migration: database $startVersion has no carbInsulin but already the new bolus layout"
+    }
+    return 31
+}
+
+internal fun hasColumn(connection: SQLiteConnection, table: String, column: String): Boolean =
+    connection.prepare("PRAGMA table_info(`$table`)").use { statement ->
+        var found = false
+        // Column 1 of table_info is the column name.
+        while (statement.step()) if (statement.getText(1) == column) found = true
+        found
+    }
+
+/**
+ * The fork tables, exactly as Room created them on the fork (fork schema 34). Kept when present.
+ * The SQL must match the entities [app.aaps.database.entities.AutoIsfValues] and the three local
+ * command entities, or Room rejects the database after the migration.
+ */
+internal fun createForkTables(connection: SQLiteConnection) {
+    connection.execSQL("CREATE TABLE IF NOT EXISTS `$TABLE_AUTOISF_VALUES` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `timestamp` INTEGER NOT NULL, `acceIsf` REAL NOT NULL, `bgIsf` REAL NOT NULL, `ppIsf` REAL NOT NULL, `driftIsf` REAL NOT NULL, `duraIsf` REAL NOT NULL, `finalIsf` REAL NOT NULL, `iobThEffective` REAL NOT NULL, `utcOffset` INTEGER NOT NULL, `version` INTEGER NOT NULL, `dateCreated` INTEGER NOT NULL, `isValid` INTEGER NOT NULL, `referenceId` INTEGER, `nightscoutSystemId` TEXT, `nightscoutId` TEXT, `pumpType` TEXT, `pumpSerial` TEXT, `temporaryId` INTEGER, `pumpId` INTEGER, `startId` INTEGER, `endId` INTEGER)")
+    connection.execSQL("CREATE INDEX IF NOT EXISTS `index_autoIsfValues_id` ON `$TABLE_AUTOISF_VALUES` (`id`)")
+    connection.execSQL("CREATE INDEX IF NOT EXISTS `index_autoIsfValues_timestamp` ON `$TABLE_AUTOISF_VALUES` (`timestamp`)")
+
+    connection.execSQL("CREATE TABLE IF NOT EXISTS `$TABLE_LOCAL_COMMAND_OUTCOME` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `requestId` TEXT NOT NULL, `requestHash` TEXT NOT NULL, `cmd` TEXT NOT NULL, `outcome` TEXT NOT NULL, `errorCode` TEXT, `appliedAt` INTEGER, `ttDbId` INTEGER, `ttEntityVersion` INTEGER, `validateOnly` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `retainUntil` INTEGER NOT NULL, `resultJson` TEXT)")
+    connection.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_localCommandOutcome_requestId` ON `$TABLE_LOCAL_COMMAND_OUTCOME` (`requestId`)")
+    connection.execSQL("CREATE INDEX IF NOT EXISTS `index_localCommandOutcome_createdAt` ON `$TABLE_LOCAL_COMMAND_OUTCOME` (`createdAt`)")
+
+    connection.execSQL("CREATE TABLE IF NOT EXISTS `$TABLE_LOCAL_COMMAND_OWNERSHIP` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `requestId` TEXT NOT NULL, `ttDbId` INTEGER NOT NULL, `ttEntityVersion` INTEGER NOT NULL, `ttTimestamp` INTEGER NOT NULL, `lowTarget` REAL NOT NULL, `highTarget` REAL NOT NULL, `durationMs` INTEGER NOT NULL, `reasonKey` TEXT NOT NULL, `ownerPolicyHash` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `terminatedAt` INTEGER, `terminalReason` TEXT)")
+    connection.execSQL("CREATE INDEX IF NOT EXISTS `index_localCommandOwnership_terminatedAt` ON `$TABLE_LOCAL_COMMAND_OWNERSHIP` (`terminatedAt`)")
+    connection.execSQL("CREATE INDEX IF NOT EXISTS `index_localCommandOwnership_ttDbId` ON `$TABLE_LOCAL_COMMAND_OWNERSHIP` (`ttDbId`)")
+
+    connection.execSQL("CREATE TABLE IF NOT EXISTS `$TABLE_LOCAL_COMMAND_VALUE_LEASE` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `capability` TEXT NOT NULL, `leaseId` TEXT NOT NULL, `leaseVersion` INTEGER NOT NULL, `ownerPolicyHash` TEXT NOT NULL, `basePayload` TEXT NOT NULL, `baseGeneration` INTEGER NOT NULL, `setPayload` TEXT NOT NULL, `gateGeneration` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `expiresAtWallMs` INTEGER NOT NULL, `activeSlot` INTEGER, `terminatedAt` INTEGER, `terminalReason` TEXT)")
+    connection.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_localCommandValueLease_capability_activeSlot` ON `$TABLE_LOCAL_COMMAND_VALUE_LEASE` (`capability`, `activeSlot`)")
+    connection.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_localCommandValueLease_capability_leaseVersion` ON `$TABLE_LOCAL_COMMAND_VALUE_LEASE` (`capability`, `leaseVersion`)")
+    connection.execSQL("CREATE INDEX IF NOT EXISTS `index_localCommandValueLease_terminatedAt` ON `$TABLE_LOCAL_COMMAND_VALUE_LEASE` (`terminatedAt`)")
+}

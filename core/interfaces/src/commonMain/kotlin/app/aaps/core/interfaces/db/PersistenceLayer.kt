@@ -1,5 +1,6 @@
 package app.aaps.core.interfaces.db
 
+import app.aaps.core.data.model.AIV
 import app.aaps.core.data.model.BCR
 import app.aaps.core.data.model.BS
 import app.aaps.core.data.model.CA
@@ -1627,6 +1628,33 @@ interface PersistenceLayer {
      * @return List of inserted/updated records
      */
     suspend fun insertOrUpdateStepsCounts(stepsCounts: List<SC>): TransactionResult<SC>
+
+    // AutoISF key values (fork table, autoISF 3.2.x)
+
+    /**
+     * Get autoisf values records from time
+     *
+     * @param from time
+     * @return list of autoisf values records
+     */
+    suspend fun getAutoIsfValuesFromTime(from: Long): List<AIV>
+
+    /**
+     * Get autoisf values records from interval
+     *
+     * @param startTime from
+     * @param endTime to
+     * @return list of autoisf values records
+     */
+    suspend fun getAutoIsfValuesFromTimeToTime(startTime: Long, endTime: Long): List<AIV>
+
+    /**
+     * Insert or update if exists record
+     *
+     * @param autoIsfValues record
+     * @return List of inserted/updated records
+     */
+    suspend fun insertOrUpdateAutoIsfValues(autoIsfValues: AIV): TransactionResult<AIV>
 
     // VersionChange
 
