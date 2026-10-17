@@ -331,7 +331,9 @@ class IobCobCalculatorPlugin(
         }
         basalIob.iobWithZeroTemp = IobTotal.combine(bolusIob, basalIobWithZeroTemp).round()
         val iobTotal = IobTotal.combine(bolusIob, basalIob).round()
-        if (time < dateUtil.now()) {
+        // Fork (FUSE contract 2): ONLY VALID RESULTS INTO THE CACHE. An invalid one there would keep
+        // "unknown" alive beyond the event that caused it, and nothing would ever remove it again.
+        if (time < dateUtil.now() && iobTotal.valid) {
             dataLock.withLock {
                 iobTable.put(time, iobTotal)
             }
@@ -546,6 +548,13 @@ class IobCobCalculatorPlugin(
      */
     private suspend fun range(): Long = ((profileFunction.getProfile()?.iCfg?.dia ?: Constants.DEFAULT_DIA) * 60 * 60 * 1000).toLong()
 
+    /**
+     * Fork (FUSE contract 2): true when [range] comes from a real profile with a real insulin. Without a
+     * profile v4 falls back to DEFAULT_DIA and silently drops older insulin; with the sentinel insulin of
+     * not yet stamped rows the range is zero and no bolus counts at all. Either way the IOB is unknown.
+     */
+    private suspend fun rangeFromRealInsulin(): Boolean = profileFunction.getProfile()?.iCfg?.isUsable == true
+
     override suspend fun calculateIobFromBolus(): IobTotal = calculateIobFromBolusToTime(dateUtil.now())
 
     /**
@@ -559,6 +568,8 @@ class IobCobCalculatorPlugin(
      */
     private suspend fun calculateIobFromBolusToTime(toTime: Long): IobTotal {
         val total = IobTotal(toTime)
+        // Fork (FUSE contract 2): WITHOUT A PROFILE THE RESULT IS UNKNOWN, NOT ZERO.
+        if (!rangeFromRealInsulin()) total.valid = false
         val divisor = preferences.get(DoubleKey.ApsAmaBolusSnoozeDivisor)
         devAssert(divisor > 0)
 
@@ -566,6 +577,9 @@ class IobCobCalculatorPlugin(
 
         boluses.forEach { t ->
             if (t.isValid && t.timestamp < toTime) {
+                // Fork (FUSE contract 2): a row without a real insulin (the sentinel of a not yet stamped
+                // row) is calculated with clamps - the result is no statement.
+                if (!t.iCfg.isUsable) total.valid = false
                 val tIOB = t.iobCalc(toTime)
                 total.iob += tIOB.iobContrib
                 total.activity += tIOB.activityContrib
@@ -599,7 +613,8 @@ class IobCobCalculatorPlugin(
                     e.amount *= newDuration.toDouble() / e.duration
                     e.duration = newDuration
                 }
-                val profile = profileFunction.getProfile(e.timestamp) ?: return total
+                // Fork (FUSE contract 2): an extended bolus without a profile is insulin that is not counted.
+                val profile = profileFunction.getProfile(e.timestamp) ?: return total.also { it.valid = false }
                 val calc = e.iobCalc(toTime, profile)
                 total.plus(calc)
             }
@@ -640,11 +655,18 @@ class IobCobCalculatorPlugin(
         val now = dateUtil.now()
         val pumpInterface = activePlugin.activePump
 
+        // Fork (FUSE contract 2): the window itself must come from a real insulin.
+        if (!rangeFromRealInsulin()) total.valid = false
         val temporaryBasals = persistenceLayer.getTemporaryBasalsStartingFromTimeToTime(toTime - range(), toTime, true)
         for (pos in temporaryBasals.indices) {
             val t = temporaryBasals[pos]
             if (t.timestamp > toTime) continue
-            val profile = profileFunction.getProfile(t.timestamp) ?: continue
+            // Fork (FUSE contract 2): a temp basal without a profile is skipped insulin -> unknown.
+            val profile = profileFunction.getProfile(t.timestamp)
+            if (profile == null) {
+                total.valid = false
+                continue
+            }
             if (t.end > now) t.duration = now - t.timestamp
             val calc = t.iobCalc(toTime, profile)
             //log.debug("BasalIOB " + new Date(time) + " >>> " + calc.basalIob);
@@ -656,7 +678,11 @@ class IobCobCalculatorPlugin(
             for (pos in extendedBoluses.indices) {
                 val e = extendedBoluses[pos]
                 if (e.timestamp > toTime) continue
-                val profile = profileFunction.getProfile(e.timestamp) ?: continue
+                val profile = profileFunction.getProfile(e.timestamp)
+                if (profile == null) {
+                    totalExt.valid = false
+                    continue
+                }
                 if (e.end > now) {
                     val newDuration = now - e.timestamp
                     e.amount *= newDuration.toDouble() / e.duration
@@ -679,11 +705,18 @@ class IobCobCalculatorPlugin(
         val total = IobTotal(toTime)
         val pumpInterface = activePlugin.activePump
         val now = dateUtil.now()
+        // Fork (FUSE contract 2): the window itself must come from a real insulin.
+        if (!rangeFromRealInsulin()) total.valid = false
         val temporaryBasals = persistenceLayer.getTemporaryBasalsStartingFromTimeToTime(toTime - range(), toTime, true)
         for (pos in temporaryBasals.indices) {
             val t = temporaryBasals[pos]
             if (t.timestamp > toTime) continue
-            val profile = profileFunction.getProfile(t.timestamp) ?: continue
+            // Fork (FUSE contract 2): a temp basal without a profile is skipped insulin -> unknown.
+            val profile = profileFunction.getProfile(t.timestamp)
+            if (profile == null) {
+                total.valid = false
+                continue
+            }
             if (t.end > now) t.duration = now - t.timestamp
             val calc = t.iobCalc(toTime, profile, lastAutosensResult, exerciseMode, halfBasalExerciseTarget, isTempTarget)
             //log.debug("BasalIOB " + new Date(time) + " >>> " + calc.basalIob);
@@ -695,7 +728,11 @@ class IobCobCalculatorPlugin(
             for (pos in extendedBoluses.indices) {
                 val e = extendedBoluses[pos]
                 if (e.timestamp > toTime) continue
-                val profile = profileFunction.getProfile(e.timestamp) ?: continue
+                val profile = profileFunction.getProfile(e.timestamp)
+                if (profile == null) {
+                    totalExt.valid = false
+                    continue
+                }
                 if (e.end > now) {
                     val newDuration = now - e.timestamp
                     e.amount *= newDuration.toDouble() / e.duration

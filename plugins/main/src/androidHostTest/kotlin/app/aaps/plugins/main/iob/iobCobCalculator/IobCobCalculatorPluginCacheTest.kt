@@ -1,5 +1,7 @@
 package app.aaps.plugins.main.iob.iobCobCalculator
 
+import app.aaps.core.data.model.BS
+import app.aaps.core.data.model.ICfg
 import app.aaps.core.interfaces.concurrent.withLock
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.db.ProcessedTbrEbData
@@ -47,6 +49,7 @@ class IobCobCalculatorPluginCacheTest {
     private val dateUtil = mock<DateUtil>()
     private val preferences = mock<Preferences>()
     private val profile = mock<EffectiveProfile>()
+    private val profileFunction = mock<ProfileFunction>()
     private lateinit var sut: IobCobCalculatorPlugin
 
     private val now = 1_800_000_000_000L
@@ -55,6 +58,9 @@ class IobCobCalculatorPluginCacheTest {
     @BeforeEach
     fun setUp() = runBlocking {
         whenever(dateUtil.now()).thenReturn(now)
+        // A real profile with a real insulin: only then is the IOB valid and cached (fork, FUSE contract 2).
+        whenever(profile.iCfg).thenReturn(ICfg("Test", peak = 75, dia = 5.0, concentration = 1.0))
+        whenever(profileFunction.getProfile()).thenReturn(profile)
         whenever(preferences.get(DoubleKey.ApsAmaBolusSnoozeDivisor)).thenReturn(2.0)
         val pump = mock<PumpWithConcentration>()
         whenever(pump.isFakingTempsByExtendedBoluses).thenReturn(false)
@@ -63,7 +69,7 @@ class IobCobCalculatorPluginCacheTest {
         whenever(persistenceLayer.getTemporaryBasalsStartingFromTimeToTime(any(), any(), any())).thenReturn(emptyList())
         whenever(persistenceLayer.getExtendedBolusesStartingFromTimeToTime(any(), any(), any())).thenReturn(emptyList())
         sut = IobCobCalculatorPlugin(
-            AAPSLoggerTest(), mock<RxBus>(), preferences, mock<TextResolver>(), mock<ProfileFunction>(), activePlugin, dateUtil,
+            AAPSLoggerTest(), mock<RxBus>(), preferences, mock<TextResolver>(), profileFunction, activePlugin, dateUtil,
             persistenceLayer, mock<OverviewData>(), mock<CalculationWorkflow>(), mock<DecimalFormatter>(), mock<ProcessedTbrEbData>(),
             mock<CalculationSignalsEmitter>(), mock<NotificationManager>()
         ) { mock<OverviewDataCache>() }
@@ -72,6 +78,32 @@ class IobCobCalculatorPluginCacheTest {
     private fun calculateAt(time: Long) = runBlocking { sut.calculateFromTreatmentsAndTemps(time, profile) }
 
     private fun verifyCalculations(count: Int) = verifyBlocking(persistenceLayer, times(count)) { getBolusesFromTime(any(), any()) }
+
+    @Test
+    fun `fork - without a profile the IOB is unknown and not cached`() {
+        whenever(runBlocking { profileFunction.getProfile() }).thenReturn(null)
+
+        val first = calculateAt(now - hour)
+        calculateAt(now - hour)
+
+        assertThat(first.valid).isFalse()
+        verifyCalculations(2)
+    }
+
+    @Test
+    fun `fork - a bolus without a real insulin makes the IOB unknown`() {
+        val sentinel = ICfg("", insulinEndTime = -1, insulinPeakTime = -1)
+        whenever(runBlocking { persistenceLayer.getBolusesFromTime(any(), any()) }).thenReturn(
+            listOf(BS(timestamp = now - 2 * hour, amount = 1.0, type = BS.Type.NORMAL, iCfg = sentinel))
+        )
+
+        assertThat(calculateAt(now - hour).valid).isFalse()
+    }
+
+    @Test
+    fun `fork - with a real profile and insulin the IOB is valid`() {
+        assertThat(calculateAt(now - hour).valid).isTrue()
+    }
 
     @Test
     fun `a value of the past is calculated once and then taken from the cache`() {

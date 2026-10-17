@@ -17,6 +17,8 @@ operator fun IobTotal.plus(other: IobTotal): IobTotal {
     hightempinsulin += other.hightempinsulin
     netInsulin += other.netInsulin
     extendedBolusInsulin += other.extendedBolusInsulin
+    // Fork (FUSE contract 2): a sum with an unknown part is unknown.
+    valid = valid && other.valid
     return this
 }
 
@@ -87,5 +89,7 @@ fun IobTotal.Companion.combine(bolusIOB: IobTotal, basalIob: IobTotal): IobTotal
     result.extendedBolusInsulin = basalIob.extendedBolusInsulin + bolusIOB.extendedBolusInsulin
     result.lastBolusTime = bolusIOB.lastBolusTime
     result.iobWithZeroTemp = basalIob.iobWithZeroTemp
+    // Fork (FUSE contract 2): invalidity spreads - a sum of a calculation that was not possible is no statement.
+    result.valid = bolusIOB.valid && basalIob.valid
     return result
 }
