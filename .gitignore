@@ -49,3 +49,16 @@ ios/app/Version.xcconfig
 # Office owner/lock files (~$foo.xlsx). They are transient, machine-local and must never
 # reach history - one was staged for commit alongside _docs/import.xlsx.
 ~$*
+
+# Toni-Fork: eigene Signier-Zugangsdaten (keystore.properties) - NIE versionieren.
+keystore.properties
+
+# GESUNDHEITSDATEN GEHOEREN NICHT INS REPO.
+# Trails, Ledger und Behandlungssichten tragen BG-, Insulin- und Zeitdaten
+# einer realen Person. Diese Zeilen sollen ein versehentliches Committen verhindern.
+messungen/**/*.jsonl
+messungen/**/*.jsonl.gz
+messungen/**/*.json
+
+# Persoenliche Geraetedaten (Trails, Logs) - NIE in den oeffentlichen Fork.
+mylogs/
