@@ -1437,6 +1437,75 @@ class AutosensDataStoreTest : TestBaseWithProfile() {
         assertThat(autosensDataStore.findOlder(T.mins(4).msecs())).isNull()
     }
 
+    /**
+     * Fork patch 0037: the binary search in findNewer/findOlder must find the same reading as the
+     * linear scan it replaced. The scans are kept here as the reference, and both run on a 1-minute
+     * series with gaps and readings off the full minute, for every 10 seconds of its span and beyond.
+     */
+    @Test
+    fun `fork 0037 - binary search finds the same reading as the former linear scan`() {
+        fun linearNewer(readings: List<GV>, time: Long): GV? {
+            var lastFound = readings[0]
+            if (lastFound.timestamp < time) return null
+            for (i in 1 until readings.size) {
+                if (readings[i].timestamp == time) return readings[i]
+                if (readings[i].timestamp > time) continue
+                lastFound = readings[i - 1]
+                if (readings[i].timestamp < time) break
+            }
+            return lastFound
+        }
+
+        fun linearOlder(readings: List<GV>, time: Long): GV? {
+            var lastFound = readings[readings.size - 1]
+            if (lastFound.timestamp > time) return null
+            for (i in readings.size - 2 downTo 0) {
+                if (readings[i].timestamp == time) return readings[i]
+                if (readings[i].timestamp < time) continue
+                lastFound = readings[i + 1]
+                if (readings[i].timestamp > time) break
+            }
+            return lastFound
+        }
+
+        // Newest first, as the store holds them. Every 7th minute is missing, and every 3rd reading
+        // comes 20 s after the full minute.
+        val readings = (300 downTo 0)
+            .filter { it % 7 != 3 }
+            .map { minute ->
+                GV(
+                    raw = 0.0, noise = 0.0, value = 100.0 + minute,
+                    timestamp = T.mins(minute.toLong()).msecs() + if (minute % 3 == 0) T.secs(20).msecs() else 0L,
+                    sourceSensor = SourceSensor.UNKNOWN, trendArrow = TrendArrow.FLAT
+                )
+            }
+        autosensDataStore.bgReadings = readings
+        val newest = readings.first()
+        val oldest = readings.last()
+
+        var time = oldest.timestamp
+        while (time <= newest.timestamp) {
+            assertThat(autosensDataStore.findNewer(time)).isSameInstanceAs(linearNewer(readings, time))
+            assertThat(autosensDataStore.findOlder(time)).isSameInstanceAs(linearOlder(readings, time))
+            time += T.secs(10).msecs()
+        }
+
+        // Outside the span one side is null, as before, and the bucketing stops there. The other side
+        // is now the closest reading; the scans returned the reading at the far end instead, which the
+        // bucketing never used because it stops when either side is null.
+        assertThat(autosensDataStore.findNewer(newest.timestamp + 1)).isNull()
+        assertThat(linearNewer(readings, newest.timestamp + 1)).isNull()
+        assertThat(autosensDataStore.findOlder(oldest.timestamp - 1)).isNull()
+        assertThat(linearOlder(readings, oldest.timestamp - 1)).isNull()
+        assertThat(autosensDataStore.findNewer(oldest.timestamp - 1)).isSameInstanceAs(oldest)
+        assertThat(autosensDataStore.findOlder(newest.timestamp + 1)).isSameInstanceAs(newest)
+
+        // The scans failed on an empty list; the search answers that nothing is there.
+        autosensDataStore.bgReadings = emptyList()
+        assertThat(autosensDataStore.findNewer(T.mins(5).msecs())).isNull()
+        assertThat(autosensDataStore.findOlder(T.mins(5).msecs())).isNull()
+    }
+
     @Test
     fun findPreviousTimeFromBucketedDataTest() {
         val bgReadingList: MutableList<GV> = ArrayList()
@@ -1897,14 +1966,18 @@ class AutosensDataStoreTest : TestBaseWithProfile() {
         assertThat(autosensDataStore.autosensDataTable.size()).isEqualTo(0)
     }
 
+    /**
+     * Fork (1-minute CGM): a 1 or 3 minute source anchors the grid on its newest reading on every run,
+     * as in the fork, so bucketedData[0] is the newest reading and the loop sees every new value. Upstream
+     * kept the anchor still here (issue #5066), and the loop then ran only when the grid moved on.
+     * The cached autosens data stays: it is keyed by minute, and a move must not throw it away, or every
+     * reading would cost a full recalculation - what #5066 was about.
+     */
     @Test
-    fun aSourceFasterThanFiveMinutesKeepsItsGrid() {
-        // A 1 or 3 minute source is off the 5 minute grid most of the time. Its two newest readings are
-        // never in one 5 minute phase, so it must never move the grid: every move throws away the cached
-        // autosens data (issue #5066).
+    fun `fork - a source faster than five minutes anchors on its newest reading and keeps the cached data`() {
         for (stepSeconds in listOf(60L, 180L)) {
             val anchor = T.mins(45).msecs()
-            // The newest reading 2 minutes off the grid, the one before it off too
+            // The newest reading 2 minutes off the old grid
             val newest = T.mins(47).msecs()
             autosensDataStore.bgReadings = readingsAt(*(0 until 20).map { newest - it * T.secs(stepSeconds).msecs() }.toLongArray())
             autosensDataStore.referenceTime = anchor
@@ -1914,9 +1987,47 @@ class AutosensDataStoreTest : TestBaseWithProfile() {
 
             autosensDataStore.createBucketedData(aapsLogger, dateUtil)
 
-            assertThat(autosensDataStore.referenceTime).isEqualTo(anchor)
+            assertThat(autosensDataStore.referenceTime).isEqualTo(newest)
             assertThat(autosensDataStore.autosensDataTable.size()).isEqualTo(1)
+            val bucketed = autosensDataStore.bucketedData!!
+            assertThat(bucketed[0].timestamp).isEqualTo(newest)
+            assertThat(bucketed[0].value).isEqualTo(200.0)
+            assertThat(bucketed[0].filledGap).isFalse()
+            assertThat(bucketed[1].timestamp).isEqualTo(newest - T.mins(5).msecs())
         }
+    }
+
+    /**
+     * Fork (1-minute CGM): from one reading to the next, the newest bucket moves on by one minute. The
+     * loop runs once per new bucketedData[0], so it runs on every reading - with the anchor kept still it
+     * ran on every 5th one.
+     */
+    @Test
+    fun `fork - on a 1 minute source the newest bucket follows every new reading`() {
+        val first = T.mins(47).msecs()
+        val newestBuckets = (0 until 6).map { step ->
+            val newest = first + T.mins(step.toLong()).msecs()
+            autosensDataStore.bgReadings = readingsAt(*(0 until 40).map { newest - T.mins(it.toLong()).msecs() }.toLongArray())
+            autosensDataStore.createBucketedData(aapsLogger, dateUtil)
+            autosensDataStore.bucketedData!![0].timestamp
+        }
+
+        assertThat(newestBuckets).containsExactlyElementsIn((0 until 6).map { first + T.mins(it.toLong()).msecs() }).inOrder()
+    }
+
+    /** A 5 minute source with jitter is not "faster than five minutes": it keeps the upstream grid. */
+    @Test
+    fun `fork - a 5 minute source with jitter keeps its grid`() {
+        val anchor = T.mins(45).msecs()
+        // 5 minutes apart with one 7 minute gap, so the recalculated path runs; the newest reading on the grid
+        autosensDataStore.bgReadings = readingsForRecalculatedPath(T.mins(50).msecs())
+        autosensDataStore.referenceTime = anchor
+        cachedEntryAt(anchor)
+
+        autosensDataStore.createBucketedData(aapsLogger, dateUtil)
+
+        assertThat(autosensDataStore.referenceTime).isEqualTo(anchor)
+        assertThat(autosensDataStore.autosensDataTable.size()).isEqualTo(1)
     }
 
     /**

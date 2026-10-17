@@ -50,6 +50,14 @@ class AutosensDataStoreObject : AutosensDataStore {
         // now rather than one it left hours ago.
         const val PHASE_SEED_MIN = 30L
 
+        // Fork (1-minute CGM): a source whose newest intervals have a median below this sends faster than
+        // every 5 minutes, see isFasterThanFiveMinutes. 4 minutes is clear of a 5 minute source with jitter
+        // and of a 3 minute one.
+        const val FAST_SOURCE_MAX_INTERVAL_SEC = 240L
+
+        // How many of the newest intervals isFasterThanFiveMinutes looks at.
+        const val FAST_SOURCE_INTERVALS = 10
+
         // Autosens/COB data (table or stored fallback) older than this is treated as stale and not handed out.
         val MAX_AUTOSENS_AGE_MS = T.mins(11).msecs()
     }
@@ -319,6 +327,18 @@ class AutosensDataStoreObject : AutosensDataStore {
     }
 
     /**
+     * Fork (1-minute CGM): true when the source sends faster than every 5 minutes - the median of the
+     * newest [FAST_SOURCE_INTERVALS] intervals is below [FAST_SOURCE_MAX_INTERVAL_SEC]. The median, so that
+     * one gap or one burst of backfilled readings does not decide it either way.
+     */
+    private fun isFasterThanFiveMinutes(readings: List<GV>): Boolean {
+        val count = min(FAST_SOURCE_INTERVALS, readings.size - 1)
+        if (count < 2) return false
+        val intervals = (0 until count).map { readings[it].timestamp - readings[it + 1].timestamp }.sorted()
+        return intervals[count / 2] < T.secs(FAST_SOURCE_MAX_INTERVAL_SEC).msecs()
+    }
+
+    /**
      * Distance from [someTime] to the nearest point of the 5 minute grid that [anchor] defines, always
      * positive. Unlike [adjustToReferenceTime] it takes the anchor as a parameter, because the seeding
      * scores candidate anchors before one is chosen.
@@ -370,39 +390,57 @@ class AutosensDataStoreObject : AutosensDataStore {
     }
 
     /**
-     * The closest reading at or after [time], or null when every reading is older than it.
+     * The closest reading at or after [time] (the smallest timestamp >= [time]), or null when every
+     * reading is older than it.
+     *
+     * Fork patch 0037: a binary search instead of a linear scan. The readings are sorted newest first.
+     * createBucketedDataRecalculated (the path for a 1-minute CGM, whose data is not 5-minute data)
+     * calls this and [findOlder] once per 5-minute bucket over 24 h + DIA, about 400 buckets against
+     * about 2000 one-minute readings, so the linear scans cost about a million comparisons on every new
+     * reading. Within the span of the readings the result is the same reading; only with two readings at
+     * the same timestamp the search may return the other one of them. Before the oldest reading the
+     * search returns the oldest one, where the scan returned the newest - [findOlder] is null there, so
+     * the bucketing stops either way.
      *
      * The local `readings` is not a style choice. [bgReadings]' getter takes [dataLock] on every
-     * single access, and this loop reads it two to four times per element, so a full bucketing pass
-     * used to re-enter the lock over a million times - on a lock the caller (createBucketedData, under
+     * single access, so the search reads it once - on a lock the caller (createBucketedData, under
      * loadBgData) already holds. The list is only ever replaced, never mutated in place, so reading it
-     * once is the same data and also pins one snapshot for the whole scan.
+     * once is the same data and also pins one snapshot for the whole search.
      */
     fun findNewer(time: Long): GV? {
         val readings = bgReadings
-        var lastFound = readings[0]
-        if (lastFound.timestamp < time) return null
-        for (i in 1 until readings.size) {
-            if (readings[i].timestamp == time) return readings[i]
-            if (readings[i].timestamp > time) continue
-            lastFound = readings[i - 1]
-            if (readings[i].timestamp < time) break
+        if (readings.isEmpty() || readings[0].timestamp < time) return null
+        var low = 0
+        var high = readings.size - 1
+        var found = 0
+        while (low <= high) {
+            val middle = (low + high) / 2
+            if (readings[middle].timestamp >= time) {
+                found = middle
+                low = middle + 1
+            } else high = middle - 1
         }
-        return lastFound
+        return readings[found]
     }
 
-    /** Mirror of [findNewer] at the other end, and the same note about the local list applies. */
+    /**
+     * Mirror of [findNewer] at the other end: the closest reading at or before [time] (the largest
+     * timestamp <= [time]), or null when every reading is newer than it. The same notes apply.
+     */
     fun findOlder(time: Long): GV? {
         val readings = bgReadings
-        var lastFound = readings[readings.size - 1]
-        if (lastFound.timestamp > time) return null
-        for (i in readings.size - 2 downTo 0) {
-            if (readings[i].timestamp == time) return readings[i]
-            if (readings[i].timestamp < time) continue
-            lastFound = readings[i + 1]
-            if (readings[i].timestamp > time) break
+        if (readings.isEmpty() || readings[readings.size - 1].timestamp > time) return null
+        var low = 0
+        var high = readings.size - 1
+        var found = readings.size - 1
+        while (low <= high) {
+            val middle = (low + high) / 2
+            if (readings[middle].timestamp <= time) {
+                found = middle
+                high = middle - 1
+            } else low = middle + 1
         }
-        return lastFound
+        return readings[found]
     }
 
     private fun createBucketedDataRecalculated(aapsLogger: AAPSLogger, dateUtil: DateUtil) {
@@ -413,9 +451,23 @@ class AutosensDataStoreObject : AutosensDataStore {
             return
         }
         val lastBg = readings[0]
+        // Fork (1-minute CGM): a source faster than 5 minutes anchors the grid on its newest reading on
+        // every run, as in the fork. With the anchor kept still for such a source (issue #5066),
+        // bucketedData[0] was the grid point below the newest reading, up to 4.5 minutes old, and the loop,
+        // which runs once per new bucketedData[0], ran only when the grid moved on: every 5th reading of a
+        // 1-minute CGM (measured on the test phone). The fork re-anchored on every reading, because its
+        // clone() did not carry the anchor over, and looped on every reading.
+        //
+        // The cached autosens data is NOT thrown away when the anchor moves here. Every bucket is keyed by
+        // its own minute (roundUpTime), so the entries of the other grid phases simply wait until their
+        // phase comes round again, and a run calculates only what is new - no full recalculation per
+        // reading, which is what #5066 was about. The entries of one phase never mix with another's: the
+        // table is read only at bucket times of the current grid.
+        val anchoredOnNewest = isFasterThanFiveMinutes(readings)
+        if (anchoredOnNewest) referenceTime = lastBg.timestamp
         // The anchor is kept for the life of the process, so the one time it is chosen has to be right.
         // Only the temporary re-anchor below moves it, when the newest readings have left the grid.
-        if (referenceTime == -1L) seedReferenceTime()
+        else if (referenceTime == -1L) seedReferenceTime()
         else reAnchorWhenTheNewestReadingsLeftTheGrid(readings, aapsLogger)
         val newBucketedData = ArrayList<InMemoryGlucoseValue>()
         val adjustedTime = adjustToReferenceTime(lastBg.timestamp)
@@ -467,6 +519,10 @@ class AutosensDataStoreObject : AutosensDataStore {
         // used to be empty into a single point, and GlucoseStatus answers a lone point with delta 0
         // instead of null, so the APS would run on a made up flat trend instead of declining to run.
         if (firstBucket != null && newBucketedData.isNotEmpty()) newBucketedData.add(0, firstBucket)
+        // Fork (1-minute CGM): with the anchor on the newest reading, that reading is always the first
+        // bucket, also when every reading is inside the last 5 minutes. Alone it is no trend either, for
+        // the same reason as above, so a single bucket stays out until 5 minutes of data are there.
+        if (anchoredOnNewest && newBucketedData.size < 2) newBucketedData.clear()
         bucketedData = newBucketedData
     }
 
