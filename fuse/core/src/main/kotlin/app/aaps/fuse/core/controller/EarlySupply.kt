@@ -193,6 +193,22 @@ object EarlySupply {
     }
 
     /**
+     * KANDIDAT W (Pruefstand): IN DER WENDEPHASE rechnen Guard und Schwanz dieselbe Mahlzeit an wie die Anforderung
+     * ([effectiveScale]: der gebuchte Skalierer im Verhaeltnis beobachtet/erwartet, hoechstens er) - ohne den Deckel der
+     * Kurve, den [confirmedGuardScale] sonst setzt. Nur dort; sonst gilt [confirmedGuardScale]. Nie weniger als sie.
+     * Dieselben Bedingungen: vor [ADAPT_FROM_MIN] und ohne gueltige Beobachtung nichts.
+     */
+    fun confirmedGuardScaleToBooked(
+        scale: Double, ageMin: Double, observedU: Double, observedValid: Boolean, curve: ExpectationAccount.Curve,
+    ): Double {
+        if (!ageMin.isFinite() || ageMin < ADAPT_FROM_MIN || !observedValid || !observedU.isFinite() || !scale.isFinite())
+            return 0.0
+        val erwartet = curve.at(ageMin)
+        if (erwartet <= EPS) return 0.0
+        return max(0.0, scale) * min(1.0, max(0.0, observedU) / erwartet)
+    }
+
+    /**
      * Erwarteter Anstieg [mg/dl] durch die angekuendigte Mahlzeit zwischen Markeralter [ageMin] und
      * [ageMin] + [offsetMin], hoechstens bis zum Ende der Vorschau. Nie negativ; nicht berechenbar = 0.
      *

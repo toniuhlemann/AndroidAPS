@@ -409,6 +409,25 @@ object ExpectationAccount {
          * Mahlzeit laeuft nicht. Sie zaehlt nur fuer weitere Portionen und nie nach einem gemessenen Tief.
          */
         val continuation: EarlySupply.Continuation? = null,
+        /** KANDIDAT W (Pruefstand): Wendephase, Rampe und Abwaertsstopp; `null` = ohne W (Produkt). */
+        val turn: Turn? = null,
+    )
+
+    /**
+     * KANDIDAT W (Pruefstand, [TurnDetector]): in der Wendephase ([active]) kommt je Zyklus hoechstens [rampFactor] mal
+     * die eingestellte Rate (Menge je Zeitraum / Zeitraum) mal der Zyklusdauer [cycleMin] - klein an der Wende, mit der
+     * Beschleunigung bis zur vollen Rate, nie mehr als die Anforderung; Guard und Schwanz rechnen dort dieselbe Mahlzeit
+     * an wie die Anforderung. [stop] = Wende nach unten, keine weitere Portion. Nur fuer weitere Portionen, nie fuer die
+     * Anfangsportion.
+     */
+    data class Turn(
+        val active: Boolean,
+        val rampFactor: Double,
+        val stop: Boolean,
+        val sinceTs: Long = 0L,
+        val accel5MgdlPerMin: Double = Double.NaN,
+        val event: String? = null,
+        val cycleMin: Double = 1.0,
     )
 
     /** v2: was die fruehe Versorgung in diesem Zyklus rechnet (Export und Lieferweg). */
@@ -427,6 +446,8 @@ object ExpectationAccount {
         val continuationUPerMin: Double = 0.0,
         /** Anzeige: die jetzt erwartete Mahlzeitwirkung [mg/dl/min] ([EarlySupply.expectedDriveMgdlPerMin]); 0 = keine. */
         val expectedDriveMgdlPerMin: Double = 0.0,
+        /** KANDIDAT W (Pruefstand): die in diesem Zyklus geltende Wende; `null` = ohne W. */
+        val turn: Turn? = null,
     )
 
     data class Evaluation(
@@ -555,9 +576,18 @@ object ExpectationAccount {
         )
         val rMess = (inputs.bgMgdl - inputs.targetMgdl) / inputs.isfMgdlPerU - inputs.iobTotalU
         val mess = if (rMess.isFinite()) max(0.0, rMess) else 0.0
+        // KANDIDAT W (Pruefstand): nur weitere Portionen - nach einer Wende nach unten keine, in der Wendephase hoechstens
+        // Rampe mal eingestellte Rate je Zyklus (klein beginnen, nach Beschleunigung steigern), nie mehr als die
+        // Anforderung. Ohne W unveraendert.
+        val wende = inputs.turn?.takeIf { !anfang && !s.earlyAfterLow }
         val restEff = when {
             expired || inputs.paused || !s.released || s.frozen || e == null || pins.withdrawn || s.earlyLowLocked -> 0.0
             anfang -> min(s.restU, pins.initialShare * s.a0U)
+            wende?.stop == true -> 0.0
+            wende?.active == true -> min(
+                min(min(s.restU, pins.maxPortionU), zeitraumRestU),
+                min(x, max(0.0, wende.rampFactor) * pins.maxPerPeriodU / max(1, pins.periodMin) * max(0.0, wende.cycleMin)),
+            )
             else -> min(min(s.restU, pins.maxPortionU), zeitraumRestU)
         }
         val status = when {
@@ -584,12 +614,16 @@ object ExpectationAccount {
                 // ausdruecklich bestaetigt hat und die Sperre aufgehoben ist - dann wie sonst, soweit sie sich zeigt und
                 // hoechstens die Kurve. Solange die Sperre gilt (unbestaetigt oder ein neues Tief), keine Anrechnung.
                 guardScale = if (curve == null || expired || s.earlyLowLocked) 0.0
+                // KANDIDAT W (Pruefstand): bis zur gebuchten Skalierung nur in der Wendephase.
+                else if (wende?.active == true)
+                    EarlySupply.confirmedGuardScaleToBooked(s.phi0, inputs.ageMin, s.disturbanceU, s.disturbanceValid, curve)
                 else EarlySupply.confirmedGuardScale(s.phi0, inputs.ageMin, s.disturbanceU, s.disturbanceValid, curve),
                 continuationUPerMin = if (expired || curve == null || e == null) 0.0
                 else fortsetzung?.rateUPerMin?.takeIf { it.isFinite() && it > 0.0 } ?: 0.0,
                 // Ohne Budget ("Nur Marker", ohne fruehe Versorgung) erwartet das Konto nichts - die Linie bleibt 0.
                 expectedDriveMgdlPerMin = if (curve == null || expired || s.a0U <= EPS_U) 0.0
                 else EarlySupply.expectedDriveMgdlPerMin(curve, inputs.ageMin, scaleEff, s.isfAtMarkerMgdlPerU),
+                turn = wende,
             ),
         )
     }

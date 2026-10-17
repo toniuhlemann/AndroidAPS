@@ -3,6 +3,7 @@ package app.aaps.fuse.core.controller
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -430,5 +431,92 @@ class ExpectationAccountEarlyTest {
         assertEquals(1.4, schritt(teil, 2).second.early!!.periodLeftU, 1e-12)
         // Ohne Buchungszeit bleibt das Buch wie bisher.
         assertEquals(1.0, ExpectationAccount.cancel(gebucht, erwU = 1.0).portions.sumOf { it.amountU }, 1e-12)
+    }
+
+    /** KANDIDAT W (Pruefstand): ein Zyklus mit Wende; `null` = ohne W (Produkt). */
+    private fun mitWende(s: ExpectationAccount.State, min: Int, bg: Double, w: ExpectationAccount.Turn?) = ExpectationAccount.step(
+        s,
+        ExpectationAccount.Inputs(
+            nowTs = t0 + min * 60_000L, ageMin = min.toDouble(), bgMgdl = bg, targetMgdl = 100.0, isfMgdlPerU = 50.0,
+            iobTotalU = 0.0, activityUPerMin = 0.0, paused = false, stableNow = true, early = eingaben(), turn = w,
+        ),
+    )
+
+    private val wendeAktiv = ExpectationAccount.Turn(active = true, rampFactor = 0.25, stop = false)
+    private val wendeStopp = ExpectationAccount.Turn(active = false, rampFactor = 1.0, stop = true)
+
+    /** Die Mahlzeit laeuft bis Minute 39 (BG steigt), der Anfang ist vorbei. */
+    private fun laufend(k: ExpectationAccount.State = konto()): ExpectationAccount.State {
+        var s = k
+        for (m in 0..39) s = schritt(s, m, bg = 100.0 + 2.0 * m).first
+        return s
+    }
+
+    @Test
+    fun `KANDIDAT W - die Anfangsportion kennt weder Rampe noch Stopp`() {
+        val ohne = schritt(konto(), 0).second
+        for (w in listOf(wendeAktiv, wendeStopp)) {
+            val (_, e) = mitWende(konto(), 0, 100.0, w)
+            assertEquals(ohne.restEffU, e.restEffU, 0.0)
+            assertNull(e.early!!.turn)
+        }
+    }
+
+    @Test
+    fun `KANDIDAT W - weitere Portionen in der Wendephase hoechstens Rampe mal Rate, beim Stopp keine`() {
+        val s = laufend()
+        val ohne = schritt(s, 40, bg = 180.0).second
+        val x = ohne.early!!.demandU
+        assertTrue(x > 0.5) { "Anforderung $x" }
+        assertEquals(1.0, ohne.restEffU, 1e-12)
+        // Eingestellte Rate: 2,0 U je 10 min. An der Wende ein Viertel davon je Minute ...
+        val (_, klein) = mitWende(s, 40, 180.0, wendeAktiv)
+        assertEquals(0.25 * 2.0 / 10, klein.restEffU, 1e-12)
+        assertEquals(0.25 * 2.0 / 10, ExpectationAccount.expectationShareU(klein), 1e-12)
+        // ... mit der Beschleunigung die volle Rate, bei laengerem Zyklus entsprechend mehr ...
+        assertEquals(2.0 / 10, mitWende(s, 40, 180.0, wendeAktiv.copy(rampFactor = 1.0)).second.restEffU, 1e-12)
+        assertEquals(minOf(3 * 2.0 / 10, x), mitWende(s, 40, 180.0, wendeAktiv.copy(rampFactor = 1.0, cycleMin = 3.0)).second.restEffU, 1e-12)
+        // ... und nie ueber die Kappen oder die Anforderung.
+        val (_, voll) = mitWende(s, 40, 180.0, wendeAktiv.copy(rampFactor = 1.0, cycleMin = 1000.0))
+        assertEquals(minOf(ohne.restEffU, x), voll.restEffU, 1e-12)
+        assertEquals(wendeAktiv.copy(rampFactor = 1.0, cycleMin = 1000.0), voll.early!!.turn)
+        // Wende nach unten: keine weitere Portion.
+        val (_, stopp) = mitWende(s, 40, 180.0, wendeStopp)
+        assertEquals(0.0, stopp.restEffU, 0.0)
+        assertEquals(0.0, ExpectationAccount.expectationShareU(stopp), 0.0)
+        // Ohne Wende (Produkt) unveraendert.
+        assertEquals(ohne, mitWende(s, 40, 180.0, null).second)
+        // Nach einem Tief dieser Mahlzeit gilt die Wende nicht.
+        val nachTief = s.copy(earlyAfterLow = true)
+        assertEquals(schritt(nachTief, 40, bg = 180.0).second, mitWende(nachTief, 40, 180.0, wendeStopp).second)
+    }
+
+    @Test
+    fun `KANDIDAT W - Guard und Schwanz rechnen in der Wendephase dieselbe Mahlzeit an wie die Anforderung`() {
+        val gross = ExpectationAccount.armEarly(
+            authId = t0, windowEndTs = t0 + 120 * 60_000L, params = params,
+            settings = requireNotNull(EarlySupply.Settings.of(1.5, 0.5, 8.0, 0.5, 1.0, 2.0, 10)), switches = alle,
+            startStable = true, nowTs = t0, bgMgdl = 100.0, isfMgdlPerU = 50.0, unitAction = wirkung,
+        )
+        val s = laufend(gross)
+        val ohne = schritt(s, 40, bg = 180.0).second.early!!
+        val mit = mitWende(s, 40, 180.0, wendeAktiv).second.early!!
+        // Ohne W hoechstens die Kurve; in der Wendephase der Skalierer der Anforderung, hoechstens der gebuchte.
+        assertTrue(ohne.guardScale <= 1.0)
+        assertEquals(mit.scaleEff, mit.guardScale, 1e-12)
+        assertTrue(mit.guardScale > 1.0) { "Skala ${mit.guardScale}" }
+        assertTrue(mit.guardScale <= 1.5 + 1e-12)
+        // Ausserhalb der Wendephase wie bisher.
+        assertEquals(ohne.guardScale, mitWende(s, 40, 180.0, wendeStopp).second.early!!.guardScale, 0.0)
+        // Nie weniger als ohne W, und vor +20 nichts.
+        for (m in listOf(20, 25, 30, 35)) {
+            var t = gross
+            for (k in 0 until m) t = schritt(t, k, bg = 100.0 + 0.5 * k).first
+            val a = schritt(t, m, bg = 100.0 + 0.5 * m).second.early!!.guardScale
+            val b = mitWende(t, m, 100.0 + 0.5 * m, wendeAktiv).second.early!!.guardScale
+            assertTrue(b + 1e-12 >= a) { "Minute $m: mit W $b, ohne $a" }
+        }
+        assertEquals(0.0, EarlySupply.confirmedGuardScaleToBooked(1.5, 19.0, 5.0, true, ExpectationAccount.Curve.of(werte)!!), 0.0)
+        assertEquals(0.0, EarlySupply.confirmedGuardScaleToBooked(1.5, 40.0, 5.0, false, ExpectationAccount.Curve.of(werte)!!), 0.0)
     }
 }

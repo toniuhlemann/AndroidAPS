@@ -2478,6 +2478,17 @@ object FuseStateJson {
                     .put("tailWithMealInvalidReason", x.fruehSchwanzMitMahlzeit?.invalidReason ?: JSONObject.NULL)
                     // Was die beobachtete Fortsetzung der laufenden Mahlzeit dabei am Horizont beitraegt.
                     .put("continuationRiseMgdl", fin(x.fruehFortsetzungMgdl)))
+                // KANDIDAT W (Pruefstand): die Wende - nur mit dem Pruefarm W; ohne ihn bleibt der Block bitgleich.
+                z.wende?.let { w ->
+                    o.getJSONObject("earlySupply").put("turn", JSONObject()
+                        .put("active", w.active)
+                        .put("rampFactor", fin(w.rampFactor))
+                        .put("stop", w.stop)
+                        .put("sinceTs", if (w.sinceTs > 0L) w.sinceTs else JSONObject.NULL)
+                        .put("accel5MgdlPerMin", fin(w.accel5MgdlPerMin))
+                        .put("cycleMin", fin(w.cycleMin))
+                        .put("event", w.event ?: JSONObject.NULL))
+                }
             }
         }
         val b = x.buchung

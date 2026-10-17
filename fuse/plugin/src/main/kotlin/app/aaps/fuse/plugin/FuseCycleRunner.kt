@@ -474,6 +474,12 @@ class FuseCycleRunner(
         /** Name der Kontosperre aus dem Tieftor (Null-Tor) - Exportwert, nicht umbenennen. */
         const val SPERRE_TIEFTOR = "LOW_THREAT"
 
+        /** KANDIDAT W (Pruefstand): so viele Minuten Vorgeschichte haelt die Wendeerkennung. */
+        const val WENDE_VERLAUF_MIN = 30
+
+        /** KANDIDAT W (Pruefstand): laengstens so viele Minuten zaehlt ein Zyklus fuer die Rate der Wendephase. */
+        const val WENDE_ZYKLUS_MAX_MIN = 5.0
+
         // Konsolidierung 2.0: die Direktdosis-Familie (EK_DIREKTDOSIS, volle Kontobuchung) ist entfallen.
 
         /** Rundungsluft des Schwanz-Vetos [U]. Ein Spielraum von exakt 0 ist
@@ -3174,6 +3180,7 @@ class FuseCycleRunner(
             riegelHistorisch = MeasuredDescentGate.causeOf(descentLatch.blocksPositive, descentLatch.reason) ==
                 MeasuredDescentGate.Cause.HISTORICAL_LATCH,
             fortsetzung = ekFortsetzung(signal.rSigned, state.isfMgdlPerU, cfg),
+            rSigned = signal.rSigned,
         )
         ekZyklusThisCycle = ekZyklus
         val baseDecision = FuseController.decide(
@@ -3435,7 +3442,9 @@ class FuseCycleRunner(
         // Fortsetzung an wie der Kontobedarf - sonst fordert das Konto Insulin, das die Pruefungen nie durchlassen
         // (Geraetebefund: zweite Welle einer Mahlzeit, Schwanz mit Erwartung negativ, waehrend die Mahlzeit sichtbar lief).
         // Nur bei laufender Mahlzeit (also nie nach einem Tief dieser Mahlzeit) und erst bestaetigt (s. Kern).
-        val fruehFortsetzung = fruehZyklus?.takeIf { it.mahlzeitLaeuft }?.let { ekFortsetzung(signal.rSigned, fruehIsf, cfg) }
+        // KANDIDAT W (Pruefstand): in der Wendephase auch unter der Schwelle - dieselbe Fortsetzung wie im Bedarf.
+        val fruehFortsetzung = fruehZyklus?.takeIf { it.mahlzeitLaeuft }
+            ?.let { ekFortsetzung(signal.rSigned, fruehIsf, cfg, ohneSchwelle = it.wende?.active == true) }
         val predictionMitErwartung = if (fruehKurve == null || fruehHebung?.guardLift != true) null
         else app.aaps.fuse.core.controller.EarlySupply.withExpectation(
             prediction, fruehAlterAmAnkerMin, fruehKurve, fruehHorizontMin, fruehSkala, fruehIsf, fruehFortsetzung,
@@ -3462,7 +3471,8 @@ class FuseCycleRunner(
         val zIsf = fruehMitMahlzeitZ?.state?.isfAtMarkerMgdlPerU?.takeIf { it.isFinite() && it > 0.0 } ?: state.isfMgdlPerU
         val zAlterMin = fruehMitMahlzeitZ?.let { (prediction.predictionAnchorTs - it.state.authId) / 60_000.0 } ?: 0.0
         val zSkala = fruehMitMahlzeitZ?.eval?.early?.guardScale ?: 0.0
-        val zFortsetzung = fruehMitMahlzeitZ?.takeIf { it.mahlzeitLaeuft }?.let { ekFortsetzung(signal.rSigned, zIsf, cfg) }
+        val zFortsetzung = fruehMitMahlzeitZ?.takeIf { it.mahlzeitLaeuft }
+            ?.let { ekFortsetzung(signal.rSigned, zIsf, cfg, ohneSchwelle = it.wende?.active == true) }
         val fruehUntenMitMahlzeitMgdl: Double? = if (fruehMitMahlzeitZ == null || zKurve == null) null
         else app.aaps.fuse.core.controller.EarlySupply.withExpectation(
             prediction, zAlterMin, zKurve, fruehMitMahlzeitZ.state.horizonMin, zSkala, zIsf, zFortsetzung,
@@ -5743,6 +5753,12 @@ class FuseCycleRunner(
          * Laufs (Einstellungsstufen fuer N2). Wirkt nur im Pruefstand.
          */
         val nurErwartung: Boolean = false,
+        /**
+         * KANDIDAT W (Toni, Pruefstand): Wendeerkennung ([app.aaps.fuse.core.controller.TurnDetector]) fuer die weiteren
+         * Portionen - klein an der Wende zur naechsten Welle, nach Beschleunigung mehr, Stopp an der Wende nach unten.
+         * Wirkt nur im Pruefstand; am Geraet gibt es keinen Pruefarm.
+         */
+        val wende: Boolean = false,
     ) {
         fun anwenden(c: Config): Config =
             if (!kontoAn) c.copy(
@@ -5770,7 +5786,10 @@ class FuseCycleRunner(
              */
             val V2 = Pruefarm("V2", kontoAn = true, nurErwartung = true)
 
-            val ALLE: List<Pruefarm> = listOf(REF, V2)
+            /** KANDIDAT W: wie [V2], dazu die Wendeerkennung fuer die weiteren Portionen. */
+            val V2_W = Pruefarm("V2_W", kontoAn = true, nurErwartung = true, wende = true)
+
+            val ALLE: List<Pruefarm> = listOf(REF, V2, V2_W)
 
             fun vonName(name: String): Pruefarm? = ALLE.firstOrNull { it.name == name }
         }
@@ -5801,6 +5820,8 @@ class FuseCycleRunner(
         val mahlzeitLaeuft: Boolean = false,
         /** Schritt 2: die Strecke der weiteren Portionen (ohne den alten Riegel) ist erfuellt. */
         val stabilFolge: Boolean = false,
+        /** KANDIDAT W (Pruefstand): die Wende dieses Zyklus; `null` = ohne W (Produkt). */
+        val wende: ExpectationAccount.Turn? = null,
     )
 
     /** E-034: alles, was der Trail-Block des Kontos braucht - ein Zyklus. */
@@ -5963,8 +5984,17 @@ class FuseCycleRunner(
         riegelHistorisch: Boolean = false,
         /** Schritt 2: die beobachtete Fortsetzung der laufenden Mahlzeit fuer den Kontobedarf; `null` = keine. */
         fortsetzung: app.aaps.fuse.core.controller.EarlySupply.Continuation? = null,
+        /** KANDIDAT W (Pruefstand): r dieses Zyklus fuer die Wendeerkennung; gelesen nur mit dem Pruefarm W. */
+        rSigned: Double? = null,
     ): ErwartungskontoZyklus? {
         val fruehEingaben by lazy(LazyThreadSafetyMode.NONE) { fruehEingabenVon() }
+        // KANDIDAT W (Pruefstand): die Vorgeschichte der Wendeerkennung in JEDEM Zyklus - nur mit dem Pruefarm W.
+        if (pruefarm?.wende == true && (wendeVerlauf.lastOrNull()?.ts ?: Long.MIN_VALUE) < computeTs) {
+            wendeVerlauf.addLast(
+                app.aaps.fuse.core.controller.TurnDetector.Point(computeTs, ukfRateMgdlPerMin, rSigned ?: Double.NaN),
+            )
+            while (wendeVerlauf.first().ts < computeTs - WENDE_VERLAUF_MIN * 60_000L) wendeVerlauf.removeFirst()
+        }
         // Die Strecke fragt, ob der Zucker STABIL ist: der Ueberdeckungsbefund ist eine Hochrechnung - ob der Zucker
         // faellt, entscheidet die Fallgrenze der Strecke.
         val gemesseneSperre = sperren.any { it != SPERRE_TIEFTOR || !tieftorNurUeberdeckung }
@@ -6060,9 +6090,34 @@ class FuseCycleRunner(
         // (Schritt 2, unten). Nach einem Tief immer die Kanalkonstante.
         val anfangOffen = konto.early != null && !konto.initialDone &&
             computeTs - konto.authId < (app.aaps.fuse.core.controller.EarlySupply.INITIAL_WINDOW_MIN * 60_000.0).toLong()
+        // KANDIDAT W (Pruefstand): die Wende zur naechsten Welle und die Wende nach unten - nur mit dem Pruefarm W, im
+        // Produkt null. Eine Wendephase gibt es nur nach dem Anfang, ab der Anpassung, ohne Tief dieser Mahlzeit und ueber
+        // der Stabilitaetsgrenze. Gemessene Sperren und technische Gruende pausieren sie wie jede Portion, beenden sie
+        // aber nicht - ein Zyklus "Pumpe beschaeftigt" beendete sonst die Phase samt Sperre. In der Wendephase gilt fuer
+        // die weiteren Portionen, was bei laufender Mahlzeit gilt (Fallgrenze, alter Riegel, Fortsetzung, eigene Strecke).
+        val wende: ExpectationAccount.Turn? = if (pruefarm?.wende != true || konto.early == null) null else {
+            if (wendeFuerAuth != konto.authId) {
+                wendeZustand = app.aaps.fuse.core.controller.TurnDetector.State()
+                wendeFuerAuth = konto.authId
+            }
+            val erlaubt = !anfangOffen && !konto.earlyAfterLow && !konto.earlyLowLocked && bgMgdl > grenzeBg && !gemessenesTief &&
+                (computeTs - konto.authId) / 60_000.0 >= app.aaps.fuse.core.controller.EarlySupply.ADAPT_FROM_MIN
+            val w = app.aaps.fuse.core.controller.TurnDetector.step(
+                wendeZustand, wendeVerlauf.toList(), computeTs, upAllowed = erlaubt, stopAllowed = !anfangOffen,
+            )
+            wendeZustand = w.state
+            // Die Zyklusdauer fuer die Rate der Wendephase: seit dem vorigen Zyklus, hoechstens WENDE_ZYKLUS_MAX_MIN.
+            val vorigerTs = wendeVerlauf.getOrNull(wendeVerlauf.size - 2)?.ts
+            ExpectationAccount.Turn(
+                active = w.active, rampFactor = w.rampFactor, stop = w.stop, sinceTs = w.state.sinceTs,
+                accel5MgdlPerMin = w.accel5, event = w.event,
+                cycleMin = if (vorigerTs == null) 1.0 else ((computeTs - vorigerTs) / 60_000.0).coerceIn(0.0, WENDE_ZYKLUS_MAX_MIN),
+            )
+        }
+        val wendeAktiv = wende?.active == true
         // SCHRITT 2 (Toni): laeuft die Mahlzeit, gelten fuer die weiteren Portionen die eingestellte Fallgrenze statt der
         // Kanalkonstante, und der alte Riegel haelt sie nicht auf. Nicht nach einem gemessenen Tief dieser Mahlzeit.
-        val folgeImLauf = konto.early != null && !anfangOffen && mahlzeitLaeuft && !konto.earlyAfterLow
+        val folgeImLauf = konto.early != null && !anfangOffen && (mahlzeitLaeuft || wendeAktiv) && !konto.earlyAfterLow
         val faelltFuerPause = if (anfangOffen || folgeImLauf) faelltFuerStrecke else faellt
         // Ebenso die Pause (Toni): die offene Anfangsportion halten nur gemessene Sperren auf (Tief, Tieftor
         // MEASURED_LOW) - weder der alte Riegel noch ein vorhergesagtes Abwaertsrisiko noch der Ueberdeckungsbefund. Das
@@ -6119,7 +6174,10 @@ class FuseCycleRunner(
                 lowLocksEarlySupply = tiefGrund != null,
                 confirmedAfterLowTs = bestaetigtNachTief,
                 early = if (konto.early != null) fruehEingaben else null,
-                continuation = fortsetzung.takeIf { folgeImLauf },
+                // KANDIDAT W (Pruefstand): in der Wendephase zaehlt die beobachtete Fortsetzung schon unter der Schwelle.
+                continuation = (fortsetzung ?: if (wendeAktiv) ekFortsetzung(rSigned, isfMgdlPerU, cfg, ohneSchwelle = true) else null)
+                    .takeIf { folgeImLauf },
+                turn = wende,
             ),
         )
         if (neu.released) ekFreigabeBestaetigtFuerAuth = neu.authId
@@ -6147,6 +6205,7 @@ class FuseCycleRunner(
             fruehSchalter = gefuehrt.early?.switches,
             mahlzeitLaeuft = folgeImLauf,
             stabilFolge = stabilFolge,
+            wende = wende,
         )
     }
 
@@ -6158,10 +6217,15 @@ class FuseCycleRunner(
     /**
      * SCHRITT 2 (Toni): die beobachtete Fortsetzung der laufenden Mahlzeit - r ueber der Schwelle "Mahlzeit laeuft ab r",
      * als Rate r / [isfMgdlPerU], abklingend wie der Antrieb der Bahn. EIN Helfer fuer Kontobedarf, Guard und Schwanz;
-     * `null` = die Mahlzeit laeuft nicht (oder nicht rechenbar).
+     * `null` = die Mahlzeit laeuft nicht (oder nicht rechenbar). [ohneSchwelle]: KANDIDAT W (Pruefstand) - in der
+     * Wendephase zaehlt jedes positive r.
      */
-    private fun ekFortsetzung(rSigned: Double?, isfMgdlPerU: Double, cfg: Config): app.aaps.fuse.core.controller.EarlySupply.Continuation? =
-        rSigned?.takeIf { it.isFinite() && it > 0.0 && it >= cfg.mahlzeitLaeuftAbR && isfMgdlPerU.isFinite() && isfMgdlPerU > 0.0 }
+    private fun ekFortsetzung(
+        rSigned: Double?, isfMgdlPerU: Double, cfg: Config, ohneSchwelle: Boolean = false,
+    ): app.aaps.fuse.core.controller.EarlySupply.Continuation? =
+        rSigned?.takeIf {
+            it.isFinite() && it > 0.0 && (ohneSchwelle || it >= cfg.mahlzeitLaeuftAbR) && isfMgdlPerU.isFinite() && isfMgdlPerU > 0.0
+        }
             ?.let { app.aaps.fuse.core.controller.EarlySupply.Continuation(it / isfMgdlPerU, cfg.driveTauMin.toDouble()) }
 
     private fun ekFruehEinstellungen(cfg: Config, nurErwartung: Boolean): app.aaps.fuse.core.controller.EarlySupply.Settings =
@@ -7145,6 +7209,13 @@ class FuseCycleRunner(
     /** E-034: letzte Fortschreibung der Strecke; eine laengere Luecke
      *  beendet sie (nicht beobachtet heisst nicht stabil). */
     private var ekStabilLetzteTs = 0L
+
+    /** KANDIDAT W (Pruefstand): Vorgeschichte der Wendeerkennung (UKF-Steigung, r); gefuehrt nur mit dem Pruefarm W. */
+    private val wendeVerlauf = ArrayDeque<app.aaps.fuse.core.controller.TurnDetector.Point>()
+
+    /** KANDIDAT W (Pruefstand): Zustand der Wendeerkennung fuer die Autorisierung [wendeFuerAuth]; nur im Speicher. */
+    private var wendeZustand = app.aaps.fuse.core.controller.TurnDetector.State()
+    private var wendeFuerAuth = 0L
 
     /** E-034: die zuletzt IN DIESEM PROZESS gebuchte Autorisierung - sie wird
      *  nie ein zweites Mal gebucht (Codex 11.10., Punkt 8). */
