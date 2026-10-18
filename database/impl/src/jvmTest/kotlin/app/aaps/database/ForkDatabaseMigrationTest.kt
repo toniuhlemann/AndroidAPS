@@ -74,6 +74,59 @@ class ForkDatabaseMigrationTest {
         }
     }
 
+    /**
+     * Toni: a fork row keeps the insulin curve it was given with; only rows without a valid one get the
+     * placeholder that MainApp stamps. Seen on the test phone after port -> fork -> port: without this every row
+     * became the Fiasp substitute and FUSE paused on mixed insulin definitions.
+     */
+    @Test
+    fun `fork 34 keeps the insulin curve of each row`() = runTest {
+        createFrom(forkSchema34(), version = 34)
+        withRaw { c ->
+            c.execSQL(bolusWithCurve(id = 1, label = "Lyumjev", end = END, peak = PEAK))
+            // An old fork bolus without a curve, and one with a broken curve: both get the placeholder.
+            c.execSQL("INSERT INTO boluses (id, version, dateCreated, isValid, timestamp, utcOffset, amount, type, isBasalInsulin) VALUES (2, 0, $T0, 1, $T0, 0, 1.0, 'SMB', 0)")
+            c.execSQL(bolusWithCurve(id = 3, label = "Broken", end = END, peak = 0))
+            c.execSQL(
+                "INSERT INTO effectiveProfileSwitches (id, version, dateCreated, isValid, timestamp, utcOffset, basalBlocks, isfBlocks, icBlocks, targetBlocks, glucoseUnit, " +
+                    "originalProfileName, originalCustomizedName, originalTimeshift, originalPercentage, originalDuration, originalEnd, insulinLabel, insulinEndTime, peak) " +
+                    "VALUES (1, 0, $T0, 1, $T0, 0, '[]', '[]', '[]', '[]', 'MGDL', 'Test', 'Test', 0, 100, 0, 0, 'Lyumjev', $END, $PEAK)"
+            )
+            c.execSQL(
+                "INSERT INTO profileSwitches (id, version, dateCreated, isValid, timestamp, utcOffset, basalBlocks, isfBlocks, icBlocks, targetBlocks, glucoseUnit, " +
+                    "profileName, timeshift, percentage, duration, insulinLabel, insulinEndTime, peak) " +
+                    "VALUES (1, 0, $T0, 1, $T0, 0, '[]', '[]', '[]', '[]', 'MGDL', 'Test', 0, 100, 0, 'Lyumjev', $END, $PEAK)"
+            )
+        }
+
+        openWithRoom()
+
+        withRaw { c ->
+            assertThat(strings(c, "SELECT insulinLabel FROM boluses ORDER BY id")).containsExactly("Lyumjev", "", "").inOrder()
+            assertThat(longs(c, "SELECT insulinEndTime FROM boluses ORDER BY id")).containsExactly(END, -1L, -1L).inOrder()
+            assertThat(longs(c, "SELECT insulinPeakTime FROM boluses ORDER BY id")).containsExactly(PEAK, -1L, -1L).inOrder()
+            assertThat(doubles(c, "SELECT concentration FROM boluses")).containsExactly(1.0, 1.0, 1.0)
+            assertThat(strings(c, "SELECT insulinLabel FROM effectiveProfileSwitches")).containsExactly("Lyumjev")
+            assertThat(longs(c, "SELECT insulinPeakTime FROM effectiveProfileSwitches")).containsExactly(PEAK)
+            assertThat(longs(c, "SELECT insulinEndTime FROM profileSwitches")).containsExactly(END)
+            assertThat(longs(c, "SELECT insulinPeakTime FROM profileSwitches")).containsExactly(PEAK)
+        }
+    }
+
+    /** An upstream database keeps the upstream behaviour: every row gets the placeholder, MainApp stamps it. */
+    @Test
+    fun `upstream 31 keeps the upstream placeholder`() = runTest {
+        createFrom(upstreamSchema(31), version = 31)
+        withRaw { c -> c.execSQL(bolusWithCurve(id = 1, label = "Lyumjev", end = END, peak = PEAK)) }
+
+        openWithRoom()
+
+        withRaw { c ->
+            assertThat(longs(c, "SELECT insulinEndTime FROM boluses")).containsExactly(-1L)
+            assertThat(longs(c, "SELECT insulinPeakTime FROM boluses")).containsExactly(-1L)
+        }
+    }
+
     @Test
     fun `fork 33 and fork 32 reach the same schema`() = runTest {
         for (version in listOf(33, 32)) {
@@ -189,6 +242,11 @@ class ForkDatabaseMigrationTest {
         )
     }
 
+    /** A bolus of the fork / upstream 31 layout with an insulin curve (insulinLabel, insulinEndTime, peak). */
+    private fun bolusWithCurve(id: Long, label: String, end: Long, peak: Long) =
+        "INSERT INTO boluses (id, version, dateCreated, isValid, timestamp, utcOffset, amount, type, isBasalInsulin, insulinLabel, insulinEndTime, peak) " +
+            "VALUES ($id, 0, $T0, 1, $T0, 0, 1.0, 'SMB', 0, '$label', $end, $peak)"
+
     private fun insertTdd() = withRaw { c ->
         c.execSQL("INSERT INTO totalDailyDoses (version, dateCreated, isValid, timestamp, utcOffset, basalAmount, bolusAmount, totalAmount, carbs) VALUES (0, $T0, 1, $T0, 0, 1.0, 1.0, 2.0, 0.0)")
     }
@@ -248,5 +306,9 @@ class ForkDatabaseMigrationTest {
         const val T0 = 1_800_000_000_000L
         const val MIN = 60_000L
         const val DAY = 86_400_000L
+
+        /** A synthetic insulin curve: 8 h duration, 45 min peak. */
+        const val END = 8 * 3_600_000L
+        const val PEAK = 45 * MIN
     }
 }
