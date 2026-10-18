@@ -20,8 +20,12 @@ import kotlinx.serialization.json.Json
  * the "Sleeping" state. The states and their allowed values are stored as JSON in two preferences, under
  * the same names as the automation-state plugin of the 3.4 fork, so existing states carry over.
  *
- * In 3.4 this was a plugin of its own with a tab. In v4 it is a plain service here; the UI changes the
- * values through the preferences, which a screen can observe.
+ * In 3.4 this was a plugin of its own with a tab. In v4 the service lives here and
+ * [AutomationStatePlugin] is the tab; the tab watches the two preferences.
+ *
+ * Every call reads the preferences again instead of keeping a copy from the start. A settings import
+ * no longer restarts the app, so a copy would keep showing the old states after an import, and the next
+ * write would put the old states back over the imported ones.
  */
 @ContributesBinding(AppScope::class, binding = binding<AutomationStateInterface>())
 @SingleIn(AppScope::class)
@@ -30,74 +34,86 @@ class AutomationStateService(
     private val preferences: Preferences
 ) : AutomationStateInterface {
 
-    /** Was `@Synchronized` on the JVM in the fork. */
+    /** Was `@Synchronized` on the JVM in the fork. A read and the write after it stay one step. */
     private val lock = AapsLock()
 
-    private var automationStates: HashMap<String, String> =
+    private fun storedStates(): HashMap<String, String> =
         runCatching { Json.decodeFromString<HashMap<String, String>>(preferences.get(StringNonKey.AutomationCurrentStates)) }.getOrElse { HashMap() }
 
-    private var stateValues: HashMap<String, List<String>> =
+    private fun storedValues(): HashMap<String, List<String>> =
         runCatching { Json.decodeFromString<HashMap<String, List<String>>>(preferences.get(StringNonKey.AutomationStateValues)) }.getOrElse { HashMap() }
 
+    private fun storeStates(states: HashMap<String, String>) =
+        preferences.put(StringNonKey.AutomationCurrentStates, Json.encodeToString(states))
+
+    private fun storeValues(values: HashMap<String, List<String>>) =
+        preferences.put(StringNonKey.AutomationStateValues, Json.encodeToString(values))
+
     override fun inState(stateName: String, state: String): Boolean = lock.withLock {
-        automationStates[stateName.trim()]?.let { it == state.trim() } ?: false
+        storedStates()[stateName.trim()]?.let { it == state.trim() } ?: false
     }
 
     override fun setState(stateName: String, state: String) = lock.withLock {
         val trimmedName = stateName.trim()
         val trimmedState = state.trim()
+        val values = storedValues()
         // Validate that the state value is in the allowed list
-        require(stateValues.containsKey(trimmedName)) { "Invalid state name: $trimmedName" }
-        require(stateValues[trimmedName]!!.contains(trimmedState)) { "Invalid state value: $trimmedState" }
-        automationStates[trimmedName] = trimmedState
-        preferences.put(StringNonKey.AutomationCurrentStates, Json.encodeToString(automationStates))
+        require(values.containsKey(trimmedName)) { "Invalid state name: $trimmedName" }
+        require(values[trimmedName]!!.contains(trimmedState)) { "Invalid state value: $trimmedState" }
+        val states = storedStates()
+        states[trimmedName] = trimmedState
+        storeStates(states)
     }
 
     override fun getState(stateName: String): String = lock.withLock {
-        automationStates[stateName.trim()] ?: ""
+        storedStates()[stateName.trim()] ?: ""
     }
 
     override fun getAllStates(): List<Pair<String, String>> = lock.withLock {
-        stateValues.keys.map { stateName -> Pair(stateName, automationStates[stateName] ?: "") }
+        val states = storedStates()
+        storedValues().keys.map { stateName -> Pair(stateName, states[stateName] ?: "") }
     }
 
     fun clearStates() = lock.withLock {
-        automationStates.clear()
         preferences.put(StringNonKey.AutomationCurrentStates, "{}")
     }
 
     override fun getStateValues(stateName: String): List<String> = lock.withLock {
-        stateValues[stateName.trim()] ?: emptyList()
+        storedValues()[stateName.trim()] ?: emptyList()
     }
 
     override fun setStateValues(stateName: String, values: List<String>) = lock.withLock {
         val trimmedName = stateName.trim()
         val trimmedValues = values.map { it.trim() }
         // If the current value is not in the new list, the current state is cleared
-        val currentState = automationStates[trimmedName]
+        val states = storedStates()
+        val currentState = states[trimmedName]
         if (currentState != null && !trimmedValues.contains(currentState)) {
-            automationStates.remove(trimmedName)
-            preferences.put(StringNonKey.AutomationCurrentStates, Json.encodeToString(automationStates))
+            states.remove(trimmedName)
+            storeStates(states)
         }
-        stateValues[trimmedName] = trimmedValues
-        preferences.put(StringNonKey.AutomationStateValues, Json.encodeToString(stateValues))
+        val allValues = storedValues()
+        allValues[trimmedName] = trimmedValues
+        storeValues(allValues)
     }
 
     override fun getStateSnapshot(stateName: String): AutomationStateSnapshot = lock.withLock {
         val trimmedName = stateName.trim()
-        if (!stateValues.containsKey(trimmedName)) AutomationStateSnapshot(known = false, value = null)
-        else automationStates[trimmedName].let { AutomationStateSnapshot(known = it != null, value = it) }
+        if (!storedValues().containsKey(trimmedName)) AutomationStateSnapshot(known = false, value = null)
+        else storedStates()[trimmedName].let { AutomationStateSnapshot(known = it != null, value = it) }
     }
 
     override fun hasStateValues(stateName: String): Boolean = lock.withLock {
-        stateValues.containsKey(stateName.trim())
+        storedValues().containsKey(stateName.trim())
     }
 
     override fun deleteState(stateName: String) = lock.withLock {
         val trimmedName = stateName.trim()
-        automationStates.remove(trimmedName)
-        stateValues.remove(trimmedName)
-        preferences.put(StringNonKey.AutomationCurrentStates, Json.encodeToString(automationStates))
-        preferences.put(StringNonKey.AutomationStateValues, Json.encodeToString(stateValues))
+        val states = storedStates()
+        val values = storedValues()
+        states.remove(trimmedName)
+        values.remove(trimmedName)
+        storeStates(states)
+        storeValues(values)
     }
 }

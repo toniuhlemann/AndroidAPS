@@ -104,6 +104,22 @@ class PreferenceImportApplierTest {
         assertThat(store.getString(StringNonKey.ActivePumpSerialNumber.key, "")).isEmpty()
     }
 
+    /** Fork: the automation states and their allowed values travel with a settings file. */
+    @Test fun `the automation states and their allowed values are imported`() = runTest {
+        val values = """{"Sleeping":["true","false"]}"""
+        val current = """{"Sleeping":"false"}"""
+
+        val outcome = sut().apply(
+            prefs(StringNonKey.AutomationStateValues.key to values, StringNonKey.AutomationCurrentStates.key to current),
+            keepPumpSettings = true
+        )
+
+        assertThat(outcome.changed).isEqualTo(2)
+        assertThat(store.getString(StringNonKey.AutomationStateValues.key, "")).isEqualTo(values)
+        assertThat(store.getString(StringNonKey.AutomationCurrentStates.key, "")).isEqualTo(current)
+        verify(preferences).reloadFromStore()
+    }
+
     @Test fun `a name this build does not know is left alone, not dropped`() = runTest {
         val outcome = sut().apply(prefs("key_from_a_newer_aaps" to "x"), keepPumpSettings = false)
 

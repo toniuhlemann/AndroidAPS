@@ -194,6 +194,24 @@
     <string name="check_state_description" comment="%1$s = state name, %2$s = state value">Check automation state %1$s=%2$s</string>
     <string name="state_name_label">State name</string>
     <string name="state_value_label">State value</string>
+    <!-- The automation states tab (was the automation-state plugin of the 3.4 fork) -->
+    <string name="automation_states">Automation states</string>
+    <string name="description_automation_states">Shows the automation states. Set a state by hand and edit the values it may have.</string>
+    <string name="automation_states_empty_desc">No automation states yet. Add one with the + button.</string>
+    <string name="automation_state_add">Add automation state</string>
+    <string name="automation_state_no_value">No value set</string>
+    <string name="automation_state_edit_values" comment="Button to edit the allowed values of one state. %1$s = state name, e.g. Sleeping">Edit the values of %1$s</string>
+    <string name="automation_state_values_title" comment="Dialog title. %1$s = state name, e.g. Sleeping">Values of %1$s</string>
+    <string name="automation_state_current_value">Current value</string>
+    <string name="automation_state_add_value">Add value</string>
+    <string name="automation_state_delete_value" comment="Button to remove one allowed value. %1$s = the value, e.g. true">Delete %1$s</string>
+    <string name="automation_state_missing_name">Please enter a state name</string>
+    <string name="automation_state_missing_value">Please enter a state value</string>
+    <string name="automation_state_value_exists">This value already exists</string>
+    <string name="automation_state_last_value">The last value cannot be deleted</string>
+    <string name="automation_state_delete">Delete state</string>
+    <string name="automation_state_delete_confirmation" comment="%1$s = state name, e.g. Sleeping">Delete the state %1$s and its values? Automations that use it will not find it any more.</string>
+    <string name="automation_state_set_failed" comment="%1$s = state name, %2$s = value, e.g. Sleeping, true">Could not set %1$s to %2$s</string>
     <!-- Fork (IOB-Action viewer) automation -->
     <string name="automate_set_pp_weight" comment="%1$.2f = new pp weight, e.g. 0.05">Set pp_ISF_weight to %1$.2f</string>
     <string name="automate_set_dura_weight" comment="%1$.2f = new dura weight, e.g. 1.50">Set dura_ISF_weight to %1$.2f</string>
