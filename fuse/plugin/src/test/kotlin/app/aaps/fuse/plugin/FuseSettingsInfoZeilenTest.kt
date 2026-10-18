@@ -8,6 +8,7 @@ import app.aaps.core.keys.interfaces.PreferenceKey
 import app.aaps.core.keys.interfaces.StringPreferenceKey
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.ui.compose.preference.PreferenceInfoDef
+import app.aaps.core.ui.compose.preference.PreferenceSummaryMode
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -55,11 +56,11 @@ class FuseSettingsInfoZeilenTest {
         for (b in bereiche.values) assertTrue(b.items.any { it is PreferenceKey }) { "Bereich ${b.key} zeigt keinen Wert" }
     }
 
-    /** Toni: in ALLEN Bereichen am Feld nur die kurze Zeile, die ganze Erklaerung erst beim Antippen. */
+    /** Toni: in ALLEN Bereichen am Feld nur die Live-Zeile, die Erklaerung erst beim Hineingehen oder Antippen. */
     @Test
-    fun `alle Bereiche zeigen nur kurze Zeilen`() {
-        val lang = bereiche.values.filterNot { it.shortSummaries }.map { it.key }
-        assertTrue(lang.isEmpty()) { "Bereiche mit voller Erklaerung am Feld: $lang" }
+    fun `alle Bereiche zeigen nur Live-Zeilen`() {
+        val mitErklaerung = bereiche.values.filterNot { it.summaryMode == PreferenceSummaryMode.LIVE_ONLY }.map { it.key }
+        assertTrue(mitErklaerung.isEmpty()) { "Bereiche mit Erklaerung am Feld: $mitErklaerung" }
     }
 
     /** Ein Eingabe-Typ ausserhalb der vier beobachteten liesse seine Zeile nach einer Aenderung stehen. */
