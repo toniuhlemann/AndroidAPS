@@ -1051,6 +1051,10 @@ class FuseCycleRunner(
          *  entwaffnen? Das Zyklusergebnis - Anzeige und Trail lesen es,
          *  statt das Markeralter nachzurechnen. */
         val evidenceMayOverrideRebound: Boolean = false,
+        /** Darf die Evidenz in DIESEM Zyklus das Nacht-Totband entwaffnen?
+         *  Kredit UND laufendes Mahlzeitfenster - das Zyklusergebnis fuer
+         *  Anzeige und Trail. */
+        val evidenceMayOverrideNight: Boolean = false,
         /** Gepinnter Ablauf des Sonderrechts [ms], 0 = keines. */
         val reboundOverrideDeadlineTs: Long = 0L,
         /** Warum es NICHT gilt - typisiert. null = es gilt. */
@@ -3219,17 +3223,32 @@ class FuseCycleRunner(
             rSigned = signal.rSigned,
         )
         ekZyklusThisCycle = ekZyklus
+        // ---- DAS NACHT-SONDERRECHT DER EVIDENZ (Toni) ----------------------
+        //
+        // NUR IM MAHLZEITFENSTER. Danach ist ein Anstieg nachts wieder
+        // unangekuendigt, auch wenn die Episode weiterlaeuft und Kredit ausweist
+        // (Anlass: vorbeugendes Gegenessen Stunden nach dem Marker, s.
+        // NightWindow.evidenceMayOverrideNight). Das Fenster ist das des Kontos
+        // zum DOSIER-Marker - erst NACH der Kontobuchung oben gelesen, damit ein
+        // eben gebuchtes Konto zaehlt. Im Rueckfall ohne Konto gibt es keins und
+        // damit kein Recht.
+        val nachtOverrideErlaubt = NightWindow.evidenceMayOverrideNight(
+            evidenceCreditActive = evidenzKredit > 0.0,
+            mealWindowEndTs = MahlzeitFenster.endeTs(episodes.expectation, dosierMarkerTs),
+            computeTs = computeTs,
+        )
         val baseDecision = FuseController.decide(
             state, prediction,
             FuseController.Limits(guardFloorMgdl = cfg.guardFloorMgdl, releaseHorizonMin = cfg.releaseHorizonMin),
             tail,
             restraint,
-            // Fliessender Kredit entwaffnet die Totbaender - eine
+            // Fliessender Kredit entwaffnet das Nacht-Totband - eine
             // markereroeffnete Episode mit versiegelter unbezahlter Stoerung
             // ist keine unangekuendigte Abweichung. Abschluss-Audit 15.08.:
             // diese Zeile FEHLTE, der Default false verdeckte das - viele
             // Zyklen im 2-Tage-Trail blieben trotz Kredit im Totband.
-            evidenceCreditActive = evidenzKredit > 0.0,
+            // Seit der Befristung zaehlt der Kredit nur im Mahlzeitfenster (oben).
+            evidenceCreditActive = nachtOverrideErlaubt,
             evidenceMayOverrideRebound = reboundOverrideErlaubt,
             // DAS LOW-TOR (Toni 17.08.): der einzige Weg zu einer Zero-TBR.
             // Ohne positiven Low-Nachweis sperrt der Guard die MENGE, nicht
@@ -5489,6 +5508,7 @@ class FuseCycleRunner(
             computeDurationMs = computeDurationMs,
             mealStats = mealStats,
             evidenceMayOverrideRebound = reboundOverrideErlaubt,
+            evidenceMayOverrideNight = nachtOverrideErlaubt,
             reboundOverrideDeadlineTs = reboundOverrideDeadlineTs,
             reboundOverrideDenial = reboundOverrideDenial?.name,
             descentRiskActive = descentRisk.active,
