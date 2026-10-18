@@ -45,6 +45,7 @@ import app.aaps.core.interfaces.overview.graph.CarbsGraphPoint
 import app.aaps.core.interfaces.overview.graph.CobGraphData
 import app.aaps.core.interfaces.overview.graph.DevSlopeGraphData
 import app.aaps.core.interfaces.overview.graph.DeviationsGraphData
+import app.aaps.core.interfaces.overview.graph.AutoIsfGraphData
 import app.aaps.core.interfaces.overview.graph.FuseGraphData
 import app.aaps.core.interfaces.overview.graph.EpsGraphPoint
 import app.aaps.core.interfaces.overview.graph.ExtendedBolusGraphPoint
@@ -273,6 +274,8 @@ class OverviewDataCacheImpl(
     override val stepsGraphFlow: StateFlow<StepsGraphData> = _stepsGraphFlow.asStateFlow()
     private val _fuseGraphFlow = MutableStateFlow(FuseGraphData())
     override val fuseGraphFlow: StateFlow<FuseGraphData> = _fuseGraphFlow.asStateFlow()
+    private val _autoIsfGraphFlow = MutableStateFlow(AutoIsfGraphData())
+    override val autoIsfGraphFlow: StateFlow<AutoIsfGraphData> = _autoIsfGraphFlow.asStateFlow()
     private val _treatmentGraphFlow = MutableStateFlow(TreatmentGraphData(emptyList(), emptyList(), emptyList(), emptyList()))
     override val treatmentGraphFlow: StateFlow<TreatmentGraphData> = _treatmentGraphFlow.asStateFlow()
     private val _epsGraphFlow = MutableStateFlow<List<EpsGraphPoint>>(emptyList())
@@ -835,6 +838,10 @@ class OverviewDataCacheImpl(
         _fuseGraphFlow.value = data
     }
 
+    override fun updateAutoIsfGraph(data: AutoIsfGraphData) {
+        _autoIsfGraphFlow.value = data
+    }
+
     // =========================================================================
     // Category B: Reactive graph builders (treatments, RM, TT, basal)
     // =========================================================================
@@ -1270,6 +1277,7 @@ class OverviewDataCacheImpl(
         _heartRateGraphFlow.value = HeartRateGraphData(emptyList())
         _stepsGraphFlow.value = StepsGraphData(emptyList())
         _fuseGraphFlow.value = FuseGraphData()
+        _autoIsfGraphFlow.value = AutoIsfGraphData()
         _treatmentGraphFlow.value = TreatmentGraphData(emptyList(), emptyList(), emptyList(), emptyList())
         _epsGraphFlow.value = emptyList()
         _basalGraphFlow.value = BasalGraphData(emptyList(), emptyList(), 0.0)

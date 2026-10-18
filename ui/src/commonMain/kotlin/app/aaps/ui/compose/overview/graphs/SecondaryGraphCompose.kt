@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -21,6 +22,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.aaps.core.data.configuration.Constants
 import app.aaps.core.graph.vico.AdaptiveStep
 import app.aaps.core.graph.vico.Square
+import app.aaps.core.interfaces.overview.graph.AutoIsfGraphData
 import app.aaps.core.interfaces.overview.graph.BolusType
 import app.aaps.core.interfaces.overview.graph.DeviationType
 import app.aaps.core.interfaces.overview.graph.GraphDataPoint
@@ -215,6 +217,8 @@ fun SecondaryGraphCompose(
     val stepsData = if (primaryType == SeriesType.STEPS) viewModel.stepsGraphFlow.collectAsStateWithLifecycle().value else null
     // Fork (FUSE): F.DRV and F.GRD
     val fuseData = if (primaryType == SeriesType.FUSE_DRIVE || primaryType == SeriesType.FUSE_GUARD) viewModel.fuseGraphFlow.collectAsStateWithLifecycle().value else null
+    // Fork (autoISF): IOB_TH and the autoISF factors
+    val autoIsfData = if (primaryType in AutoIsfGraphData.SERIES) viewModel.autoIsfGraphFlow.collectAsStateWithLifecycle().value else null
     // Activity data: either as primary series OR as overlay (on IOB graph)
     val needsActivity = primaryType == SeriesType.ACTIVITY || (activityOverlay && hasIob)
     val activityData = if (needsActivity) viewModel.activityGraphFlow.collectAsStateWithLifecycle().value else null
@@ -247,6 +251,9 @@ fun SecondaryGraphCompose(
         // Fork (FUSE): on the right axis only the main line - the drive bars as a line, the guard margin
         SeriesType.FUSE_DRIVE      -> viewModel.fuseGraphFlow.collectAsStateWithLifecycle().value.drive.map { GraphDataPoint(it.timestamp, it.value) }
         SeriesType.FUSE_GUARD      -> viewModel.fuseGraphFlow.collectAsStateWithLifecycle().value.guard
+        // Fork (autoISF)
+        SeriesType.IOB_TH, SeriesType.FIN_ISF, SeriesType.ACC_ISF, SeriesType.BG_ISF, SeriesType.PP_ISF, SeriesType.DUR_ISF ->
+            viewModel.autoIsfGraphFlow.collectAsStateWithLifecycle().value.points(secondaryType)
         SeriesType.PREDICTIONS     -> emptyList() // UI-only overlay flag, not a secondary series
     }
 
@@ -262,7 +269,7 @@ fun SecondaryGraphCompose(
 
     // Simple line series processing (excludes BASAL — it's a fixed flipped overlay on IOB)
     val processedSimpleSeries = remember(
-        stableTimeRange, absIobData, bgiData, ratioData, varSensData, devSlopeData, hrData, stepsData, activityData
+        stableTimeRange, absIobData, bgiData, ratioData, varSensData, devSlopeData, hrData, stepsData, activityData, autoIsfData
     ) {
         if (!hasRealTimeRange) return@remember emptyList()
         buildList {
@@ -291,6 +298,10 @@ fun SecondaryGraphCompose(
             }
             stepsData?.steps?.takeIf { it.isNotEmpty() }?.let {
                 add(SeriesType.STEPS to processPoints(it, minTimestamp, minX, maxX))
+            }
+            // Fork (autoISF): one point per autoISF run
+            autoIsfData?.points(primaryType)?.takeIf { it.isNotEmpty() }?.let {
+                add(primaryType to processPoints(it, minTimestamp, minX, maxX))
             }
             if (primaryType == SeriesType.ACTIVITY) {
                 activityData?.let {
@@ -643,15 +654,17 @@ fun SecondaryGraphCompose(
         val secondaryY = windowedY(processedSecondary, visibleMinX, visibleMaxX)
         if (primaryYValues.isEmpty() || secondaryY.isEmpty()) return@remember null
 
-        val primaryIsPivot = primaryType == SeriesType.SENSITIVITY || primaryType == SeriesType.DEV_SLOPE
-        val secondaryIsPivot = secondaryType == SeriesType.SENSITIVITY || secondaryType == SeriesType.DEV_SLOPE
+        val primaryPivot = seriesPivot(primaryType)
+        val secondaryPivot = seriesPivot(secondaryType)
+        val primaryIsPivot = primaryPivot != null
+        val secondaryIsPivot = secondaryPivot != null
         if (primaryIsPivot != secondaryIsPivot) {
-            // Exactly one side is pivot-centered (SENS/DEV_SLOPE), the other zero-floor-style
+            // Exactly one side is pivot-centered (SENS/DEV_SLOPE/autoISF factor), the other zero-floor-style
             // (e.g. COB, BGI) — see [pivotZeroFloorPairing] for how each side's range is built.
-            val isSensPivot = primaryType == SeriesType.SENSITIVITY || secondaryType == SeriesType.SENSITIVITY
-            val pivot = if (isSensPivot) 100.0 else 0.0
-            val pivotMinDeviation = if (isSensPivot) SENS_MIN_DEVIATION else 0.0
-            val pivotTickCount = if (isSensPivot) SENS_PIVOT_TICK_COUNT else SECONDARY_GRAPH_TICK_COUNT
+            val pivotType = if (primaryIsPivot) primaryType else secondaryType
+            val pivot = primaryPivot ?: secondaryPivot ?: 0.0
+            val pivotMinDeviation = pivotMinDeviation(pivotType)
+            val pivotTickCount = pivotTickCount(pivotType)
             return@remember if (primaryIsPivot) {
                 val pairing = pivotZeroFloorPairing(primaryYValues, secondaryY, pivot, pivotMinDeviation, pivotTickCount)
                 // Primary is the pivot itself here — its own axis is fully meaningful in both
@@ -667,12 +680,10 @@ fun SecondaryGraphCompose(
             }
         }
         if (primaryIsPivot || secondaryIsPivot) {
-            // Both sides pivot-centered (SENS + DEV_SLOPE together — unusual but possible): keep
+            // Both sides pivot-centered (SENS + DEV_SLOPE together, or two autoISF factors): keep
             // the existing pivot-aware zero alignment, both are symmetric around their own pivot
             // anyway so the old mechanism is adequate here.
-            val primaryPivot = if (primaryType == SeriesType.SENSITIVITY) 100.0 else 0.0
-            val secondaryPivot = if (secondaryType == SeriesType.SENSITIVITY) 100.0 else 0.0
-            return@remember alignZeros(primaryYValues.min(), primaryYValues.max(), secondaryY.min(), secondaryY.max(), primaryPivot, secondaryPivot)
+            return@remember alignZeros(primaryYValues.min(), primaryYValues.max(), secondaryY.min(), secondaryY.max(), primaryPivot ?: 0.0, secondaryPivot ?: 0.0)
         }
 
         // Neither series is pivot-centered (e.g. COB + VAR_SENSITIVITY, or BGI + STEPS): primary
@@ -743,6 +754,9 @@ fun SecondaryGraphCompose(
             SeriesType.VAR_SENSITIVITY, SeriesType.HEART_RATE  -> niceScale(primaryYValues.min(), primaryYValues.max(), SECONDARY_GRAPH_TICK_COUNT)
             SeriesType.SENSITIVITY                             -> niceScaleAroundPivot(primaryYValues.min(), primaryYValues.max(), 100.0, SENS_PIVOT_TICK_COUNT, SENS_MIN_DEVIATION)
             SeriesType.DEV_SLOPE                               -> niceScaleAroundPivot(primaryYValues.min(), primaryYValues.max(), 0.0, SECONDARY_GRAPH_TICK_COUNT)
+            // Fork (autoISF): the factors around 1 (IOB_TH is zero-floored, see ZERO_FLOOR_SERIES_TYPES)
+            in AutoIsfGraphData.FACTOR_SERIES                  ->
+                niceScaleAroundPivot(primaryYValues.min(), primaryYValues.max(), AUTO_ISF_FACTOR_PIVOT, SENS_PIVOT_TICK_COUNT, AUTO_ISF_FACTOR_MIN_DEVIATION)
             else                                               -> null
         }
     }
@@ -798,8 +812,10 @@ fun SecondaryGraphCompose(
 
     // Secondary axis line style (colored by series type)
     val secondaryAxisColor = secondaryType?.let { seriesColors.colorFor(it) } ?: Color.Gray
-    val secondaryAxisLine = remember(secondaryAxisColor) {
-        LineCartesianLayer.Line(
+    val secondaryAxisLine = remember(secondaryAxisColor, secondaryType) {
+        // Fork (autoISF): iobTH stays dashed on the right axis too
+        if (secondaryType != null && secondaryType in AutoIsfGraphData.SERIES) autoIsfLine(secondaryType, secondaryAxisColor)
+        else LineCartesianLayer.Line(
             fill = LineCartesianLayer.LineFill.single(Fill(secondaryAxisColor)),
             areaFill = LineCartesianLayer.AreaFill.single(
                 fill = Fill(Color.Transparent)
@@ -1189,12 +1205,20 @@ data class SeriesColors(
     val activity: Color,
     // Fork (FUSE): the line color on a right axis and of the axis itself, as in the fork
     val fuseDrive: Color = FUSE_DRIVE_COLOR,
-    val fuseGuard: Color = FUSE_GUARD_COLOR
+    val fuseGuard: Color = FUSE_GUARD_COLOR,
+    // Fork (autoISF): the colors of the six autoISF series, as in the fork
+    val autoIsf: AutoIsfColors = AutoIsfColors.DARK
 ) {
 
     fun colorFor(type: SeriesType): Color = when (type) {
         SeriesType.FUSE_DRIVE      -> fuseDrive
         SeriesType.FUSE_GUARD      -> fuseGuard
+        SeriesType.IOB_TH          -> autoIsf.iobTh
+        SeriesType.FIN_ISF         -> autoIsf.finalIsf
+        SeriesType.ACC_ISF         -> autoIsf.acceIsf
+        SeriesType.BG_ISF          -> autoIsf.bgIsf
+        SeriesType.PP_ISF          -> autoIsf.ppIsf
+        SeriesType.DUR_ISF         -> autoIsf.duraIsf
         SeriesType.IOB             -> iob
         SeriesType.ABS_IOB         -> absIob
         SeriesType.COB             -> cob
@@ -1215,8 +1239,11 @@ fun rememberSeriesColors(): SeriesColors {
     val iobColor = AapsTheme.generalColors.iobPrediction
     val cobColor = AapsTheme.generalColors.cobPrediction
     val onSurface = MaterialTheme.colorScheme.onSurface
-    return remember(iobColor, cobColor, onSurface) {
+    // Fork (autoISF): the fork has lighter variants of some colors for the dark theme
+    val darkBackground = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    return remember(iobColor, cobColor, onSurface, darkBackground) {
         SeriesColors(
+            autoIsf = if (darkBackground) AutoIsfColors.DARK else AutoIsfColors.LIGHT,
             iob = iobColor,                         // #1e88e5 blue (matches @color/iob)
             absIob = iobColor,                      // same blue as IOB
             cob = cobColor,                         // #FB8C00 orange (matches @color/cob)
@@ -1244,6 +1271,8 @@ private fun createDevSlopeMinLine(): LineCartesianLayer.Line {
 fun createSeriesLine(type: SeriesType, colors: SeriesColors): LineCartesianLayer.Line {
     val color = colors.colorFor(type)
     return when (type) {
+        // Fork (autoISF): iobTH dashed, the factors as plain lines
+        in AutoIsfGraphData.SERIES                                               -> autoIsfLine(type, color)
         // Step function with area fill (like IOB)
         SeriesType.ABS_IOB                                                       -> LineCartesianLayer.Line(
             fill = LineCartesianLayer.LineFill.single(Fill(color)),
@@ -1474,6 +1503,30 @@ internal data class ProcessedDeviationLines(
  * it so primary never shows a fake tick below a value it can actually reach.
  */
 internal data class AlignedRanges(val aMin: Double, val aMax: Double, val bMin: Double, val bMax: Double, val primaryLabelFloor: Double? = null)
+
+/**
+ * The value a pivot-centered series is drawn around - SENSITIVITY 100 %, DEV_SLOPE 0, the autoISF factors 1 (fork) -
+ * or null for a series that is not pivot-centered.
+ */
+internal fun seriesPivot(type: SeriesType?): Double? = when (type) {
+    SeriesType.SENSITIVITY            -> 100.0
+    SeriesType.DEV_SLOPE              -> 0.0
+    in AutoIsfGraphData.FACTOR_SERIES -> AUTO_ISF_FACTOR_PIVOT
+    else                              -> null
+}
+
+/** How far a pivot-centered axis reaches at least to each side of its pivot. */
+private fun pivotMinDeviation(type: SeriesType?): Double = when (type) {
+    SeriesType.SENSITIVITY            -> SENS_MIN_DEVIATION
+    in AutoIsfGraphData.FACTOR_SERIES -> AUTO_ISF_FACTOR_MIN_DEVIATION
+    else                              -> 0.0
+}
+
+/** Tick count of a pivot-centered axis: few ticks for SENSITIVITY and the autoISF factors. */
+private fun pivotTickCount(type: SeriesType?): Int = when (type) {
+    SeriesType.SENSITIVITY, in AutoIsfGraphData.FACTOR_SERIES -> SENS_PIVOT_TICK_COUNT
+    else                                                      -> SECONDARY_GRAPH_TICK_COUNT
+}
 
 /** Result of [pivotZeroFloorPairing]: the pivot side's full nice range, and the zero-floor side's symmetric container (half-width, and its own real floor for label clamping). */
 internal data class PivotZeroFloorPairing(val pivotNice: NiceScale, val zeroFloorHalf: Double, val zeroFloorMin: Double)

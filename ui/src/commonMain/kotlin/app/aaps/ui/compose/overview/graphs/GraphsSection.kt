@@ -51,6 +51,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.aaps.core.data.configuration.Constants
 import app.aaps.core.data.model.GlucoseUnit
 import app.aaps.core.interfaces.InterfacesStrings
+import app.aaps.core.interfaces.overview.graph.AutoIsfGraphData
 import app.aaps.core.interfaces.overview.graph.BgDataPoint
 import app.aaps.core.interfaces.overview.graph.BgType
 import app.aaps.core.interfaces.overview.graph.GraphConfig
@@ -203,9 +204,12 @@ private val CONFIGURABLE_SERIES = SeriesType.entries.filter {
 /** Fork (FUSE): the two FUSE series, offered only while FUSE delivers them (see `GraphViewModel.fuseGraphAvailable`). */
 private val FUSE_SERIES = setOf(SeriesType.FUSE_DRIVE, SeriesType.FUSE_GUARD)
 
-/** The series the graph menu offers: without FUSE as the active APS the two FUSE series are left out. */
-internal fun configurableSeries(fuseAvailable: Boolean): List<SeriesType> =
-    if (fuseAvailable) CONFIGURABLE_SERIES else CONFIGURABLE_SERIES.filter { it !in FUSE_SERIES }
+/**
+ * The series the graph menu offers: without FUSE as the active APS the two FUSE series are left out, without autoISF
+ * the six autoISF series (fork: `masterFuse`, `masterAutoIsf`).
+ */
+internal fun configurableSeries(fuseAvailable: Boolean, autoIsfAvailable: Boolean): List<SeriesType> =
+    CONFIGURABLE_SERIES.filter { (fuseAvailable || it !in FUSE_SERIES) && (autoIsfAvailable || it !in AutoIsfGraphData.SERIES) }
 
 @OptIn(FlowPreview::class)
 @Composable
@@ -228,6 +232,8 @@ fun GraphsSection(
     val graphConfig = if (isSimpleMode) SIMPLE_MODE_CONFIG else savedGraphConfig
     // Fork (FUSE): F.DRV and F.GRD are offered only while FUSE delivers them
     val fuseGraphAvailable by graphViewModel.fuseGraphAvailable.collectAsStateWithLifecycle()
+    // Fork (autoISF): the six autoISF series only while autoISF runs
+    val autoIsfGraphAvailable by graphViewModel.autoIsfGraphAvailable.collectAsStateWithLifecycle()
 
     // Zoom.x(...) allocates a fresh (non-equal, unmemoized) lambda instance on every call.
     // rememberVicoZoomState's underlying rememberSaveable is keyed on initialZoom/minZoom/maxZoom
@@ -712,8 +718,11 @@ fun GraphsSection(
             GraphSeriesBottomSheet(
                 title = stringResource(CoreUiStrings.graph_number, index + 2),
                 selectedSeries = editing.series,
-                // A graph that already holds a FUSE series keeps its chips, so the series can still be deselected.
-                availableSeries = configurableSeries(fuseGraphAvailable || editing.series.any { it in FUSE_SERIES }),
+                // A graph that already holds a FUSE or autoISF series keeps its chips, so the series can still be deselected.
+                availableSeries = configurableSeries(
+                    fuseAvailable = fuseGraphAvailable || editing.series.any { it in FUSE_SERIES },
+                    autoIsfAvailable = autoIsfGraphAvailable || editing.series.any { it in AutoIsfGraphData.SERIES }
+                ),
                 height = editing.height,
                 onHeightChange = { h ->
                     // The current config, not the captured one: after "Remove graph" the captured
@@ -765,7 +774,7 @@ fun GraphsSection(
                 GraphSeriesBottomSheet(
                     title = stringResource(CoreUiStrings.graph_new),
                     selectedSeries = newGraphSeries,
-                    availableSeries = configurableSeries(fuseGraphAvailable),
+                    availableSeries = configurableSeries(fuseGraphAvailable, autoIsfGraphAvailable),
                     height = newGraphHeight,
                     onHeightChange = { newGraphHeight = it },
                     onToggle = { type ->
@@ -849,6 +858,12 @@ private fun seriesShortNameId(type: SeriesType): TextRef = when (type) {
     SeriesType.ACTIVITY        -> CoreUiStrings.activity_shortname
     SeriesType.FUSE_DRIVE      -> CoreUiStrings.fuse_drive_shortname
     SeriesType.FUSE_GUARD      -> CoreUiStrings.fuse_guard_shortname
+    SeriesType.IOB_TH          -> CoreUiStrings.autoisf_iob_th_shortname
+    SeriesType.FIN_ISF         -> CoreUiStrings.autoisf_final_shortname
+    SeriesType.ACC_ISF         -> CoreUiStrings.autoisf_acce_shortname
+    SeriesType.BG_ISF          -> CoreUiStrings.autoisf_bg_shortname
+    SeriesType.PP_ISF          -> CoreUiStrings.autoisf_pp_shortname
+    SeriesType.DUR_ISF         -> CoreUiStrings.autoisf_dura_shortname
     SeriesType.PREDICTIONS     -> CoreUiStrings.predictions_shortname
 }
 

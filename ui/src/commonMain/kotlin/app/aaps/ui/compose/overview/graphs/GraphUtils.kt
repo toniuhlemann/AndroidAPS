@@ -542,7 +542,7 @@ fun niceScaleAroundPivot(min: Double, max: Double, pivot: Double, maxTickCount: 
  * isn't included here — its basal-overlay combo graph has its own dedicated range computation
  * (SecondaryGraphCompose's `primaryYMaxResult`) that calls [zeroFloorNiceRange] directly.
  */
-val ZERO_FLOOR_SERIES_TYPES = setOf(SeriesType.BGI, SeriesType.DEVIATIONS, SeriesType.ACTIVITY, SeriesType.STEPS, SeriesType.ABS_IOB)
+val ZERO_FLOOR_SERIES_TYPES = setOf(SeriesType.BGI, SeriesType.DEVIATIONS, SeriesType.ACTIVITY, SeriesType.STEPS, SeriesType.ABS_IOB, SeriesType.IOB_TH)
 
 /**
  * Zero-floor axis range, disparity-aware: when the negative excursion is tiny relative to the

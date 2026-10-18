@@ -104,6 +104,10 @@ interface OverviewDataCache {
     val fuseGraphFlow: StateFlow<FuseGraphData>
     fun updateFuseGraph(data: FuseGraphData)
 
+    // Fork (autoISF): IOB_TH and the autoISF factors, from the stored values of the autoISF runs
+    val autoIsfGraphFlow: StateFlow<AutoIsfGraphData>
+    fun updateAutoIsfGraph(data: AutoIsfGraphData)
+
     // =========================================================================
     // Treatment graph flows (main graph overlays)
     // Populated reactively by observing database changes — no worker needed.
