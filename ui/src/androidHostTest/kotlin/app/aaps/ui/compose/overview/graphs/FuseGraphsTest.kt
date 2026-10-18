@@ -45,7 +45,7 @@ internal class FuseGraphsTest {
         assertThat(fuse.lines.count { it.style == FuseLineStyle.EXPECTED_DRIVE }).isEqualTo(1)
         assertThat(fuse.markerXs).containsExactly(4.0)
         // symmetric around 0 and at least 1.25 times the upper ramp edge (fork)
-        val scale = fuse.scale(fuse.windowedY(null, null), SECONDARY_GRAPH_TICK_COUNT)
+        val scale = fuse.scale(fuse.windowedY(null, null))
         assertThat(scale.max).isAtLeast(2.5)
         assertThat(scale.min).isEqualTo(-scale.max)
         assertThat(fuse.strip).isEmpty()
@@ -69,9 +69,21 @@ internal class FuseGraphsTest {
         assertThat(fuse.lines.map { it.style })
             .containsExactly(FuseLineStyle.GUARD, FuseLineStyle.TAIL, FuseLineStyle.GUARD_WITH_MEAL, FuseLineStyle.GUARD_WITH_MEAL).inOrder()
         assertThat(fuse.strip.map { it.status }).containsExactly(AccountStatus.AKTIV)
-        val scale = fuse.scale(fuse.windowedY(null, null), SECONDARY_GRAPH_TICK_COUNT)
+        val scale = fuse.scale(fuse.windowedY(null, null))
         assertThat(scale.max).isAtLeast(10.0)
         assertThat(scale.min).isEqualTo(-scale.max)
+    }
+
+    /** Seen on the phone: 1.25 x an upper ramp edge of 2.5 gave the labels 3.12 / 0 / -3.12. */
+    @Test
+    fun `the F DRV axis has round labels`() {
+        val data = FuseGraphData(available = true, rampLow = 1.25, rampHigh = 2.5, drive = listOf(DeviationDataPoint(at(5), 1.0, DeviationType.POSITIVE)))
+        val fuse = processFuse(data, SeriesType.FUSE_DRIVE, start, 0.0, maxX)!!
+
+        val scale = fuse.scale(fuse.windowedY(null, null))
+        assertThat(scale.max).isEqualTo(5.0)
+        assertThat(scale.step).isEqualTo(2.5)
+        assertThat(scale.min).isEqualTo(-5.0)
     }
 
     @Test

@@ -737,7 +737,7 @@ fun SecondaryGraphCompose(
         if (dualAxisRanges != null || hasBasalLayer || primaryYValues.isEmpty()) return@remember null
         when (primaryType) {
             // Fork (FUSE): symmetric around 0, at least the fork's minimum to each side
-            SeriesType.FUSE_DRIVE, SeriesType.FUSE_GUARD       -> processedFuse?.scale(primaryYValues, SECONDARY_GRAPH_TICK_COUNT)
+            SeriesType.FUSE_DRIVE, SeriesType.FUSE_GUARD       -> processedFuse?.scale(primaryYValues)
             SeriesType.COB                                    -> niceScale(0.0, primaryYValues.max().coerceAtLeast(0.0), SECONDARY_GRAPH_TICK_COUNT)
             in ZERO_FLOOR_SERIES_TYPES                         -> zeroFloorNiceRange(primaryYValues.min(), primaryYValues.max(), SECONDARY_GRAPH_TICK_COUNT)
             SeriesType.VAR_SENSITIVITY, SeriesType.HEART_RATE  -> niceScale(primaryYValues.min(), primaryYValues.max(), SECONDARY_GRAPH_TICK_COUNT)

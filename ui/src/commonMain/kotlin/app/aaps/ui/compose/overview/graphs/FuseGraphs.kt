@@ -85,10 +85,13 @@ internal class ProcessedFuse(
         return all.filter { inWindow(it.first) }.map { it.second }.ifEmpty { all.map { it.second } }
     }
 
-    /** The symmetric axis around 0: at least [minHalfRange], else the largest value either way. */
-    fun scale(values: List<Double>, tickCount: Int): NiceScale {
-        val half = maxOf(minHalfRange, values.maxOfOrNull { abs(it) } ?: 0.0)
-        return niceScaleAroundPivot(-half, half, 0.0, tickCount, minDeviation = minHalfRange)
+    /**
+     * The symmetric axis around 0: at least [minHalfRange], else the largest value either way - rounded up to a
+     * round number, so the labels read 5 / 2.5 / 0 and not 3.12 (the minimum 1.25 x ramp edge is rarely round).
+     */
+    fun scale(values: List<Double>): NiceScale {
+        val half = niceUp(maxOf(minHalfRange, values.maxOfOrNull { abs(it) } ?: 0.0))
+        return NiceScale(-half, half, half / 2)
     }
 }
 
