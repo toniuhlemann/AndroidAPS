@@ -2,6 +2,7 @@ import com.android.build.api.variant.ApplicationAndroidComponentsExtension
 import java.io.ByteArrayOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.compose.compiler)
@@ -58,6 +59,28 @@ android {
             // instrumentation and that causes online (JavaAgent) instrumentation
             // to fail in this project.
             enableAndroidTestCoverage = false
+        }
+    }
+
+    // IOB Action: sign the watch app with the same keystore as the phone app (values in
+    // keystore.properties, gitignored). The Wear data layer only connects a phone app and a
+    // watch app that carry the SAME signature. Without the file, nothing changes.
+    val iobKeystoreProps = rootProject.file("keystore.properties")
+    if (iobKeystoreProps.exists()) {
+        val kp = Properties().apply { iobKeystoreProps.inputStream().use { load(it) } }
+        signingConfigs {
+            create("iobaction") {
+                // Resolved like in :app (relative paths there are relative to app/), so both
+                // modules read the very same key file.
+                storeFile = rootProject.file("app").resolve(kp.getProperty("storeFile"))
+                storePassword = kp.getProperty("storePassword")
+                keyAlias = kp.getProperty("keyAlias")
+                keyPassword = kp.getProperty("keyPassword")
+            }
+        }
+        buildTypes {
+            getByName("debug") { signingConfig = signingConfigs.getByName("iobaction") }
+            getByName("release") { signingConfig = signingConfigs.getByName("iobaction") }
         }
     }
 
