@@ -81,16 +81,21 @@ enum class FuseIntentKey(
  *  - Die Ledger-Handlungen stehen auf je einer eigenen Seite mit Rueckfrage.
  *
  * Wie in v3 stehen die Info-Zeilen des Forks an ihren Plaetzen zwischen den Werten, und die Felder von
- * Erwartungskonto und frueher Versorgung zeigen die laufend berechnete kurze Zeile ([FuseLiveZeilen]); die
- * ausfuehrliche Erklaerung steht im Dialog beim Antippen.
+ * Erwartungskonto und frueher Versorgung zeigen die laufend berechnete kurze Zeile ([FuseLiveZeilen]). In ALLEN
+ * Bereichen (Toni) steht am Feld und in den Info-Zeilen hoechstens eine kurze Zeile; die ganze Erklaerung
+ * kommt beim Antippen (shortSummaries).
  *
  * Die Vollstaendigkeitswache des Forks gilt weiter: [einstellbareKeys] muss genau [fuseEinstellbareKeys]
  * sein, jeder Wert genau einmal (Test).
  */
 object FuseSettings {
 
+    /**
+     * Ein Bereich. Toni: in ALLEN FUSE-Bereichen am Feld nur die kurze Zeile (Live-Zeile, sonst der Anfang der
+     * Erklaerung), die ganze Erklaerung erst beim Antippen - auch fuer die Info-Zeilen.
+     */
     private fun section(key: String, title: Int, vararg items: PreferenceItem) =
-        PreferenceSubScreenDef(key = key, title = TextRef.AndroidRes(title), items = items.toList())
+        PreferenceSubScreenDef(key = key, title = TextRef.AndroidRes(title), items = items.toList(), shortSummaries = true)
 
     /** Eine Info-Zeile des Forks mit Ueberschrift, an ihrem v3-Platz - wortgleich. */
     private fun info(titel: String, text: String) = PreferenceInfoDef(text = TextRef.Literal(text), title = TextRef.Literal(titel))
@@ -284,6 +289,7 @@ object FuseSettings {
             key = "fuse_settings",
             title = TextRef.AndroidRes(R.string.fuse_settings),
             items = bereiche,
+            shortSummaries = true,
         )
     }
 }

@@ -71,6 +71,7 @@
     <string name="confirm_password_hint">Confirm password</string>
     <string name="confirm_pin_hint">Confirm PIN</string>
     <string name="preference_range_summary" comment="%1$s=current value, %2$s=unit label, %3$s=minimum, %4$s=maximum. Example: 5.0 U (0.0 – 10.0)">%1$s%2$s (%3$s – %4$s)</string>
+    <string name="preference_show_explanation" comment="Action on a short setting description: opens the whole explanation">Show the whole explanation</string>
     <string name="statuslights">Status lights</string>
     <string name="configbuilder_insulin">Insulin</string>
     <string name="configbuilder_bgsource">BG Source</string>

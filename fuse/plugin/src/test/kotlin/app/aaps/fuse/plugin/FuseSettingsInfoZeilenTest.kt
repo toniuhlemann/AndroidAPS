@@ -55,6 +55,13 @@ class FuseSettingsInfoZeilenTest {
         for (b in bereiche.values) assertTrue(b.items.any { it is PreferenceKey }) { "Bereich ${b.key} zeigt keinen Wert" }
     }
 
+    /** Toni: in ALLEN Bereichen am Feld nur die kurze Zeile, die ganze Erklaerung erst beim Antippen. */
+    @Test
+    fun `alle Bereiche zeigen nur kurze Zeilen`() {
+        val lang = bereiche.values.filterNot { it.shortSummaries }.map { it.key }
+        assertTrue(lang.isEmpty()) { "Bereiche mit voller Erklaerung am Feld: $lang" }
+    }
+
     /** Ein Eingabe-Typ ausserhalb der vier beobachteten liesse seine Zeile nach einer Aenderung stehen. */
     @Test
     fun `jede Eingabe der Live-Zeilen wird beobachtet`() {

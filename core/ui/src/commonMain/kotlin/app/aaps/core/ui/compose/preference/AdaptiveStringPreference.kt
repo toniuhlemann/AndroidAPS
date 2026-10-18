@@ -55,6 +55,7 @@ fun AdaptiveStringPreferenceItem(
 
     // Get dialog summary from key
     val dialogSummary = if (effectiveSummary != null) stringResource(effectiveSummary) else null
+    val short = LocalShortPreferenceSummaries.current
 
     TextFieldPreference(
         state = state,
@@ -75,7 +76,10 @@ fun AdaptiveStringPreferenceItem(
             }
 
             rowSummary != null             -> {
-                { Text(rowSummary) }
+                {
+                    if (short) ShortPreferenceSummary(text = rowSummary, title = stringResource(effectiveTitle), explanation = dialogSummary)
+                    else Text(rowSummary)
+                }
             }
 
             value.isNotEmpty()             -> {
@@ -83,7 +87,10 @@ fun AdaptiveStringPreferenceItem(
             }
 
             effectiveSummary != null       -> {
-                { Text(stringResource(effectiveSummary)) }
+                {
+                    if (short) ShortPreferenceSummary(text = stringResource(effectiveSummary), title = stringResource(effectiveTitle))
+                    else Text(stringResource(effectiveSummary))
+                }
             }
 
             else                           -> null

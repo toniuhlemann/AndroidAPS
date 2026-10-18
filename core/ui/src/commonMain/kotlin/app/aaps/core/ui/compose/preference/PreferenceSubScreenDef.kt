@@ -26,6 +26,8 @@ import app.aaps.core.keys.interfaces.TextRef
  * @param summary Optional summary shown in the parent list
  * @param icon Optional Compose ImageVector icon shown next to the title
  * @param rowSummaries Optional live lines for the rows of this screen, see [PreferenceRowSummaries]
+ * @param shortSummaries The rows show at most two lines under the title and the whole explanation after a tap, see
+ *   [LocalShortPreferenceSummaries]
  */
 data class PreferenceSubScreenDef(
     val key: String,
@@ -35,7 +37,8 @@ data class PreferenceSubScreenDef(
     /** Optional summary, in the same form as [PreferenceKey.summary]. */
     val summary: TextRef? = null,
     val icon: ImageVector? = null,
-    val rowSummaries: PreferenceRowSummaries? = null
+    val rowSummaries: PreferenceRowSummaries? = null,
+    val shortSummaries: Boolean = false
 ) : PreferenceItem {
 
     /**

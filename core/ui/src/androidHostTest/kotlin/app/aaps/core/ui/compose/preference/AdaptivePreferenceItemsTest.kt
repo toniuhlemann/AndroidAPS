@@ -2,11 +2,14 @@ package app.aaps.core.ui.compose.preference
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
@@ -113,6 +116,46 @@ class AdaptivePreferenceItemsTest {
         render { PreferenceInfoRow(PreferenceInfoDef(text = TextRef.Literal("The text"), title = TextRef.Literal("The heading"))) }
         compose.onNodeWithText("The heading").assertIsDisplayed().assertHasNoClickAction()
         compose.onNodeWithText("The text").assertIsDisplayed().assertHasNoClickAction()
+    }
+
+    @Test
+    fun aShortSummaryCutsALongTextAndATapShowsAllOfIt() {
+        val long = List(40) { "word$it" }.joinToString(" ")
+        render { ShortPreferenceSummary(text = long, title = "Heading") }
+
+        compose.onNodeWithText(long).assertIsDisplayed().performClick()
+        // Now the cut row and the dialog both hold the text
+        compose.onAllNodesWithText(long).assertCountEquals(2)
+        compose.onNodeWithText("Heading").assertIsDisplayed()
+    }
+
+    @Test
+    fun aShortLiveLineOpensTheExplanation() {
+        render { ShortPreferenceSummary(text = "what it does now", title = "Heading", explanation = "The whole explanation") }
+
+        compose.onNodeWithText("The whole explanation").assertDoesNotExist()
+        compose.onNodeWithText("what it does now").performClick()
+        compose.onNodeWithText("The whole explanation").assertIsDisplayed()
+    }
+
+    @Test
+    fun aShortTextThatFitsIsNotClickable() {
+        render { ShortPreferenceSummary(text = "fits", title = "Heading") }
+
+        compose.onNodeWithText("fits").assertHasNoClickAction()
+    }
+
+    @Test
+    fun anInfoRowOnAShortSummaryScreenIsCut() {
+        val long = List(40) { "word$it" }.joinToString(" ")
+        render {
+            CompositionLocalProvider(LocalShortPreferenceSummaries provides true) {
+                PreferenceInfoRow(PreferenceInfoDef(text = TextRef.Literal(long), title = TextRef.Literal("The heading")))
+            }
+        }
+
+        compose.onNodeWithText(long).performClick()
+        compose.onAllNodesWithText(long).assertCountEquals(2)
     }
 
     @Test

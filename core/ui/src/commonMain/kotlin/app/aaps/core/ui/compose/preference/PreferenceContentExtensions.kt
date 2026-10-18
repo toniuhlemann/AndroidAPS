@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -65,14 +66,16 @@ fun LazyListScope.addPreferenceSubScreenDef(
             icon = def.icon
         ) {
             // Render items in order, preserving the original structure
-            RenderPreferenceItems(
-                items = def.items,
-                parentKey = def.key,
-                onShowMessage = onShowMessage,
-                sectionState = sectionState,
-                visibilityContext = visibilityContext,
-                rowSummaries = def.rowSummaries?.lines().orEmpty()
-            )
+            CompositionLocalProvider(LocalShortPreferenceSummaries provides def.shortSummaries) {
+                RenderPreferenceItems(
+                    items = def.items,
+                    parentKey = def.key,
+                    onShowMessage = onShowMessage,
+                    sectionState = sectionState,
+                    visibilityContext = visibilityContext,
+                    rowSummaries = def.rowSummaries?.lines().orEmpty()
+                )
+            }
         }
     }
 }
@@ -131,13 +134,15 @@ private fun RenderPreferenceItems(
                             Column(
                                 modifier = Modifier.padding(start = theme.nestedContentIndent)
                             ) {
-                                AdaptivePreferenceList(
-                                    items = item.items,
-                                    onShowMessage = onShowMessage,
-                                    visibilityContext = visibilityContext,
-                                    onNavigateToSubScreen = null, // Nested subscreens not supported here
-                                    rowSummaries = item.rowSummaries?.lines().orEmpty()
-                                )
+                                CompositionLocalProvider(LocalShortPreferenceSummaries provides item.shortSummaries) {
+                                    AdaptivePreferenceList(
+                                        items = item.items,
+                                        onShowMessage = onShowMessage,
+                                        visibilityContext = visibilityContext,
+                                        onNavigateToSubScreen = null, // Nested subscreens not supported here
+                                        rowSummaries = item.rowSummaries?.lines().orEmpty()
+                                    )
+                                }
                             }
                         }
                     }

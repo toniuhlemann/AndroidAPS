@@ -54,9 +54,13 @@ fun AdaptiveSwitchPreferenceItem(
 
     var guardMessage by remember { mutableStateOf<String?>(null) }
 
+    val short = LocalShortPreferenceSummaries.current
     val summary: @Composable (() -> Unit)? = when {
         rowSummary != null                      -> {
-            { Text(rowSummary) }
+            {
+                if (short) ShortPreferenceSummary(text = rowSummary, title = stringResource(effectiveTitle), explanation = effectiveSummary?.let { stringResource(it) })
+                else Text(rowSummary)
+            }
         }
 
         summaryOn != null && summaryOff != null -> {
@@ -64,7 +68,10 @@ fun AdaptiveSwitchPreferenceItem(
         }
 
         effectiveSummary != null                -> {
-            { Text(stringResource(effectiveSummary)) }
+            {
+                if (short) ShortPreferenceSummary(text = stringResource(effectiveSummary), title = stringResource(effectiveTitle))
+                else Text(stringResource(effectiveSummary))
+            }
         }
 
         else                                    -> null

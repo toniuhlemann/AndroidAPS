@@ -83,11 +83,15 @@ fun AdaptiveIntPreferenceItem(
             )
             val rowText = rowSummary ?: summary
             if (rowText != null) {
-                Text(
-                    text = rowText,
-                    style = theme.summaryTextStyle,
-                    color = theme.summaryColor.let { if (visibility.enabled) it else it.copy(alpha = theme.disabledOpacity) }
-                )
+                val summaryColor = theme.summaryColor.let { if (visibility.enabled) it else it.copy(alpha = theme.disabledOpacity) }
+                if (LocalShortPreferenceSummaries.current)
+                    ShortPreferenceSummary(text = rowText, title = stringResource(effectiveTitle), explanation = summary, color = summaryColor)
+                else
+                    Text(
+                        text = rowText,
+                        style = theme.summaryTextStyle,
+                        color = summaryColor
+                    )
             }
             PreferenceSliderWithButtons(
                 value = value.toDouble(),
