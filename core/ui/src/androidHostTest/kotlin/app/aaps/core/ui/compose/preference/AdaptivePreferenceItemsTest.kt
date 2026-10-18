@@ -18,8 +18,10 @@ import app.aaps.core.interfaces.profile.ProfileUtil
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
+import app.aaps.core.keys.PreferenceType
 import app.aaps.core.keys.StringKey
 import app.aaps.core.keys.UnitDoubleKey
+import app.aaps.core.keys.interfaces.IntentPreferenceKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.ui.compose.LocalConfig
@@ -224,6 +226,35 @@ class AdaptivePreferenceItemsTest {
         compose.onNodeWithText("This is the weight", substring = true).assertDoesNotExist()
         compose.onNode(hasClickAction() and hasContentDescription("BG acceleration ISF weight:", substring = true)).performClick()
         compose.onNodeWithText("This is the weight", substring = true).assertIsDisplayed()
+    }
+
+    private enum class TestIntentKey(
+        override val key: String,
+        override val title: TextRef,
+        override val summary: TextRef?,
+        override val preferenceType: PreferenceType = PreferenceType.CLICK
+    ) : IntentPreferenceKey {
+
+        Ledger("test_ledger", TextRef.Literal("Open the ledger"), TextRef.Literal("What opening the ledger does"))
+    }
+
+    @Test
+    fun aRowThatOpensSomethingKeepsItsExplanationBehindTheInfoSignOnALiveOnlyScreen() {
+        var opened = false
+        renderIn(PreferenceSummaryMode.LIVE_ONLY) { AdaptiveIntentPreferenceItem(intentKey = TestIntentKey.Ledger, onClick = { opened = true }) }
+
+        compose.onNodeWithText("What opening the ledger does").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Show the whole explanation").performClick()
+        compose.onNodeWithText("What opening the ledger does").assertIsDisplayed()
+        assertEquals(false, opened)
+    }
+
+    @Test
+    fun aRowThatOpensSomethingShowsItsSummaryOnAFullScreen() {
+        renderIn(PreferenceSummaryMode.FULL) { AdaptiveIntentPreferenceItem(intentKey = TestIntentKey.Ledger, onClick = {}) }
+
+        compose.onNodeWithText("What opening the ledger does").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Show the whole explanation").assertDoesNotExist()
     }
 
     @Test

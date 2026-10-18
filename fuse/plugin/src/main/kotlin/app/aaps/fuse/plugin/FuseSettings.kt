@@ -82,8 +82,8 @@ enum class FuseIntentKey(
  *
  * Wie in v3 stehen die Info-Zeilen des Forks an ihren Plaetzen zwischen den Werten, und die Felder von
  * Erwartungskonto und frueher Versorgung zeigen die laufend berechnete kurze Zeile ([FuseLiveZeilen]). In ALLEN
- * Bereichen (Toni) steht am Feld und in den Info-Zeilen hoechstens eine kurze Zeile; die ganze Erklaerung
- * kommt beim Antippen (shortSummaries).
+ * Bereichen (Toni, wie autoISF) steht am Feld nur die Live-Zeile; die Erklaerung kommt beim Hineingehen oder
+ * Antippen (liveLinesOnly). Die Info-Zeilen bleiben kurz, die ganze Erklaerung beim Antippen.
  *
  * Die Vollstaendigkeitswache des Forks gilt weiter: [einstellbareKeys] muss genau [fuseEinstellbareKeys]
  * sein, jeder Wert genau einmal (Test).
@@ -91,11 +91,11 @@ enum class FuseIntentKey(
 object FuseSettings {
 
     /**
-     * Ein Bereich. Toni: in ALLEN FUSE-Bereichen am Feld nur die kurze Zeile (Live-Zeile, sonst der Anfang der
-     * Erklaerung), die ganze Erklaerung erst beim Antippen - auch fuer die Info-Zeilen.
+     * Ein Bereich. Toni: in ALLEN FUSE-Bereichen am Feld nur die Live-Zeile, die Erklaerung erst im Eingabedialog,
+     * bei Schaltern und Absprung-Zeilen hinter dem (i) am Titel. Die Info-Zeilen bleiben kurz mit (i).
      */
     private fun section(key: String, title: Int, vararg items: PreferenceItem) =
-        PreferenceSubScreenDef(key = key, title = TextRef.AndroidRes(title), items = items.toList(), shortSummaries = true)
+        PreferenceSubScreenDef(key = key, title = TextRef.AndroidRes(title), items = items.toList(), liveLinesOnly = true)
 
     /** Eine Info-Zeile des Forks mit Ueberschrift, an ihrem v3-Platz - wortgleich. */
     private fun info(titel: String, text: String) = PreferenceInfoDef(text = TextRef.Literal(text), title = TextRef.Literal(titel))
@@ -289,7 +289,7 @@ object FuseSettings {
             key = "fuse_settings",
             title = TextRef.AndroidRes(R.string.fuse_settings),
             items = bereiche,
-            shortSummaries = true,
+            liveLinesOnly = true,
         )
     }
 }

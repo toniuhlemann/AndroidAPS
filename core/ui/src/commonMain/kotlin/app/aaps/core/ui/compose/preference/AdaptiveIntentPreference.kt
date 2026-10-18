@@ -4,12 +4,15 @@
 
 package app.aaps.core.ui.compose.preference
 
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import app.aaps.core.keys.interfaces.IntentPreferenceKey
 import app.aaps.core.keys.interfaces.TextRef
@@ -65,9 +68,9 @@ fun AdaptiveIntentPreferenceItem(
         onClick
     }
 
-    Preference(
-        title = { Text(stringResource(effectiveTitle)) },
-        summary = effectiveSummary?.let { { Text(stringResource(it)) } },
+    IntentRow(
+        title = effectiveTitle,
+        summary = effectiveSummary,
         enabled = visibility.enabled,
         onClick = if (visibility.enabled) effectiveOnClick else null
     )
@@ -128,12 +131,42 @@ fun AdaptiveComposeScreenPreferenceItem(
 
     if (!visibility.visible) return
 
-    Preference(
-        title = { Text(stringResource(effectiveTitle)) },
-        summary = effectiveSummary?.let { { Text(stringResource(it)) } },
+    IntentRow(
+        title = effectiveTitle,
+        summary = effectiveSummary,
         enabled = visibility.enabled,
         onClick = if (visibility.enabled) {
             { onNavigate(composeScreen) }
         } else null
+    )
+}
+
+/**
+ * A row that opens something rather than holding a value. On a [PreferenceSummaryMode.SHORT] screen its summary is
+ * cut to two lines; on a [PreferenceSummaryMode.LIVE_ONLY] screen it shows behind an info sign next to the title,
+ * because a tap on the row opens its target.
+ */
+@Composable
+private fun IntentRow(title: TextRef, summary: TextRef?, enabled: Boolean, onClick: (() -> Unit)?) {
+    val mode = LocalPreferenceSummaryMode.current
+    val titleText = stringResource(title)
+    val summaryText = summary?.let { stringResource(it) }
+    Preference(
+        title = {
+            if (mode == PreferenceSummaryMode.LIVE_ONLY && summaryText != null)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(titleText, modifier = Modifier.weight(1f, fill = false))
+                    PreferenceExplanationButton(title = titleText, explanation = summaryText)
+                }
+            else Text(titleText)
+        },
+        summary = summaryText?.takeIf { mode != PreferenceSummaryMode.LIVE_ONLY }?.let { text ->
+            {
+                if (mode == PreferenceSummaryMode.SHORT) ShortPreferenceSummary(text = text, title = titleText)
+                else Text(text)
+            }
+        },
+        enabled = enabled,
+        onClick = onClick
     )
 }
