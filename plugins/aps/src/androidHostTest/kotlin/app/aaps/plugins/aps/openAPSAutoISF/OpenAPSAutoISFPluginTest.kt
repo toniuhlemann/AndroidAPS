@@ -17,6 +17,9 @@ import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.LongNonKey
 import app.aaps.core.keys.UnitDoubleKey
+import app.aaps.core.keys.interfaces.PreferenceKey
+import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
+import app.aaps.core.ui.compose.preference.PreferenceSummaryMode
 import app.aaps.plugins.aps.iobaction.LocalCommandChannelSettings
 import app.aaps.plugins.aps.iobaction.ValueOverlayReader
 import app.aaps.shared.tests.TestBaseWithProfile
@@ -53,6 +56,32 @@ class OpenAPSAutoISFPluginTest : TestBaseWithProfile() {
         whenever(effectiveAutoIsfSettings.snapshot()).thenReturn(
             EffectiveAutoIsfSettingsProvider.Snapshot(100, 100, AutoIsfOverrideState.NONE, null, null, null)
         )
+    }
+
+    /** Fork: only live lines on every autoISF screen (Toni), the lines themselves on the weights and the SMB delivery screen. */
+    @Test
+    fun `fork - every autoISF screen shows only live lines and two carry them`() {
+        val root = openAPSAutoISFPlugin.getPreferenceScreenContent()
+        val screens = listOf(root) + root.items.filterIsInstance<PreferenceSubScreenDef>()
+        assertThat(screens.map { it.key }).containsExactly(
+            "openapsautoisf_settings", "absorption_smb_advanced", "auto_isf_settings", "smb_delivery_settings",
+            "activity_monitor_settings", "libre_special_settings"
+        )
+        assertThat(screens.filterNot { it.summaryMode == PreferenceSummaryMode.LIVE_ONLY }.map { it.key }).isEmpty()
+        val withLines = screens.filter { it.rowSummaries != null }
+        assertThat(withLines.map { it.key }).containsExactly("auto_isf_settings", "smb_delivery_settings")
+        assertThat(withLines[0].rowSummaries).isSameInstanceAs(withLines[1].rowSummaries)
+        // The defs are data classes: a second call must give an equal screen, not a new live line object.
+        assertThat(openAPSAutoISFPlugin.getPreferenceScreenContent()).isEqualTo(root)
+
+        // Every line belongs to a row of these two screens, whatever the settings are.
+        val rows = withLines.flatMap { s -> s.items.filterIsInstance<PreferenceKey>().map { it.key } }
+        val input = AutoIsfLiveInput(
+            weightsSwitch = true, autoIsfMin = 0.8, autoIsfMax = 1.5, weights = AutoIsfLiveLines.weightKeys.associateWith { 0.0 },
+            iobThPercent = 50, maxIobU = 4.0, smbOnEvenTarget = true, fixedRatio = 0.5, ratioMin = 0.5, ratioMax = 0.7, bgRangeSetting = 20.0
+        )
+        for (variant in listOf(input, input.copy(weightsSwitch = false, smbOnEvenTarget = false), input.copy(bgRangeSetting = 0.0)))
+            assertThat(rows).containsAtLeastElementsIn(AutoIsfLiveLines.lines(variant).keys)
     }
 
     @Test

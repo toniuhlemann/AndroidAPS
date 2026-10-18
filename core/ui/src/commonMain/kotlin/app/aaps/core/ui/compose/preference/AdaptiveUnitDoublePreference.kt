@@ -83,12 +83,18 @@ fun AdaptiveUnitDoublePreferenceItem(
             // slider branch builds its own row instead of going through Preference.
             color = theme.titleColor.let { if (visibility.enabled) it else it.copy(alpha = theme.disabledOpacity) }
         )
-        if (summary != null) {
-            Text(
-                text = summary,
-                style = theme.summaryTextStyle,
-                color = theme.summaryColor.let { if (visibility.enabled) it else it.copy(alpha = theme.disabledOpacity) }
-            )
+        val mode = LocalPreferenceSummaryMode.current
+        // LIVE_ONLY: this row has no live line, the explanation is in the input dialog of the value (dialogSummary)
+        if (summary != null && mode != PreferenceSummaryMode.LIVE_ONLY) {
+            val summaryColor = theme.summaryColor.let { if (visibility.enabled) it else it.copy(alpha = theme.disabledOpacity) }
+            if (mode == PreferenceSummaryMode.SHORT)
+                ShortPreferenceSummary(text = summary, title = stringResource(effectiveTitle), explanation = summary, color = summaryColor)
+            else
+                Text(
+                    text = summary,
+                    style = theme.summaryTextStyle,
+                    color = summaryColor
+                )
         }
         PreferenceSliderWithButtons(
             value = currentValue,

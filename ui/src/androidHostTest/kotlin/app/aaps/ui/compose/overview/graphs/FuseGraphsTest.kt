@@ -21,9 +21,9 @@ internal class FuseGraphsTest {
 
     @Test
     fun `the graph menu offers the FUSE series only while FUSE delivers them`() {
-        assertThat(configurableSeries(fuseAvailable = true)).containsAtLeast(SeriesType.FUSE_DRIVE, SeriesType.FUSE_GUARD)
-        assertThat(configurableSeries(fuseAvailable = false)).containsNoneOf(SeriesType.FUSE_DRIVE, SeriesType.FUSE_GUARD)
-        assertThat(configurableSeries(fuseAvailable = false)).contains(SeriesType.COB)
+        assertThat(configurableSeries(fuseAvailable = true, autoIsfAvailable = false)).containsAtLeast(SeriesType.FUSE_DRIVE, SeriesType.FUSE_GUARD)
+        assertThat(configurableSeries(fuseAvailable = false, autoIsfAvailable = false)).containsNoneOf(SeriesType.FUSE_DRIVE, SeriesType.FUSE_GUARD)
+        assertThat(configurableSeries(fuseAvailable = false, autoIsfAvailable = false)).contains(SeriesType.COB)
     }
 
     @Test

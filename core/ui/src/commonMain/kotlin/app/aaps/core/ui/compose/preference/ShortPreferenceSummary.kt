@@ -28,12 +28,26 @@ import app.aaps.core.ui.compose.AapsSpacing
 import app.aaps.core.ui.compose.stringResource
 
 /**
- * Short summaries: the rows of a screen show at most [SHORT_SUMMARY_MAX_LINES] lines under the title - the live line
- * of the row, or the start of its explanation - and the whole explanation after a tap. A screen asks for it with
- * `PreferenceSubScreenDef.shortSummaries`; the screen renderer provides this flag for the rows of that screen. Off
- * everywhere else, and then the rows look exactly as before.
+ * How much of its explanation a row shows under its title. A screen picks it with
+ * `PreferenceSubScreenDef.shortSummaries` or `PreferenceSubScreenDef.liveLinesOnly`; the screen renderer provides it for
+ * the rows of that screen. [FULL] everywhere else, and then the rows look exactly as before.
  */
-val LocalShortPreferenceSummaries = staticCompositionLocalOf { false }
+enum class PreferenceSummaryMode {
+
+    /** The whole explanation under the title. */
+    FULL,
+
+    /** At most [SHORT_SUMMARY_MAX_LINES] lines - the live line of the row, or the start of its explanation - and all of it after a tap. */
+    SHORT,
+
+    /**
+     * Only the live line, if the row has one. The explanation shows where the value is entered (the input dialog). A
+     * switch has no dialog, so it shows an info sign that opens the explanation.
+     */
+    LIVE_ONLY
+}
+
+val LocalPreferenceSummaryMode = staticCompositionLocalOf { PreferenceSummaryMode.FULL }
 
 /** Lines a short summary shows before it is cut with "…". */
 const val SHORT_SUMMARY_MAX_LINES = 2
@@ -70,22 +84,44 @@ fun ShortPreferenceSummary(
             onTextLayout = { cut = it.hasVisualOverflow },
             modifier = Modifier.weight(1f, fill = false)
         )
-        if (hasMore)
-            Icon(
-                imageVector = Icons.Outlined.Info,
-                contentDescription = label,
-                tint = color,
-                modifier = Modifier
-                    .padding(start = AapsSpacing.small)
-                    .size(AapsSpacing.extraLarge)
-            )
+        if (hasMore) InfoSign(label, color)
     }
-    if (open) {
-        AlertDialog(
-            onDismissRequest = { open = false },
-            title = title?.let { { Text(it) } },
-            text = { Text(full, modifier = Modifier.verticalScroll(rememberScrollState())) },
-            confirmButton = { TextButton(onClick = { open = false }) { Text(stringResource(CoreUiStrings.ok)) } }
-        )
-    }
+    if (open) ExplanationDialog(title, full) { open = false }
 }
+
+/**
+ * Only the info sign: a tap opens [explanation] in a dialog with [title]. For a row that shows no text of its own but
+ * has an explanation and no dialog to show it in (a switch on a [PreferenceSummaryMode.LIVE_ONLY] screen).
+ */
+@Composable
+fun PreferenceExplanationButton(
+    title: String?,
+    explanation: String,
+    modifier: Modifier = Modifier,
+    color: Color = LocalPreferenceTheme.current.summaryColor
+) {
+    var open by remember { mutableStateOf(false) }
+    val label = stringResource(CoreUiStrings.preference_show_explanation)
+    Row(modifier = modifier.clickable(onClickLabel = label) { open = true }) { InfoSign(label, color) }
+    if (open) ExplanationDialog(title, explanation) { open = false }
+}
+
+@Composable
+private fun InfoSign(label: String, color: Color) =
+    Icon(
+        imageVector = Icons.Outlined.Info,
+        contentDescription = label,
+        tint = color,
+        modifier = Modifier
+            .padding(start = AapsSpacing.small)
+            .size(AapsSpacing.extraLarge)
+    )
+
+@Composable
+private fun ExplanationDialog(title: String?, text: String, onDismiss: () -> Unit) =
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = title?.let { { Text(it) } },
+        text = { Text(text, modifier = Modifier.verticalScroll(rememberScrollState())) },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(CoreUiStrings.ok)) } }
+    )

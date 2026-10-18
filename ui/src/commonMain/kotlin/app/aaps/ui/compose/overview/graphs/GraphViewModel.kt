@@ -117,6 +117,15 @@ class GraphViewModel(
     val heartRateGraphFlow = cache.heartRateGraphFlow
     val stepsGraphFlow = cache.stepsGraphFlow
     val fuseGraphFlow = cache.fuseGraphFlow
+    val autoIsfGraphFlow = cache.autoIsfGraphFlow
+
+    /** Fork (autoISF): whether the graph menu offers the six autoISF series - only while autoISF runs. Lazy, as below. */
+    val autoIsfGraphAvailable: StateFlow<Boolean> by lazy {
+        cache.autoIsfGraphFlow
+            .map { it.available }
+            .distinctUntilChanged()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), cache.autoIsfGraphFlow.value.available)
+    }
 
     /**
      * Fork (FUSE): whether the graph menu offers F.DRV and F.GRD - only while FUSE is the active APS and delivers

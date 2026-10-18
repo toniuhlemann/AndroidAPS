@@ -151,4 +151,19 @@
     <string name="lcc_status_set">set</string>
     <string name="lcc_status_empty">EMPTY (deny all)</string>
 
+    <!-- Fork: live lines of the autoISF settings (AutoIsfLiveLines.kt) -->
+    <string name="autoisf_live_no_effect_while_off" comment="%1$s=title of a switch. Example: No effect while Enable AutoISF is off">No effect while %1$s is off</string>
+    <string name="autoisf_live_weight_off">Off at 0</string>
+    <string name="autoisf_live_range_none">autoISF does not change ISF: min and max are both 1</string>
+    <string name="autoisf_live_range_stronger" comment="%1$.2f=factor. Example: autoISF can make ISF up to 2.00 times stronger, never weaker">autoISF can make ISF up to %1$.2f times stronger, never weaker</string>
+    <string name="autoisf_live_range_weaker" comment="%1$.2f=factor. Example: autoISF can make ISF up to 1.43 times weaker, never stronger">autoISF can make ISF up to %1$.2f times weaker, never stronger</string>
+    <string name="autoisf_live_range_both" comment="%1$.2f=factor stronger, %2$.2f=factor weaker. Example: autoISF can make ISF up to 2.00 times stronger or 1.43 times weaker">autoISF can make ISF up to %1$.2f times stronger or %2$.2f times weaker</string>
+    <string name="autoisf_live_iob_th_off" comment="%1$d=percent. Example: Off: iobTH does nothing at 100 %">Off: iobTH does nothing at %1$d %%</string>
+    <string name="autoisf_live_iob_th" comment="%1$s=threshold with unit, %2$d=percent, %3$s=max IOB with unit. Example: 3.00 U (30 % of max IOB 10.00 U). Profile % and sensitivity scale it.">%1$s (%2$d %% of max IOB %3$s). Profile %% and sensitivity scale it.</string>
+    <string name="autoisf_live_smb_ramp_off" comment="%1$.2f=ratio. Example: Ramp off: every SMB uses the fixed ratio 0.50">Ramp off: every SMB uses the fixed ratio %1$.2f</string>
+    <string name="autoisf_live_smb_ramp" comment="%1$.2f=ratio at target, %2$.2f=ratio at the top, %3$s=glucose range with unit. Example: Ramp: 0.50 at target, rising to 0.80 at target + 30 mg/dl">Ramp: %1$.2f at target, rising to %2$.2f at target + %3$s</string>
+    <string name="autoisf_live_smb_not_used_ramp_off">Not used: the ramp is off (BG range 0)</string>
+    <string name="autoisf_live_smb_not_used_ramp_on">Not used while the ramp is on</string>
+    <string name="autoisf_live_smb_full_loop_floor" comment="%1$s=glucose with unit. Example: With the ramp on, only used at even targets below 100 mg/dl, as the lowest ratio">With the ramp on, only used at even targets below %1$s, as the lowest ratio</string>
+
 </resources>

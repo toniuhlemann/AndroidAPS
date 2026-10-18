@@ -5,22 +5,33 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import app.aaps.core.data.model.GlucoseUnit
+import app.aaps.core.interfaces.profile.ProfileUtil
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
 import app.aaps.core.keys.StringKey
+import app.aaps.core.keys.UnitDoubleKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.ui.compose.LocalConfig
 import app.aaps.core.ui.compose.LocalPreferences
+import app.aaps.core.ui.compose.LocalProfileUtil
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.mockito.kotlin.any
+import org.mockito.kotlin.doAnswer
+import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -149,13 +160,79 @@ class AdaptivePreferenceItemsTest {
     fun anInfoRowOnAShortSummaryScreenIsCut() {
         val long = List(40) { "word$it" }.joinToString(" ")
         render {
-            CompositionLocalProvider(LocalShortPreferenceSummaries provides true) {
+            CompositionLocalProvider(LocalPreferenceSummaryMode provides PreferenceSummaryMode.SHORT) {
                 PreferenceInfoRow(PreferenceInfoDef(text = TextRef.Literal(long), title = TextRef.Literal("The heading")))
             }
         }
 
         compose.onNodeWithText(long).performClick()
         compose.onAllNodesWithText(long).assertCountEquals(2)
+    }
+
+    // Fork (autoISF): screens with live lines only - the explanation shows where the value is entered
+
+    private val profileUtil: ProfileUtil = mock {
+        on { units } doReturn GlucoseUnit.MGDL
+        on { fromMgdlToUnits(any(), any()) } doAnswer { it.getArgument<Double>(0) }
+        on { valueInCurrentUnitsDetect(any()) } doAnswer { it.getArgument<Double>(0) }
+    }
+
+    private fun renderIn(mode: PreferenceSummaryMode, block: @Composable () -> Unit) = render {
+        CompositionLocalProvider(LocalProfileUtil provides profileUtil, LocalPreferenceSummaryMode provides mode) { block() }
+    }
+
+    @Test
+    fun aScreenPicksItsSummaryMode() {
+        val def = PreferenceSubScreenDef(key = "k", title = TextRef.Literal("t"))
+        assertEquals(PreferenceSummaryMode.FULL, def.summaryMode)
+        assertEquals(PreferenceSummaryMode.SHORT, def.copy(shortSummaries = true).summaryMode)
+        assertEquals(PreferenceSummaryMode.LIVE_ONLY, def.copy(shortSummaries = true, liveLinesOnly = true).summaryMode)
+    }
+
+    @Test
+    fun aUnitRowOnAShortSummaryScreenIsCutAndATapShowsAllOfIt() {
+        renderIn(PreferenceSummaryMode.SHORT) { AdaptiveUnitDoublePreferenceItem(unitKey = UnitDoubleKey.ApsAutoIsfHalfBasalExerciseTarget) }
+
+        compose.onNodeWithText("Set to a number", substring = true).performClick()
+        // Now the cut row and the dialog both hold the explanation
+        compose.onAllNodesWithText("Set to a number", substring = true).assertCountEquals(2)
+    }
+
+    @Test
+    fun aUnitRowOnALiveOnlyScreenShowsItsExplanationInTheValueDialog() {
+        renderIn(PreferenceSummaryMode.LIVE_ONLY) { AdaptiveUnitDoublePreferenceItem(unitKey = UnitDoubleKey.ApsAutoIsfHalfBasalExerciseTarget) }
+
+        compose.onNodeWithText("Set to a number", substring = true).assertDoesNotExist()
+        // The value ("Title: value"), not the minus and plus buttons ("decrement Title by step")
+        compose.onNode(hasClickAction() and hasContentDescription("Half basal exercise target:", substring = true)).performClick()
+        compose.onNodeWithText("Set to a number", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun aNumberRowOnALiveOnlyScreenShowsOnlyItsLiveLine() {
+        renderIn(PreferenceSummaryMode.LIVE_ONLY) { AdaptiveDoublePreferenceItem(doubleKey = DoubleKey.ApsAutoIsfBgAccelWeight, rowSummary = "what it does now") }
+
+        compose.onNodeWithText("This is the weight", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("what it does now").performClick()
+        compose.onNodeWithText("This is the weight", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun aNumberRowOnALiveOnlyScreenWithoutLiveLineShowsItsExplanationInTheValueDialog() {
+        renderIn(PreferenceSummaryMode.LIVE_ONLY) { AdaptiveDoublePreferenceItem(doubleKey = DoubleKey.ApsAutoIsfBgAccelWeight) }
+
+        compose.onNodeWithText("This is the weight", substring = true).assertDoesNotExist()
+        compose.onNode(hasClickAction() and hasContentDescription("BG acceleration ISF weight:", substring = true)).performClick()
+        compose.onNodeWithText("This is the weight", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun aSwitchOnALiveOnlyScreenKeepsItsExplanationBehindTheInfoSign() {
+        renderIn(PreferenceSummaryMode.LIVE_ONLY) { AdaptiveSwitchPreferenceItem(booleanKey = BooleanKey.ApsUseAutoIsfWeights) }
+
+        compose.onNodeWithText("Enable AutoISF weight-based", substring = true).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Show the whole explanation").performClick()
+        compose.onNodeWithText("Enable AutoISF weight-based", substring = true).assertIsDisplayed()
     }
 
     @Test

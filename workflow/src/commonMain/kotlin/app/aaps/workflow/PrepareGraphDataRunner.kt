@@ -5,6 +5,7 @@ import app.aaps.core.data.configuration.Constants
 import app.aaps.core.data.model.CA
 import app.aaps.core.data.model.TE
 import app.aaps.core.data.time.T
+import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.AutosensData
 import app.aaps.core.interfaces.aps.AutosensDataStore
 import app.aaps.core.interfaces.aps.AutosensResult
@@ -876,6 +877,11 @@ class PrepareGraphDataRunner(
         // Fork (FUSE): F.DRV, F.GRD and the meal markers, while FUSE is the active APS. Not injected: the binding
         // exists only in the FUSE builds.
         data.cache.updateFuseGraph(FuseGraphDataBuilder.build(activePlugin.activeAPS as? FuseOverviewSource, fromTime, endTime))
+        // Fork (autoISF): IOB_TH and the autoISF factors, while autoISF is the active APS and this is not a client
+        val autoIsfRuns = activePlugin.activeAPS?.algorithm == APSResult.Algorithm.AUTO_ISF && !config.AAPSCLIENT
+        data.cache.updateAutoIsfGraph(
+            AutoIsfGraphDataBuilder.build(autoIsfRuns, if (autoIsfRuns) persistenceLayer.getAutoIsfValuesFromTimeToTime(fromTime, endTime) else emptyList())
+        )
 
         data.signals.emitProgress(CalculationWorkflow.ProgressData.PREPARE_IOB_AUTOSENS_DATA, 100)
     }

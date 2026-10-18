@@ -27,7 +27,9 @@ import app.aaps.core.keys.interfaces.TextRef
  * @param icon Optional Compose ImageVector icon shown next to the title
  * @param rowSummaries Optional live lines for the rows of this screen, see [PreferenceRowSummaries]
  * @param shortSummaries The rows show at most two lines under the title and the whole explanation after a tap, see
- *   [LocalShortPreferenceSummaries]
+ *   [PreferenceSummaryMode.SHORT]
+ * @param liveLinesOnly The rows show only their live line, the explanation where the value is entered, see
+ *   [PreferenceSummaryMode.LIVE_ONLY]. Wins over [shortSummaries].
  */
 data class PreferenceSubScreenDef(
     val key: String,
@@ -38,8 +40,17 @@ data class PreferenceSubScreenDef(
     val summary: TextRef? = null,
     val icon: ImageVector? = null,
     val rowSummaries: PreferenceRowSummaries? = null,
-    val shortSummaries: Boolean = false
+    val shortSummaries: Boolean = false,
+    val liveLinesOnly: Boolean = false
 ) : PreferenceItem {
+
+    /** How much of their explanation the rows of this screen show, provided as [LocalPreferenceSummaryMode]. */
+    val summaryMode: PreferenceSummaryMode
+        get() = when {
+            liveLinesOnly  -> PreferenceSummaryMode.LIVE_ONLY
+            shortSummaries -> PreferenceSummaryMode.SHORT
+            else           -> PreferenceSummaryMode.FULL
+        }
 
     /**
      * Resource id form, for the many call sites that still name their strings with R.string.

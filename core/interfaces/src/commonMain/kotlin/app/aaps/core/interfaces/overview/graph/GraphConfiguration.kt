@@ -31,6 +31,24 @@ enum class SeriesType {
 
     /** Fork (FUSE): guard and tail margin, also with the announced meal, and the account state as a strip (F.GRD). */
     FUSE_GUARD,
+
+    /** Fork (autoISF): the effective iobTH of each run [U] (IOB_TH). See [AutoIsfGraphData]. */
+    IOB_TH,
+
+    /** Fork (autoISF): the final autoISF factor (FINAL). */
+    FIN_ISF,
+
+    /** Fork (autoISF): the factor from the glucose acceleration (ACCE). */
+    ACC_ISF,
+
+    /** Fork (autoISF): the factor from the glucose level (BG). */
+    BG_ISF,
+
+    /** Fork (autoISF): the factor from the rise after a meal (PP). */
+    PP_ISF,
+
+    /** Fork (autoISF): the factor from the duration of a high plateau (DURA). */
+    DUR_ISF,
     PREDICTIONS
 }
 

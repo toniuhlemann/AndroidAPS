@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fork (autoISF): short names of the autoISF graph series, as in the fork's graph menu -->
+    <string name="autoisf_iob_th_shortname" comment="Short name of a graph series: the iobTH (IOB threshold) of autoISF">IOB_TH</string>
+    <string name="autoisf_final_shortname" comment="Short name of a graph series: the final autoISF factor">FINAL</string>
+    <string name="autoisf_acce_shortname" comment="Short name of a graph series: the autoISF factor from the glucose acceleration">ACCE</string>
+    <string name="autoisf_bg_shortname" comment="Short name of a graph series: the autoISF factor from the glucose level">BG</string>
+    <string name="autoisf_pp_shortname" comment="Short name of a graph series: the autoISF factor from the rise after a meal (postprandial)">PP</string>
+    <string name="autoisf_dura_shortname" comment="Short name of a graph series: the autoISF factor from the duration of a high plateau">DURA</string>
+</resources>
