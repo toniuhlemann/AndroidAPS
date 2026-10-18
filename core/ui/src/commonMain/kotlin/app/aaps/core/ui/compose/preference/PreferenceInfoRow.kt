@@ -9,13 +9,14 @@ import app.aaps.core.ui.compose.stringResource
 
 /**
  * Renders a [PreferenceInfoDef]: a heading with its text like a preference row, or the text alone as a short
- * paragraph. Neither changes anything. On a screen with short summaries ([LocalShortPreferenceSummaries]) the text
- * is cut to two lines and a tap shows all of it.
+ * paragraph. Neither changes anything. On a screen with short summaries or live lines only
+ * ([LocalPreferenceSummaryMode]) the text is cut to two lines and a tap shows all of it - an info row has no dialog,
+ * so it is never hidden.
  */
 @Composable
 fun PreferenceInfoRow(info: PreferenceInfoDef) {
     val title = info.title
-    val short = LocalShortPreferenceSummaries.current
+    val short = LocalPreferenceSummaryMode.current != PreferenceSummaryMode.FULL
     val text = stringResource(info.text)
     if (title != null) {
         val titleText = stringResource(title)

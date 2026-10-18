@@ -66,7 +66,7 @@ fun LazyListScope.addPreferenceSubScreenDef(
             icon = def.icon
         ) {
             // Render items in order, preserving the original structure
-            CompositionLocalProvider(LocalShortPreferenceSummaries provides def.shortSummaries) {
+            CompositionLocalProvider(LocalPreferenceSummaryMode provides def.summaryMode) {
                 RenderPreferenceItems(
                     items = def.items,
                     parentKey = def.key,
@@ -134,7 +134,7 @@ private fun RenderPreferenceItems(
                             Column(
                                 modifier = Modifier.padding(start = theme.nestedContentIndent)
                             ) {
-                                CompositionLocalProvider(LocalShortPreferenceSummaries provides item.shortSummaries) {
+                                CompositionLocalProvider(LocalPreferenceSummaryMode provides item.summaryMode) {
                                     AdaptivePreferenceList(
                                         items = item.items,
                                         onShowMessage = onShowMessage,

@@ -81,10 +81,12 @@ fun AdaptiveIntPreferenceItem(
                 // slider branch builds its own row instead of going through Preference.
                 color = theme.titleColor.let { if (visibility.enabled) it else it.copy(alpha = theme.disabledOpacity) }
             )
-            val rowText = rowSummary ?: summary
+            val mode = LocalPreferenceSummaryMode.current
+            // LIVE_ONLY: the explanation is in the input dialog of the value (dialogSummary)
+            val rowText = if (mode == PreferenceSummaryMode.LIVE_ONLY) rowSummary else rowSummary ?: summary
             if (rowText != null) {
                 val summaryColor = theme.summaryColor.let { if (visibility.enabled) it else it.copy(alpha = theme.disabledOpacity) }
-                if (LocalShortPreferenceSummaries.current)
+                if (mode != PreferenceSummaryMode.FULL)
                     ShortPreferenceSummary(text = rowText, title = stringResource(effectiveTitle), explanation = summary, color = summaryColor)
                 else
                     Text(
@@ -128,7 +130,9 @@ fun AdaptiveIntPreferenceItem(
                 text.toIntOrNull()?.coerceIn(intKey.min, intKey.max)
             },
             enabled = visibility.enabled,
-            summary = { Text(summaryText) }
+            summary = { Text(summaryText) },
+            // The row shows the range, so the explanation goes into the dialog
+            dialogSummary = summary
         )
     }
 }

@@ -4,12 +4,15 @@
 
 package app.aaps.core.ui.compose.preference
 
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import app.aaps.core.keys.interfaces.BooleanKeyWithChangeGuard
 import app.aaps.core.keys.interfaces.BooleanPreferenceKey
 import app.aaps.core.keys.interfaces.TextRef
@@ -54,27 +57,40 @@ fun AdaptiveSwitchPreferenceItem(
 
     var guardMessage by remember { mutableStateOf<String?>(null) }
 
-    val short = LocalShortPreferenceSummaries.current
+    val mode = LocalPreferenceSummaryMode.current
     val summary: @Composable (() -> Unit)? = when {
         rowSummary != null                      -> {
             {
-                if (short) ShortPreferenceSummary(text = rowSummary, title = stringResource(effectiveTitle), explanation = effectiveSummary?.let { stringResource(it) })
+                if (mode != PreferenceSummaryMode.FULL) ShortPreferenceSummary(text = rowSummary, title = stringResource(effectiveTitle), explanation = effectiveSummary?.let { stringResource(it) })
                 else Text(rowSummary)
             }
         }
 
         summaryOn != null && summaryOff != null -> {
-            { Text(stringResource(if (state.value) summaryOn else summaryOff)) }
+            {
+                val status = stringResource(if (state.value) summaryOn else summaryOff)
+                if (mode == PreferenceSummaryMode.LIVE_ONLY) ShortPreferenceSummary(text = status, title = stringResource(effectiveTitle), explanation = effectiveSummary?.let { stringResource(it) })
+                else Text(status)
+            }
         }
+
+        // LIVE_ONLY: no text on the row, the info sign next to the title opens the explanation
+        mode == PreferenceSummaryMode.LIVE_ONLY -> null
 
         effectiveSummary != null                -> {
             {
-                if (short) ShortPreferenceSummary(text = stringResource(effectiveSummary), title = stringResource(effectiveTitle))
+                if (mode == PreferenceSummaryMode.SHORT) ShortPreferenceSummary(text = stringResource(effectiveSummary), title = stringResource(effectiveTitle))
                 else Text(stringResource(effectiveSummary))
             }
         }
 
         else                                    -> null
+    }
+    // A switch has no dialog: a row without text keeps its explanation behind an info sign
+    val explanationOnly = effectiveSummary.takeIf { mode == PreferenceSummaryMode.LIVE_ONLY && summary == null }
+    val titleSlot: @Composable () -> Unit = {
+        if (explanationOnly != null) TitleWithExplanation(effectiveTitle, booleanKey, explanationOnly)
+        else PreferenceTitleWithSyncBadge(effectiveTitle, booleanKey)
     }
 
     if (changeGuard != null) {
@@ -88,14 +104,14 @@ fun AdaptiveSwitchPreferenceItem(
                     guardMessage = message
                 }
             },
-            title = { PreferenceTitleWithSyncBadge(effectiveTitle, booleanKey) },
+            title = titleSlot,
             summary = summary,
             enabled = visibility.enabled
         )
     } else {
         SwitchPreference(
             state = state,
-            title = { PreferenceTitleWithSyncBadge(effectiveTitle, booleanKey) },
+            title = titleSlot,
             summary = summary,
             enabled = visibility.enabled
         )
@@ -108,5 +124,15 @@ fun AdaptiveSwitchPreferenceItem(
             message = message,
             onDismiss = { guardMessage = null }
         )
+    }
+}
+
+/** The title of a switch with the info sign that opens its [explanation] (no text under the title). */
+@Composable
+private fun TitleWithExplanation(title: TextRef, key: BooleanPreferenceKey, explanation: TextRef) {
+    val titleText = stringResource(title)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        TextWithSyncBadge(text = titleText, key = key, modifier = Modifier.weight(1f, fill = false))
+        PreferenceExplanationButton(title = titleText, explanation = stringResource(explanation))
     }
 }

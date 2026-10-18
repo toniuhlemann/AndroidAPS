@@ -1512,6 +1512,10 @@ open class OpenAPSAutoISFPlugin(
         return new_SMB
     }
 
+    // Fork: the rows show only their live line, the explanation where the value is entered (Toni). Two screens have
+    // live lines; one instance, because the screen defs are data classes (AutoIsfLiveLines.kt).
+    private val liveLines by lazy { AutoIsfLiveSummaries(profileUtil) }
+
     override fun getPreferenceScreenContent() = PreferenceSubScreenDef(
         key = "openapsautoisf_settings",
         title = ApsStrings.openaps_auto_isf,
@@ -1543,7 +1547,8 @@ open class OpenAPSAutoISFPlugin(
                     BooleanKey.ApsAlwaysUseShortDeltas,
                     DoubleKey.ApsMaxDailyMultiplier,
                     DoubleKey.ApsMaxCurrentBasalMultiplier
-                )
+                ),
+                liveLinesOnly = true
             ),
             PreferenceSubScreenDef(
                 key = "auto_isf_settings",
@@ -1559,7 +1564,9 @@ open class OpenAPSAutoISFPlugin(
                     DoubleKey.ApsAutoIsfPpWeight,
                     DoubleKey.ApsAutoIsfDuraWeight,
                     IntKey.ApsAutoIsfIobThPercent
-                )
+                ),
+                rowSummaries = liveLines,
+                liveLinesOnly = true
             ),
             PreferenceSubScreenDef(
                 key = "smb_delivery_settings",
@@ -1571,7 +1578,9 @@ open class OpenAPSAutoISFPlugin(
                     DoubleKey.ApsAutoIsfSmbDeliveryRatioBgRange,
                     DoubleKey.ApsAutoIsfSmbMaxRangeExtension,
                     BooleanKey.ApsAutoIsfSmbOnEvenTarget
-                )
+                ),
+                rowSummaries = liveLines,
+                liveLinesOnly = true
             ),
             // autoISF 3.2.1 (Tobias/ga-zelle)
             PreferenceSubScreenDef(
@@ -1585,7 +1594,8 @@ open class OpenAPSAutoISFPlugin(
                     IntKey.ActivityMonitorIdleStart,
                     IntKey.ActivityMonitorIdleEnd,
                     BooleanKey.ActivityMonitorShowStepsFromSmartphone
-                )
+                ),
+                liveLinesOnly = true
             ),
             PreferenceSubScreenDef(
                 key = "libre_special_settings",
@@ -1597,12 +1607,14 @@ open class OpenAPSAutoISFPlugin(
                     DoubleKey.FslCalSlope,
                     DoubleKey.FslSmoothAlpha,
                     BooleanKey.FslUkfQ1Enabled
-                )
+                ),
+                liveLinesOnly = true
             )
         ) + listOfNotNull(
             // Fork: the local command channel of the IOB-Action viewer. Only where it exists (Android).
             localCommandChannelSettings.screen()?.let { ApsIntentKey.LocalCommandChannel.withCompose(it) }
         ),
-        icon = pluginDescription.icon
+        icon = pluginDescription.icon,
+        liveLinesOnly = true
     )
 }
