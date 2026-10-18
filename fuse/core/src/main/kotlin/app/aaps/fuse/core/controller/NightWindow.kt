@@ -63,6 +63,10 @@ object NightWindow {
      * noch nicht mit Insulin bezahlt ist. Beides zusammen ist das Gegenteil
      * der Lage, fuer die die Totbaender gebaut wurden. Ohne Kredit (DORMANT,
      * SUSPENDED, PENDING_SEAL, Widerruf, Hold) gelten sie unveraendert.
+     *
+     * Beide Rechte sind befristet: das Rebound-Recht bis zur Frist am
+     * Markerdruck ([evidenceMayOverrideRebound]), das Nacht-Recht bis zum Ende
+     * des Mahlzeitfensters ([evidenceMayOverrideNight]).
      */
     fun effectiveDeadbandMgdl(
         reboundWindow: Boolean,
@@ -86,7 +90,7 @@ object NightWindow {
          * Commit-Botschaft die Verdrahtung behauptete).
          */
         reboundOverrideByEvidence: Boolean,
-        /** Das NACHT-Sonderrecht - unbefristet, Verhalten wie bisher. */
+        /** Das NACHT-Sonderrecht - nur im Mahlzeitfenster, s. [evidenceMayOverrideNight]. */
         nightOverrideByEvidence: Boolean,
     ): Double {
         val rebound = if (reboundWindow && !reboundOverrideByEvidence) reboundDeadbandMgdl else 0.0
@@ -120,6 +124,35 @@ object NightWindow {
         deadlineTs: Long,
         computeTs: Long,
     ): Boolean = evidenceCreditActive && deadlineTs > 0L && computeTs < deadlineTs
+
+    /**
+     * DAS NACHT-SONDERRECHT DER EVIDENZ ENDET MIT DEM MAHLZEITFENSTER (Toni).
+     *
+     * DER GEMESSENE ANLASS. Stunden nach dem Abendbrot-Marker, nachts, Bolus an
+     * Bord und der Zucker fallend - FUSE sah das Tief selbst kommen. Toni ass
+     * vorbeugend etwas, bevor der Zucker ins Tief fiel. Den Anstieg las die noch
+     * laufende Evidenzepisode als spaete Mahlzeitwirkung; jeder Kreditzyklus
+     * entwaffnete das Nacht-Totband, und FUSE dosierte zyklusweise gegen das
+     * Gegenessen - genau die Lage, fuer die das Totband gebaut ist.
+     *
+     * Das Mahlzeitfenster ist das Fenster des Kontos (Ende der MEAL-Vollmacht,
+     * Tonis Mahlzeitenfrist). Darin gilt die Regel "Rebound-Totfenster darf das
+     * Mahlzeitenfenster niemals blocken" unveraendert. Danach ist ein Anstieg
+     * nachts wieder unangekuendigt und wird erst ueber der Schwelle korrigiert.
+     * Die Episode selbst laeuft weiter - wie beim Rebound-Sonderrecht wird nur
+     * ihr Recht befristet, ein Totband zu entwaffnen.
+     *
+     * HALB OFFENES FENSTER: bei exakt dem Fensterende ist das Recht beendet.
+     *
+     * @param mealWindowEndTs Ende des Mahlzeitfensters zum gesetzten Marker.
+     *   0 heisst "kein Recht" - kein Konto, Rueckfall ohne Konto, Widerruf
+     *   oder ein neuer Druck ohne eigenes Konto.
+     */
+    fun evidenceMayOverrideNight(
+        evidenceCreditActive: Boolean,
+        mealWindowEndTs: Long,
+        computeTs: Long,
+    ): Boolean = evidenceCreditActive && mealWindowEndTs > 0L && computeTs < mealWindowEndTs
 
     /** Warum das Rebound-Sonderrecht NICHT gilt - typisiert fuer den Trail. */
     enum class ReboundOverrideDenial {

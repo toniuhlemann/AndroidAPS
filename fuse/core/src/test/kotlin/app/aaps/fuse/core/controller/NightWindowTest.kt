@@ -108,4 +108,35 @@ class NightWindowTest {
             0.0,
         )
     }
+    // ---- Das Nacht-Recht der Evidenz endet mit dem Mahlzeitfenster (Toni) ----
+
+    /**
+     * Der Anlass: Stunden nach dem Marker las die noch laufende Episode
+     * vorbeugendes Gegenessen als spaete Mahlzeitwirkung und entwaffnete das
+     * Nacht-Totband. Das Recht gilt nur, solange das Mahlzeitfenster laeuft.
+     */
+    @Test
+    fun `Nacht-Recht der Evidenz nur im Mahlzeitfenster`() {
+        val ende = 10_000_000L
+        assertTrue(NightWindow.evidenceMayOverrideNight(evidenceCreditActive = true, mealWindowEndTs = ende, computeTs = ende - 1L))
+        // Halb offen: am Fensterende ist das Recht beendet.
+        assertFalse(NightWindow.evidenceMayOverrideNight(evidenceCreditActive = true, mealWindowEndTs = ende, computeTs = ende))
+        assertFalse(NightWindow.evidenceMayOverrideNight(evidenceCreditActive = true, mealWindowEndTs = ende, computeTs = ende + 60_000L))
+        // Ohne Kredit nie.
+        assertFalse(NightWindow.evidenceMayOverrideNight(evidenceCreditActive = false, mealWindowEndTs = ende, computeTs = ende - 1L))
+        // Kein Fenster (kein Konto, Rueckfall ohne Konto, Widerruf): fail-closed.
+        assertFalse(NightWindow.evidenceMayOverrideNight(evidenceCreditActive = true, mealWindowEndTs = 0L, computeTs = 1L))
+    }
+
+    /** Nach dem Fenster bleibt das Nacht-Totband trotz Kredit scharf. */
+    @Test
+    fun `nach dem Mahlzeitfenster bleibt das Nacht-Totband trotz Kredit scharf`() {
+        val recht = NightWindow.evidenceMayOverrideNight(evidenceCreditActive = true, mealWindowEndTs = 1_000L, computeTs = 2_000L)
+        assertFalse(recht)
+        assertEquals(
+            45.0,
+            NightWindow.effectiveDeadbandMgdl(false, 25.0, true, 45.0, markerBoost = false, reboundOverrideByEvidence = false, nightOverrideByEvidence = recht),
+            0.0,
+        )
+    }
 }
