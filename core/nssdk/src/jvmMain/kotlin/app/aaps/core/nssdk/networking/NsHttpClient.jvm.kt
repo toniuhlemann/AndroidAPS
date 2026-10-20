@@ -23,9 +23,11 @@ internal actual fun nsHttpClient(
         engine {
             addInterceptor { chain ->
                 val request = chain.request()
-                logger("--> ${request.method} ${request.url}")
+                // The refresh URL carries the access token in its path - never write it to the log.
+                val url = NsLogRedaction.url(request.url.toString())
+                logger("--> ${request.method} $url")
                 val response = chain.proceed(request)
-                logger("<-- ${response.code} ${request.url}")
+                logger("<-- ${response.code} $url")
                 response
             }
         }
