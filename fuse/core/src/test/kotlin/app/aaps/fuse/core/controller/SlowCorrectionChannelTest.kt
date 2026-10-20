@@ -200,17 +200,41 @@ class SlowCorrectionChannelTest {
         assertEquals(Reason.NO_DEMAND_ESTIMATE, laufend(1.5, null, rest = 5).reason)
     }
 
+    private fun block(rate: Double, abMin: Int) = SlowCorrectionChannel.Block(rate, start + abMin * minute, 30)
+
+    private fun plan(vararg bloecke: SlowCorrectionChannel.Block, jetztMin: Int) =
+        SlowCorrectionChannel.plannedEnvelope(bloecke.toList(), start + jetztMin * minute, 0.5)
+
     @Test fun `der geplante Rest steht als Einzelgaben in der Prognose`() {
         // 1,0 U/h auf 0,5 U/h, vor 10 min angefordert: 20 min Rest in 5-min-Gaben zu je 0,5 x 5/60 U.
-        val gaben = SlowCorrectionChannel.plannedChunks(1.0, start, 30, start + 10 * minute, 0.5)
+        val gaben = plan(block(1.0, 0), jetztMin = 10)
         assertEquals(4, gaben.size)
         assertEquals(start + 10 * minute, gaben.first().first)
         assertEquals(0.5 * 20 / 60.0, gaben.sumOf { it.second }, 1e-9)
         // Noch nicht begonnen: ab der Anforderung, der ganze Block.
-        assertEquals(0.25, SlowCorrectionChannel.plannedChunks(1.0, start, 30, start - minute, 0.5).sumOf { it.second }, 1e-9)
+        assertEquals(0.25, plan(block(1.0, 0), jetztMin = -1).sumOf { it.second }, 1e-9)
         // Abgelaufen oder ohne Zusatz: nichts.
-        assertTrue(SlowCorrectionChannel.plannedChunks(1.0, start, 30, start + 30 * minute, 0.5).isEmpty())
-        assertTrue(SlowCorrectionChannel.plannedChunks(0.5, start, 30, start, 0.5).isEmpty())
+        assertTrue(plan(block(1.0, 0), jetztMin = 30).isEmpty())
+        assertTrue(plan(block(0.5, 0), jetztMin = 0).isEmpty())
+    }
+
+    @Test fun `eine unbestaetigte Absenkung mindert den geplanten Rest nicht - nie beide zusammen`() {
+        // Laeuft 1,0 U/h seit Minute 0 (Zusatz 0,5), in Minute 10 auf 0,75 U/h (Zusatz 0,25) abgesenkt angefordert,
+        // jetzt Minute 12 und die Pumpe zeigt die Absenkung noch nicht. Je Abschnitt zaehlt der groessere Zusatz:
+        // bis Minute 30 der alte, danach bis Minute 40 der neue.
+        val alt = block(1.0, 0)
+        val absenkung = block(0.75, 10)
+        val huelle = plan(alt, absenkung, jetztMin = 12).sumOf { it.second }
+        val altRest = 0.5 * 18 / 60.0
+        val neuRest = 0.25 * 28 / 60.0
+        assertEquals(0.5 * 18 / 60.0 + 0.25 * 10 / 60.0, huelle, 1e-9)
+        assertTrue(huelle >= altRest - 1e-9) { "die alte, hoehere TBR kann weiterlaufen" }
+        assertTrue(huelle < altRest + neuRest - 1e-9) { "nie beide Bloecke zusammen" }
+        // Bestaetigt die Pumpe die Absenkung, fuehrt der Lebenszyklus nur noch den neuen Block - dann sinkt der Rest.
+        assertEquals(neuRest, plan(absenkung, jetztMin = 12).sumOf { it.second }, 1e-9)
+        // Eine unbestaetigte ANHEBUNG zaehlt dagegen sofort: je Abschnitt der hoehere neue Zusatz.
+        val anhebung = block(1.0, 10)
+        assertEquals(0.5 * 28 / 60.0, plan(block(0.75, 0), anhebung, jetztMin = 12).sumOf { it.second }, 1e-9)
     }
 
     @Test fun `die TBR sinkt Stufe um Stufe Richtung Profilbasal`() {

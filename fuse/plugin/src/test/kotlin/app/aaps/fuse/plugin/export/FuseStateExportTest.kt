@@ -703,7 +703,7 @@ class FuseStateExportTest {
                         enabled = true, want = true, reason = "CONTINUE", detail = "block", rateUPerH = 2.0,
                         extraUPerH = 1.0, highForMin = 41.0, stage = 2, demandU = 0.8, plannedRemainderU = 0.3, smbThisCycleU = 0.2,
                         phase = "RUNNING", acted = true,
-                        command = "SLOW_CORRECTION_HOLD", smbCutU = 0.1, reservedU = 0.3, deliveredU = 0.2, cancelledU = 0.05,
+                        command = "SLOW_CORRECTION_HOLD", smbCutU = 0.1, smbRoomU = 0.4, reservedU = 0.3, deliveredU = 0.2, cancelledU = 0.05,
                         factor = 2.0, thresholdMgdl = 180.0, entryMin = 30,
                     ),
                 ),
@@ -713,6 +713,7 @@ class FuseStateExportTest {
         assertEquals("RUNNING", block.getString("phase"))
         assertEquals("SLOW_CORRECTION_HOLD", block.getString("command"))
         assertEquals(0.1, block.getDouble("smbCutU"), 0.0)
+        assertEquals(0.4, block.getDouble("smbRoomU"), 0.0)
         assertEquals(0.2, block.getDouble("deliveredU"), 0.0)
         assertEquals(0.3, block.getDouble("reservedU"), 0.0)
         assertEquals(0.05, block.getDouble("cancelledU"), 0.0)

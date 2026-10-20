@@ -2465,9 +2465,9 @@ class FuseCycleRunner(
         transportSichtThisCycle = TransportSicht(aufnahme, transportModelledU)
         // DER GEPLANTE REST DER KANAL-TBR (Toni 20.10.2026): zeitabhaengig in Bahn und Schwanz, wie ein SMB auf dem
         // Transportweg - schon Abgegebenes steht im IOB und zaehlt nicht noch einmal. Ohne Kanal-TBR leer: bitgleich.
-        val slowGeplant = (slowOwnTbr.pendingRequest ?: slowOwnTbr.confirmedRunning)?.let {
-            SlowCorrectionChannel.plannedChunks(it.rateUPerH, it.setAtTs, it.durationMin, computeTs, profile.getBasal(computeTs))
-        }.orEmpty()
+        // Bestaetigt laufender Block UND offene Anforderung, je Abschnitt der groessere Zusatz: eine unbestaetigte
+        // Absenkung mindert die angenommene Restwirkung nicht - die alte, hoehere TBR kann ja weiterlaufen.
+        val slowGeplant = SlowCorrectionChannel.plannedEnvelope(slowBloecke(slowOwnTbr), computeTs, profile.getBasal(computeTs))
         val slowGeplantU = slowGeplant.sumOf { it.second }
         // Der Kern wird weiterhin TRAEGE gebaut: ohne Posten faellt der Aufwand
         // (~540 Modellabfragen) ganz weg.
@@ -5414,10 +5414,10 @@ class FuseCycleRunner(
             wantEnd = !slowWill,
         )
         // DIE GEMEINSAME GRENZE fuer Zyklen ohne Kanal-Kommando: maxIOB minus IOB, Transport und dem geplanten Rest der
-        // Kanal-TBR nach diesem Fortschreiben (eine offene Anforderung ersetzt die laufende und zaehlt ganz).
-        val slowRestU = (slowOwnStep.state.pendingRequest ?: slowOwnStep.state.confirmedRunning)?.let {
-            SlowCorrectionChannel.plannedChunks(it.rateUPerH, it.setAtTs, it.durationMin, computeTs, slowBasal).sumOf { g -> g.second }
-        } ?: 0.0
+        // Kanal-TBR nach diesem Fortschreiben - wieder die Huelle aus bestaetigtem Block und offener Anforderung: nur
+        // tatsaechlich verfuegbarer Spielraum, solange die Pumpe eine Absenkung nicht zeigt.
+        val slowRestU = SlowCorrectionChannel.plannedEnvelope(slowBloecke(slowOwnStep.state), computeTs, slowBasal).sumOf { it.second }
+        val slowSmbRaumU = state.maxIobU - (state.capIobU + transportModelledU) - slowRestU
         val slowUeberlagert = FuseTbrTranslator.ueberlagereLangsamenKanal(
             normal = combinedNormal,
             want = slowWill,
@@ -5426,7 +5426,7 @@ class FuseCycleRunner(
             current = currentTbr,
             pumpBusy = pumpBusy(),
             basalStepUPerH = pumpe.basalStepUPerH,
-            smbRaumU = state.maxIobU - (state.capIobU + transportModelledU) - slowRestU,
+            smbRaumU = slowSmbRaumU,
             bolusStepU = pumpe.bolusStepU,
         )
         val combined = slowUeberlagert.result
@@ -5467,6 +5467,7 @@ class FuseCycleRunner(
                 acted = slowUeberlagert.acted,
                 command = if (slowUeberlagert.acted) combined.reason.substringBefore('|') else null,
                 smbCutU = slowUeberlagert.smbCutU,
+                smbRoomU = slowSmbRaumU,
                 reservedU = slowLedger.reservedU,
                 deliveredU = slowLedger.deliveredU,
                 cancelledU = slowLedger.cancelledU,
@@ -7614,6 +7615,8 @@ class FuseCycleRunner(
         val command: String?,
         /** So viel SMB lag ueber der gemeinsamen maxIOB-Grenze, als der Kanal keinen Platz machen konnte [U]. */
         val smbCutU: Double,
+        /** Der maxIOB-Spielraum neben IOB, Transport und dem geplanten Kanal-Rest [U] - fuer Zyklen ohne Kommando. */
+        val smbRoomU: Double,
         val reservedU: Double,
         val deliveredU: Double,
         val cancelledU: Double,
@@ -7628,6 +7631,10 @@ class FuseCycleRunner(
     private var slowMemory = SlowCorrectionChannel.Memory()
     private var slowOwnTbr = PartialTbrOwnership.State()
     private var slowLedger = SlowCorrectionChannel.Ledger()
+
+    /** Bestaetigt laufender Kanal-Block und offene Anforderung - Grundlage der Huelle [SlowCorrectionChannel.plannedEnvelope]. */
+    private fun slowBloecke(s: PartialTbrOwnership.State): List<SlowCorrectionChannel.Block> =
+        listOfNotNull(s.confirmedRunning, s.pendingRequest).map { SlowCorrectionChannel.Block(it.rateUPerH, it.setAtTs, it.durationMin) }
     private val slowQ1Verlauf = ArrayDeque<Pair<Long, Double>>()
     private var slowExportThisCycle: SlowChannelExport? = null
 

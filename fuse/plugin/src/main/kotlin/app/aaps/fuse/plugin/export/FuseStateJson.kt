@@ -2417,6 +2417,7 @@ object FuseStateJson {
         .put("acted", x.acted)
         .put("command", x.command ?: JSONObject.NULL)
         .put("smbCutU", fin(x.smbCutU))
+        .put("smbRoomU", fin(x.smbRoomU))
         .put("reservedU", fin(x.reservedU))
         .put("deliveredU", fin(x.deliveredU))
         .put("cancelledU", fin(x.cancelledU))

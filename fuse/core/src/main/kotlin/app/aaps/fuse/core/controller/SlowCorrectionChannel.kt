@@ -364,28 +364,40 @@ object SlowCorrectionChannel {
     /** Laenge der Einzelgaben [min], in die der geplante Rest fuer die Prognose zerlegt wird. */
     const val CHUNK_MIN = 5
 
+    /** Ein eigener Kanal-Block: Rate [U/h], Zeitpunkt der Anforderung, Dauer [min]. */
+    data class Block(val rateUPerH: Double, val setAtTs: Long, val durationMin: Int)
+
     /**
-     * DER GEPLANTE REST EINES EIGENEN BLOCKS ALS EINZELGABEN fuer Bahn und Schwanz: je [CHUNK_MIN] Minuten der
-     * Zusatz ueber dem Profilbasal, ab jetzt (oder ab der Anforderung) bis zum Blockende - Zeitpunkt und Menge [U].
-     * So steht die geplante TBR zeitabhaengig in der Prognose wie ein SMB auf dem Transportweg; was schon abgegeben
-     * ist, steht im IOB und zaehlt nicht noch einmal. Jede Gabe sitzt am Anfang ihres Abschnitts - ein wenig frueher
-     * als wirklich, also eher zu viel Wirkung in der Bahn als zu wenig.
+     * DER GEPLANTE REST DER EIGENEN BLOECKE ALS EINZELGABEN fuer Bahn, Schwanz und den SMB-Spielraum: je [CHUNK_MIN]
+     * Minuten ab jetzt der Zusatz ueber dem Profilbasal - Zeitpunkt und Menge [U]. So steht die geplante TBR
+     * zeitabhaengig in der Prognose wie ein SMB auf dem Transportweg; was schon abgegeben ist, steht im IOB und zaehlt
+     * nicht noch einmal. Jede Gabe sitzt am Anfang ihres Abschnitts - eher zu viel Wirkung in der Bahn als zu wenig.
+     *
+     * MEHRERE BLOECKE (die bestaetigt laufende und eine noch offene Anforderung): je Abschnitt zaehlt der GROESSERE
+     * Zusatz, nie beide zusammen. Eine Aenderung ersetzt den laufenden Block erst, wenn die Pumpe sie zeigt - bis
+     * dahin mindert eine unbestaetigte Absenkung die angenommene Restwirkung nicht (die alte, hoehere TBR kann ja
+     * weiterlaufen), und eine unbestaetigte Anhebung zaehlt schon mit. Erst wenn der Lebenszyklus die neue Rate als
+     * bestaetigt fuehrt, faellt der alte Block aus der Liste.
      */
-    fun plannedChunks(
-        rateUPerH: Double,
-        setAtTs: Long,
-        durationMin: Int,
-        nowTs: Long,
-        scheduledBasalUPerH: Double,
-    ): List<Pair<Long, Double>> {
-        val zusatz = rateUPerH - scheduledBasalUPerH
-        if (!zusatz.isFinite() || zusatz <= 0.0 || durationMin <= 0) return emptyList()
-        val ende = setAtTs + durationMin * 60_000L
+    fun plannedEnvelope(blocks: List<Block>, nowTs: Long, scheduledBasalUPerH: Double): List<Pair<Long, Double>> {
+        if (!scheduledBasalUPerH.isFinite()) return emptyList()
+        val gueltig = blocks.filter { it.rateUPerH.isFinite() && it.rateUPerH > scheduledBasalUPerH && it.durationMin > 0 }
+        if (gueltig.isEmpty()) return emptyList()
+        fun ende(b: Block) = b.setAtTs + b.durationMin * 60_000L
+        val schluss = gueltig.maxOf { ende(it) }
+        // ZEITGENAU, nicht je Abschnitt: zwischen zwei Block-Grenzen ist der groesste Zusatz konstant. Je Abschnitt den
+        // groesseren BETRAG zu nehmen verloere dort, wo ein Block mitten im Abschnitt endet, die Minuten des anderen.
+        fun zusatzAb(ts: Long): Double =
+            gueltig.filter { ts >= it.setAtTs && ts < ende(it) }.maxOfOrNull { it.rateUPerH - scheduledBasalUPerH } ?: 0.0
+        val grenzen = gueltig.flatMap { listOf(it.setAtTs, ende(it)) }
         val gaben = ArrayList<Pair<Long, Double>>()
-        var t = max(nowTs, setAtTs)
-        while (t < ende) {
-            val bis = min(ende, t + CHUNK_MIN * 60_000L)
-            gaben += t to zusatz * (bis - t) / 3_600_000.0
+        var t = nowTs
+        while (t < schluss) {
+            val bis = min(schluss, t + CHUNK_MIN * 60_000L)
+            val stuecke = (listOf(t, bis) + grenzen.filter { it > t && it < bis }).distinct().sorted()
+            var menge = 0.0
+            for (i in 0 until stuecke.size - 1) menge += zusatzAb(stuecke[i]) * (stuecke[i + 1] - stuecke[i]) / 3_600_000.0
+            if (menge > 0.0) gaben += t to menge
             t = bis
         }
         return gaben

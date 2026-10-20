@@ -7980,6 +7980,9 @@ class TransportWiringTest : TestBaseWithProfile() {
     /** Was die Rig-Pumpe gerade fuehrt: Rate [U/h] und Start auf der Rig-Uhr; null = keine TBR. */
     private var rigTbr: Pair<Double, Long>? = null
 
+    /** So viele Absenkungen (positive Rate unter der laufenden) verweigert die Rig-Pumpe - die alte Rate laeuft weiter. */
+    private var verweigereAbsenkungen = 0
+
     private fun langsamerKanal(an: Boolean, schwelle: Double = 180.0, faktor: Double = 2.0, einstieg: Int = 30) {
         whenever(preferences.get(FuseBooleanKey.SlowChannelEnabled)).thenReturn(an)
         whenever(preferences.get(FuseDoubleKey.SlowChannelFactor)).thenReturn(faktor)
@@ -8005,6 +8008,11 @@ class TransportWiringTest : TestBaseWithProfile() {
         if (k != null) {
             val laufend = rigTbr
             val rest = laufend?.let { (_, seit) -> 30 - (clock - seit) / 60_000L } ?: 0L
+            val absenkung = laufend != null && k.durationMin > 0 && k.rateUPerH > 0.0 && k.rateUPerH < laufend.first - 0.025
+            if (absenkung && verweigereAbsenkungen > 0) {
+                verweigereAbsenkungen--
+                return o to k
+            }
             rigTbr = when {
                 k.durationMin == 0 -> null
                 abs(k.rateUPerH - 1.0) < 0.05 -> null
@@ -8164,6 +8172,69 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertNotNull(setz) { kanalBericht(lauf) }
         assertEquals(1.5, setz!!.second!!.rateUPerH, 1e-9) { kanalBericht(lauf) }
         assertEquals("2/4 maxIob", setz.first.slowChannel!!.detail)
+    }
+
+    /**
+     * REGRESSION "Absenkung angefordert, alte hoehere TBR laeuft weiter" (Toni 20.10.2026). Eine unbestaetigte Absenkung
+     * darf weder die angenommene Restwirkung (Plan in Bahn und Schwanz) noch die Reservierung noch den SMB-Spielraum
+     * vorzeitig mindern. Ueber mehrere Zyklen: Block auf der Obergrenze, maxIOB sinkt, der Kanal fordert eine Absenkung
+     * an und die Pumpe verweigert sie; Wartephase in der Bestaetigungsfrist ohne neues Kommando; danach Wiederholung,
+     * die Pumpe nimmt sie an - erst dann sinken Plan und Reservierung, und nichts verfaellt.
+     */
+    @Test
+    fun `langsamer Kanal - unbestaetigte Absenkung mindert weder Plan noch Reservierung noch Spielraum`(@TempDir dir: File) = runBlocking<Unit> {
+        flach = 220.0
+        steigungProMin = 0.0
+        maxSmbU = 0.0
+        // Obergrenze 2 x 1,0 U/h: Stufen 1,25 / 1,5 / 1,75 / 2,0 U/h.
+        langsamerKanal(an = true)
+        clock = start
+        rigTbr = null
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+
+        // (1) Bis der Block auf der Obergrenze laeuft, dann 5 min weiter.
+        val lauf = ArrayList<Pair<FuseCycleRunner.Outcome, TbrKommando?>>()
+        while (lauf.none { it.second?.rateUPerH == 2.0 } && lauf.size < 60) lauf += zyklusMitPumpe()
+        assertEquals(2.0, rigTbr?.first ?: -1.0, 1e-9) { kanalBericht(lauf) }
+        val altStart = rigTbr!!.second
+        repeat(5) { lauf += zyklusMitPumpe() }
+
+        // (2) maxIOB sinkt: der offene Rest (1,0 U/h x 25 min) passt nicht mehr - ein ganzer Block traegt nur noch
+        //     Stufe 1/4 (1,25 U/h). Der Kanal fordert sie an, die Pumpe verweigert, die alte Rate laeuft weiter. Eng genug
+        //     gewaehlt, dass die Absenkung auch nach der Bestaetigungsfrist noch noetig ist.
+        maxIobU = 0.15
+        verweigereAbsenkungen = 1
+        val absenkung = zyklusMitPumpe()
+        lauf += absenkung
+        assertEquals(1.25, absenkung.second?.rateUPerH ?: -1.0, 1e-9) { kanalBericht(lauf) }
+        assertEquals(2.0, rigTbr!!.first, 1e-9)
+
+        // (3) Wartephase in der Bestaetigungsfrist: kein neues Kommando; Plan, Reservierung und SMB-Spielraum bleiben
+        //     die der alten, hoeheren TBR.
+        repeat(3) {
+            val (o, k) = zyklusMitPumpe()
+            lauf += o to k
+            val bericht = kanalBericht(lauf)
+            assertNull(k) { bericht }
+            val sc = o.slowChannel!!
+            val altRest = 1.0 * (30.0 - (o.computeTs - altStart) / 60_000.0) / 60.0
+            assertTrue(sc.plannedRemainderU >= altRest - 0.02) { "Plan ${sc.plannedRemainderU} unter dem alten Rest $altRest\n$bericht" }
+            assertEquals(altRest, sc.reservedU, 0.02) { bericht }
+            assertTrue(sc.smbRoomU <= 0.15 - altRest + 0.02) { "Spielraum ${sc.smbRoomU} ueber dem tatsaechlich verfuegbaren\n$bericht" }
+        }
+
+        // (4) Nach der Frist wird wiederholt, die Pumpe nimmt die Absenkung an. Danach zaehlt nur noch die neue Rate.
+        var n = 0
+        while (rigTbr?.first != 1.25 && n++ < 10) lauf += zyklusMitPumpe()
+        assertEquals(1.25, rigTbr?.first ?: -1.0, 1e-9) { kanalBericht(lauf) }
+        val neuStart = rigTbr!!.second
+        repeat(2) { lauf += zyklusMitPumpe() }
+        val sc = lauf.last().first.slowChannel!!
+        val neuRest = 0.25 * (30.0 - (lauf.last().first.computeTs - neuStart) / 60_000.0) / 60.0
+        assertEquals(neuRest, sc.plannedRemainderU, 0.02) { kanalBericht(lauf) }
+        assertEquals(neuRest, sc.reservedU, 0.02) { kanalBericht(lauf) }
+        assertEquals(0.0, sc.cancelledU, 1e-9) { "eine bestaetigte Absenkung loest den Block ab - nichts verfaellt\n${kanalBericht(lauf)}" }
     }
 
     /** Eine harte Sperre erreicht den Kanal im echten Zyklus: bei geschlossenem Pumpentor startet er nie. */
