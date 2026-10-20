@@ -39,9 +39,17 @@ class FuseStateExporter(
          *
          * 32 MB x 3 sind bei diesem Mass rund vier Wochen. Die Zahl bleibt
          * beobachtet: `export.prevBytes` steht in jedem Datensatz.
+         *
+         * NACHGEMESSEN 20.10.2026 auf v4: ~29 kB je Datensatz, rund 40 MB am
+         * Tag - eine 32-MB-Datei traegt nur noch ~19 h, drei Generationen also
+         * gut drei Tage statt vier Wochen. Darum 40 Generationen: mit der
+         * aktiven Datei 41 x 32 MB = rund 1,3 GB, gut 30 Tage wie die
+         * AAPS-Logs (`PeriodicMaintenance.KEEP_LOG_FILES`). Die DATEIGROESSE
+         * bleibt bewusst bei 32 MB: FUSE liest beim Warmstart die ganze aktive
+         * Datei, der Viewer liest .1 bis .3 vollstaendig ein.
          */
         const val MAX_BYTES = 32L * 1024 * 1024
-        const val GENERATIONS = 3
+        const val GENERATIONS = 40
     }
 
     sealed interface Result {

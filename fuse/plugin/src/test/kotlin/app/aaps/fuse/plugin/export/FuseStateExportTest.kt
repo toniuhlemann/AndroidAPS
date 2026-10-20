@@ -1104,6 +1104,27 @@ class FuseStateExportTest {
         assertEquals("b", File(dir, FuseStateExporter.FILE_NAME).readText().trim())
     }
 
+    @Test
+    fun `die Rotation behaelt alle Generationen und verwirft nur die aelteste`(@TempDir dir: File) {
+        val n = FuseStateExporter.GENERATIONS
+        val ex = FuseStateExporter(maxBytes = 1L)          // jede Zeile rotiert
+        repeat(n + 2) { i -> ex.append(dir, "$i") }
+        assertEquals("${n + 1}", File(dir, FuseStateExporter.FILE_NAME).readText().trim())
+        assertEquals("$n", File(dir, "${FuseStateExporter.FILE_NAME}.1").readText().trim())
+        assertEquals("1", File(dir, "${FuseStateExporter.FILE_NAME}.$n").readText().trim())
+        assertFalse(File(dir, "${FuseStateExporter.FILE_NAME}.${n + 1}").exists())
+    }
+
+    /** Gemessen 20.10.2026 auf v4: rund 40 MB Trail am Tag. Der Trail soll so
+     *  lange reichen wie die AAPS-Logs (30 Tage), sonst bestimmt wieder er,
+     *  wie oft abgezogen werden muss. */
+    @Test
+    fun `die Generationen tragen den Trail rund 30 Tage`() {
+        val tagBytes = 40L * 1024 * 1024
+        val traegtTage = (FuseStateExporter.GENERATIONS + 1) * FuseStateExporter.MAX_BYTES / tagBytes
+        assertTrue(traegtTage >= 30, "traegt nur $traegtTage Tage")
+    }
+
     /** Der Export darf niemals werfen — er ist Beobachtung, nicht Regelung. */
     @Test
     fun `ein unbeschreibbares Ziel meldet sich, statt zu werfen`(@TempDir dir: File) {
