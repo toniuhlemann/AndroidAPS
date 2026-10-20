@@ -1,12 +1,16 @@
 package app.aaps.ui.compose.quickLaunch
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
@@ -31,6 +35,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
@@ -161,13 +166,45 @@ private fun ToolbarIconButton(
             modifier = Modifier
                 .size(48.dp)
         ) {
-            Icon(
-                imageVector = item.icon,
-                contentDescription = item.label,
-                tint = resolveItemColor(item),
-                modifier = Modifier.size(24.dp)
-            )
+            val tint = resolveItemColor(item)
+            Box(Modifier.size(24.dp)) {
+                Icon(
+                    imageVector = item.icon,
+                    contentDescription = item.label,
+                    tint = tint,
+                    modifier = Modifier.size(24.dp)
+                )
+                FuseMealMarkView(fuseMealMark(item.fuseMealState), tint, Modifier.align(Alignment.TopEnd))
+            }
         }
+    }
+}
+
+/**
+ * Fork (FUSE): a mark at the meal button. The toolbar shows no text, so the "◉" of the label ("◉ Mahlzeit") was
+ * only in the long-press tooltip, and yellow (meal running) next to orange (no meal) is hard to tell apart.
+ */
+internal enum class FuseMealMark { NONE, DOT, RING }
+
+internal fun fuseMealMark(state: FuseMealButtonState?): FuseMealMark = when (state) {
+    // The marker runs: a press withdraws the meal.
+    FuseMealButtonState.ACTIVE,
+    FuseMealButtonState.ACTIVE_NO_ACCOUNT -> FuseMealMark.DOT
+    // The window of the meal is still open: a press starts a new meal.
+    FuseMealButtonState.NEW_MEAL          -> FuseMealMark.RING
+    FuseMealButtonState.IDLE, null        -> FuseMealMark.NONE
+}
+
+/** The mark sits at the top right corner, half outside the icon; an edge in the toolbar color keeps it apart. */
+@Composable
+private fun FuseMealMarkView(mark: FuseMealMark, color: Color, modifier: Modifier) {
+    if (mark == FuseMealMark.NONE) return
+    val toolbar = MaterialTheme.colorScheme.surfaceContainerHigh
+    val placed = modifier.offset(x = 4.dp, y = (-4).dp).size(10.dp)
+    when (mark) {
+        FuseMealMark.DOT  -> Box(placed.background(color, CircleShape).border(2.dp, toolbar, CircleShape))
+        FuseMealMark.RING -> Box(placed.background(toolbar, CircleShape).border(2.dp, color, CircleShape))
+        FuseMealMark.NONE -> Unit
     }
 }
 
