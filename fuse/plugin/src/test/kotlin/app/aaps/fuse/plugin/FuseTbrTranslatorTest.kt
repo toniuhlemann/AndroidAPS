@@ -439,4 +439,60 @@ class FuseTbrTranslatorTest {
         assertEquals(0.30, r.request?.rateUPerH ?: -1.0, 1e-12)
         assertEquals(0.0, r.decision.smbU, 1e-12)
     }
+
+    // ---- Der globale SMB-Schalter von AAPS (Toni) ------------------------------
+
+    /** Schalter aus: die sonst freie Menge faellt weg, die TBR-Anforderung bleibt, wie die Tabelle sie stellt. */
+    @Test
+    fun `SMB-Schalter aus nimmt die Menge und laesst die TBR stehen`() {
+        val an = FuseTbrTranslator.combine(
+            decision(0.20, FuseController.TbrAction.CANCEL_TO_SCHEDULED), running(1.50), scheduled, cfg,
+        )
+        val aus = FuseTbrTranslator.combine(
+            decision(0.20, FuseController.TbrAction.CANCEL_TO_SCHEDULED), running(1.50), scheduled, cfg,
+            smbSchalterAus = true,
+        )
+        assertEquals(0.20, an.decision.smbU, 1e-12)
+        assertFalse(an.smbSwitchOff)
+        assertEquals(0.0, aus.decision.smbU, 1e-12)
+        assertTrue(aus.smbSwitchOff)
+        assertEquals(an.request, aus.request)
+        assertEquals(TbrPolicy.SmbBlockCause.NONE, aus.smbBlockCause)
+    }
+
+    /** Auch eine markerautorisierte Menge: der Schalter ist die ausdrueckliche Vorgabe des Nutzers. */
+    @Test
+    fun `SMB-Schalter aus nimmt auch den autorisierten Anteil`() {
+        val r = FuseTbrTranslator.combine(
+            autorisiert(0.10, 0.10, FuseController.TbrAction.ZERO_TEMP), null, scheduled, cfg,
+            smbSchalterAus = true,
+        )
+        assertEquals(0.0, r.decision.smbU, 1e-12)
+        assertTrue(r.smbSwitchOff)
+        assertEquals(FuseController.TbrRequest(0.0, 30), r.request, "die Null laeuft weiter")
+    }
+
+    /** Ohne Menge gibt es keinen Widerspruch fuer C7a: das Ende der laufenden Null geht hinaus wie ohne SMB. */
+    @Test
+    fun `SMB-Schalter aus loest kein C7a-Veto aus`() {
+        val r = FuseTbrTranslator.combine(
+            decision(0.20, FuseController.TbrAction.KEEP_CURRENT), running(0.0), scheduled, cfg,
+            smbSchalterAus = true,
+        )
+        assertEquals(FuseController.TbrRequest(0.0, 0), r.request)
+        assertFalse(r.reason.startsWith(FuseTbrTranslator.C7A_REASON), r.reason)
+    }
+
+    /** Hat schon ein anderer Riegel genullt, ist der Schalter nicht der Grund und wird nicht gemeldet. */
+    @Test
+    fun `SMB-Schalter aus meldet sich nicht, wenn ein anderer Riegel schon nullte`() {
+        val r = FuseTbrTranslator.combine(
+            decision(0.20, FuseController.TbrAction.KEEP_CURRENT), running(1.50), scheduled, cfg,
+            fault = TbrPolicy.FaultCode.CORE_INPUT_INVALID,
+            smbSchalterAus = true,
+        )
+        assertEquals(0.0, r.decision.smbU, 1e-12)
+        assertFalse(r.smbSwitchOff)
+        assertTrue(r.smbBlockCause != TbrPolicy.SmbBlockCause.NONE)
+    }
 }

@@ -60,6 +60,8 @@ object FuseTbrTranslator {
          * nachgelagert gesperrten Dosis.
          */
         val smbBlockCause: TbrPolicy.SmbBlockCause = TbrPolicy.SmbBlockCause.NONE,
+        /** Der globale SMB-Schalter hat eine sonst freie Menge genommen (s. `smbSchalterAus` in [combine]). */
+        val smbSwitchOff: Boolean = false,
     )
 
     /**
@@ -189,6 +191,12 @@ object FuseTbrTranslator {
          *  UNBERUEHRT - der Latch haelt ausschliesslich die Basalachse,
          *  der positive Insulinpfad ist strukturell unbeeinflusst. */
         latchZeroOnly: Boolean = false,
+        /**
+         * DER GLOBALE SMB-SCHALTER VON AAPS IST AUS (Toni): `BooleanKey.ApsUseSmb`, den etwa eine Szene "SMB aus"
+         * umlegt. Dann gibt FUSE keine SMB, auch keine markerautorisierte. Die TBR-Achse bleibt, wie die Tabelle sie
+         * stellt: der Schalter heisst "keine Boli", nicht "keine Basalsteuerung".
+         */
+        smbSchalterAus: Boolean = false,
     ): Result {
         val tbr = TbrPolicy.decide(
             intentOf(decision.tbr), current, scheduledBasalUPerH, cfg, fault, pumpBusy,
@@ -217,7 +225,12 @@ object FuseTbrTranslator {
             if (latchZeroOnly && tbr.smbBlockCause == TbrPolicy.SmbBlockCause.SAFETY_ZERO)
                 TbrPolicy.SmbBlockCause.NONE
             else tbr.smbBlockCause
-        val effective = applyBlock(decision, wirksamerGrund)
+        val nachRiegel = applyBlock(decision, wirksamerGrund)
+        // DER SMB-SCHALTER greift NACH allen Riegeln und VOR C7a: eine genullte Menge beendet keine Zurueckhaltung,
+        // die TBR-Anforderung bleibt also, wie die Tabelle sie gestellt hat. Gemeldet wird er nur, wenn er wirklich
+        // eine Menge genommen hat - sonst war ein anderer Riegel oder keiner der Grund.
+        val schalterNimmt = smbSchalterAus && nachRiegel.smbU > 0.0
+        val effective = if (schalterNimmt) nachRiegel.copy(smbU = 0.0) else nachRiegel
         // C7a — GEMEINSAMES ZERTIFIKAT (Codex-Adjudication H3, D-Tabelle C7).
         val ends = effective.smbU > 0.0 && endsWithholding(tbr.outcome, current, scheduledBasalUPerH, cfg)
         // C7c — DIE AUTORISIERUNG ZERTIFIZIERT BEIDE GEMEINSAM (Toni 17.08.).
@@ -261,8 +274,12 @@ object FuseTbrTranslator {
             // ursaechlich. Der Runner entscheidet das anhand von
             // `actuatedU`, hier steht nur, WELCHER griff.
             smbBlockCause = wirksamerGrund,
+            smbSwitchOff = schalterNimmt,
         )
     }
+
+    /** Endgrund, wenn allein der globale SMB-Schalter von AAPS die Menge genommen hat (Trail `smb.finalBlock`). */
+    const val SMB_SWITCH_OFF_BLOCK = "SMB_SWITCH_OFF"
 
     /** Grund-Praefix des C7a-Vetos. Als Konstante, weil er im Trail gesucht
      *  wird: ohne ihn saehe der unterdrueckte Abbruch aus wie "es lief nichts". */

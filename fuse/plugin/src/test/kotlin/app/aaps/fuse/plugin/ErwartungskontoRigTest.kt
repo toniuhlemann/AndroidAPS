@@ -79,6 +79,8 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     private var clock = 0L
     private var markerPress = 0L
     private var markerAt = 0L
+    /** Der globale SMB-Schalter von AAPS, wie ihn das Plugin dem Runner gibt; umlegbar je Minute ueber `vorZyklus`. */
+    private var smbSchalterAn = true
     private var ohneVorschuss = false
     private var nurErwartung = false
     /** E-034 v2: die Bestaetigung "Mahlzeit nach Tief" [ms]; 0 = keine. */
@@ -282,7 +284,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             clock += 60_000L
             vorZyklus(f.minute(clock))
             val evidenzVorLauf = ledger.episodes.evidenceState
-            val o = runner.run(false, testPumpe())
+            val o = runner.run(false, testPumpe(), smbSchalterAn = smbSchalterAn)
             val units = o.decision.smbU.takeIf { it > 0.0 }
             val cycleId = "ek#${o.computeTs}"
             val rt = RT(
@@ -1870,6 +1872,34 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(nach30.all { it.o.erwartungskonto!!.zyklus!!.eval.restEffU == 0.0 })
         // Die Anpassung nimmt den Skalierer ab +20 zurueck, nie ueber den eingestellten.
         assertTrue(zyklen.filter { it.minute in 21..30 }.all { (it.frueh()?.scaleEff ?: 0.0) <= 1.0 + 1e-12 })
+    }
+
+    /**
+     * DER GLOBALE SMB-SCHALTER (Toni): steht er beim Druck aus, etwa durch eine Szene "SMB aus", geht nichts hinaus und
+     * das Konto bucht nichts. Wird er erst nach dem Fenster der Anfangsportion wieder eingeschaltet, kommt sie NICHT
+     * verspaetet - sie ist verfallen, danach gibt es nur die weiteren, gepruefte Portionen.
+     */
+    @Test
+    fun `SMB-Schalter aus am Druck - keine Abgabe und danach keine spaete Anfangsportion`(@TempDir dir: File) = runBlocking<Unit> {
+        val mit = fruehLauf(fStabil, File(dir, "mit")) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+        assertTrue(mit.any { it.frueh()?.initial == true && it.dErw() > 0.0 }) { "Gegenprobe: keine Anfangsportion mit Schalter an" }
+
+        val einMin = app.aaps.fuse.core.controller.EarlySupply.INITIAL_WINDOW_MIN.toInt() + 5
+        val ohne = try {
+            fruehLauf(fStabil, File(dir, "ohne"), vorZyklus = { m -> smbSchalterAn = m >= einMin }) {
+                fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
+            }
+        } finally {
+            smbSchalterAn = true
+        }
+        val aus = ohne.filter { it.minute < einMin }
+        assertTrue(aus.isNotEmpty())
+        assertTrue(aus.all { it.geliefertU == 0.0 && it.dErw() == 0.0 }) {
+            "Abgabe oder Buchung bei Schalter aus: " + aus.filter { it.geliefertU > 0.0 || it.dErw() > 0.0 }.map { it.minute }
+        }
+        assertTrue(aus.any { it.o.smbFinalBlock == FuseTbrTranslator.SMB_SWITCH_OFF_BLOCK }) { "Schalter nicht als Endgrund gemeldet" }
+        assertTrue(aus.none { it.o.smbSwitchOn == true }) { "Export meldet den Schalter an" }
+        assertTrue(ohne.none { it.minute >= einMin && it.frueh()?.initial == true && it.dErw() > 0.0 }) { "spaete Anfangsportion" }
     }
 
     @Test

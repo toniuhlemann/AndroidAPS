@@ -36,6 +36,7 @@ import app.aaps.core.interfaces.rx.events.EventAPSCalculationFinished
 import app.aaps.core.interfaces.rx.events.EventRefreshOverview
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.interfaces.utils.HardLimits
+import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.TextRef
@@ -1566,7 +1567,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         try {
 
         val outcome = try {
-            cycleRunner().run(tempBasalFallback, aktivePumpe)
+            // Der globale SMB-Schalter von AAPS (Toni): steht er aus, etwa durch eine Szene "SMB aus", gibt FUSE keine SMB.
+            cycleRunner().run(tempBasalFallback, aktivePumpe, smbSchalterAn = preferences.get(BooleanKey.ApsUseSmb))
         } catch (e: Exception) {
             aapsLogger.error(LTag.APS, "FUSE cycle failed", e)
             // SUB-02 Rest (Codex Re-Review 603a15a): eine Ausnahme umgeht das

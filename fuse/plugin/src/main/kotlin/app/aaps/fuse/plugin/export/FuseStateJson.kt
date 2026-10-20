@@ -762,6 +762,8 @@ object FuseStateJson {
                     // ueber einer nachgelagert gesperrten Dosis.
                     .put("actuatedU", outcome.smbActuatedU?.let { fin(it) } ?: JSONObject.NULL)
                     .put("finalBlock", outcome.smbFinalBlock ?: JSONObject.NULL)
+                    // Der globale SMB-Schalter von AAPS (etwa eine Szene "SMB aus"); null in Zyklen ohne Entscheidung.
+                    .put("switchOn", outcome.smbSwitchOn ?: JSONObject.NULL)
             } ?: JSONObject.NULL)
             // A1: der zentrale Dosierkontext (Bauauftrag §4) mit den vier
             // Pflichtfeldern; policyGeneration = der bestehende Policy-Hash

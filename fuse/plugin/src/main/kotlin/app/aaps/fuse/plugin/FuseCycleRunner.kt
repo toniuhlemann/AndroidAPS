@@ -275,6 +275,11 @@ class FuseCycleRunner(
      *  Zu Beginn jedes Laufs geleert (KI-174), s. [run]. */
     private var upfrontChainThisCycle: UpfrontChain? = null
 
+    /** Der globale SMB-Schalter von AAPS (`BooleanKey.ApsUseSmb`) fuer DIESEN Zyklus, gesetzt in [run]. Das Plugin
+     *  liest ihn, nicht der Runner: die Pruefstaende stellen jeden AAPS-Schalter pauschal auf "aus" und rechnen so
+     *  weiter mit SMB. */
+    private var smbSchalterAnThisCycle: Boolean = true
+
     /** Aufnahmenachweis und Transportmenge DIESES Zyklus fuer den Export. Wie
      *  die Sofortbatch-Kette am Zyklusanfang geleert (KI-174). */
     private var transportSichtThisCycle: TransportSicht? = null
@@ -1403,6 +1408,8 @@ class FuseCycleRunner(
          * Menge danach nullte. Diese Zahl macht den Unterschied sichtbar.
          */
         val smbFinalBlock: String? = null,
+        /** Stand des globalen SMB-Schalters von AAPS in diesem Zyklus; `null` in Zyklen ohne SMB-Entscheidung. */
+        val smbSwitchOn: Boolean? = null,
         val exposureGateBindet: Boolean? = null,
         val exposureGateBlocked: Boolean? = null,
         val exposureGateHeadroomU: Double? = null,
@@ -1552,7 +1559,8 @@ class FuseCycleRunner(
      * durchlassen, waehrend die Ledgerzeile als emuliert gepinnt wird - und
      * damit ohne Patchpruefung bindet (Auditbefund 10.08.2026).
      */
-    fun run(tempBasalFallback: Boolean, pumpe: FuseActivePump): Outcome {
+    fun run(tempBasalFallback: Boolean, pumpe: FuseActivePump, smbSchalterAn: Boolean = true): Outcome {
+        smbSchalterAnThisCycle = smbSchalterAn
         // KI-174: die Sofortbatch-Kette gilt nur fuer DIESEN Zyklus. Der
         // Hauptpfad setzt sie neu; der praediktorfreie Markerpfad kehrt vorher
         // zurueck und exportierte ohne dieses Leeren die Kette des letzten
@@ -5229,6 +5237,7 @@ class FuseCycleRunner(
             decision = decision,
             current = currentTbr,
             latchZeroOnly = zeroLatchUebersteuert,
+            smbSchalterAus = !smbSchalterAnThisCycle,
             scheduledBasalUPerH = profile.getBasal(computeTs),
             // Der Anteil gilt NUR in der Teilstufe; sonst 0, und die
             // Tabelle rechnet dann bitgleich wie bisher.
@@ -5679,8 +5688,10 @@ class FuseCycleRunner(
                 decisionVorEndpruefung.smbU <= 0.0 -> null
                 actuatedU > 0.0                    -> null
                 !gate.allowed                      -> "PUMP_GATE"
+                combined.smbSwitchOff              -> FuseTbrTranslator.SMB_SWITCH_OFF_BLOCK
                 else                               -> combined.smbBlockCause.name
             },
+            smbSwitchOn = smbSchalterAnThisCycle,
             exposureGateBindet = exposureGateResult?.bindet,
             exposureGateBlocked = exposureGateResult?.blocked,
             exposureGateHeadroomU = exposureGateResult?.headroomU,
@@ -6777,6 +6788,7 @@ class FuseCycleRunner(
         val runningTbr = lies { processedTbrEbData.getTempBasalIncludingConvertedExtended(computeTs) }
         val combined = FuseTbrTranslator.combine(
             decision = heldMitRiegel,
+            smbSchalterAus = !smbSchalterAnThisCycle,
             current = runningTbr?.let {
                 TbrPolicy.Current(
                     absoluteRateUPerH = it.convertedToAbsolute(computeTs, profile),
@@ -6931,8 +6943,10 @@ class FuseCycleRunner(
                 heldVorEndpruefung.smbU <= 0.0 -> null
                 actuatedU > 0.0                -> null
                 !gate.allowed                  -> "PUMP_GATE"
+                combined.smbSwitchOff          -> FuseTbrTranslator.SMB_SWITCH_OFF_BLOCK
                 else                           -> combined.smbBlockCause.name
             },
+            smbSwitchOn = smbSchalterAnThisCycle,
             exposureGateBindet = fallbackGateResult?.bindet,
             exposureGateBlocked = fallbackGateResult?.blocked,
             exposureGateHeadroomU = fallbackGateResult?.headroomU,
