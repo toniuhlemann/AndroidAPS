@@ -185,6 +185,15 @@ object FuseSettings {
             ),
             FuseBooleanKey.LivenessChannelEnabled, FuseDoubleKey.LivenessBgMinDayMgdl, FuseDoubleKey.LivenessBgMinNightMgdl,
             FuseIntKey.LivenessReArmMin,
+            info(
+                "Langsamer Korrekturkanal",
+                "Positive TBR fuer Tage mit erhoehtem Bedarf (Infekt, Resistenz) - ein Schalter, den du an solchen " +
+                    "Tagen einschaltest. Rate nach Bedarf, der Faktor ist nur die Obergrenze. Einstieg und Stopp nur " +
+                    "ueber den gemessenen Verlauf; darf an Guard, Schwanz und Exposition vorbei, nie ueber maxIOB. " +
+                    "Laeuft wie das Profilbasal nebenher - SMB bleiben unberuehrt.",
+            ),
+            FuseBooleanKey.SlowChannelEnabled, FuseDoubleKey.SlowChannelFactor, FuseDoubleKey.SlowChannelThresholdMgdl,
+            FuseIntKey.SlowChannelEntryMin,
             info("Onset", "Fruehe Reaktion auf einen kinematisch erkannten Mahlzeitbeginn ohne Marker."),
             FuseBooleanKey.OnsetChannelEnabled, FuseDoubleKey.OnsetEnvelopeU,
             info(
@@ -209,7 +218,8 @@ object FuseSettings {
             info(
                 "Welche Kanaele werden gesperrt?",
                 "Beide Totbaender sperren den SMB-Kanal. Eine laufende Basalabsenkung bleibt als Schutz bestehen; " +
-                    "positive TBR verwendet FUSE derzeit nicht. Ein erklaerter Mahlzeitenmarker kann die Markerregeln oeffnen.",
+                    "positive TBR setzt FUSE nur ueber den langsamen Korrekturkanal (Schalter, ab Werk aus). Ein " +
+                    "erklaerter Mahlzeitenmarker kann die Markerregeln oeffnen.",
             ),
             FuseDoubleKey.NightDeadbandMgdl,
             info("Nachtfenster", "Beginn und Ende stehen in Minuten ab Mitternacht (1380 = 23:00). Beginn gleich Ende schaltet es aus."),
@@ -228,8 +238,10 @@ object FuseSettings {
                 "Jeder neue 1-min-CGM-Wert ist ein Zyklus. Fest - kein Legacy-SMB-Intervall. Geregelt wird mit der insulinbereinigten Stoerungsrate r; Q1 und Rohwert stehen im Reiter nebeneinander.",
             ),
             info(
-                "Positive TBR: nicht verwendet",
-                "Der schnelle Kanal ist der 1-min-SMB; FUSE setzt nur Null-Temps oder bricht ab. Max-TBR/Basal-Multiplikatoren greifen deshalb nicht.",
+                "Positive TBR: nur langsamer Korrekturkanal",
+                "Der schnelle Kanal ist der 1-min-SMB. Ohne den Schalter \"Langsamer Korrekturkanal\" setzt FUSE nur " +
+                    "Null-Temps oder bricht ab. Mit ihm gelten fuer die positive TBR die AAPS-Grenzen der Basalrate " +
+                    "(Hard-Limit, Pumpe).",
             ),
             info(
                 "ISF: Profil, zeitabhaengig",

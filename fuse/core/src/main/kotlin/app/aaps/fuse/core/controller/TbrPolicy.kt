@@ -159,6 +159,15 @@ object TbrPolicy {
          * TBR-Zustand zeigt, dass unsere Teilrate nicht mehr laeuft.
          */
         PARTIAL_ENDING,
+
+        /**
+         * DIE GEMEINSAME maxIOB-GRENZE MIT DEM LANGSAMEN KORREKTURKANAL (Toni 20.10.2026). Der Kanal sperrt keinen SMB;
+         * SMB und TBR teilen sich aber maxIOB, abgestimmt VOR beiden Kommandos desselben Zyklus. Normal macht die TBR
+         * Platz (sie sinkt im selben Zyklus). Kann der Kanal in einem Zyklus nicht kommandieren (Bestaetigung offen,
+         * Abbruch im Backoff, Pumpe belegt), bekommt der SMB nur den Spielraum neben dem geplanten Rest - und ist der
+         * null, steht diese Ursache da.
+         */
+        SLOW_CORRECTION,
         PUMP_BUSY,
         INVALID_INPUT,
         SAFETY_SNAPSHOT_MISSING,

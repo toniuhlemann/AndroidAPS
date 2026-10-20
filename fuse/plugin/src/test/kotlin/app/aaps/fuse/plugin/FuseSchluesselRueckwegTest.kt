@@ -80,9 +80,23 @@ class FuseSchluesselRueckwegTest {
      * Neue Schluessel NACH dem 1.x-Stand, deren Vorgabe genau das bisherige Verhalten ist - je mit dieser Vorgabe. Ein
      * Eintrag hier braucht den Nachweis im Code (Standard = alter Ablauf), nicht nur einen Wert.
      */
-    private val neuMitNeutralerVorgabe: Map<String, Double> = mapOf(
+    private val neuMitNeutralerVorgabe: Map<String, Any> = mapOf(
         // Schritt 2: 0 = die Schwelle "Mahlzeit laeuft" ist die Rampen-Unterkante, wie vor dieser Einstellung.
         FuseDoubleKey.MealRunningMinR.key to 0.0,
+        // Langsamer Korrekturkanal (Toni 20.10.2026): ab Werk AUS, und aus ist er bitgleich mit dem Stand davor
+        // (FuseTbrTranslator.ueberlagereLangsamenKanal greift nur, wenn er beteiligt ist).
+        FuseBooleanKey.SlowChannelEnabled.key to false,
+    )
+
+    /**
+     * Neue Regler, die NUR hinter einem neuen Schalter mit neutraler Vorgabe wirken - je mit diesem Schalter. Fehlen
+     * sie in einer alten Sicherung, fehlt dort auch der Schalter, und der steht dann aus: keine andere
+     * Funktionskombination (Vertragspunkt 3).
+     */
+    private val neuHinterSchalter: Map<String, String> = mapOf(
+        FuseDoubleKey.SlowChannelFactor.key to FuseBooleanKey.SlowChannelEnabled.key,
+        FuseDoubleKey.SlowChannelThresholdMgdl.key to FuseBooleanKey.SlowChannelEnabled.key,
+        FuseIntKey.SlowChannelEntryMin.key to FuseBooleanKey.SlowChannelEnabled.key,
     )
 
     private val alle get() = fuseSchluesselKlassen.flatMap { it.enumConstants!!.asIterable() }
@@ -100,7 +114,7 @@ class FuseSchluesselRueckwegTest {
     @Test
     fun `es kommt kein neuer Schluessel hinzu und keiner doppelt`() {
         val schluessel = alle.map { it.key }
-        val neu = schluessel.toSet() - stand1x - neuMitNeutralerVorgabe.keys
+        val neu = schluessel.toSet() - stand1x - neuMitNeutralerVorgabe.keys - neuHinterSchalter.keys
         assertTrue(neu.isEmpty()) { "neu - fehlt in jeder alten Sicherung (Uebernahmevertrag pruefen): $neu" }
         assertEquals(schluessel.size, schluessel.toSet().size, "doppelt registriert")
     }
@@ -108,12 +122,21 @@ class FuseSchluesselRueckwegTest {
     /** Die Ausnahme haelt nur, solange die Vorgabe das bisherige Verhalten ist - sie darf sich nicht still verschieben. */
     @Test
     fun `neue Schluessel stehen auf ihrer neutralen Vorgabe`() {
-        for ((key, neutral) in neuMitNeutralerVorgabe) {
-            val k = FuseDoubleKey.entries.single { it.key == key }
-            assertEquals(neutral, k.defaultValue, 0.0, "Vorgabe von $key")
-            assertTrue(neutral in k.min..k.max) { "neutrale Vorgabe von $key nicht einstellbar" }
+        for ((key, neutral) in neuMitNeutralerVorgabe) when (neutral) {
+            is Double  -> {
+                val k = FuseDoubleKey.entries.single { it.key == key }
+                assertEquals(neutral, k.defaultValue, 0.0, "Vorgabe von $key")
+                assertTrue(neutral in k.min..k.max) { "neutrale Vorgabe von $key nicht einstellbar" }
+            }
+            is Boolean -> assertEquals(neutral, FuseBooleanKey.entries.single { it.key == key }.defaultValue, "Vorgabe von $key")
+            else       -> throw AssertionError("Typ der neutralen Vorgabe von $key nicht geprueft")
         }
         assertTrue(neuMitNeutralerVorgabe.keys.none { it in stand1x }) { "kein 1.x-Schluessel ist neu" }
+        // Ein Regler hinter einem Schalter ist nur neutral, wenn der Schalter selbst neu und neutral ist.
+        for ((regler, schalter) in neuHinterSchalter) {
+            assertTrue(regler !in stand1x) { "$regler ist kein neuer Schluessel" }
+            assertEquals(false, neuMitNeutralerVorgabe[schalter]) { "Schalter $schalter von $regler steht nicht neutral aus" }
+        }
     }
 
     /**

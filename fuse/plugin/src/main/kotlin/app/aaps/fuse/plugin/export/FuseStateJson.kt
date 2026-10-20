@@ -634,6 +634,9 @@ object FuseStateJson {
             })
             // E-034: nur bei eingeschaltetem Konto - aus bleibt der Datensatz bitgleich.
             .apply { outcome.erwartungskonto?.let { put("expectationAccount", erwartungskontoJson(it)) } }
+            // Langsamer Korrekturkanal (Toni 20.10.2026): nur, wenn er an ist oder noch etwas von ihm laeuft - aus
+            // bleibt der Datensatz bitgleich.
+            .apply { outcome.slowChannel?.let { put("slowChannel", slowChannelJson(it)) } }
             .put("mealFoundation", JSONObject()
                 .put("armed", false)
                 .put("armedTs", 0L)
@@ -2084,6 +2087,17 @@ object FuseStateJson {
                     .put("expectationValid", p.expectationParams != null),
             )
         }
+        // Langsamer Korrekturkanal (Toni 20.10.2026): nur bei eingeschaltetem Kanal - aus bleibt das JSON bitgleich.
+        .apply {
+            if (p.slowChannel.enabled) put(
+                "slowChannel",
+                JSONObject()
+                    .put("factor", fin(p.slowChannel.factor))
+                    .put("thresholdMgdl", fin(p.slowChannel.thresholdMgdl))
+                    .put("entryMin", p.slowChannel.entryMin)
+                    .put("settingsValid", p.slowChannel.violation() == null),
+            )
+        }
 
         .put("livenessReArmMin", p.livenessReArmMin)
         // Ohne diese Zeile waere hinterher nicht belegbar, OB der Schalter in
@@ -2368,9 +2382,47 @@ object FuseStateJson {
                 true,
                 p.absorptionCreditWindowMin,
                 p.markerBoostMaxMin,
-            ).map { it.toString() } + modusTeile + kontoTeile + fruehTeile
+            ).map { it.toString() } + modusTeile + kontoTeile + fruehTeile + slowTeile(p)
         return Sha.of(parts.joinToString("|"))
     }
+
+    /**
+     * Der langsame Korrekturkanal im Hash - NUR wenn er an ist: ausgeschaltet bleibt der Hash bitgleich wie vor dem
+     * Kanal; eingeschaltet sind Faktor, Schwelle und Einstiegszeit verschiedene Regler. Wie bei KI-141 und KI-170
+     * bewusst OHNE Anhebung von RULE_SET_VERSION (Fingerprint der Ruhe-Erholung).
+     */
+    private fun slowTeile(p: FuseCycleRunner.Config): List<String> =
+        if (!p.slowChannel.enabled) emptyList()
+        else listOf(
+            "slowChannel:on",
+            Sha.lossless(p.slowChannel.factor),
+            Sha.lossless(p.slowChannel.thresholdMgdl),
+            p.slowChannel.entryMin.toString(),
+        )
+
+    /** Der Trail-Block des langsamen Korrekturkanals. */
+    private fun slowChannelJson(x: FuseCycleRunner.SlowChannelExport): JSONObject = JSONObject()
+        .put("enabled", x.enabled)
+        .put("want", x.want)
+        .put("reason", x.reason)
+        .put("detail", x.detail ?: JSONObject.NULL)
+        .put("rateUPerH", fin(x.rateUPerH))
+        .put("extraUPerH", fin(x.extraUPerH))
+        .put("highForMin", fin(x.highForMin))
+        .put("stage", x.stage)
+        .put("demandU", x.demandU?.let { fin(it) } ?: JSONObject.NULL)
+        .put("plannedRemainderU", fin(x.plannedRemainderU))
+        .put("smbThisCycleU", fin(x.smbThisCycleU))
+        .put("phase", x.phase)
+        .put("acted", x.acted)
+        .put("command", x.command ?: JSONObject.NULL)
+        .put("smbCutU", fin(x.smbCutU))
+        .put("reservedU", fin(x.reservedU))
+        .put("deliveredU", fin(x.deliveredU))
+        .put("cancelledU", fin(x.cancelledU))
+        .put("factor", fin(x.factor))
+        .put("thresholdMgdl", fin(x.thresholdMgdl))
+        .put("entryMin", x.entryMin)
 
     private fun fin(d: Double?): Any = if (d != null && d.isFinite()) d else JSONObject.NULL
 

@@ -749,6 +749,23 @@ object FuseController {
         Decision(0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_INPUT, null, null, null, reason)
 
     /**
+     * DER NORMALBEDARF [U] aus der Mittelbahn am Freigabehorizont. Kein zweites "- iob": die IOB-Wirkung (und alles
+     * Geplante, das als ausstehendes Insulin in der Bahn steht) ist in der Prognose bereits enthalten.
+     */
+    fun normalDemandU(releaseMeanMgdl: Double, targetMgdl: Double, isfMgdlPerU: Double): Double =
+        (releaseMeanMgdl - targetMgdl) / isfMgdlPerU
+
+    /** Der Kontobedarf (E-034) [U]; nicht berechenbar zaehlt als 0, ohne Konto `null`. */
+    fun accountDemandU(expectationDemandU: Double?): Double? = expectationDemandU?.let { if (it.isFinite()) it else 0.0 }
+
+    /**
+     * DER GEMEINSAME BEDARF [U] - vor jeder Sperrentscheidung. [decide] rechnet ihn nach Guard und Schwanz, der
+     * langsame Korrekturkanal ([SlowCorrectionChannel]) liest ihn auch in gesperrten Zyklen: eine Formel, zwei Leser.
+     */
+    fun jointDemandU(normalReqU: Double, accountReqU: Double?): Double =
+        if (accountReqU == null) normalReqU else max(accountReqU, normalReqU)
+
+    /**
      * DER STEMPEL, DEN KEIN RUECKGABEPFAD VERGESSEN KANN (Toni 17.08.).
      *
      * [Decision.basalFloorProtected] muss an JEDEM Ausgang stimmen - der
@@ -1030,14 +1047,14 @@ object FuseController {
         }
 
         // Kein zweites "- iob": die IOB-Wirkung ist in predBG bereits enthalten.
-        val normalReq = (releaseMean - state.targetMgdl) / state.isfMgdlPerU
+        val normalReq = normalDemandU(releaseMean, state.targetMgdl, state.isfMgdlPerU)
         // E-034: im Mahlzeitkontext mit Konto kommt der Bedarf AUCH aus dem Konto (dort steht das IOB ausdruecklich in
         // R_mess); nicht berechenbar zaehlt als 0. Der Normalbedarf bleibt daneben erhalten (Toni: frueh begrenzt
         // vorleisten und die Mahlzeit anschliessend bedarfsgerecht weiter versorgen). Ersetzte der Kontobedarf ihn, kam
         // nach dem Ende der Kurve oder bei statischem R_mess <= 0 trotz steigender Fortschreibung bis zum Fensterende
         // nichts - mit Marker weniger als ohne.
-        val kontoReq = expectationDemandU?.let { if (it.isFinite()) it else 0.0 }
-        val insulinReq = if (kontoReq == null) normalReq else max(kontoReq, normalReq)
+        val kontoReq = accountDemandU(expectationDemandU)
+        val insulinReq = jointDemandU(normalReq, kontoReq)
 
         // REBOUND-TOTBAND (v2): Nach einem Tief ist die Erholung bis leicht
         // ueber das Ziel das ZIEL der Traubenzucker-Aktion, keine Stoerung.

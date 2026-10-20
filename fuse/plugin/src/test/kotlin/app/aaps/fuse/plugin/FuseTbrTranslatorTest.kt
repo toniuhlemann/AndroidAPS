@@ -375,7 +375,10 @@ class FuseTbrTranslatorTest {
         // Teilrate laeuft; PARTIAL_ENDING sperrt, waehrend sie BEENDET
         // wird. Der Abbruch hebt die Rate zurueck aufs Profilbasal - eine
         // Anhebung, die neben einem SMB von C7a still verworfen wuerde.
-        assertEquals(9, TbrPolicy.SmbBlockCause.entries.size)
+        // 10 seit dem langsamen Korrekturkanal (Toni 20.10.2026): SLOW_CORRECTION steht da, wenn die gemeinsame
+        // maxIOB-Grenze mit dem Kanal den SMB auf null begrenzt, weil der Kanal in diesem Zyklus keinen Platz machen
+        // kann. Sie setzt nur die Ueberlagerung (`ueberlagereLangsamenKanal`), nie die Tabelle.
+        assertEquals(10, TbrPolicy.SmbBlockCause.entries.size)
         for (c in TbrPolicy.SmbBlockCause.entries)
             assertEquals(
                 c != TbrPolicy.SmbBlockCause.NONE,

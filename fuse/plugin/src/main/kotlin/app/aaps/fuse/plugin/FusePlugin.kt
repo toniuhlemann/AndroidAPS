@@ -12,6 +12,7 @@ import app.aaps.core.interfaces.aps.RT
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.constraints.Constraint
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
+import app.aaps.core.objects.constraints.ConstraintObject
 import app.aaps.core.interfaces.constraints.PluginConstraints
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.db.ProcessedTbrEbData
@@ -1568,7 +1569,15 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
 
         val outcome = try {
             // Der globale SMB-Schalter von AAPS (Toni): steht er aus, etwa durch eine Szene "SMB aus", gibt FUSE keine SMB.
-            cycleRunner().run(tempBasalFallback, aktivePumpe, smbSchalterAn = preferences.get(BooleanKey.ApsUseSmb))
+            // Die Basalgrenzen von AAPS fuer den langsamen Korrekturkanal: dieselbe Kappung, die LoopPlugin vor dem
+            // Einstellen anwendet - FUSE fordert und bucht nur, was die Pumpe dann auch wirklich bekommt.
+            cycleRunner().run(
+                tempBasalFallback, aktivePumpe,
+                smbSchalterAn = preferences.get(BooleanKey.ApsUseSmb),
+                basalGrenze = { rate, profil ->
+                    constraintsChecker.applyBasalConstraints(ConstraintObject(rate, aapsLogger), profil).value()
+                },
+            )
         } catch (e: Exception) {
             aapsLogger.error(LTag.APS, "FUSE cycle failed", e)
             // SUB-02 Rest (Codex Re-Review 603a15a): eine Ausnahme umgeht das

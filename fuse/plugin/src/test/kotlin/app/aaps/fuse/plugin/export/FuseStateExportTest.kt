@@ -3,6 +3,7 @@ package app.aaps.fuse.plugin.export
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.RT
 import app.aaps.fuse.core.controller.FuseController
+import app.aaps.fuse.core.controller.SlowCorrectionChannel
 import app.aaps.fuse.core.controller.TailLiability
 import app.aaps.fuse.core.controller.TurnResponseShadow
 import app.aaps.fuse.core.observer.ActivityValidity
@@ -662,6 +663,65 @@ class FuseStateExportTest {
         assertTrue(gewaehltGesperrt.getBoolean("selected"))
         assertEquals("EARLY_ADAPTIVE_MEAL_H8", gewaehltGesperrt.getString("source"))
         assertEquals(0.0, gewaehltGesperrt.getDouble("candidateAfterHeadroomU"), 0.0)
+    }
+
+    /**
+     * LANGSAMER KORREKTURKANAL (Toni 20.10.2026): aus bleiben Hash, Politikwerte und Datensatz wie vor dem Kanal - auch
+     * seine Regler bewegen dann nichts, denn sie wirken nicht. An bewegen Faktor, Schwelle und Einstiegszeit den Hash
+     * je einzeln, und der Trail traegt den Block mit der getrennten Buchung.
+     */
+    @Test
+    fun `langsamer Kanal - aus unveraendert, an in Hash, Politikwerten und Trail`() {
+        val h = FuseStateJson.hashOf(cfg)!!
+        val ausMitReglern = cfg.copy(
+            slowChannel = SlowCorrectionChannel.Settings(enabled = false, factor = 4.0, thresholdMgdl = 200.0, entryMin = 45),
+        )
+        assertEquals(h, FuseStateJson.hashOf(ausMitReglern))
+        assertFalse(FuseStateJson.policyValues(cfg).has("slowChannel"))
+        assertFalse(record().has("slowChannel"))
+
+        val an = cfg.copy(slowChannel = SlowCorrectionChannel.Settings(enabled = true))
+        val hAn = FuseStateJson.hashOf(an)!!
+        assertTrue(hAn != h)
+        val proben = listOf(
+            an.copy(slowChannel = an.slowChannel.copy(factor = 3.0)),
+            an.copy(slowChannel = an.slowChannel.copy(thresholdMgdl = 200.0)),
+            an.copy(slowChannel = an.slowChannel.copy(entryMin = 45)),
+        ).map { FuseStateJson.hashOf(it)!! }
+        assertTrue(proben.none { it == hAn || it == h }) { "jeder Regler bewegt den Hash" }
+        assertEquals(3, proben.toSet().size, "die Regler vertreten sich im Hash nicht gegenseitig")
+        val werte = FuseStateJson.policyValues(an).getJSONObject("slowChannel")
+        assertEquals(2.0, werte.getDouble("factor"), 0.0)
+        assertEquals(180.0, werte.getDouble("thresholdMgdl"), 0.0)
+        assertEquals(30, werte.getInt("entryMin"))
+        assertTrue(werte.getBoolean("settingsValid"))
+
+        val block = record(
+            outcome().copy(
+                bloecke = FuseCycleRunner.Bloecke(
+                    slowChannel = FuseCycleRunner.SlowChannelExport(
+                        enabled = true, want = true, reason = "CONTINUE", detail = "block", rateUPerH = 2.0,
+                        extraUPerH = 1.0, highForMin = 41.0, stage = 2, demandU = 0.8, plannedRemainderU = 0.3, smbThisCycleU = 0.2,
+                        phase = "RUNNING", acted = true,
+                        command = "SLOW_CORRECTION_HOLD", smbCutU = 0.1, reservedU = 0.3, deliveredU = 0.2, cancelledU = 0.05,
+                        factor = 2.0, thresholdMgdl = 180.0, entryMin = 30,
+                    ),
+                ),
+            ),
+        ).getJSONObject("slowChannel")
+        assertEquals("CONTINUE", block.getString("reason"))
+        assertEquals("RUNNING", block.getString("phase"))
+        assertEquals("SLOW_CORRECTION_HOLD", block.getString("command"))
+        assertEquals(0.1, block.getDouble("smbCutU"), 0.0)
+        assertEquals(0.2, block.getDouble("deliveredU"), 0.0)
+        assertEquals(0.3, block.getDouble("reservedU"), 0.0)
+        assertEquals(0.05, block.getDouble("cancelledU"), 0.0)
+        assertEquals(2.0, block.getDouble("rateUPerH"), 0.0)
+        assertEquals(1.0, block.getDouble("extraUPerH"), 0.0)
+        assertEquals(2, block.getInt("stage"))
+        assertEquals(0.8, block.getDouble("demandU"), 0.0)
+        assertEquals(0.3, block.getDouble("plannedRemainderU"), 0.0)
+        assertEquals(0.2, block.getDouble("smbThisCycleU"), 0.0)
     }
 
     @Test

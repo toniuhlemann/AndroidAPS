@@ -330,6 +330,10 @@ fuse_reversal_rebound_ukf|FuseDoubleKey|true
 fuse_rise_ramp_high_r|FuseDoubleKey|true
 fuse_rise_ramp_low_r|FuseDoubleKey|true
 fuse_signal_rejoin_enabled|FuseBooleanKey|true
+fuse_slow_channel_enabled|FuseBooleanKey|true
+fuse_slow_channel_entry_min|FuseIntKey|true
+fuse_slow_channel_factor|FuseDoubleKey|true
+fuse_slow_channel_threshold_mgdl|FuseDoubleKey|true
 fuse_smb_ratio_rise|FuseDoubleKey|true
 fuse_smb_ratio|FuseDoubleKey|true
 fuse_tail_floor_mgdl|FuseDoubleKey|true

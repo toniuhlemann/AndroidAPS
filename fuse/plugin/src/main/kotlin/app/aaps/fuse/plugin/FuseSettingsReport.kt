@@ -33,6 +33,10 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.MarkerPrimeDescentHorizonMin.key,
     FuseIntKey.DeferredPrimeEndMin.key,
     FuseBooleanKey.PartialRecoveryEnabled.key,
+    FuseBooleanKey.SlowChannelEnabled.key,
+    FuseDoubleKey.SlowChannelFactor.key,
+    FuseDoubleKey.SlowChannelThresholdMgdl.key,
+    FuseIntKey.SlowChannelEntryMin.key,
     FuseBooleanKey.LivenessChannelEnabled.key,
     FuseBooleanKey.SignalRejoinEnabled.key,
     FuseIntKey.LivenessMealPowerMin.key,
@@ -270,6 +274,10 @@ object FuseSettingsReport {
                     ganz(FuseIntKey.ZeroLatchReasonGoneExitCycles, "Latch-Grund-weg", "Zyk"),
                     schalter(FuseBooleanKey.PartialRecoveryEnabled, "Teilbasal-Rueckkehr"),
                     zahl(FuseDoubleKey.ZeroLatchCalmDistanceMgdl, "Latch-Abstand", "mg/dl"),
+                    schalter(FuseBooleanKey.SlowChannelEnabled, "Langsamer Korrekturkanal"),
+                    zahl(FuseDoubleKey.SlowChannelFactor, "Kanal-Max-Multiplikator", "x Basal"),
+                    zahl(FuseDoubleKey.SlowChannelThresholdMgdl, "Kanal-Schwelle", "mg/dl"),
+                    ganz(FuseIntKey.SlowChannelEntryMin, "Kanal-Einstieg", "min"),
                 ),
                 // Eigene Gruppe: der Beobachter dosiert nichts - wer die Einstellungen liest, soll auf einen Blick
                 // sehen, dass hier nur gemessen wird.

@@ -60,6 +60,7 @@ import app.aaps.fuse.core.controller.CandidateGate
 import app.aaps.fuse.core.controller.BasalRecoverySearch
 import app.aaps.fuse.core.controller.PartialRecoveryGate
 import app.aaps.fuse.core.controller.PartialTbrOwnership
+import app.aaps.fuse.core.controller.SlowCorrectionChannel
 import app.aaps.fuse.core.profile.ProfileSlots
 import app.aaps.fuse.core.controller.CandidateSearch
 import app.aaps.fuse.core.controller.EvidenceStock
@@ -89,6 +90,8 @@ import app.aaps.fuse.core.predictor.TrajectoryCore
 import app.aaps.fuse.core.predictor.minSafetyHorizonLowerOf
 import app.aaps.fuse.core.predictor.minSafetyLowerOf
 import kotlinx.coroutines.runBlocking
+import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
@@ -279,6 +282,7 @@ class FuseCycleRunner(
      *  liest ihn, nicht der Runner: die Pruefstaende stellen jeden AAPS-Schalter pauschal auf "aus" und rechnen so
      *  weiter mit SMB. */
     private var smbSchalterAnThisCycle: Boolean = true
+    private var basalGrenzeThisCycle: (Double, Profile) -> Double = { rate, _ -> rate }
 
     /** Aufnahmenachweis und Transportmenge DIESES Zyklus fuer den Export. Wie
      *  die Sofortbatch-Kette am Zyklusanfang geleert (KI-174). */
@@ -320,6 +324,12 @@ class FuseCycleRunner(
     companion object {
         /** Quelle der Insulindefinition in v4 (Fork: das aktive Insulin-Plugin). */
         const val INSULIN_SOURCE = "profile.iCfg"
+
+        /** So weit haelt der langsame Kanal den q1-Verlauf [min] - mehr als die laengste Einstiegszeit. */
+        const val SLOW_VERLAUF_MAX_MIN = 120
+
+        /** Der Wert "vor der Einstiegszeit" darf so weit vom Sollzeitpunkt abweichen [min]; sonst kein Einstieg. */
+        const val SLOW_EINSTIEG_TOLERANZ_MIN = 5
 
 
         /**
@@ -1439,10 +1449,20 @@ class FuseCycleRunner(
          *  bleiben konservativ stehen. Default, damit Abbruchpfade und Tests
          *  unveraendert konstruieren. */
         val treatmentView: TreatmentView? = null,
+        /**
+         * GEBUENDELT, NICHT ALS EINZELFELDER: `Outcome` steht an der JVM-Parametergrenze. Ein weiteres Einzelfeld ergibt
+         * `ClassFormatError: Too many arguments in method signature` erst beim Laden der Klasse - der Compiler meldet
+         * nichts, die Tests scheitern in der Discovery. Neue Bloecke kommen deshalb in [Bloecke].
+         */
+        val bloecke: Bloecke = Bloecke(),
+    ) {
         /** E-034: der Konto-Zustand dieses Zyklus fuer den Export - `null` bei
          *  ausgeschaltetem Konto; dann steht im Trail kein Block. */
-        val erwartungskonto: ErwartungskontoExport? = null,
-    ) {
+        val erwartungskonto: ErwartungskontoExport? get() = bloecke.erwartungskonto
+
+        /** Der langsame Korrekturkanal in diesem Zyklus - `null`, wenn er aus ist und nichts von ihm laeuft. */
+        val slowChannel: SlowChannelExport? get() = bloecke.slowChannel
+
         /** Verlustursache der entfallenen Rebound-Evidenz-Ausnahme - Konsolidierung 2.0: neutral (null). */
         val livenessEvidenceLossCause: String? get() = livenessBookingDiagnosis.lossCause
 
@@ -1559,14 +1579,28 @@ class FuseCycleRunner(
      * durchlassen, waehrend die Ledgerzeile als emuliert gepinnt wird - und
      * damit ohne Patchpruefung bindet (Auditbefund 10.08.2026).
      */
-    fun run(tempBasalFallback: Boolean, pumpe: FuseActivePump, smbSchalterAn: Boolean = true): Outcome {
+    fun run(
+        tempBasalFallback: Boolean,
+        pumpe: FuseActivePump,
+        smbSchalterAn: Boolean = true,
+        /**
+         * Die AAPS-Grenzen der Basalrate (Hard-Limit, Pumpe, Rasterabrundung), wie `LoopPlugin` sie vor dem
+         * Einstellen anwendet - fuer den langsamen Korrekturkanal, der nur anfordern und buchen darf, was AAPS auch
+         * wirklich einstellt. Das Plugin reicht `ConstraintsChecker.applyBasalConstraints` herein; Vorgabe = keine
+         * Kappung (Rigs und Bank bleiben bitgleich, dort ist der Kanal ohnehin aus).
+         */
+        basalGrenze: (Double, Profile) -> Double = { rate, _ -> rate },
+    ): Outcome {
         smbSchalterAnThisCycle = smbSchalterAn
+        basalGrenzeThisCycle = basalGrenze
         // KI-174: die Sofortbatch-Kette gilt nur fuer DIESEN Zyklus. Der
         // Hauptpfad setzt sie neu; der praediktorfreie Markerpfad kehrt vorher
         // zurueck und exportierte ohne dieses Leeren die Kette des letzten
         // Hauptpfadzyklus (etwa dessen Grant). Nur Export - kein Dosierpfad
         // liest das Feld zurueck.
         upfrontChainThisCycle = null
+        // Der langsame Kanal laeuft nur im Hauptpfad - Abbruch- und Rueckfallpfade exportieren keinen alten Stand.
+        slowExportThisCycle = null
         transportSichtThisCycle = null
         ekBuchungThisCycle = null
         ekZyklusThisCycle = null
@@ -2429,12 +2463,20 @@ class FuseCycleRunner(
         // die Kappen koennen dadurch nur enger werden, nie weiter.
         val transportModelledU = transport.sumOf { it.amountU }
         transportSichtThisCycle = TransportSicht(aufnahme, transportModelledU)
+        // DER GEPLANTE REST DER KANAL-TBR (Toni 20.10.2026): zeitabhaengig in Bahn und Schwanz, wie ein SMB auf dem
+        // Transportweg - schon Abgegebenes steht im IOB und zaehlt nicht noch einmal. Ohne Kanal-TBR leer: bitgleich.
+        val slowGeplant = (slowOwnTbr.pendingRequest ?: slowOwnTbr.confirmedRunning)?.let {
+            SlowCorrectionChannel.plannedChunks(it.rateUPerH, it.setAtTs, it.durationMin, computeTs, profile.getBasal(computeTs))
+        }.orEmpty()
+        val slowGeplantU = slowGeplant.sumOf { it.second }
         // Der Kern wird weiterhin TRAEGE gebaut: ohne Posten faellt der Aufwand
         // (~540 Modellabfragen) ganz weg.
         val pending: List<PendingInsulinEffect> =
-            if (transport.isEmpty()) emptyList()
-            else kernel()?.let { k -> transport.map { KernelPendingInsulin(k, it.amountU, it.earliestTs) } }
-                ?: emptyList()
+            if (transport.isEmpty() && slowGeplant.isEmpty()) emptyList()
+            else kernel()?.let { k ->
+                transport.map { KernelPendingInsulin(k, it.amountU, it.earliestTs) } +
+                    slowGeplant.map { (ts, u) -> KernelPendingInsulin(k, u, ts) }
+            } ?: emptyList()
 
         val builtVorTrend = when (val b = CoreInputGuard.build { buildPredictorInput(signal, profile, iCfg, cfg, band, bolusActivityUPerMin, if (onset.active) onset.driveMgdlPerMin else null, reboundWindow, markerBoost, declaredDrive, pending, iobArrays) }) {
             is CoreInputGuard.Outcome.Built  -> b.value ?: return abort("input incomplete", signal, cfg, step)
@@ -3011,7 +3053,10 @@ class FuseCycleRunner(
             tailFloorMgdl = cfg.tailFloorMgdl,
             tailRecoveryU = cfg.tailRecoveryU,
             transport = TailLiability.sumOf(
-                transport.map { tailTransportDose(it, kernel(), liabilityHorizonTs) }
+                transport.map { tailTransportDose(it, kernel(), liabilityHorizonTs) } +
+                    slowGeplant.map { (ts, u) ->
+                        TailLiability.Dose(u, kernel()?.let { k -> KernelPendingInsulin(k, u, ts).iobAt(liabilityHorizonTs) })
+                    }
             ),
         )
         // Der KAPPEN-Bericht: ohne Kandidat, denn der ist genau die Groesse, die
@@ -3245,6 +3290,8 @@ class FuseCycleRunner(
             mealWindowEndTs = MahlzeitFenster.endeTs(episodes.expectation, dosierMarkerTs),
             computeTs = computeTs,
         )
+        // Der Kontobedarf dieses Zyklus - fuer die Entscheidung UND fuer den langsamen Kanal (gemeinsamer Bedarf).
+        val ekBedarfU = ekZyklus?.let { ExpectationAccount.deliverableU(it.eval) }
         val baseDecision = FuseController.decide(
             state, prediction,
             FuseController.Limits(guardFloorMgdl = cfg.guardFloorMgdl, releaseHorizonMin = cfg.releaseHorizonMin),
@@ -3267,7 +3314,7 @@ class FuseCycleRunner(
             lowThreat = lowThreatWirksam,
             onsetCapU = if (onset.active) onset.remainingU else null,
             // E-034: im Mahlzeitkontext des Kontos kommt der Bedarf aus dem Konto.
-            expectationDemandU = ekZyklus?.let { ExpectationAccount.deliverableU(it.eval) },
+            expectationDemandU = ekBedarfU,
         )
 
         // KANDIDATENPRUEFUNG (Audit: schon eine kleine SMB senkt die Bahn
@@ -5233,7 +5280,7 @@ class FuseCycleRunner(
             wantEnd = !partialAktiv,
         )
 
-        val combined = FuseTbrTranslator.combine(
+        val combinedNormal = FuseTbrTranslator.combine(
             decision = decision,
             current = currentTbr,
             latchZeroOnly = zeroLatchUebersteuert,
@@ -5275,6 +5322,160 @@ class FuseCycleRunner(
             endZeroAttempts = endZeroFehlversuche,
         )
 
+        // ---- LANGSAMER KORREKTURKANAL (Toni 20.10.2026) -----------------
+        //
+        // Er legt sich NACH der normalen Kombination darueber und nur, wenn er beteiligt ist
+        // (FuseTbrTranslator.ueberlagereLangsamenKanal) - ausgeschaltet bleibt alles bitgleich. Einstieg und Stopp
+        // kommen aus dem gemessenen Verlauf. Harte Sperren sind ausschliesslich GEMESSENE Lagen und Technik: die
+        // modellbedingten Sperren (Guard, Schwanz, Exposition, Schutz-Null) zu ueberstimmen ist sein Zweck.
+        val slowBasal = profile.getBasal(computeTs)
+        signal.q1.takeIf { it.isFinite() }?.let { q -> slowQ1Verlauf.addLast(signal.sourceTs to q) }
+        while (slowQ1Verlauf.isNotEmpty() && signal.sourceTs - slowQ1Verlauf.first().first > SLOW_VERLAUF_MAX_MIN * 60_000L)
+            slowQ1Verlauf.removeFirst()
+        val slowZiel = signal.sourceTs - cfg.slowChannel.entryMin * 60_000L
+        val slowEinstiegVorher = slowQ1Verlauf
+            .filter { abs(it.first - slowZiel) <= SLOW_EINSTIEG_TOLERANZ_MIN * 60_000L }
+            .minByOrNull { abs(it.first - slowZiel) }?.second
+        val slowHart = when {
+            tempBasalFallback -> "TEMP_BASAL_FALLBACK"
+            step.health != Health.READY -> "SIGNAL_NOT_READY"
+            measuredLow -> "MEASURED_LOW"
+            descentRisk.active -> "DESCENT_RISK"
+            ledgerView.hold -> "LEDGER_HOLD"
+            currentTbr?.sourceType == TbrPolicy.SourceType.FAKE_EXTENDED -> "FAKE_EXTENDED"
+            !gate.allowed -> "PUMP_GATE_CLOSED"
+            else -> null
+        }
+        // Die Kanal-TBR, die die Pumpe JETZT als unsere fuehrt - nur aus belastbarer Sicht.
+        val slowLauf = if (tbrSicht is PartialTbrOwnership.View.Authoritative)
+            listOfNotNull(slowOwnTbr.pendingRequest, slowOwnTbr.confirmedRunning)
+                .firstOrNull { PartialTbrOwnership.matches(it, currentTbr, computeTs, pumpe.basalStepUPerH) }
+        else null
+        // DER GEMEINSAME BEDARF VOR DEN SPERREN: dieselbe Formel wie im Regler, aus derselben Mittelbahn am
+        // Freigabehorizont - IOB, Transport und der geplante Kanal-Rest stehen darin zeitabhaengig. null, wenn der
+        // Zyklus vor der Bahn endete.
+        val slowBedarfU = baseDecision.predAtReleaseMgdl?.let {
+            FuseController.jointDemandU(
+                FuseController.normalDemandU(it, state.targetMgdl, state.isfMgdlPerU),
+                FuseController.accountDemandU(ekBedarfU),
+            )
+        }
+        val slowSchritt = SlowCorrectionChannel.step(
+            settings = cfg.slowChannel,
+            input = SlowCorrectionChannel.Input(
+                nowTs = computeTs,
+                q1Mgdl = signal.q1,
+                q1EntryAgoMgdl = slowEinstiegVorher,
+                trendMgdlPerMin = signal.ukfRatePerMin,
+                // DIESELBE Zahl wie die uebrigen Headrooms: zurueckgehaltenes Basal schafft keinen Spielraum
+                // (capIobU), und ein SMB auf dem Transportweg zaehlt schon mit.
+                iobU = state.capIobU + transportModelledU,
+                maxIobU = state.maxIobU,
+                scheduledBasalUPerH = slowBasal,
+                basalStepUPerH = pumpe.basalStepUPerH,
+                hardStop = slowHart,
+                // Der SMB dieses Zyklus zaehlt zuerst - im Restbedarf und in maxIOB; die Kanal-TBR laeuft nebenher und
+                // sinkt an der Grenze abgestuft; den SMB fasst der Kanal nie an.
+                smbThisCycleU = combinedNormal.decision.smbU,
+                demandU = slowBedarfU,
+                plannedRemainderU = slowGeplantU,
+                active = !slowOwnTbr.leer || slowOwnTbr.ending != null,
+                otherOwnBasalActive = partialAktiv || !episodes.ownPartialTbr.leer || episodes.ownPartialTbr.ending != null,
+                runningRateUPerH = slowLauf?.rateUPerH,
+                runningRemainingMin = slowLauf?.let { currentTbr?.remainingMin },
+            ),
+            memory = slowMemory,
+        )
+        slowMemory = slowSchritt.memory
+        slowLedger = SlowCorrectionChannel.book(
+            ledger = slowLedger,
+            nowTs = computeTs,
+            runningRateUPerH = slowLauf?.rateUPerH,
+            runningSetAtTs = slowLauf?.setAtTs ?: 0L,
+            runningRemainingMin = slowLauf?.let { currentTbr?.remainingMin },
+            scheduledBasalUPerH = slowBasal,
+            newEpisode = slowSchritt.reason == SlowCorrectionChannel.Reason.START,
+        )
+        // AAPS kappt jede Rate selbst (Hard-Limit, Pumpe, Rasterabrundung). Angefordert und als eigene Kennung
+        // gebucht wird nur, was AAPS auch wirklich einstellt - sonst passte die Kennung nie zur Pumpe, und der
+        // Lebenszyklus gaebe nach drei Versuchen auf.
+        val slowRate = if (slowSchritt.want)
+            runCatching { basalGrenzeThisCycle(slowSchritt.rateUPerH, profile) }.getOrDefault(slowSchritt.rateUPerH)
+        else 0.0
+        // Mindestens einen Basalschritt ueber dem Profilbasal UND ueber der Basis, mit der AAPS entscheidet: naeher
+        // daran fuehrt LoopPlugin eine Rate als Abbruch aus, nicht als Setzen.
+        val slowWill = slowSchritt.want && slowRate - maxOf(slowBasal, aapsBasis) >= pumpe.basalStepUPerH - 1e-9
+        val slowOwnStep = PartialTbrOwnership.advance(
+            state = slowOwnTbr,
+            view = tbrSicht,
+            nowTs = computeTs,
+            basalStepUPerH = pumpe.basalStepUPerH,
+            wunschRate = if (slowWill) slowRate else null,
+            wantEnd = !slowWill,
+        )
+        // DIE GEMEINSAME GRENZE fuer Zyklen ohne Kanal-Kommando: maxIOB minus IOB, Transport und dem geplanten Rest der
+        // Kanal-TBR nach diesem Fortschreiben (eine offene Anforderung ersetzt die laufende und zaehlt ganz).
+        val slowRestU = (slowOwnStep.state.pendingRequest ?: slowOwnStep.state.confirmedRunning)?.let {
+            SlowCorrectionChannel.plannedChunks(it.rateUPerH, it.setAtTs, it.durationMin, computeTs, slowBasal).sumOf { g -> g.second }
+        } ?: 0.0
+        val slowUeberlagert = FuseTbrTranslator.ueberlagereLangsamenKanal(
+            normal = combinedNormal,
+            want = slowWill,
+            rateUPerH = slowRate,
+            own = slowOwnStep,
+            current = currentTbr,
+            pumpBusy = pumpBusy(),
+            basalStepUPerH = pumpe.basalStepUPerH,
+            smbRaumU = state.maxIobU - (state.capIobU + transportModelledU) - slowRestU,
+            bolusStepU = pumpe.bolusStepU,
+        )
+        val combined = slowUeberlagert.result
+        // Gebucht wird in BEIDEN Lebenszyklen nur, was wirklich hinausging: ein vom Kanal ersetztes oder
+        // unterdruecktes Normalkommando darf die Teilbasal-Kennung nicht bewegen, und ein Normalkommando ist nie
+        // eine Kanal-Kennung - ausser der durchgelassenen Null, die die Kanal-TBR beendet.
+        val normalKommandoRaus = combined.request === combinedNormal.request
+        slowOwnTbr = run {
+            val req = combined.request
+            val wirkung = PartialTbrOwnership.klassifiziere(
+                rateUPerH = req?.rateUPerH,
+                durationMin = req?.durationMin,
+                scheduledBasalUPerH = aapsBasis,
+                basalStepUPerH = pumpe.basalStepUPerH,
+                ausgegeben = gate.allowed && req != null && slowUeberlagert.acted,
+            )
+            PartialTbrOwnership.buche(
+                slowOwnStep.state, wirkung, req?.rateUPerH ?: 0.0, req?.durationMin ?: 0, computeTs, pumpe.basalStepUPerH,
+            )
+        }
+        slowExportThisCycle = if (!cfg.slowChannel.enabled && slowOwnStep.state.leer && slowOwnStep.state.ending == null && !slowUeberlagert.acted) null
+        else {
+            SlowChannelExport(
+                enabled = cfg.slowChannel.enabled,
+                want = slowWill,
+                reason = slowSchritt.reason.name,
+                // Wollte der Kanal, aber die AAPS-Grenzen (etwa ein niedriges Max-Basal) liessen keinen ganzen
+                // Basalschritt ueber dem Profil uebrig: benannt, sonst stuende START ohne Kommando im Trail.
+                detail = if (slowSchritt.want && !slowWill) "AAPS_BASAL_LIMIT" else slowSchritt.detail,
+                rateUPerH = slowRate,
+                extraUPerH = max(0.0, slowRate - slowBasal),
+                highForMin = slowSchritt.highForMin,
+                stage = slowSchritt.stage,
+                demandU = slowBedarfU,
+                plannedRemainderU = slowGeplantU,
+                smbThisCycleU = combinedNormal.decision.smbU,
+                phase = PartialTbrOwnership.anzeige(slowOwnStep.copy(state = slowOwnTbr)).name,
+                acted = slowUeberlagert.acted,
+                command = if (slowUeberlagert.acted) combined.reason.substringBefore('|') else null,
+                smbCutU = slowUeberlagert.smbCutU,
+                reservedU = slowLedger.reservedU,
+                deliveredU = slowLedger.deliveredU,
+                cancelledU = slowLedger.cancelledU,
+                factor = cfg.slowChannel.factor,
+                thresholdMgdl = cfg.slowChannel.thresholdMgdl,
+                entryMin = cfg.slowChannel.entryMin,
+            )
+        }
+
         // BACKOFF FORTSCHREIBEN (Medtrum-Auflage). Der Erfolg eines Abbruchs
         // ist erst im NAECHSTEN Zyklus sichtbar - er steht in `current`, also
         // in der laufenden TBR, die AAPS uns liefert. Deshalb hier:
@@ -5296,7 +5497,8 @@ class FuseCycleRunner(
         // kann und CONFIRM_TIMEOUT je greift.
         var letzteWirkung: PartialTbrOwnership.Wirkung? = null
         episodes.ownPartialTbr = run {
-            val req = combined.request
+            // Hat der langsame Kanal die Ausgabe bestimmt, ging das Normalkommando nicht hinaus (s. oben).
+            val req = if (normalKommandoRaus) combined.request else null
             // DIE EFFEKTIVE WIRKUNG, nicht der Wunsch (Review-P0-2):
             //  - `gate.allowed` entscheidet, ob das Kommando ueberhaupt in
             //    die APSResult-Ausgabe kommt (FuseRtBuilder streicht es
@@ -5456,38 +5658,41 @@ class FuseCycleRunner(
         val huellenStand = envelopeUseOf(episodes, cfg.primeEnvelopeU)
         return Outcome(
             configGeneration = app.aaps.fuse.plugin.export.FuseStateJson.hashOf(cfg).orEmpty(),
-            // E-034: bei eingeschaltetem Konto - und im Rueckfall ohne Konto (keine gueltige Kurve) auch ohne, damit
-            // der Ausfall im Trail steht (Toni: "den Ausfall deutlich melden").
-            erwartungskonto = if (!cfg.expectationAccountEnabled && !kontoRueckfall) null else ErwartungskontoExport(
-                gilt = ekGilt,
-                kontextAbweichung = ekKontextAbweichungThisCycle,
-                verworfenBeimLaden = episodes.expectationDropped,
-                zyklus = ekZyklus,
-                buchung = ekBuchungThisCycle,
-                // Konsolidierung 2.0: die v1-Guard-Ausnahme ist entfallen.
-                bodenU = 0.0,
-                angehobenU = (lifted.smbU - liftedVorKonto.smbU).coerceAtLeast(0.0),
-                blockNormalpfad = vetted.block,
-                grundNormalpfad = vetted.candidateReason,
-                grundEnde = decision.candidateReason,
-                stabilSeitTs = ekStabilSeit,
-                rueckfall = ekRueckfall(
-                    ekZyklus, dosingCtx.mealAuthorized, dosingCtx.authorizationId, episodes, cfg.expectationAccountEnabled,
+            bloecke = Bloecke(
+                slowChannel = slowExportThisCycle,
+                // E-034: bei eingeschaltetem Konto - und im Rueckfall ohne Konto (keine gueltige Kurve) auch ohne, damit
+                // der Ausfall im Trail steht (Toni: "den Ausfall deutlich melden").
+                erwartungskonto = if (!cfg.expectationAccountEnabled && !kontoRueckfall) null else ErwartungskontoExport(
+                    gilt = ekGilt,
+                    kontextAbweichung = ekKontextAbweichungThisCycle,
+                    verworfenBeimLaden = episodes.expectationDropped,
+                    zyklus = ekZyklus,
+                    buchung = ekBuchungThisCycle,
+                    // Konsolidierung 2.0: die v1-Guard-Ausnahme ist entfallen.
+                    bodenU = 0.0,
+                    angehobenU = (lifted.smbU - liftedVorKonto.smbU).coerceAtLeast(0.0),
+                    blockNormalpfad = vetted.block,
+                    grundNormalpfad = vetted.candidateReason,
+                    grundEnde = decision.candidateReason,
+                    stabilSeitTs = ekStabilSeit,
+                    rueckfall = ekRueckfall(
+                        ekZyklus, dosingCtx.mealAuthorized, dosingCtx.authorizationId, episodes, cfg.expectationAccountEnabled,
+                    ),
+                    fruehBodenU = fruehBodenU,
+                    fruehGemessenFreiU = if (fruehGilt) fruehGemessenFreiU else 0.0,
+                    fruehHebung = fruehHebung.takeIf { fruehGilt },
+                    fruehEndgrund = fruehEndgrund,
+                    fruehUntenMitErwartungMgdl = predictionMitErwartung?.minLowerBgPriorFree,
+                    fruehBremseUntenMitErwartungMgdl = restraintMitErwartung?.minLowerBgPriorFree,
+                    fruehSchwanzMitErwartungU = tailMitErwartung?.takeIf { it.usable }?.headroomU,
+                    fruehSchwanzKappeU = fruehSchwanzKappeU.takeIf { fruehGilt },
+                    fruehAmRiegelVorbeiU = fruehAmRiegelVorbeiU,
+                    fruehUntenMitMahlzeitMgdl = fruehUntenMitMahlzeitMgdl,
+                    fruehSchwanzMitMahlzeit = fruehSchwanzMitMahlzeit,
+                    fruehFortsetzungMgdl = fruehFortsetzungMgdl,
+                    mahlzeitLaeuftAbR = cfg.mahlzeitLaeuftAbR,
+                    folgeStabilSeitTs = ekFolgeStabilSeit,
                 ),
-                fruehBodenU = fruehBodenU,
-                fruehGemessenFreiU = if (fruehGilt) fruehGemessenFreiU else 0.0,
-                fruehHebung = fruehHebung.takeIf { fruehGilt },
-                fruehEndgrund = fruehEndgrund,
-                fruehUntenMitErwartungMgdl = predictionMitErwartung?.minLowerBgPriorFree,
-                fruehBremseUntenMitErwartungMgdl = restraintMitErwartung?.minLowerBgPriorFree,
-                fruehSchwanzMitErwartungU = tailMitErwartung?.takeIf { it.usable }?.headroomU,
-                fruehSchwanzKappeU = fruehSchwanzKappeU.takeIf { fruehGilt },
-                fruehAmRiegelVorbeiU = fruehAmRiegelVorbeiU,
-                fruehUntenMitMahlzeitMgdl = fruehUntenMitMahlzeitMgdl,
-                fruehSchwanzMitMahlzeit = fruehSchwanzMitMahlzeit,
-                fruehFortsetzungMgdl = fruehFortsetzungMgdl,
-                mahlzeitLaeuftAbR = cfg.mahlzeitLaeuftAbR,
-                folgeStabilSeitTs = ekFolgeStabilSeit,
             ),
             // Fixvertrag 30.08.: das typisierte Zyklus-IOB fuer
             // APSResult.iobData / DeviceStatus openaps.iob.
@@ -6862,21 +7067,23 @@ class FuseCycleRunner(
         return Outcome(
             decision = combined.decision,
             tbr = combined.request,
-            // E-034: im praediktorfreien Pfad ohne Ausnahme und ohne Suche.
-            erwartungskonto = if (!cfg.expectationAccountEnabled) null else ErwartungskontoExport(
-                gilt = ekGilt,
-                kontextAbweichung = ekKontextAbweichungThisCycle,
-                verworfenBeimLaden = episodes.expectationDropped,
-                zyklus = ekZyklus,
-                buchung = ekBuchungThisCycle,
-                bodenU = 0.0,
-                angehobenU = 0.0,
-                blockNormalpfad = null,
-                grundNormalpfad = null,
-                grundEnde = combined.decision.candidateReason,
-                stabilSeitTs = ekStabilSeit,
-                rueckfall = ekRueckfall(
-                    ekZyklus, fallbackCtx.mealAuthorized, fallbackCtx.authorizationId, episodes, cfg.expectationAccountEnabled,
+            // E-034: im praediktorfreien Pfad ohne Ausnahme und ohne Suche. Der langsame Kanal laeuft hier nicht.
+            bloecke = Bloecke(
+                erwartungskonto = if (!cfg.expectationAccountEnabled) null else ErwartungskontoExport(
+                    gilt = ekGilt,
+                    kontextAbweichung = ekKontextAbweichungThisCycle,
+                    verworfenBeimLaden = episodes.expectationDropped,
+                    zyklus = ekZyklus,
+                    buchung = ekBuchungThisCycle,
+                    bodenU = 0.0,
+                    angehobenU = 0.0,
+                    blockNormalpfad = null,
+                    grundNormalpfad = null,
+                    grundEnde = combined.decision.candidateReason,
+                    stabilSeitTs = ekStabilSeit,
+                    rueckfall = ekRueckfall(
+                        ekZyklus, fallbackCtx.mealAuthorized, fallbackCtx.authorizationId, episodes, cfg.expectationAccountEnabled,
+                    ),
                 ),
             ),
             // Fixvertrag 30.08.: derselbe typisierte IOB-Stand wie im
@@ -7375,6 +7582,55 @@ class FuseCycleRunner(
     private var partialLastTs = 0L
     private var partialAktiv = false
 
+    /** Die gebuendelten Bloecke eines Zyklus (s. [Outcome.bloecke]). */
+    data class Bloecke(
+        val erwartungskonto: ErwartungskontoExport? = null,
+        val slowChannel: SlowChannelExport? = null,
+    )
+
+    /**
+     * Der langsame Korrekturkanal fuer den Trail: was er wollte, warum, was er tat und seine Buchung
+     * ([SlowCorrectionChannel.Ledger]): [deliveredU] hat die Pumpe in dieser Episode zusaetzlich abgegeben,
+     * [reservedU] gibt der laufende Block noch ab, [cancelledU] ist mit vorzeitig beendeten Bloecken verfallen.
+     */
+    data class SlowChannelExport(
+        val enabled: Boolean,
+        val want: Boolean,
+        val reason: String,
+        val detail: String?,
+        val rateUPerH: Double,
+        val extraUPerH: Double,
+        val highForMin: Double,
+        /** Die Stufe der gewuenschten Rate, 1..4 (Faktor = Obergrenze); 0 = keine TBR. */
+        val stage: Int,
+        /** Der gemeinsame Bedarf vor den Sperren [U]; null = nicht berechenbar. */
+        val demandU: Double?,
+        /** Der geplante, noch nicht abgegebene Zusatz der Kanal-TBR in der Prognose [U]. */
+        val plannedRemainderU: Double,
+        /** Der SMB dieses Zyklus, den der Kanal vom Bedarf abgezogen hat [U] - fruehere stehen schon im Bedarf. */
+        val smbThisCycleU: Double,
+        val phase: String,
+        val acted: Boolean,
+        val command: String?,
+        /** So viel SMB lag ueber der gemeinsamen maxIOB-Grenze, als der Kanal keinen Platz machen konnte [U]. */
+        val smbCutU: Double,
+        val reservedU: Double,
+        val deliveredU: Double,
+        val cancelledU: Double,
+        val factor: Double,
+        val thresholdMgdl: Double,
+        val entryMin: Int,
+    )
+
+    // ---- LANGSAMER KORREKTURKANAL (Toni 20.10.2026) ----------------------
+    // Bewusst NICHT persistiert: nach einem Neustart beginnt die Einstiegszeit neu, und eine noch laufende Kanal-TBR
+    // ist dann "fremd" - der Normalpfad bricht sie als positive TBR ab (KEEP_CANCEL_POSITIVE). Beides senkt Insulin.
+    private var slowMemory = SlowCorrectionChannel.Memory()
+    private var slowOwnTbr = PartialTbrOwnership.State()
+    private var slowLedger = SlowCorrectionChannel.Ledger()
+    private val slowQ1Verlauf = ArrayDeque<Pair<Long, Double>>()
+    private var slowExportThisCycle: SlowChannelExport? = null
+
     /** Die in DIESEM Zyklus tragbare Teilbasal-Rate [U/h] und - falls
      *  keine bestimmbar war - der typisierte Grund. Beides rein
      *  zyklusbezogen, kein Zustand ueber Zyklen hinweg. */
@@ -7581,6 +7837,11 @@ class FuseCycleRunner(
         // 2.0 (Stufe 1, K2): der Serien-Deckel (correctionSeriesCapU,
         // correctionSeriesWindowMin) steht nicht mehr hier.
         val zeroLatchCalmDistanceMgdl: Double,
+        /**
+         * DER LANGSAME KORREKTURKANAL (Toni 20.10.2026), s. [SlowCorrectionChannel]. Vorgaben = aus, damit jede
+         * bestehende Konfiguration (Rigs, Bank) bitgleich bleibt.
+         */
+        val slowChannel: SlowCorrectionChannel.Settings = SlowCorrectionChannel.Settings(enabled = false),
         /** V-Reversal-Schutz im Korrekturkontext - s.
          *  [CorrectionReversalGuard] und FuseKeys (Default AUS). */
         val reversalGuardEnabled: Boolean,
@@ -7738,6 +7999,12 @@ class FuseCycleRunner(
         zeroLatchReasonGoneExitCycles = preferences.get(FuseIntKey.ZeroLatchReasonGoneExitCycles),
         partialRecoveryEnabled = preferences.get(FuseBooleanKey.PartialRecoveryEnabled),
         zeroLatchCalmDistanceMgdl = preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl),
+        slowChannel = SlowCorrectionChannel.Settings(
+            enabled = preferences.get(FuseBooleanKey.SlowChannelEnabled),
+            factor = preferences.get(FuseDoubleKey.SlowChannelFactor),
+            thresholdMgdl = preferences.get(FuseDoubleKey.SlowChannelThresholdMgdl),
+            entryMin = preferences.get(FuseIntKey.SlowChannelEntryMin),
+        ),
         reversalGuardEnabled = preferences.get(FuseBooleanKey.CorrectionReversalGuardEnabled),
         reversalFallUkf = preferences.get(FuseDoubleKey.ReversalFallUkf),
         reversalLookbackMin = preferences.get(FuseIntKey.ReversalLookbackMin),

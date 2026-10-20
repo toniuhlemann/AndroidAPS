@@ -1,7 +1,10 @@
 package app.aaps.fuse.plugin
 
 import app.aaps.fuse.core.controller.FuseController
+import app.aaps.fuse.core.controller.PartialTbrOwnership
+import app.aaps.fuse.core.controller.SlowCorrectionChannel
 import app.aaps.fuse.core.controller.TbrPolicy
+import kotlin.math.max
 import kotlin.math.min
 
 /**
@@ -277,6 +280,95 @@ object FuseTbrTranslator {
             smbSwitchOff = schalterNimmt,
         )
     }
+
+    /**
+     * Was der langsame Korrekturkanal aus dem Normalergebnis macht. [acted] = der Kanal bestimmt die TBR-Ausgabe;
+     * [smbCutU] = so viel SMB lag ueber der gemeinsamen maxIOB-Grenze in einem Zyklus, in dem der Kanal keinen Platz
+     * machen konnte.
+     */
+    data class SlowOverlay(val result: Result, val acted: Boolean, val smbCutU: Double = 0.0)
+
+    /**
+     * DER LANGSAME KORREKTURKANAL UEBER DEM NORMALERGEBNIS (Toni 20.10.2026).
+     *
+     * Der Kanal entscheidet NACH der normalen Kombination und nur, wenn er beteiligt ist - sonst bleibt das Ergebnis
+     * unveraendert (ausgeschaltet bitgleich). Er bestimmt die TBR-Achse; die positive TBR laeuft wie das Profilbasal
+     * nebenher, unterstuetzend oder als Ersatz, wenn der SMB gesperrt ist (Toni). Er darf, als einziger Weg, an Guard,
+     * Schwanz und Exposition vorbei; die harten, gemessenen Sperren und maxIOB (mit dem SMB dieses Zyklus zuerst, die
+     * TBR sinkt abgestuft) hat [app.aaps.fuse.core.controller.SlowCorrectionChannel] vorher geprueft.
+     *
+     *  1. Abbruch der eigenen Kanal-TBR faellig -> Abbruch (Rate 0, Dauer 0). Will der Normalpfad in diesem Zyklus
+     *     eine Null setzen (z. B. Schutz-Null bei Tief), geht statt des Abbruchs diese Null hinaus: sie beendet die
+     *     Kanal-TBR ebenso und schuetzt sofort.
+     *  2. Kanal will laufen und darf setzen -> 30-min-TBR mit seiner Rate (neu, abgesenkt oder erneuert).
+     *  3. Eigene Kanal-TBR laeuft, steht aus oder endet, ohne Kommando in diesem Zyklus -> KEIN TBR-Kommando des
+     *     Normalpfads: der wuerde sie sonst als fremde positive TBR abbrechen (KEEP_CANCEL_POSITIVE) oder durch eine
+     *     modellbedingte Null ersetzen. Einzige Ausnahme beim Beenden: eine gesetzte Null des Normalpfads darf hinaus.
+     *
+     * DER SMB - KEINE SPERRE, ABER EINE GEMEINSAME GRENZE, abgestimmt VOR beiden Kommandos dieses Zyklus. Bei 1 und 2
+     * bleibt er unveraendert: die TBR ist neben ihm bemessen bzw. macht Platz, und `LoopPlugin` gibt den SMB nur ab,
+     * wenn das TBR-Kommando desselben Laufs geklappt hat. Ohne Kanal-Kommando (3, belegte Pumpe) bleibt der geplante
+     * Rest stehen - dann bekommt der SMB hoechstens [smbRaumU], den maxIOB-Spielraum daneben. Passt er hinein, bleibt
+     * er ebenfalls unveraendert.
+     */
+    fun ueberlagereLangsamenKanal(
+        normal: Result,
+        want: Boolean,
+        rateUPerH: Double,
+        own: PartialTbrOwnership.Step,
+        current: TbrPolicy.Current?,
+        pumpBusy: Boolean,
+        basalStepUPerH: Double,
+        /** maxIOB minus IOB, Transport und geplanter Rest der Kanal-TBR [U] - gilt nur ohne Kanal-Kommando. */
+        smbRaumU: Double,
+        bolusStepU: Double,
+    ): SlowOverlay {
+        val endet = own.state.ending != null
+        val normalNull = normal.request?.let { it.rateUPerH == 0.0 && it.durationMin > 0 } == true
+        val smbNormal = normal.decision.smbU
+        fun mit(request: FuseController.TbrRequest?, grund: String, kommando: Boolean): SlowOverlay {
+            val smb = if (kommando) smbNormal else SlowCorrectionChannel.clampSmbU(smbNormal, smbRaumU, bolusStepU)
+            return SlowOverlay(
+                normal.copy(
+                    request = request,
+                    decision = if (smb == smbNormal) normal.decision else normal.decision.copy(smbU = smb),
+                    reason = "$grund|${normal.reason}",
+                    smbBlockCause = if (smbNormal > 0.0 && smb <= 0.0) TbrPolicy.SmbBlockCause.SLOW_CORRECTION
+                    else normal.smbBlockCause,
+                ),
+                acted = true,
+                smbCutU = max(0.0, smbNormal - smb),
+            )
+        }
+        if (own.sendCancel)
+            return when {
+                pumpBusy   -> mit(null, SLOW_BUSY_REASON, kommando = false)
+                normalNull -> mit(normal.request, SLOW_END_BY_ZERO_REASON, kommando = true)
+                else       -> mit(FuseController.TbrRequest(0.0, 0), SLOW_END_REASON, kommando = true)
+            }
+        if (want && own.allowSet && SlowCorrectionChannel.needsCommand(
+                rateUPerH, own.state.confirmedRunning?.rateUPerH, current?.remainingMin, basalStepUPerH,
+            )
+        )
+            return if (pumpBusy) mit(null, SLOW_BUSY_REASON, kommando = false)
+            else mit(FuseController.TbrRequest(rateUPerH, SlowCorrectionChannel.BLOCK_MIN), SLOW_SET_REASON, kommando = true)
+        if (own.smbBlocked) {
+            val nullErsetzt = endet && !pumpBusy && normalNull
+            return mit(
+                if (nullErsetzt) normal.request else null,
+                if (nullErsetzt) SLOW_END_BY_ZERO_REASON else SLOW_HOLD_REASON,
+                kommando = nullErsetzt,
+            )
+        }
+        return SlowOverlay(normal, acted = false)
+    }
+
+    /** Grund-Praefixe des langsamen Korrekturkanals im RT und im Trail. */
+    const val SLOW_SET_REASON = "SLOW_CORRECTION_SET"
+    const val SLOW_END_REASON = "SLOW_CORRECTION_END"
+    const val SLOW_END_BY_ZERO_REASON = "SLOW_CORRECTION_END_BY_ZERO"
+    const val SLOW_HOLD_REASON = "SLOW_CORRECTION_HOLD"
+    const val SLOW_BUSY_REASON = "SLOW_CORRECTION_PUMP_BUSY"
 
     /** Endgrund, wenn allein der globale SMB-Schalter von AAPS die Menge genommen hat (Trail `smb.finalBlock`). */
     const val SMB_SWITCH_OFF_BLOCK = "SMB_SWITCH_OFF"

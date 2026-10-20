@@ -481,7 +481,8 @@ class PartialTbrOwnershipTest {
 
     @Test
     fun `die Blockursachen sind vollstaendig aufgezaehlt`() {
-        assertEquals(9, TbrPolicy.SmbBlockCause.entries.size)
+        // 10 seit dem langsamen Korrekturkanal (SLOW_CORRECTION: gemeinsame maxIOB-Grenze - Toni 20.10.2026).
+        assertEquals(10, TbrPolicy.SmbBlockCause.entries.size)
         assertTrue(TbrPolicy.SmbBlockCause.entries.contains(TbrPolicy.SmbBlockCause.PARTIAL_ENDING))
     }
 

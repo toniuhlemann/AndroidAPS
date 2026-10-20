@@ -29,6 +29,8 @@ import app.aaps.fuse.core.util.Sha
 import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
 import app.aaps.fuse.plugin.ledger.EpisodeBudgets
 import app.aaps.fuse.core.observer.Health
+import kotlin.math.abs
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import app.aaps.fuse.core.controller.MarkerReauthorization
@@ -7969,6 +7971,251 @@ class TransportWiringTest : TestBaseWithProfile() {
             if (besitz().leer && besitz().ending == null) break
         }
         assertTrue(besitz().leer) { "ein autoritativer Snapshot ohne TBR beendet den Zustand: ${besitz()}" }
+    }
+
+    // =====================================================================
+    // LANGSAMER KORREKTURKANAL (Toni 20.10.2026): DER KOMMANDOSTROM
+    // =====================================================================
+
+    /** Was die Rig-Pumpe gerade fuehrt: Rate [U/h] und Start auf der Rig-Uhr; null = keine TBR. */
+    private var rigTbr: Pair<Double, Long>? = null
+
+    private fun langsamerKanal(an: Boolean, schwelle: Double = 180.0, faktor: Double = 2.0, einstieg: Int = 30) {
+        whenever(preferences.get(FuseBooleanKey.SlowChannelEnabled)).thenReturn(an)
+        whenever(preferences.get(FuseDoubleKey.SlowChannelFactor)).thenReturn(faktor)
+        whenever(preferences.get(FuseDoubleKey.SlowChannelThresholdMgdl)).thenReturn(schwelle)
+        whenever(preferences.get(FuseIntKey.SlowChannelEntryMin)).thenReturn(einstieg)
+    }
+
+    /**
+     * EIN ZYKLUS MIT EINER PUMPE, DIE KOMMANDOS WIE `LoopPlugin` AUSFUEHRT: Dauer 0 ist ein Abbruch, eine Rate innerhalb
+     * eines Basalschritts um das Profilbasal (1,0 U/h im Rig) auch; dieselbe Rate bei mehr als 5 min Rest laeuft weiter
+     * (let_temp_basal_run). Die Restzeit meldet die Quelle gegen die Wanduhr, wie `TB.plannedRemainingMinutes` sie
+     * rechnet.
+     */
+    private suspend fun zyklusMitPumpe(): Pair<FuseCycleRunner.Outcome, TbrKommando?> {
+        clock += taktMs
+        rigTbr?.let { (_, seit) -> if (clock - seit >= 30 * 60_000L) rigTbr = null }
+        quelleMeldet(rigTbr?.let { (rate, seit) ->
+            TB(timestamp = System.currentTimeMillis() - (clock - seit), duration = 30 * 60_000L, rate = rate,
+               isAbsolute = true, type = TB.Type.NORMAL)
+        })
+        val o = runner.run(false, testPumpe())
+        val k = o.tbr?.let { TbrKommando(it.rateUPerH, it.durationMin, o.reason) }
+        if (k != null) {
+            val laufend = rigTbr
+            val rest = laufend?.let { (_, seit) -> 30 - (clock - seit) / 60_000L } ?: 0L
+            rigTbr = when {
+                k.durationMin == 0 -> null
+                abs(k.rateUPerH - 1.0) < 0.05 -> null
+                laufend != null && rest > 5 && abs(k.rateUPerH - laufend.first) < 0.05 -> laufend
+                else -> k.rateUPerH to clock
+            }
+        }
+        return o to k
+    }
+
+    private fun kanalBericht(lauf: List<Pair<FuseCycleRunner.Outcome, TbrKommando?>>) = lauf.joinToString("\n") { (o, k) ->
+        "t=${(o.computeTs - start) / 60_000L} smb=${o.decision.smbU} kmd=${k?.let { "${it.rateUPerH}/${it.durationMin}" }} " +
+            "kanal=${o.slowChannel?.let { "${it.reason} want=${it.want} phase=${it.phase} hoch=${it.highForMin} " +
+                "abg=${"%.3f".format(it.deliveredU)} res=${"%.3f".format(it.reservedU)} verf=${"%.3f".format(it.cancelledU)}" }} " +
+            "grund=${o.reason}"
+    }
+
+    /**
+     * DER KANAL ALS KOMMANDOSTROM: Einstieg erst nach der Einstiegszeit, dann GENAU EIN Setzkommando je Block (keine
+     * minuetliche Wiederholung, kein Abbruch durch den Normalpfad), Erneuerung kurz vor dem Ende, ein Abbruch beim Fall -
+     * und die Buchung trennt abgegeben, reserviert und verfallen.
+     */
+    @Test
+    fun `langsamer Kanal - Einstieg, Halten, Erneuern und Stopp als Kommandostrom`(@TempDir dir: File) = runBlocking<Unit> {
+        flach = 220.0
+        steigungProMin = 0.0
+        // Der Normalpfad gibt hier nie einen SMB - so ist der Kanal allein messbar.
+        maxSmbU = 0.0
+        langsamerKanal(an = true)
+        clock = start
+        rigTbr = null
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+
+        val lauf = (0 until 95).map { zyklusMitPumpe() }
+        val bericht = kanalBericht(lauf)
+        val setz = lauf.withIndex().filter { (_, p) -> p.second?.let { it.rateUPerH > 0.0 && it.durationMin > 0 } == true }
+        assertTrue(setz.size >= 2) { "Einstieg und mindestens eine Erneuerung erwartet\n$bericht" }
+        val (eintritt, eintrittKmd) = setz.first().value
+        assertTrue(eintritt.slowChannel!!.highForMin >= 30.0) { "Einstieg vor der Einstiegszeit\n$bericht" }
+        assertEquals(lauf.first { it.first.slowChannel?.reason == "START" }.first.computeTs, eintritt.computeTs)
+        assertEquals(2.0, eintrittKmd!!.rateUPerH, 1e-9) { "Obergrenze Faktor 2 x Profilbasal 1,0" }
+        // Der Bedarf, mit dem der Kanal rechnete, ist der gemeinsame Bedarf vor den Sperren: (Bahn - Ziel) / ISF.
+        assertEquals(
+            (eintritt.decision.predAtReleaseMgdl!! - eintritt.targetMgdl!!) / eintritt.isfMgdlPerU!!,
+            eintritt.slowChannel!!.demandU!!, 1e-9,
+        )
+        assertEquals(30, eintrittKmd.durationMin)
+        assertTrue(eintrittKmd.grund.startsWith(FuseTbrTranslator.SLOW_SET_REASON)) { eintrittKmd.grund }
+        // Erneuert wird alle 25 min (bei 5 min Rest), dazwischen geht KEIN Kommando hinaus.
+        val abstaende = setz.map { it.index }.zipWithNext { a, b -> b - a }
+        assertTrue(abstaende.all { it == 25 }) { "Erneuerungsabstaende $abstaende\n$bericht" }
+        val nachEintritt = lauf.drop(setz.first().index)
+        assertEquals(setz.size, nachEintritt.count { it.second != null }) { "nur die Setzkommandos des Kanals\n$bericht" }
+        assertTrue(nachEintritt.all { it.first.decision.smbU == 0.0 })
+        // Die Buchung: waehrend der Block laeuft, waechst "abgegeben", "reserviert" ist der Rest des Blocks.
+        val mitte = nachEintritt[10].first.slowChannel!!
+        assertEquals("RUNNING", mitte.phase) { bericht }
+        assertEquals(1.0 * 20 / 60.0, mitte.reservedU, 0.02) { "Rest ~20 min x 1,0 U/h Zusatz\n$bericht" }
+        assertTrue(mitte.deliveredU > 0.1) { bericht }
+        assertEquals(0.0, mitte.cancelledU, 1e-9)
+        // Erneuerungen loesen den Block nur ab - verfallen ist bis zum Stopp nichts.
+        assertEquals(0.0, lauf.last().first.slowChannel!!.cancelledU, 1e-9) { bericht }
+        // GEPLANTER REST BLEIBT GEPLANT: in der Prognose steht nur der Zusatz ab jetzt (schon abgegebene Minuten fallen
+        // heraus) und nie alter plus neuer Block - hoechstens ein ganzer Block, 1,0 U/h Zusatz x 30 min.
+        assertTrue(lauf.all { (o, _) -> (o.slowChannel?.plannedRemainderU ?: 0.0) <= 0.5 + 1e-9 }) { bericht }
+        assertEquals(1.0 * 20 / 60.0, mitte.plannedRemainderU, 0.02) { bericht }
+        val nachErneuerung = lauf[setz[1].index + 1].first.slowChannel!!
+        assertEquals(1.0 * 29 / 60.0, nachErneuerung.plannedRemainderU, 0.02) { "die alte Restplanung ist ersetzt, nicht addiert\n$bericht" }
+
+        // ---- STOPP: der BG faellt steil -> genau ein Ende des Blocks, danach kein Setzen mehr ----
+        knickAbMin = ((clock - start) / 60_000L).toInt()
+        steigungNachKnick = -3.0
+        val fall = (0 until 15).map { zyklusMitPumpe() }
+        val fallBericht = kanalBericht(fall)
+        val enden = fall.filter { (_, k) -> k != null && k.rateUPerH == 0.0 }
+        assertTrue(enden.isNotEmpty()) { "der Fall beendet den Block\n$fallBericht" }
+        assertTrue(enden.first().second!!.grund.startsWith("SLOW_CORRECTION_END")) { fallBericht }
+        assertTrue(fall.none { (_, k) -> k != null && k.rateUPerH > 0.0 }) { "nach dem Stopp kein Setzen\n$fallBericht" }
+        assertTrue(rigTbr == null || rigTbr!!.first == 0.0) { "die Kanal-TBR laeuft nicht mehr: $rigTbr\n$fallBericht" }
+        val danach = fall.last().first.slowChannel!!
+        assertEquals("NONE", danach.phase) { fallBericht }
+        assertTrue(danach.cancelledU > 0.0) { "der abgebrochene Rest ist als verfallen gebucht\n$fallBericht" }
+        assertEquals(0.0, danach.reservedU, 1e-9)
+    }
+
+    /**
+     * DAS EINE SCHLIESST DAS ANDERE NICHT AUS (Toni): die positive TBR laeuft wie das Profilbasal nebenher und darf
+     * die Versorgung ueber den schnellen Kanal weder bremsen noch verzoegern - beide bedienen einen gemeinsamen
+     * Restbedarf. Derselbe dosierende Verlauf mit und ohne Kanal:
+     *  - bis die geplante TBR in der Prognose steht, sind beide Laeufe Zyklus fuer Zyklus gleich - auch im Zyklus,
+     *    in dem der Kanal setzt (er fasst den SMB nie an);
+     *  - danach steht ihr geplanter Rest zeitabhaengig in der Bahn: die Prognose liegt tiefer als ohne Kanal;
+     *  - SMB fliessen weiter, waehrend sie laeuft.
+     */
+    @Test
+    fun `langsamer Kanal - SMB und Kanal laufen nebeneinander`(@TempDir dir: File) = runBlocking<Unit> {
+        fun lauf(an: Boolean, unterordner: String): List<Pair<FuseCycleRunner.Outcome, TbrKommando?>> = runBlocking {
+            flach = 220.0
+            steigungProMin = 0.0
+            maxSmbU = 0.3
+            // Obergrenze 5 x 1,0 U/h: je Stufe genau 1,0 U/h Zusatz - so unterscheiden die Stufen den Restbedarf.
+            langsamerKanal(an = an, faktor = 5.0)
+            clock = start
+            rigTbr = null
+            transportReset()
+            neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, unterordner).also(File::mkdirs), "test-epoch", start) })
+            (0 until 70).map { zyklusMitPumpe() }
+        }
+        val ohne = lauf(an = false, unterordner = "ohne")
+        val mit = lauf(an = true, unterordner = "mit")
+        val bericht = kanalBericht(mit)
+        assertTrue(mit.any { (_, k) -> k != null && k.grund.startsWith(FuseTbrTranslator.SLOW_SET_REASON) }) {
+            "der Kanal setzt trotz dosierendem Normalpfad\n$bericht"
+        }
+        assertTrue(mit.any { (o, _) -> o.slowChannel?.phase == "RUNNING" && o.decision.smbU > 0.0 }) {
+            "SMB, waehrend die Kanal-TBR laeuft\n$bericht"
+        }
+        // KEIN DOPPELTER ABZUG, DER SMB DIESES ZYKLUS ABGESTIMMT: beim Einstieg traegt der Block 2 x (Bedarf - SMB dieses
+        // Zyklus) je Stunde. Fruehere SMB stehen schon im Bedarf (IOB, Transport) und werden nicht noch einmal
+        // abgezogen. Je Stufe 1,0 U/h, also Stufe = ganze Zahl davon, hoechstens 4.
+        val start = mit.first { it.first.slowChannel?.reason == "START" }.first.slowChannel!!
+        assertTrue(mit.indexOfFirst { it.first.slowChannel?.reason == "START" } > 0)
+        val erwartet = minOf(4, floor(2.0 * (start.plannedRemainderU + start.demandU!! - start.smbThisCycleU) + 1e-9).toInt())
+        assertEquals(erwartet, start.stage) { "Stufe aus Bedarf ${start.demandU}, SMB ${start.smbThisCycleU}\n$bericht" }
+        assertTrue(start.smbThisCycleU > 0.0) { "der Einstieg faellt in diesem Verlauf auf einen SMB-Zyklus\n$bericht" }
+
+        val ersterPlan = mit.indexOfFirst { (it.first.slowChannel?.plannedRemainderU ?: 0.0) > 0.0 }
+        assertTrue(ersterPlan > 0) { "die geplante TBR steht nie in der Prognose\n$bericht" }
+        assertEquals(ohne.take(ersterPlan).map { it.first.decision.smbU }, mit.take(ersterPlan).map { it.first.decision.smbU }) {
+            "der Kanal bremst oder verzoegert keinen SMB\n$bericht"
+        }
+        val ohnePrognose = ohne[ersterPlan].first.decision.predAtReleaseMgdl!!
+        val mitPrognose = mit[ersterPlan].first.decision.predAtReleaseMgdl!!
+        assertTrue(mitPrognose < ohnePrognose - 0.1) {
+            "der geplante Rest senkt die Prognose: ohne $ohnePrognose, mit $mitPrognose\n$bericht"
+        }
+    }
+
+    /**
+     * maxIOB erreicht den Kanal im echten Zyklus: bei 0,3 U Spielraum traegt ein ganzer Block nur noch die Stufe 2/4
+     * des eingestellten Zusatzes (0,5 statt 1,0 U/h).
+     */
+    @Test
+    fun `langsamer Kanal - maxIOB kappt die Rate im Runner`(@TempDir dir: File) = runBlocking<Unit> {
+        flach = 220.0
+        steigungProMin = 0.0
+        maxSmbU = 0.0
+        maxIobU = 0.3
+        langsamerKanal(an = true)
+        clock = start
+        rigTbr = null
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        val lauf = (0 until 45).map { zyklusMitPumpe() }
+        val setz = lauf.firstOrNull { (_, k) -> k != null && k.rateUPerH > 0.0 && k.durationMin > 0 }
+        assertNotNull(setz) { kanalBericht(lauf) }
+        assertEquals(1.5, setz!!.second!!.rateUPerH, 1e-9) { kanalBericht(lauf) }
+        assertEquals("2/4 maxIob", setz.first.slowChannel!!.detail)
+    }
+
+    /** Eine harte Sperre erreicht den Kanal im echten Zyklus: bei geschlossenem Pumpentor startet er nie. */
+    @Test
+    fun `langsamer Kanal - geschlossenes Pumpentor startet nichts`(@TempDir dir: File) = runBlocking<Unit> {
+        flach = 220.0
+        steigungProMin = 0.0
+        maxSmbU = 0.0
+        pumpeBelegt = true
+        langsamerKanal(an = true)
+        clock = start
+        rigTbr = null
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        val lauf = (0 until 45).map { zyklusMitPumpe() }
+        assertTrue(lauf.none { it.first.slowChannel?.want == true }) { kanalBericht(lauf) }
+        assertTrue(lauf.none { it.second != null }) { kanalBericht(lauf) }
+        val letzter = lauf.last().first.slowChannel!!
+        assertEquals("HARD_STOP", letzter.reason)
+        assertEquals("PUMP_GATE_CLOSED", letzter.detail)
+    }
+
+    /**
+     * AUS UND UNBETEILIGT IST BITGLEICH: derselbe Verlauf ohne Kanal und mit eingeschaltetem, aber nie einsteigendem
+     * Kanal (Schwelle ueber dem BG) liefert in jedem Zyklus dieselben Kommandos, Mengen und Gruende. Ausgeschaltet
+     * steht nichts vom Kanal im Ergebnis.
+     */
+    @Test
+    fun `langsamer Kanal - aus und unbeteiligt aendert nichts`(@TempDir dir: File) = runBlocking<Unit> {
+        fun lauf(an: Boolean, unterordner: String): List<Pair<FuseCycleRunner.Outcome, TbrKommando?>> = runBlocking {
+            flach = 220.0
+            steigungProMin = 0.0
+            maxSmbU = 0.3
+            langsamerKanal(an = an, schwelle = 300.0)
+            clock = start
+            rigTbr = null
+            transportReset()
+            neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, unterordner).also(File::mkdirs), "test-epoch", start) })
+            (0 until 70).map { zyklusMitPumpe() }
+        }
+        val aus = lauf(an = false, unterordner = "aus")
+        val unbeteiligt = lauf(an = true, unterordner = "an")
+        assertTrue(aus.any { it.first.decision.smbU > 0.0 }) { "Vorbedingung: der Normalpfad dosiert\n${kanalBericht(aus)}" }
+        assertTrue(aus.all { it.first.slowChannel == null }) { "ausgeschaltet steht nichts vom Kanal im Ergebnis" }
+        // Eingeschaltet steht der Block im Ergebnis (ab dem ersten Zyklus mit Hauptpfad), handelt aber nie.
+        assertTrue(unbeteiligt.any { it.first.slowChannel != null }) { kanalBericht(unbeteiligt) }
+        assertTrue(unbeteiligt.none { it.first.slowChannel?.acted == true }) { kanalBericht(unbeteiligt) }
+        for ((a, b) in aus.zip(unbeteiligt)) {
+            assertEquals(a.second, b.second) { "Kommando t=${(a.first.computeTs - start) / 60_000L}" }
+            assertEquals(a.first.decision, b.first.decision) { "Entscheidung t=${(a.first.computeTs - start) / 60_000L}" }
+            assertEquals(a.first.reason, b.first.reason)
+        }
     }
 
 

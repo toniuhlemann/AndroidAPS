@@ -9,6 +9,7 @@ import app.aaps.core.keys.interfaces.LongNonPreferenceKey
 import app.aaps.core.keys.interfaces.NonPreferenceKey
 import app.aaps.core.keys.interfaces.StringPreferenceKey
 import app.aaps.core.keys.interfaces.TextRef
+import app.aaps.fuse.core.controller.SlowCorrectionChannel
 
 /**
  * FUSEs EIGENE Einstellungen — einstellbar, nicht verdrahtet.
@@ -238,6 +239,10 @@ enum class FuseDoubleKey(
      * stellt.
      */
     ZeroLatchCalmDistanceMgdl("fuse_zero_latch_calm_distance_mgdl", 30.0, 10.0, 60.0, title = TextRef.AndroidRes(R.string.fuse_zero_latch_calm_dist_title), summary = TextRef.AndroidRes(R.string.fuse_zero_latch_calm_dist_summary), unitType = UnitType.MGDL),
+    /** Langsamer Korrekturkanal (Toni 20.10.2026): OBERGRENZE der Gesamtrate als Vielfaches des Profilbasals, bis 5 - die Rate selbst folgt dem Bedarf. */
+    SlowChannelFactor("fuse_slow_channel_factor", SlowCorrectionChannel.FACTOR_DEFAULT, SlowCorrectionChannel.FACTOR_MIN, SlowCorrectionChannel.FACTOR_MAX, title = TextRef.AndroidRes(R.string.fuse_slow_channel_factor_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_factor_summary), unitType = UnitType.DOUBLE),
+    /** Langsamer Korrekturkanal: ab diesem Zucker zaehlt die Einstiegszeit; gestoppt wird 20 mg/dl darunter. */
+    SlowChannelThresholdMgdl("fuse_slow_channel_threshold_mgdl", SlowCorrectionChannel.THRESHOLD_DEFAULT_MGDL, SlowCorrectionChannel.THRESHOLD_MIN_MGDL, SlowCorrectionChannel.THRESHOLD_MAX_MGDL, title = TextRef.AndroidRes(R.string.fuse_slow_channel_threshold_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_threshold_summary), unitType = UnitType.MGDL),
 
     /**
      * Nahhorizont des harten Endriegels fuer NEUES positives Insulin [min].
@@ -492,6 +497,8 @@ enum class FuseIntKey(
      *  Medtrum-Zyklen zaehlt der Zaehler LANGSAMER als die Uhr - die
      *  konservative Richtung. Die UI sagt ehrlich "Ruhe-Zyklen". */
     ZeroLatchCalmExitMin("fuse_zero_latch_calm_exit_min", 20, 5, 120, title = TextRef.AndroidRes(R.string.fuse_zero_latch_calm_min_title), summary = TextRef.AndroidRes(R.string.fuse_zero_latch_calm_min_summary), unitType = UnitType.MIN),
+    /** Langsamer Korrekturkanal: so lange ueber der Schwelle, ohne zu fallen, bevor er startet. */
+    SlowChannelEntryMin("fuse_slow_channel_entry_min", SlowCorrectionChannel.ENTRY_DEFAULT_MIN, SlowCorrectionChannel.ENTRY_MIN_MIN, SlowCorrectionChannel.ENTRY_MAX_MIN, title = TextRef.AndroidRes(R.string.fuse_slow_channel_entry_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_entry_summary), unitType = UnitType.MIN),
 
     /**
      * VARIANTE 1 des Nullphasen-Vergleichs: der GRUND-WEG-AUSGANG.
@@ -873,6 +880,8 @@ enum class FuseBooleanKey(
      * Ruhe-Ausgang.
      */
     PartialRecoveryEnabled("fuse_partial_recovery_enabled", false, title = TextRef.AndroidRes(R.string.fuse_partial_recovery_title), summary = TextRef.AndroidRes(R.string.fuse_partial_recovery_summary)),
+    /** Langsamer Korrekturkanal (Toni 20.10.2026): positive TBR fuer Tage mit erhoehtem Bedarf. AUS = bitgleich wie bisher. */
+    SlowChannelEnabled("fuse_slow_channel_enabled", false, title = TextRef.AndroidRes(R.string.fuse_slow_channel_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_summary)),
 
     /**
      * DER MARKER-PRIME-AUFSCHUB - DEFAULT AUS (Punkt 6, Bau-GO Toni 22.08.,

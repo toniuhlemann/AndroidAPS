@@ -367,10 +367,12 @@ class FuseDashboardModelTest {
     fun `ohne Konto meldet die Markerzeile den Rueckfall wie ohne Marker`() {
         fun zeile(rueckfall: String?, seitMin: Int = 3) = FuseDashboardModel.build(
             outcome().copy(
-                erwartungskonto = FuseCycleRunner.ErwartungskontoExport(
-                    gilt = false, kontextAbweichung = false, verworfenBeimLaden = false, zyklus = null, buchung = null,
-                    bodenU = 0.0, angehobenU = 0.0, blockNormalpfad = null, grundNormalpfad = null, grundEnde = null,
-                    stabilSeitTs = null, rueckfall = rueckfall,
+                bloecke = FuseCycleRunner.Bloecke(
+                    erwartungskonto = FuseCycleRunner.ErwartungskontoExport(
+                        gilt = false, kontextAbweichung = false, verworfenBeimLaden = false, zyklus = null, buchung = null,
+                        bodenU = 0.0, angehobenU = 0.0, blockNormalpfad = null, grundNormalpfad = null, grundEnde = null,
+                        stabilSeitTs = null, rueckfall = rueckfall,
+                    ),
                 ),
             ),
             null, now, FuseScreenModel.MarkerInfo(now - seitMin * 60_000L, 90, 3.0), ledger(), null,
