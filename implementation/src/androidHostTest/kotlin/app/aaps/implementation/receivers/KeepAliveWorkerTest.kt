@@ -151,7 +151,8 @@ class KeepAliveWorkerTest : TestBaseWithProfile() {
         verify(dstHelper).dstCheck()
         verify(localAlertUtils).shortenSnoozeInterval()
         verify(localAlertUtils).checkStaleBGAlert()
-        verify(maintenance).deleteLogs(30)
+        // Fork: hourly log archives, keep 30 days of them
+        verify(maintenance).deleteLogs(30 * 24)
     }
 
     @Test

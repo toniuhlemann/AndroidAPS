@@ -142,6 +142,12 @@ class PeriodicMaintenance(
 
         /** One day per daily pass, plus room for a pass that runs late. */
         val MAX_CUTOFF_STEP = 2.days
-        const val KEEP_LOG_FILES = 30
+
+        /**
+         * Fork: logback makes one log archive per HOUR (`app/src/main/assets/logback.xml`, maxHistory 720).
+         * The upstream value of 30 files kept only about 29 hours of logs, so they were gone after one day.
+         * 30 days of hourly archives, as `deleteLogs(30*24)` in the v3 `KeepAliveWorker` (ga-zelle).
+         */
+        const val KEEP_LOG_FILES = 30 * 24
     }
 }
