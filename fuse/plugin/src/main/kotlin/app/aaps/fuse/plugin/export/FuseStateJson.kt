@@ -2076,6 +2076,11 @@ object FuseStateJson {
                     .put("horizonMin", p.expectationHorizonMin)
                     .put("curveVersion", app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(p.expectationCurveText)
                         ?.let { app.aaps.fuse.core.controller.ExpectationAccount.curveVersion(it.values()) } ?: JSONObject.NULL)
+                    // Viewer (Toni 20.10.): die Kurve selbst, F(0) bis F(120) in 5-min-Schritten [U] - damit
+                    // die Mahlzeitenstatistik die Abweichung zur Einstellung zeigen kann. Nur Anzeige: der
+                    // Politik-Hash liest die Config, nicht dieses JSON, und bleibt gleich.
+                    .put("curveU", app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(p.expectationCurveText)
+                        ?.let { c -> JSONArray(c.values().map { fin(it) }) } ?: JSONObject.NULL)
                     .put("expectationValid", p.expectationParams != null),
             )
         }

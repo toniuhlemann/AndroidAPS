@@ -1104,6 +1104,27 @@ class FuseStateExportTest {
         assertEquals("b", File(dir, FuseStateExporter.FILE_NAME).readText().trim())
     }
 
+    /** Viewer (Toni 20.10.): die Mahlzeitenstatistik zeigt die Abweichung zur eingestellten Konto-Kurve. Die Kurve
+     *  steht deshalb im Trail - nur als Anzeige; der Politik-Hash liest die Config, nicht dieses JSON. */
+    @Test
+    fun `die Konto-Kurve steht im Trail`() {
+        val ecken = listOf(0.7, 1.55, 2.54, 3.7)
+        // Die Einstellung: 24 Stuetzwerte F(5)..F(120), linear zwischen den vier Eckwerten wie im Dialog.
+        val text = (1..24).joinToString(";") { i ->
+            val a = i * 5.0
+            val k = ((a - 0.001) / 30.0).toInt()
+            val von = if (k == 0) 0.0 else ecken[k - 1]
+            "%.4f".format(java.util.Locale.ROOT, von + (ecken[k] - von) * (a - k * 30.0) / 30.0)
+        }
+        val mitKonto = cfg.copy(expectationAccountEnabled = true, expectationCurveText = text)
+        val kurve = FuseStateJson.policyValues(mitKonto).getJSONObject("expectationAccount").getJSONArray("curveU")
+        assertEquals(25, kurve.length())
+        assertEquals(0.0, kurve.getDouble(0), 1e-9)
+        listOf(6 to 0.7, 12 to 1.55, 18 to 2.54, 24 to 3.7).forEach { (i, u) -> assertEquals(u, kurve.getDouble(i), 1e-4) }
+        // Ohne Konto kein Block, also auch keine Kurve.
+        assertFalse(FuseStateJson.policyValues(cfg.copy(expectationAccountEnabled = false)).has("expectationAccount"))
+    }
+
     @Test
     fun `die Rotation behaelt alle Generationen und verwirft nur die aelteste`(@TempDir dir: File) {
         val n = FuseStateExporter.GENERATIONS
