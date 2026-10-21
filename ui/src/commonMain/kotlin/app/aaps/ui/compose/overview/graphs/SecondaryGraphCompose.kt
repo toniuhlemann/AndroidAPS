@@ -253,7 +253,8 @@ fun SecondaryGraphCompose(
         SeriesType.ACTIVITY        -> viewModel.activityGraphFlow.collectAsStateWithLifecycle().value.activity
         // Fork (FUSE): on the right axis only the main line - the drive bars as a line, the guard margin
         SeriesType.FUSE_DRIVE      -> viewModel.fuseGraphFlow.collectAsStateWithLifecycle().value.drive.map { GraphDataPoint(it.timestamp, it.value) }
-        SeriesType.FUSE_GUARD      -> viewModel.fuseGraphFlow.collectAsStateWithLifecycle().value.guard
+        // (the right axis has one line only, so the runs of the guard margin are joined there)
+        SeriesType.FUSE_GUARD      -> viewModel.fuseGraphFlow.collectAsStateWithLifecycle().value.guard.flatten()
         // Fork (autoISF)
         SeriesType.IOB_TH, SeriesType.FIN_ISF, SeriesType.ACC_ISF, SeriesType.BG_ISF, SeriesType.PP_ISF, SeriesType.DUR_ISF ->
             viewModel.autoIsfGraphFlow.collectAsStateWithLifecycle().value.points(secondaryType)
@@ -661,7 +662,8 @@ fun SecondaryGraphCompose(
     val fuseTextMeasurer = rememberTextMeasurer()
     val fuseDecimalFormatter = LocalDecimalFormatter.current
     val fuseDensity = LocalDensity.current.density
-    val fuseIobDecorations = remember(fuseSmbs, fuseLayers, stableTimeRange, fuseTextMeasurer, fuseDecimalFormatter, fuseDensity) {
+    val fuseSumBackground = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)
+    val fuseIobDecorations = remember(fuseSmbs, fuseLayers, stableTimeRange, fuseTextMeasurer, fuseDecimalFormatter, fuseDensity, fuseSumBackground) {
         if (fuseLayers == null || !hasRealTimeRange) return@remember emptyList()
         val sums = fuseSmbRuns(fuseSmbs.orEmpty())
             .filter { it.sumU >= 0.2 }
@@ -675,7 +677,10 @@ fun SecondaryGraphCompose(
             }
         listOfNotNull(
             sums.takeIf { it.isNotEmpty() }?.let {
-                FuseSmbRunSums(it, fuseTextMeasurer, TextStyle(fontSize = 10.sp, fontWeight = FontWeight.Bold), liftPx = 12f * fuseDensity)
+                FuseSmbRunSums(
+                    it, fuseTextMeasurer, TextStyle(fontSize = 10.sp, fontWeight = FontWeight.Bold), fuseSumBackground,
+                    liftPx = 12f * fuseDensity, pxPerDp = fuseDensity
+                )
             },
             fuseBasalSegments(fuseLayers.cycles, minTimestamp).takeIf { it.isNotEmpty() }?.let { FuseBasalStrip(it, heightPx = 4f * fuseDensity) }
         )

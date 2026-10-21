@@ -117,8 +117,8 @@ internal fun processFuse(data: FuseGraphData, type: SeriesType, minTimestamp: Lo
 
         SeriesType.FUSE_GUARD -> ProcessedFuse(
             bars = null,
-            lines = listOf(FuseLine(FuseLineStyle.GUARD, pts(data.guard)), FuseLine(FuseLineStyle.TAIL, pts(data.tail)))
-                .filter { it.points.isNotEmpty() } +
+            lines = runs(FuseLineStyle.GUARD, data.guard) +
+                runs(FuseLineStyle.TAIL, data.tail) +
                 runs(FuseLineStyle.GUARD_WITH_MEAL, data.guardWithMeal) +
                 runs(FuseLineStyle.TAIL_WITH_MEAL, data.tailWithMeal),
             markerXs = markerXs,

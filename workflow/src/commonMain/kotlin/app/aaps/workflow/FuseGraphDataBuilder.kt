@@ -18,7 +18,8 @@ import app.aaps.core.interfaces.overview.graph.GraphDataPoint
  * F.DRV: the disturbance r as 5 minute bars (the mean in each 5 minute slot, drawn at the newest point of the slot;
  * negative red, positive in the meal window yellow, else green), the meal effect the account expects (one line per
  * run of points), the ramp edges as reference lines. F.GRD: the guard margin, the tail margin, both again WITH the
- * announced meal (one line per run), and the account state as a strip at the top.
+ * announced meal (each one line per run of points, so a gap in the data stays a gap), and the account state as a
+ * strip at the top.
  *
  * The source is the process ring of the FUSE plugin, so after an app start the graphs begin empty and fill in the
  * 1 minute rhythm. Values stay in mg/dl and mg/dl/min, as in the fork.
@@ -36,6 +37,15 @@ internal object FuseGraphDataBuilder {
 
     /** A gap longer than this ends a run of the slow correction channel. */
     private const val CHANNEL_GAP_MS = 5 * 60_000L
+
+    /**
+     * A run goes on across a hole in the data up to this long, when the channel itself went on. A channel block runs at
+     * the pump for at most 30 minutes (`SlowCorrectionChannel.BLOCK_MIN`), so across a longer hole nobody knows.
+     */
+    private const val CHANNEL_JOIN_MS = 30 * 60_000L
+
+    /** Rounding room when the booked insulin of two cycles is compared [U]. */
+    private const val DELIVERED_EPS_U = 0.005
 
     fun build(source: FuseOverviewSource?, fromTime: Long, endTime: Long): FuseGraphData {
         source ?: return FuseGraphData()
@@ -68,8 +78,8 @@ internal object FuseGraphDataBuilder {
             expectedDrive = runs(points) { it.expectedMealDriveMgdlPerMin },
             rampLow = rampLow,
             rampHigh = rampHigh,
-            guard = points.mapNotNull { p -> p.guardMarginMgdl?.takeIf { it.isFinite() }?.let { GraphDataPoint(p.timestamp, it) } },
-            tail = points.mapNotNull { p -> p.tailMarginMgdl?.takeIf { it.isFinite() }?.let { GraphDataPoint(p.timestamp, it) } },
+            guard = runs(points) { it.guardMarginMgdl },
+            tail = runs(points) { it.tailMarginMgdl },
             guardWithMeal = runs(points) { it.guardWithMealMarginMgdl },
             tailWithMeal = runs(points) { it.tailWithMealMarginMgdl },
             accountStatus = statusStrip(points),
@@ -100,47 +110,96 @@ internal object FuseGraphDataBuilder {
     }
 
     /**
-     * Following channel cycles form one run; a gap longer than [CHANNEL_GAP_MS] starts the next. The end reason is in
-     * the first cycle in which the channel no longer wants (phase ENDING), else in the cycle after the run. A cycle
-     * without the channel block right after a run is a restart: FUSE writes the block while anything of it runs.
+     * The runs of the slow correction channel, one band each.
+     *
+     * Following active cycles form a run. A hole in the data - missing cycles, or cycles without the channel block
+     * (no input) - does not end it when the channel went on: the first cycle after the hole is still active, is no new
+     * start, its booked insulin did not go back, and the hole is at most [CHANNEL_JOIN_MS] long (Toni 21.10.2026: a
+     * short CGM gap split one run into two bands, and the second band showed the insulin of both). A run ends with its
+     * ENDING cycles; any other active cycle after them starts the next run. When the booked insulin goes back right
+     * after a cycle while the channel stays active, FUSE started again (the booking lives in memory only).
+     *
+     * The end reason is in the first ENDING cycle, else in the next cycle with the channel block, when it comes within
+     * [CHANNEL_GAP_MS]. [FuseChannelEpisode.deliveredU] is what the pump delivered during the band: the booking runs
+     * from the start of the episode, so the band shows the growth from its first to its last cycle.
      */
     internal fun channelEpisodes(points: List<FuseOverviewSource.Point>): List<FuseChannelEpisode> {
         val episodes = ArrayList<FuseChannelEpisode>()
+        val newest = points.lastOrNull()?.timestamp ?: return episodes
+        // The next cycle after [from] with the channel block; the cycles in between are a hole in the data.
+        fun nextWithChannel(from: Int): Int {
+            var n = from + 1
+            while (n < points.size && points[n].channel == null) n++
+            return n
+        }
         var i = 0
         while (i < points.size) {
             if (points[i].channel?.active != true) {
                 i++
                 continue
             }
-            var j = i
-            while (j + 1 < points.size && points[j + 1].channel?.active == true && points[j + 1].timestamp - points[j].timestamp <= CHANNEL_GAP_MS) j++
-            val last = points[j]
-            val stop = (i..j).map { points[it] }.firstOrNull { it.channel?.phase == "ENDING" }
-            val next = points.getOrNull(j + 1)
+            val members = arrayListOf(i)
+            var stop = points[i].takeIf { it.channel?.phase == "ENDING" }
+            var restart = false
+            while (true) {
+                val last = points[members.last()]
+                val n = nextWithChannel(members.last())
+                val next = points.getOrNull(n) ?: break
+                val channel = next.channel ?: break
+                if (!channel.active) break
+                val gap = next.timestamp - last.timestamp
+                val before = last.channel?.deliveredU?.takeIf { it.isFinite() }
+                val after = channel.deliveredU?.takeIf { it.isFinite() }
+                if (before != null && after != null && after < before - DELIVERED_EPS_U) {
+                    // The booking went back. Right after the run this is FUSE starting again; after a hole nobody knows.
+                    restart = stop == null && gap <= CHANNEL_GAP_MS
+                    break
+                }
+                val follows = n == members.last() + 1 && gap <= CHANNEL_GAP_MS
+                val goesOn = when {
+                    // After its ENDING cycles a run only takes more of them: the end being repeated.
+                    stop != null -> follows && channel.phase == "ENDING"
+                    follows      -> true
+                    // Across a hole only when the channel itself went on.
+                    else         -> channel.reason != "START" && gap <= CHANNEL_JOIN_MS && before != null && after != null
+                }
+                if (!goesOn) break
+                members.add(n)
+                if (stop == null && channel.phase == "ENDING") stop = next
+            }
+            val last = points[members.last()]
+            val nextChannel = points.getOrNull(nextWithChannel(members.last()))
             val end = when {
-                stop != null                                    -> channelEnd(stop.channel?.reason, stop.channel?.detail)
-                next == null                                    -> null
-                next.timestamp - last.timestamp > CHANNEL_GAP_MS -> null
-                next.channel == null                            -> FuseChannelEnd.RESTART
-                else                                            -> channelEnd(next.channel?.reason, next.channel?.detail)
+                stop != null                                            -> channelEnd(stop.channel?.reason, stop.channel?.detail)
+                restart                                                 -> FuseChannelEnd.RESTART
+                nextChannel == null                                     -> null
+                nextChannel.timestamp - last.timestamp > CHANNEL_GAP_MS -> null
+                nextChannel.channel?.active == true                     -> null
+                else                                                    -> channelEnd(nextChannel.channel?.reason, nextChannel.channel?.detail)
             }
             var factor: Double? = null
-            var delivered: Double? = null
-            for (k in i..j) {
-                points[k].channel?.factor?.let { f -> factor = maxOf(factor ?: f, f) }
-                points[k].channel?.deliveredU?.takeIf { it.isFinite() }?.let { d -> delivered = maxOf(delivered ?: d, d) }
+            var low: Double? = null
+            var high: Double? = null
+            for (k in members) {
+                val channel = points[k].channel ?: continue
+                channel.factor?.let { f -> factor = maxOf(factor ?: f, f) }
+                channel.deliveredU?.takeIf { it.isFinite() }?.let { d ->
+                    low = minOf(low ?: d, d)
+                    high = maxOf(high ?: d, d)
+                }
             }
             episodes.add(
                 FuseChannelEpisode(
                     startTime = points[i].timestamp,
                     endTime = last.timestamp,
                     factor = factor,
-                    deliveredU = delivered,
+                    deliveredU = high?.let { h -> h - (low ?: h) },
                     end = end,
-                    running = stop == null && next == null
+                    // Without newer channel data the block may still run - for at most the length of one block.
+                    running = stop == null && !restart && nextChannel == null && newest - last.timestamp <= CHANNEL_JOIN_MS
                 )
             )
-            i = j + 1
+            i = members.last() + 1
         }
         return episodes
     }

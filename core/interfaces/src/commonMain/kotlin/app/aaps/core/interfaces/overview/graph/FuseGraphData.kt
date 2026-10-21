@@ -12,8 +12,9 @@ import app.aaps.core.interfaces.overview.FuseOverviewSource
  * @property expectedDrive the meal effect the account expects, one line per run of points
  * @property rampLow lower ramp edge [mg/dl/min], a reference line in F.DRV
  * @property rampHigh upper ramp edge [mg/dl/min], a reference line in F.DRV; the axis always reaches 1.25 times it
- * @property guard guard margin: above 0 open, below 0 blocked
- * @property tail tail margin, same meaning
+ * @property guard guard margin: above 0 open, below 0 blocked; one line per run of points, so a gap in the data stays
+ *   a gap (Toni 21.10.2026: one line joined the cycles across a CGM gap)
+ * @property tail tail margin, same meaning, one line per run
  * @property guardWithMeal guard margin WITH the announced meal, one line per run
  * @property tailWithMeal tail margin WITH the announced meal, one line per run
  * @property accountStatus the account state as segments, drawn as a strip at the top of F.GRD
@@ -29,8 +30,8 @@ data class FuseGraphData(
     val expectedDrive: List<List<GraphDataPoint>> = emptyList(),
     val rampLow: Double? = null,
     val rampHigh: Double? = null,
-    val guard: List<GraphDataPoint> = emptyList(),
-    val tail: List<GraphDataPoint> = emptyList(),
+    val guard: List<List<GraphDataPoint>> = emptyList(),
+    val tail: List<List<GraphDataPoint>> = emptyList(),
     val guardWithMeal: List<List<GraphDataPoint>> = emptyList(),
     val tailWithMeal: List<List<GraphDataPoint>> = emptyList(),
     val accountStatus: List<FuseStatusSegment> = emptyList(),
@@ -61,7 +62,8 @@ data class FuseCycleInfo(
  * One run of the slow correction channel, [startTime] until [endTime] (the last cycle of the run).
  *
  * @property factor the highest active factor in the run
- * @property deliveredU the extra insulin the channel delivered in the run [U]
+ * @property deliveredU the extra insulin the pump delivered during this band [U] - not the whole episode: the channel
+ *   books from the start of its episode, and a band that starts later shows only its own part
  * @property end why the run ended; `null` while it runs or when the data stops without a reason
  * @property running the run is still going on (it is the newest data)
  */

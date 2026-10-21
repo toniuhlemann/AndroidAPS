@@ -93,7 +93,22 @@ class FuseGraphDataBuilderTest {
         val data = FuseGraphDataBuilder.build(source(points, markers = listOf(t0 + 9 * minute, t0 + 2 * minute)), 0L, Long.MAX_VALUE)
 
         assertThat(data.mealMarkers).containsExactly(t0 + 2 * minute, t0 + 9 * minute).inOrder()
-        assertThat(data.guard.map { it.value }).containsExactly(12.0, -3.0).inOrder()
+        assertThat(data.guard.single().map { it.value }).containsExactly(12.0, -3.0).inOrder()
+    }
+
+    /** Seen on the phone 21.10.2026: the guard line went straight across a CGM gap. */
+    @Test
+    fun `guard and tail lines break at a gap in the data`() {
+        val points = listOf(
+            point(0, guard = 5.0).copy(tailMarginMgdl = 2.0),
+            point(1, guard = 4.0).copy(tailMarginMgdl = 1.0),
+            point(2), // no input: no margins
+            point(10, guard = -1.0).copy(tailMarginMgdl = -2.0)
+        )
+        val data = FuseGraphDataBuilder.build(source(points), 0L, Long.MAX_VALUE)
+
+        assertThat(data.guard.map { run -> run.map { it.value } }).containsExactly(listOf(5.0, 4.0), listOf(-1.0)).inOrder()
+        assertThat(data.tail.map { run -> run.map { it.value } }).containsExactly(listOf(2.0, 1.0), listOf(-2.0)).inOrder()
     }
 
     // ---- Main graph layers (Toni 21.10.2026) ------------------------------------------------------------------------
@@ -166,25 +181,101 @@ class FuseGraphDataBuilderTest {
     }
 
     @Test
-    fun `without ENDING the next cycle names the end, a cycle without the block is a restart`() {
+    fun `without ENDING the next cycle names the end, a cycle without the block names none`() {
         val zero = FuseGraphDataBuilder.channelEpisodes(
             listOf(cycle(0, channel = running()), cycle(1, channel = ChannelState(phase = "NONE", reason = "HARD_STOP", detail = "NIGHT_DEADBAND")))
         )
         assertThat(zero.single().end).isEqualTo(FuseChannelEnd.NIGHT_DEADBAND)
 
-        val restart = FuseGraphDataBuilder.channelEpisodes(listOf(cycle(0, channel = running()), cycle(1)))
-        assertThat(restart.single().end).isEqualTo(FuseChannelEnd.RESTART)
+        // A cycle without the channel block (no input) is a hole in the data, not an end: the block may still run.
+        val hole = FuseGraphDataBuilder.channelEpisodes(listOf(cycle(0, channel = running()), cycle(1, CycleState.UNKNOWN)))
+        assertThat(hole.single().end).isNull()
+        assertThat(hole.single().running).isTrue()
     }
 
     @Test
-    fun `the newest run still runs, a gap splits runs and leaves the end open`() {
-        val runs = FuseGraphDataBuilder.channelEpisodes(listOf(cycle(0, channel = running()), cycle(10, channel = running()), cycle(11, channel = running())))
+    fun `a hole longer than a channel block splits runs and leaves the end open, the newest run still runs`() {
+        val runs = FuseGraphDataBuilder.channelEpisodes(listOf(cycle(0, channel = running()), cycle(40, channel = running()), cycle(41, channel = running())))
 
         assertThat(runs).hasSize(2)
         assertThat(runs[0].end).isNull()
         assertThat(runs[0].running).isFalse()
         assertThat(runs[1].running).isTrue()
         assertThat(runs[1].end).isNull()
+    }
+
+    /** Seen on the phone 21.10.2026: missing cycles and cycles without input split one run into two bands. */
+    @Test
+    fun `a run goes on across a short hole when the channel went on, and shows its insulin once`() {
+        val points = listOf(
+            cycle(0, CycleState.CHANNEL, channel = ChannelState(phase = "PENDING", reason = "START", rateUPerH = 2.0, extraUPerH = 1.5, deliveredU = 0.0)),
+            cycle(1, CycleState.CHANNEL, channel = running(delivered = 0.3)),
+            cycle(2, CycleState.CHANNEL, channel = running(delivered = 0.5)),
+            // minutes 3 to 6 missing, 7 to 9 without input
+            cycle(7, CycleState.UNKNOWN), cycle(8, CycleState.UNKNOWN), cycle(9, CycleState.UNKNOWN),
+            cycle(10, CycleState.CHANNEL, channel = ChannelState(phase = "PENDING", reason = "CONTINUE", rateUPerH = 1.2, extraUPerH = 0.9, deliveredU = 0.5)),
+            cycle(11, CycleState.CHANNEL, channel = running(delivered = 0.7)),
+            cycle(12, channel = ChannelState(phase = "ENDING", reason = "STOP_FALLING", deliveredU = 0.8)),
+            cycle(13, channel = ChannelState(phase = "NONE", reason = "STOP_FALLING", deliveredU = 0.8))
+        )
+        val run = FuseGraphDataBuilder.channelEpisodes(points).single()
+
+        assertThat(run.startTime).isEqualTo(t0)
+        assertThat(run.endTime).isEqualTo(t0 + 12 * minute)
+        assertThat(run.deliveredU!!).isWithin(1e-9).of(0.8)
+        assertThat(run.end).isEqualTo(FuseChannelEnd.FALLING)
+        assertThat(run.running).isFalse()
+    }
+
+    @Test
+    fun `a new start after a hole is a new band that shows only its own insulin`() {
+        val points = listOf(
+            cycle(0, channel = ChannelState(phase = "PENDING", reason = "START", deliveredU = 0.0)),
+            cycle(1, channel = running(delivered = 0.4)),
+            cycle(10, channel = ChannelState(phase = "PENDING", reason = "START", deliveredU = 0.4)),
+            cycle(11, channel = running(delivered = 0.6))
+        )
+        val runs = FuseGraphDataBuilder.channelEpisodes(points)
+
+        assertThat(runs).hasSize(2)
+        assertThat(runs[0].deliveredU!!).isWithin(1e-9).of(0.4)
+        assertThat(runs[0].end).isNull()
+        assertThat(runs[1].deliveredU!!).isWithin(1e-9).of(0.2)
+        assertThat(runs[1].running).isTrue()
+    }
+
+    @Test
+    fun `booked insulin going back right after a cycle is a restart of FUSE`() {
+        val points = listOf(
+            cycle(0, channel = ChannelState(phase = "PENDING", reason = "START", deliveredU = 0.0)),
+            cycle(1, channel = running(delivered = 0.3)),
+            cycle(2, channel = ChannelState(phase = "PENDING", reason = "START", deliveredU = 0.0)),
+            cycle(3, channel = running(delivered = 0.1))
+        )
+        val runs = FuseGraphDataBuilder.channelEpisodes(points)
+
+        assertThat(runs).hasSize(2)
+        assertThat(runs[0].end).isEqualTo(FuseChannelEnd.RESTART)
+        assertThat(runs[0].deliveredU!!).isWithin(1e-9).of(0.3)
+        assertThat(runs[1].deliveredU!!).isWithin(1e-9).of(0.1)
+    }
+
+    @Test
+    fun `after its ENDING cycles a run takes only more of them, a new start is the next run`() {
+        val points = listOf(
+            cycle(0, channel = ChannelState(phase = "PENDING", reason = "START", deliveredU = 0.0)),
+            cycle(1, channel = ChannelState(phase = "ENDING", reason = "STOP_FALLING", deliveredU = 0.2)),
+            cycle(2, channel = ChannelState(phase = "ENDING", reason = "STOP_FALLING", deliveredU = 0.25)),
+            cycle(3, channel = ChannelState(phase = "PENDING", reason = "START", deliveredU = 0.25))
+        )
+        val runs = FuseGraphDataBuilder.channelEpisodes(points)
+
+        assertThat(runs).hasSize(2)
+        assertThat(runs[0].endTime).isEqualTo(t0 + 2 * minute)
+        assertThat(runs[0].end).isEqualTo(FuseChannelEnd.FALLING)
+        assertThat(runs[0].deliveredU!!).isWithin(1e-9).of(0.25)
+        assertThat(runs[1].startTime).isEqualTo(t0 + 3 * minute)
+        assertThat(runs[1].running).isTrue()
     }
 
     @Test

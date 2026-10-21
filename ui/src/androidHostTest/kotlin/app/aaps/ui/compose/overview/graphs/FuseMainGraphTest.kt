@@ -26,6 +26,15 @@ internal class FuseMainGraphTest {
     private fun smb(min: Int, sec: Int, amount: Double) = BolusGraphPoint(at(min, sec), amount, BolusType.SMB, true, "")
 
     @Test
+    fun `a channel label tries the middle first, then right and left in steps, never outside its room`() {
+        assertThat(fuseLabelSpots(center = 50f, lo = 30f, hi = 80f, step = 10f)).containsExactly(50f, 60f, 40f, 70f, 30f, 80f).inOrder()
+        // a middle outside the room starts at the nearest edge
+        assertThat(fuseLabelSpots(center = 10f, lo = 30f, hi = 50f, step = 10f)).containsExactly(30f, 40f, 50f).inOrder()
+        // no room: only the middle
+        assertThat(fuseLabelSpots(center = 10f, lo = 50f, hi = 30f, step = 10f)).containsExactly(10f)
+    }
+
+    @Test
     fun `the layers exist only when the data says so`() {
         assertThat(FuseMainLayers.of(FuseGraphData(available = true))).isNull()
         val cycles = listOf(FuseCycleInfo(at(0), CycleState.GUARD))

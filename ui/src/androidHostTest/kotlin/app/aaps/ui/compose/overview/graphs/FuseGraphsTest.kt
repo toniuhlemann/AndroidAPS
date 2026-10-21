@@ -55,8 +55,8 @@ internal class FuseGraphsTest {
     fun `F GRD draws guard, tail and the lines with the meal, the strip, and at least 10 mg per dl each way`() {
         val data = FuseGraphData(
             available = true,
-            guard = listOf(GraphDataPoint(at(1), 4.0), GraphDataPoint(at(2), -2.0)),
-            tail = listOf(GraphDataPoint(at(1), 3.0)),
+            guard = listOf(listOf(GraphDataPoint(at(1), 4.0), GraphDataPoint(at(2), -2.0))),
+            tail = listOf(listOf(GraphDataPoint(at(1), 3.0))),
             guardWithMeal = listOf(listOf(GraphDataPoint(at(1), 1.0)), listOf(GraphDataPoint(at(20), 2.0))),
             accountStatus = listOf(
                 FuseStatusSegment(at(1), at(3), AccountStatus.AKTIV),

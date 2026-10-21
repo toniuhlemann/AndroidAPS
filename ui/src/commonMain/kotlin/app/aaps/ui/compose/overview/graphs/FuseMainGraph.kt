@@ -19,6 +19,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -300,10 +301,33 @@ private const val FUSE_BUTTON_ROOM_HEIGHT_DP = 30f
 /** At most this many rows of channel labels; a label that finds no free row is left out (its band stays). */
 private const val FUSE_LABEL_ROWS = 4
 
+/** A label that moves to the side still covers this much of its band, so it stays over its own band. */
+private const val FUSE_LABEL_MIN_OVER_BAND_DP = 6f
+
+/**
+ * Where a label can go in one row: [center] first, then to the right and to the left in [step]s, all inside [lo]..[hi].
+ * Right before left: the bands are placed in time order, so a later label moves away from the one before it.
+ */
+internal fun fuseLabelSpots(center: Float, lo: Float, hi: Float, step: Float): List<Float> {
+    if (hi < lo || step <= 0f) return listOf(center)
+    val spots = arrayListOf(center.coerceIn(lo, hi))
+    var k = 1
+    while (true) {
+        val right = spots[0] + k * step
+        val left = spots[0] - k * step
+        if (right > hi && left < lo) break
+        if (right <= hi) spots.add(right)
+        if (left >= lo) spots.add(left)
+        k++
+    }
+    return spots
+}
+
 /**
  * The slow correction channel in the BG graph: a translucent band per run over the full height, the factor and the
- * delivered insulin on top, below it how the run ended. Each label takes the highest free row: it moves down instead of
- * covering another label or the buttons on the graph (Toni 21.10.2026).
+ * delivered insulin on top, below it how the run ended. Each label takes the highest row where it fits: first above the
+ * middle of its band, else moved to the side while it still covers its band, else one row down. So it does not cover
+ * another label or the buttons on the graph, and it goes into the curve only when the top is full (Toni 21.10.2026).
  */
 internal class FuseChannelBands(
     private val bands: List<FuseBand>,
@@ -338,18 +362,28 @@ internal class FuseChannelBands(
                 val second = band.end?.let { textMeasurer.measure(it, endStyle) }
                 val width = maxOf(first.size.width, second?.size?.width ?: 0) + 6f * pxPerDp
                 val height = first.size.height + (second?.size?.height ?: 0) + 2f * pxPerDp
-                val center = ((x0 + x1) / 2f).coerceIn(layerBounds.left + width / 2f, maxOf(layerBounds.left + width / 2f, layerBounds.right - width / 2f))
-                for (row in 0 until FUSE_LABEL_ROWS) {
+                val bandLeft = x0.coerceAtLeast(layerBounds.left)
+                val bandRight = x1.coerceAtMost(layerBounds.right)
+                val over = minOf(FUSE_LABEL_MIN_OVER_BAND_DP * pxPerDp, (bandRight - bandLeft) / 2f)
+                val lo = maxOf(layerBounds.left + width / 2f, bandLeft + over - width / 2f)
+                val hi = minOf(layerBounds.right - width / 2f, bandRight - over + width / 2f)
+                val middle = (x0 + x1) / 2f
+                val spots =
+                    if (lo <= hi) fuseLabelSpots(middle, lo, hi, width / 4f)
+                    else listOf(middle.coerceIn(layerBounds.left + width / 2f, maxOf(layerBounds.left + width / 2f, layerBounds.right - width / 2f)))
+                placing@ for (row in 0 until FUSE_LABEL_ROWS) {
                     val top = layerBounds.top + 2f * pxPerDp + row * (height + 2f * pxPerDp)
-                    val rect = Rect(center - width / 2f, top, center + width / 2f, top + height)
-                    if (taken.any { it.overlaps(rect) }) continue
-                    taken.add(rect)
-                    with(mutableDrawScope) {
-                        drawRect(labelBackground, topLeft = rect.topLeft, size = rect.size)
-                        drawText(first, topLeft = Offset(center - first.size.width / 2f, top + 1f * pxPerDp))
-                        second?.let { drawText(it, topLeft = Offset(center - it.size.width / 2f, top + 1f * pxPerDp + first.size.height)) }
+                    for (center in spots) {
+                        val rect = Rect(center - width / 2f, top, center + width / 2f, top + height)
+                        if (taken.any { it.overlaps(rect) }) continue
+                        taken.add(rect)
+                        with(mutableDrawScope) {
+                            drawRect(labelBackground, topLeft = rect.topLeft, size = rect.size)
+                            drawText(first, topLeft = Offset(center - first.size.width / 2f, top + 1f * pxPerDp))
+                            second?.let { drawText(it, topLeft = Offset(center - it.size.width / 2f, top + 1f * pxPerDp + first.size.height)) }
+                        }
+                        break@placing
                     }
-                    break
                 }
             }
         }
@@ -390,35 +424,62 @@ internal class FuseSmbRunRings(
     override fun hashCode(): Int = 31 * rings.hashCode() + color.hashCode()
 }
 
-/** The sum of each SMB run above its triangles in the IOB graph: x of the run's middle, the text and its colour. */
+/**
+ * Room the SMB sums keep free in the bottom right corner of the IOB graph: the graph name and its pencil sit there
+ * (GraphsSection, `GraphNameRow`: 4 dp from the right, the 28 dp row 8 dp above the bottom of the graph, whose plot ends
+ * about 12 dp above it).
+ */
+private const val FUSE_NAME_ROOM_WIDTH_DP = 92f
+private const val FUSE_NAME_ROOM_HEIGHT_DP = 26f
+
+/**
+ * The sum of each SMB run above its triangles in the IOB graph: x of the run's middle, the text and its colour. Each
+ * sum sits on [background], so it stays readable over the IOB curve, and inside the plot (Toni 21.10.2026). Over the
+ * graph name in the bottom right corner it moves up instead of covering the name.
+ */
 internal class FuseSmbRunSums(
     private val sums: List<Triple<Double, String, Color>>,
     private val textMeasurer: TextMeasurer,
     private val style: TextStyle,
-    private val liftPx: Float
+    private val background: Color,
+    private val liftPx: Float,
+    private val pxPerDp: Float
 ) : Decoration {
 
     override fun drawOverLayers(context: CartesianDrawingContext) {
         with(context) {
+            val nameRoom = Rect(
+                layerBounds.right - FUSE_NAME_ROOM_WIDTH_DP * pxPerDp, layerBounds.bottom - FUSE_NAME_ROOM_HEIGHT_DP * pxPerDp,
+                layerBounds.right + 8f * pxPerDp, layerBounds.bottom + 8f * pxPerDp
+            )
+            val padX = 3f * pxPerDp
+            val padY = 1f * pxPerDp
             // Larger sums first; a sum that would cover one already drawn is left out.
-            val placed = ArrayList<Pair<Float, Float>>()
+            val placed = ArrayList<Rect>()
             val baseline = canvasYOf(0.0)
             for ((x, text, color) in sums) {
                 val canvasX = rawCanvasX(x) ?: continue
                 if (canvasX < layerBounds.left || canvasX > layerBounds.right) continue
                 val layout = textMeasurer.measure(text, style.copy(color = color))
-                val half = layout.size.width / 2f + 2f
-                if (placed.any { (px, ph) -> abs(px - canvasX) < ph + half }) continue
-                placed.add(canvasX to half)
+                val width = layout.size.width + 2f * padX
+                val height = layout.size.height + 2f * padY
+                val left = (canvasX - width / 2f).coerceIn(layerBounds.left, maxOf(layerBounds.left, layerBounds.right - width))
+                var rect = Rect(left, baseline - liftPx - height, left + width, baseline - liftPx)
+                if (rect.overlaps(nameRoom)) rect = Rect(left, nameRoom.top - 2f * pxPerDp - height, left + width, nameRoom.top - 2f * pxPerDp)
+                if (placed.any { it.overlaps(rect) }) continue
+                placed.add(rect)
                 with(mutableDrawScope) {
-                    drawText(layout, topLeft = Offset(canvasX - layout.size.width / 2f, baseline - liftPx - layout.size.height))
+                    drawRoundRect(background, topLeft = rect.topLeft, size = rect.size, cornerRadius = CornerRadius(3f * pxPerDp))
+                    drawText(layout, topLeft = Offset(rect.left + padX, rect.top + padY))
                 }
             }
         }
     }
 
     override fun equals(other: Any?): Boolean =
-        this === other || other is FuseSmbRunSums && sums == other.sums && style == other.style && liftPx == other.liftPx
+        this === other ||
+            other is FuseSmbRunSums && sums == other.sums && style == other.style && background == other.background && liftPx == other.liftPx &&
+            pxPerDp == other.pxPerDp
 
     override fun hashCode(): Int = 31 * sums.hashCode() + style.hashCode()
 }
