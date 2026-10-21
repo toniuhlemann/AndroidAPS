@@ -186,7 +186,8 @@ enum class FuseDoubleKey(
 
     /**
      * Untergrenze, die die pessimistische Bahn nicht unterschreiten darf (mg/dl).
-     * Wird sie verletzt, gibt es keinen SMB und eine Zero-TBR.
+     * Wird sie verletzt, gibt es keinen SMB. Das Basal stoppt der Guard nicht:
+     * eine Zero-TBR setzt allein das Tief-Tor (LowThreatGate).
      *
      * mg/dl statt einer einheitenabhaengigen Preference: das Geraet laeuft in
      * mg/dl, und ein stiller Einheitenwechsel an einer SICHERHEITSgrenze waere
@@ -737,15 +738,18 @@ enum class FuseLongKey(
      *  keinen alten Mahlzeiten-Marker wiederbeleben. */
     MealMarkerArmedTs("fuse_meal_marker_armed_ts", 0, exportable = false),
     /** EPISODENZUSTAND, kein Setting: die im Marker-Dialog getroffene Wahl
-     *  "ohne Vorschuss" (Huelle 0 fuer DIESE Episode). Lebt und stirbt mit
+     *  "Nur Marker · 0 U" (Konto ohne Budget und ohne Kredit-Huelle fuer DIESE
+     *  Episode). Lebt und stirbt mit
      *  [MealMarkerArmedTs] - beim Armen gesetzt, bei der Ruecknahme geloescht.
      *  Als Long statt Boolean, damit er im selben Enum wohnt wie der Anker
      *  und nicht im Einstellungs-Vertrag (fuseEinstellbareKeys) auftaucht. */
     MealMarkerNoPrime("fuse_meal_marker_no_prime", 0, exportable = false),
     /** EPISODENZUSTAND, kein Setting: die im Marker-Dialog getroffene Wahl
-     *  "nur Erwartung" (Toni) - keine Direktdosis in DIESER Mahlzeit,
-     *  die Huelle bleibt fuer das Erwartungskonto. Lebt und stirbt mit
-     *  [MealMarkerArmedTs] wie [MealMarkerNoPrime]. */
+     *  "Nur Erwartung" (Toni). Seit der Konsolidierung 2.0 gibt es keine
+     *  Direktdosis mehr: jeder Marker ohne "Nur Marker" ist "Nur Erwartung",
+     *  und der Runner leitet die Wahl aus [MealMarkerNoPrime] ab - dieser Wert
+     *  wird nur noch mitgefuehrt. Lebt und stirbt mit [MealMarkerArmedTs] wie
+     *  [MealMarkerNoPrime]. */
     MealMarkerExpectationOnly("fuse_meal_marker_expectation_only", 0, exportable = false),
     /** EPISODENZUSTAND, kein Setting (E-034 v2, Toni): die ausdrueckliche
      *  Bestaetigung "Mahlzeit nach Tief" [ms]. Hebt die Tief-Sperre der
@@ -867,7 +871,8 @@ enum class FuseBooleanKey(
      * Verhalten, bitgleich).
      *
      * Statt binaer zwischen voller Null und vollem Profilbasal zu
-     * springen, laeuft nach drei zusammenhaengenden ruhigen Zyklen ein
+     * springen, laeuft nach fuenf zusammenhaengenden ruhigen Zyklen
+     * (PartialRecoveryGate.ENTRY_CYCLES) ein
      * ANTEIL des Profilbasals weiter
      * (aus BasalRecoverySearch: die groesste Rate, die die Schutzbahn
      * noch traegt), waehrend die Verriegelung
