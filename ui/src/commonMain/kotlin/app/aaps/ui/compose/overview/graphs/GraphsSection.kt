@@ -606,7 +606,7 @@ fun GraphsSection(
                     onClick = { showFuseLegend = true },
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .padding(start = 34.dp, top = 2.dp)
+                        .padding(start = FUSE_LEGEND_BUTTON_START, top = 2.dp)
                 )
             }
             if (showFuseLegend) FuseLegendDialog(onDismiss = { showFuseLegend = false })

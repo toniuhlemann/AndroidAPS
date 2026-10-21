@@ -691,7 +691,7 @@ fun BgGraphCompose(
                 labelStyle = TextStyle(color = FUSE_CHANNEL_COLOR, fontSize = 10.sp, fontWeight = FontWeight.Bold),
                 endStyle = TextStyle(color = FUSE_CHANNEL_COLOR.copy(alpha = 0.9f), fontSize = 9.sp),
                 labelBackground = bandBackground,
-                density = density
+                pxPerDp = density
             )
         }
     }

@@ -20,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -288,9 +289,21 @@ private fun CartesianDrawingContext.canvasYOf(value: Double): Float {
 /** One band of the slow correction channel, in chart coordinates, with its two label lines. */
 internal data class FuseBand(val startX: Double, val endX: Double, val label: String, val end: String?)
 
+/** Where the legend button sits on the BG graph (from the start of the graph). GraphsSection places it with this. */
+internal val FUSE_LEGEND_BUTTON_START = 34.dp
+
+/** Room the channel labels keep free for the buttons on top of the BG graph: legend top left, edit top right. */
+private const val FUSE_LEGEND_ROOM_WIDTH_DP = 72f
+private const val FUSE_EDIT_ROOM_WIDTH_DP = 36f
+private const val FUSE_BUTTON_ROOM_HEIGHT_DP = 30f
+
+/** At most this many rows of channel labels; a label that finds no free row is left out (its band stays). */
+private const val FUSE_LABEL_ROWS = 4
+
 /**
  * The slow correction channel in the BG graph: a translucent band per run over the full height, the factor and the
- * delivered insulin on top, below it how the run ended. Labels of neighbouring runs alternate in height.
+ * delivered insulin on top, below it how the run ended. Each label takes the highest free row: it moves down instead of
+ * covering another label or the buttons on the graph (Toni 21.10.2026).
  */
 internal class FuseChannelBands(
     private val bands: List<FuseBand>,
@@ -298,29 +311,45 @@ internal class FuseChannelBands(
     private val labelStyle: TextStyle,
     private val endStyle: TextStyle,
     private val labelBackground: Color,
-    private val density: Float
+    private val pxPerDp: Float
 ) : Decoration {
 
     override fun drawOverLayers(context: CartesianDrawingContext) {
         with(context) {
-            bands.forEachIndexed { index, band ->
+            // A run lasts one cycle past its last point.
+            val visible = bands.mapNotNull { band ->
                 val x0 = rawCanvasX(band.startX) ?: return
-                // A run lasts one cycle past its last point.
                 val x1 = rawCanvasX(band.endX + 1.0) ?: return
-                val left = x0.coerceAtLeast(layerBounds.left)
-                val right = x1.coerceAtMost(layerBounds.right)
-                if (right <= left) return@forEachIndexed
-                with(mutableDrawScope) {
+                if (x1.coerceAtMost(layerBounds.right) <= x0.coerceAtLeast(layerBounds.left)) null else Triple(band, x0, x1)
+            }
+            with(mutableDrawScope) {
+                for ((_, x0, x1) in visible) {
+                    val left = x0.coerceAtLeast(layerBounds.left)
+                    val right = x1.coerceAtMost(layerBounds.right)
                     drawRect(FUSE_CHANNEL_COLOR.copy(alpha = 0.16f), topLeft = Offset(left, layerBounds.top), size = Size(right - left, layerBounds.height))
-                    val top = layerBounds.top + (2f + (index % 2) * 26f) * density
-                    val first = textMeasurer.measure(band.label, labelStyle)
-                    val second = band.end?.let { textMeasurer.measure(it, endStyle) }
-                    val width = maxOf(first.size.width, second?.size?.width ?: 0) + 6f * density
-                    val height = first.size.height + (second?.size?.height ?: 0) + 2f * density
-                    val center = ((x0 + x1) / 2f).coerceIn(layerBounds.left + width / 2f, maxOf(layerBounds.left + width / 2f, layerBounds.right - width / 2f))
-                    drawRect(labelBackground, topLeft = Offset(center - width / 2f, top), size = Size(width, height))
-                    drawText(first, topLeft = Offset(center - first.size.width / 2f, top + 1f * density))
-                    second?.let { drawText(it, topLeft = Offset(center - it.size.width / 2f, top + 1f * density + first.size.height)) }
+                }
+            }
+            val taken = arrayListOf(
+                Rect(0f, 0f, (FUSE_LEGEND_BUTTON_START.value + FUSE_LEGEND_ROOM_WIDTH_DP) * pxPerDp, FUSE_BUTTON_ROOM_HEIGHT_DP * pxPerDp),
+                Rect(layerBounds.right - FUSE_EDIT_ROOM_WIDTH_DP * pxPerDp, 0f, layerBounds.right + 8f * pxPerDp, FUSE_BUTTON_ROOM_HEIGHT_DP * pxPerDp)
+            )
+            for ((band, x0, x1) in visible) {
+                val first = textMeasurer.measure(band.label, labelStyle)
+                val second = band.end?.let { textMeasurer.measure(it, endStyle) }
+                val width = maxOf(first.size.width, second?.size?.width ?: 0) + 6f * pxPerDp
+                val height = first.size.height + (second?.size?.height ?: 0) + 2f * pxPerDp
+                val center = ((x0 + x1) / 2f).coerceIn(layerBounds.left + width / 2f, maxOf(layerBounds.left + width / 2f, layerBounds.right - width / 2f))
+                for (row in 0 until FUSE_LABEL_ROWS) {
+                    val top = layerBounds.top + 2f * pxPerDp + row * (height + 2f * pxPerDp)
+                    val rect = Rect(center - width / 2f, top, center + width / 2f, top + height)
+                    if (taken.any { it.overlaps(rect) }) continue
+                    taken.add(rect)
+                    with(mutableDrawScope) {
+                        drawRect(labelBackground, topLeft = rect.topLeft, size = rect.size)
+                        drawText(first, topLeft = Offset(center - first.size.width / 2f, top + 1f * pxPerDp))
+                        second?.let { drawText(it, topLeft = Offset(center - it.size.width / 2f, top + 1f * pxPerDp + first.size.height)) }
+                    }
+                    break
                 }
             }
         }
@@ -328,7 +357,7 @@ internal class FuseChannelBands(
 
     override fun equals(other: Any?): Boolean =
         this === other || other is FuseChannelBands && bands == other.bands && labelStyle == other.labelStyle && endStyle == other.endStyle &&
-            labelBackground == other.labelBackground && density == other.density
+            labelBackground == other.labelBackground && pxPerDp == other.pxPerDp
 
     override fun hashCode(): Int = 31 * bands.hashCode() + labelStyle.hashCode()
 }
