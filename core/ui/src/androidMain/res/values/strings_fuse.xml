@@ -77,5 +77,6 @@
     <string name="fuse_legend_smb">SMB-Dreiecke in der IOB-Spur in der Farbe ihrer Quelle, die Zahl ist die Summe je Serie. Ein weißer Ring auf den BG-Punkten markiert den Beginn einer Serie.</string>
     <string name="fuse_legend_channel">Türkises Band: der langsame Korrekturkanal mit Faktor, der im Band abgegebenen Zusatzmenge über dem Profilbasal und dem Ende.</string>
     <string name="fuse_legend_basal">Streifen über dem Basal: magenta Schutz-Null, türkis Korrekturkanal.</string>
+    <string name="fuse_legend_prediction">Vorhersage (PRED): blau die Mittelbahn von FUSE, gelb die untere Bahn – gegen sie rechnet der Guard.</string>
     <string name="fuse_legend_hold">Gedrückt halten zeigt Zustand, Bindung, Bedarf und Kanal des Zyklus. Abschalten: FUSE-Einstellungen, System.</string>
 </resources>

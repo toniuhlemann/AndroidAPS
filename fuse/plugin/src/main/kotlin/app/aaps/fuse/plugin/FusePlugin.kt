@@ -1712,6 +1712,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 predictorRejected = outcome.predictorRejected,
                 predictorReason = outcome.predictorReason,
                 markerFallbackUsed = outcome.markerFallbackUsed,
+                prediction = outcome.prediction,
             )
         }
         outcome?.let { if (it.abortReason != null) rt.reason.append(" | abort=").append(it.abortReason) }

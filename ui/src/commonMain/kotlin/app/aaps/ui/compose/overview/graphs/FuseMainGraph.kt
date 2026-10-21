@@ -639,6 +639,7 @@ internal fun FuseLegendDialog(onDismiss: () -> Unit) {
                 FuseOverviewSource.SmbSource.entries.forEach { source -> FuseLegendRow(fuseSourceColor(source), fuseSourceText(source), triangle = true) }
                 Text(stringResource(CoreUiStrings.fuse_legend_channel), style = MaterialTheme.typography.bodySmall)
                 Text(stringResource(CoreUiStrings.fuse_legend_basal), style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(CoreUiStrings.fuse_legend_prediction), style = MaterialTheme.typography.bodySmall)
                 Text(stringResource(CoreUiStrings.fuse_legend_hold), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }

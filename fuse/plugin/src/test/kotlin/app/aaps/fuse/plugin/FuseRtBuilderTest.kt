@@ -2,6 +2,8 @@ package app.aaps.fuse.plugin
 
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.fuse.core.controller.FuseController
+import app.aaps.fuse.core.predictor.PredictorResult
+import app.aaps.fuse.core.predictor.TrajectoryPoint
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
@@ -99,5 +101,53 @@ class FuseRtBuilderTest {
         listOf("FUSE", "insulinReq", "predRelease", "minLower", "limit=smbRatio").forEach {
             assertTrue(r.contains(it)) { "fehlt in reason: $it -> $r" }
         }
+    }
+
+    // ---- Vorhersagekurven (Toni 21.10.2026): FUSEs Bahnen statt keiner -----------------------------------------------
+
+    /** Mittelbahn 150 + Minute, untere Bahn 140 - Minute; der Anker liegt [ankerVorMin] Minuten vor jetzt. */
+    private fun bahn(minuten: Int = 60, ankerVorMin: Long = 1, mitte: (Int) -> Double = { 150.0 + it }, unten: (Int) -> Double = { 140.0 - it }) =
+        PredictorResult(
+            points = (1..minuten).map { TrajectoryPoint(it, now - ankerVorMin * 60_000L + it * 60_000L, mitte(it), unten(it), 0.0, 0.0, 0.0) },
+            predictionAnchorTs = now - ankerVorMin * 60_000L, bgAtAnchor = 150.0,
+            minMeanBg = 150.0, minLowerBg = unten(minuten), timeToMinLowerMin = minuten,
+            bgAtHorizonMean = mitte(minuten), bgAtHorizonLower = unten(minuten),
+            lineageKind = "ACTUAL", trajectoryContentHash = "h",
+            iobArraySpanMin = 235.0, iobArrayGridMin = 5.0, modelTailBeyondArrayMin = 0.0, inputSkewMs = 0L,
+        )
+
+    @Test
+    fun `ohne Bahn gibt es keine Vorhersagekurven`() {
+        assertNull(build(0.0).predBGs)
+        assertNull(FuseRtBuilder.predictions(null, now))
+    }
+
+    @Test
+    fun `die Mittelbahn wird die blaue, die untere Bahn die gelbe Kurve - im 5-Minuten-Raster ab jetzt`() {
+        val p = FuseRtBuilder.predictions(bahn(), now)!!
+        // Der Anker liegt eine Minute vor jetzt: Index 0 ist Minute 1 der Bahn, Index 1 Minute 6 ...
+        assertEquals(listOf(151, 156, 161), p.IOB!!.take(3))
+        assertEquals(listOf(139, 134, 129), p.UAM!!.take(3))
+        // ... bis Minute 56: Minute 61 hat die Bahn nicht mehr.
+        assertEquals(12, p.IOB!!.size)
+        assertEquals(p.IOB!!.size, p.UAM!!.size)
+        assertNull(p.ZT); assertNull(p.COB); assertNull(p.aCOB)
+        // Und so steht sie im RT, wenn der Zyklus eine Bahn hat.
+        val rt = FuseRtBuilder.build(now, 160.0, 100.0, 2.0, decision(0.0), null, allowed, 50.0, prediction = bahn())
+        assertEquals(p, rt.predBGs)
+    }
+
+    @Test
+    fun `am Anker gilt der Messwert, die Werte bleiben zwischen 39 und 400`() {
+        val p = FuseRtBuilder.predictions(bahn(ankerVorMin = 0, mitte = { 380.0 + 10 * it }, unten = { 60.0 - 10 * it }), now)!!
+        assertEquals(150, p.IOB!!.first())
+        assertEquals(150, p.UAM!!.first())
+        assertEquals(400, p.IOB!!.last())
+        assertEquals(39, p.UAM!!.last())
+    }
+
+    @Test
+    fun `eine Bahn ohne einen zweiten Punkt ergibt keine Kurve`() {
+        assertNull(FuseRtBuilder.predictions(bahn(minuten = 3), now))
     }
 }
