@@ -15,7 +15,9 @@ import org.junit.jupiter.api.Test
 /** Toni 20.10.2026: der langsame Korrekturkanal - Einstieg und Stopp nur ueber Messung, maxIOB immer. */
 class SlowCorrectionChannelTest {
 
-    private val an = Settings(enabled = true)
+    // Die Faelle mit Wartezeit setzen sie ausdruecklich: ab Werk startet der Kanal seit 21.10. sofort (0 min).
+    private val an = Settings(enabled = true, entryMin = 30)
+    private val sofort = Settings(enabled = true, entryMin = 0)
     private val minute = 60_000L
     private val start = 1_000_000_000_000L
 
@@ -68,6 +70,55 @@ class SlowCorrectionChannelTest {
         // Faktor 2 auf 0,5 U/h Profilbasal: insgesamt 1,0 U/h.
         assertEquals(1.0, s.rateUPerH, 1e-9)
         assertEquals(0.5, s.extraUPerH(0.5), 1e-9)
+    }
+
+    @Test fun `mit Einstiegszeit 0 startet der Kanal im ersten Zyklus ueber der Schwelle`() {
+        // Toni 21.10.: nicht erst lange warten - ueber der Schwelle, nicht fallend, mit Bedarf: sofort.
+        val s = SlowCorrectionChannel.step(sofort, input(0, q1Vorher = null), Memory())
+        assertTrue(s.want)
+        assertEquals(Reason.START, s.reason)
+        assertEquals(1.0, s.rateUPerH, 1e-9)
+        // Faellt der Trend gerade deutlich, wartet er auch ohne Einstiegszeit.
+        assertEquals(Reason.WAIT_ENTRY, SlowCorrectionChannel.step(sofort, input(0, trend = -0.7), Memory()).reason)
+        // Unter der Schwelle (aber ueber dem Stopp) startet nichts.
+        assertEquals(Reason.WAIT_ENTRY, SlowCorrectionChannel.step(sofort, input(0, q1 = 175.0), Memory()).reason)
+        // Ohne Bedarf auch nicht.
+        assertEquals(Reason.NO_DEMAND, SlowCorrectionChannel.step(sofort, input(0, bedarf = 0.0), Memory()).reason)
+    }
+
+    @Test fun `Schwelle ab 100 und Einstiegszeit ab 0 sind gueltig, darunter nicht`() {
+        assertNull(Settings(enabled = true, thresholdMgdl = 100.0).violation())
+        assertNotNull(Settings(enabled = true, thresholdMgdl = 99.0).violation())
+        assertNull(Settings(enabled = true, entryMin = 0).violation())
+        assertNotNull(Settings(enabled = true, entryMin = -1).violation())
+        assertNull(Settings(enabled = true, entryMin = 90).violation())
+        assertNotNull(Settings(enabled = true, entryMin = 91).violation())
+        assertEquals(0, Settings(enabled = true).entryMin)
+        // Schwelle 100: gestoppt wird 20 darunter.
+        val tief = Settings(enabled = true, thresholdMgdl = 100.0, entryMin = 0)
+        assertEquals(Reason.START, SlowCorrectionChannel.step(tief, input(0, q1 = 120.0), Memory()).reason)
+        assertEquals(Reason.STOP_BELOW, SlowCorrectionChannel.step(tief, input(0, q1 = 79.0), Memory()).reason)
+    }
+
+    @Test fun `die Stufen sind fein - kleiner Bedarf gibt eine kleine TBR, der Faktor ist nur der Deckel`() {
+        assertEquals(4, SlowCorrectionChannel.stagesFor(2.0))
+        assertEquals(12, SlowCorrectionChannel.stagesFor(4.0))
+        assertEquals(16, SlowCorrectionChannel.stagesFor(5.0))
+        assertEquals(6, SlowCorrectionChannel.stagesFor(2.3))
+        assertEquals(1, SlowCorrectionChannel.stagesFor(1.2))
+        // Faktor 4 auf 0,8 U/h: Stufen zu 0,2 U/h bis 3,2 U/h. Bis 21.10. war die erste Stufe schon 0,6 U/h Zusatz -
+        // ein Bedarf von 0,1 U loeste nichts aus.
+        val vier = Settings(enabled = true, factor = 4.0, entryMin = 0)
+        fun bei(bedarf: Double) = SlowCorrectionChannel.step(vier, input(0, basal = 0.8, bedarf = bedarf), Memory())
+        assertEquals(1.0, bei(0.1).rateUPerH, 1e-9)      // 0,2 U/h Zusatz -> Stufe 1
+        assertEquals(1, bei(0.1).stage)
+        assertEquals("1/12 bedarf", bei(0.1).detail)
+        assertEquals(1.8, bei(0.5).rateUPerH, 1e-9)      // 1,0 U/h -> Stufe 5
+        assertEquals(3.2, bei(5.0).rateUPerH, 1e-9)      // Deckel: 4 x 0,8
+        assertEquals(Reason.NO_DEMAND, bei(0.04).reason) // 0,08 U/h traegt keine Stufe
+        // Faktor 1,2: eine einzige Stufe, kleiner als 0,25 x Profilbasal.
+        val klein = Settings(enabled = true, factor = 1.2, entryMin = 0)
+        assertEquals(0.95, SlowCorrectionChannel.step(klein, input(0, basal = 0.8), Memory()).rateUPerH, 1e-9)
     }
 
     @Test fun `ein gefallener BG ueber die Einstiegszeit startet nichts`() {
@@ -155,19 +206,20 @@ class SlowCorrectionChannelTest {
     }
 
     @Test fun `die Rate richtet sich nach dem Bedarf - der Faktor ist nur die Obergrenze`() {
-        // Faktor 5 auf 0,5 U/h: Zusatz bis 2,0 U/h, Stufen 1,0 / 1,5 / 2,0 / 2,5 U/h. Ein frischer Block traegt
-        // 2 x Restbedarf je Stunde (wie autoISF: Basal + 2 x insulinReq).
+        // Faktor 5 auf 0,5 U/h: Zusatz bis 2,0 U/h in 16 Stufen zu 0,125 U/h (auf das 0,05er Raster abgerundet). Ein
+        // frischer Block traegt 2 x Restbedarf je Stunde (wie autoISF: Basal + 2 x insulinReq).
         val fuenf = Settings(enabled = true, factor = 5.0)
         fun bei(bedarf: Double?, smb: Double = 0.0) = lauf(30, fuenf) { input(it, bedarf = bedarf, smb = if (it == 30) smb else 0.0) }
-        assertEquals(1.0, bei(0.4).rateUPerH, 1e-9)          // 0,8 U/h Zusatz -> Stufe 1/4
-        assertEquals(1, bei(0.4).stage)
-        assertEquals(1.5, bei(0.6).rateUPerH, 1e-9)          // 1,2 U/h -> Stufe 2/4
+        assertEquals(1.25, bei(0.4).rateUPerH, 1e-9)         // 0,8 U/h Zusatz -> Stufe 6 (0,75 U/h)
+        assertEquals(6, bei(0.4).stage)
+        assertEquals(1.6, bei(0.6).rateUPerH, 1e-9)          // 1,2 U/h -> Stufe 9 (1,625 -> 1,60)
         assertEquals(2.5, bei(2.0).rateUPerH, 1e-9)          // 4,0 U/h -> Obergrenze
-        assertEquals("4/4 bedarf", bei(2.0).detail)
-        // Der SMB dieses Zyklus deckt einen Teil: Restbedarf 0,3 U -> 0,6 U/h -> Stufe 1/4.
-        assertEquals(1.0, bei(0.6, smb = 0.3).rateUPerH, 1e-9)
-        // Traegt der Restbedarf keine Stufe, kommt keine TBR.
-        assertEquals(Reason.NO_DEMAND, bei(0.1).reason)
+        assertEquals("16/16 bedarf", bei(2.0).detail)
+        // Der SMB dieses Zyklus deckt einen Teil: Restbedarf 0,3 U -> 0,6 U/h -> Stufe 5 (1,125 -> 1,10).
+        assertEquals(1.1, bei(0.6, smb = 0.3).rateUPerH, 1e-9)
+        // Auch ein kleiner Bedarf traegt eine kleine Stufe; erst unter der kleinsten kommt keine TBR.
+        assertEquals(0.6, bei(0.1).rateUPerH, 1e-9)
+        assertEquals(Reason.NO_DEMAND, bei(0.02).reason)
         assertEquals(Reason.NO_DEMAND, bei(-0.5).reason)
         // Ohne berechenbaren Bedarf startet nichts.
         assertEquals(Reason.NO_DEMAND_ESTIMATE, bei(null).reason)
@@ -178,16 +230,21 @@ class SlowCorrectionChannelTest {
         val mem = lauf(30, fuenf).memory
         fun laufend(rate: Double, bedarf: Double?, rest: Int = 20, geplant: Double = 0.0) =
             SlowCorrectionChannel.step(fuenf, input(40, aktiv = true, laeuft = rate, rest = rest, bedarf = bedarf, geplant = geplant), mem)
-        // Stufe 4/4 (2,5 U/h), 20 min Rest: offen 0,667 U. Deckt der Plan den Bedarf genau, bleibt der Block.
+        // Stufe 16 (2,5 U/h), 20 min Rest: offen 0,667 U. Deckt der Plan den Bedarf genau, bleibt der Block.
         assertEquals("block", laufend(2.5, 0.0).detail)
-        // Fehlen 0,2 U im Bedarf, traegt die Restzeit nur noch Stufe 3/4.
+        // Fehlen 0,2 U im Bedarf, traegt die Restzeit (mit einer Stufe Spiel) nur noch Stufe 12.
         val tiefer = laufend(2.5, -0.2)
         assertEquals(2.0, tiefer.rateUPerH, 1e-9)
-        assertEquals("3/4 bedarf", tiefer.detail)
-        // Ist fast nichts mehr noetig, endet der Block (Profilbasal).
-        assertEquals(Reason.NO_DEMAND, laufend(2.5, -0.6).reason)
-        // Knapp ueber der Deckung (eine halbe Stufe Spiel) bleibt er stehen - kein Pendeln.
-        assertEquals("block", laufend(1.5, -0.05).detail)
+        assertEquals("12/16 bedarf", tiefer.detail)
+        // Fehlt fast alles, sinkt er auf eine kleine Stufe ...
+        val klein = laufend(2.5, -0.6)
+        assertEquals(0.75, klein.rateUPerH, 1e-9)
+        assertEquals("2/16 bedarf", klein.detail)
+        // ... und ist nichts mehr noetig, endet der Block (Profilbasal).
+        assertEquals(Reason.NO_DEMAND, laufend(2.5, -0.7).reason)
+        // Knapp ueber der Deckung (eine Stufe Spiel) bleibt er stehen - kein Pendeln; fehlt mehr, sinkt er eine Stufe.
+        assertEquals("block", laufend(1.5, -0.03).detail)
+        assertEquals("7/16 bedarf", laufend(1.5, -0.05).detail)
         // Mehr Bedarf hebt mitten im Block NICHT an ...
         val mehr = laufend(1.5, 1.0)
         assertEquals(1.5, mehr.rateUPerH, 1e-9)
@@ -238,16 +295,17 @@ class SlowCorrectionChannelTest {
     }
 
     @Test fun `die TBR sinkt Stufe um Stufe Richtung Profilbasal`() {
-        // Faktor 3 auf 0,5 U/h: Zusatz 1,0 U/h. Stufen 1,5 / 1,25 / 1,0 / 0,75 U/h - ein ganzer Block traegt
-        // 0,5 / 0,375 / 0,25 / 0,125 U.
+        // Faktor 3 auf 0,5 U/h: Zusatz bis 1,0 U/h in 8 Stufen. Raten 1,5 / 1,35 / 1,25 / 1,1 / 1,0 / 0,85 / 0,75 /
+        // 0,6 U/h - ein ganzer Block traegt 0,5 / 0,425 / 0,375 / 0,3 / 0,25 / 0,175 / 0,125 / 0,05 U.
         val drei = Settings(enabled = true, factor = 3.0)
         fun bei(spielraum: Double) = lauf(30, drei) { input(it, iob = 8.0 - spielraum) }
         assertEquals(1.5, bei(0.6).rateUPerH, 1e-9)
         assertEquals(1.25, bei(0.4).rateUPerH, 1e-9)
-        assertEquals("3/4 maxIob", bei(0.4).detail)
-        assertEquals(1.0, bei(0.3).rateUPerH, 1e-9)
+        assertEquals("6/8 maxIob", bei(0.4).detail)
+        assertEquals(1.1, bei(0.3).rateUPerH, 1e-9)
         assertEquals(0.75, bei(0.13).rateUPerH, 1e-9)
-        assertEquals(Reason.MAX_IOB, bei(0.1).reason)
+        assertEquals(0.6, bei(0.06).rateUPerH, 1e-9)
+        assertEquals(Reason.MAX_IOB, bei(0.04).reason)
     }
 
     @Test fun `waehrend einer Teilbasal-Stufe wartet der Kanal`() {

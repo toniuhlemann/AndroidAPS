@@ -1,40 +1,44 @@
 package app.aaps.fuse.core.controller
 
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 
 /**
- * DER LANGSAME KORREKTURKANAL (Toni 20.10.2026) - eine positive TBR fuer Tage mit erhoehtem Bedarf.
+ * DER LANGSAME KORREKTURKANAL (Toni 20.10.2026) - eine positive TBR als langsamer Korrektur-Support.
  *
  * ===================================================================
  * WARUM ES IHN GIBT
  * ===================================================================
  * In langen Hochphasen haelt meist der Guard den SMB zurueck, und danach haetten Schwanz und Exposition fast immer
- * ebenfalls gesperrt; zeitweise laeuft dabei sogar eine Null-TBR. Der Bedarf ist dabei meist positiv - nur die
- * Sperren lassen ihn nicht hinaus. Bei Resistenz (etwa bei einem Infekt) wirkt das Insulin schwaecher - der BG bleibt
- * oben, und FUSE gibt nichts mehr. autoISF hat dafuer den langsamen Weg ueber eine High-Temp; FUSE hatte ihn nicht.
+ * ebenfalls gesperrt. Der Bedarf ist dabei meist positiv - nur die Sperren lassen ihn nicht hinaus. Bei Resistenz
+ * (etwa bei einem Infekt) wirkt das Insulin schwaecher - der BG bleibt oben, und FUSE gibt nichts mehr. autoISF hat
+ * dafuer den langsamen Weg ueber eine High-Temp; FUSE hatte ihn nicht.
  *
  * ===================================================================
  * WAS ER TUT - UND WAS AUSDRUECKLICH NICHT
  * ===================================================================
- * Ein SCHALTER, ab Werk aus, gedacht fuer Tage, an denen Toni erhoehten Bedarf erwartet. Eingeschaltet laeuft die
- * positive TBR wie das Profilbasal nebenher - unterstuetzend, wenn SMB fliessen, als Ersatz, wenn sie gesperrt sind
- * (Toni). Sie deckt den RESTBEDARF: den gemeinsamen Bedarf von FUSE VOR jeder Sperrentscheidung
- * ([FuseController.jointDemandU]; IOB, unterwegs befindliche SMB und der geplante Rest dieser TBR stehen zeitabhaengig
- * in der Prognose) abzueglich des SMB dieses Zyklus - verteilt auf den 30-min-Block wie bei autoISF (Basal + 2 x
- * Restbedarf). Der Faktor ist NUR die Obergrenze: die Rate laeuft in Stufen ([STAGES]) zwischen Profilbasal und
- * `Faktor x Profilbasal`. Der Kanal darf - als einziger Weg - an Guard, Schwanz und Exposition vorbei, denn genau die
- * halten die Hochphasen. Die Sicherheit haengt an Messung und harten Grenzen:
+ * Ein SCHALTER, ab Werk aus. Eingeschaltet arbeitet er wie die High-Temp bei autoISF (Toni 21.10.): nicht nur an
+ * Tagen mit erhoehtem Bedarf, sondern als langsamer Korrektur-Support, der in jedem Zyklus nach dem Bedarf
+ * entscheidet - ohne erst lange zu warten. Die positive TBR laeuft wie das Profilbasal nebenher - unterstuetzend,
+ * wenn SMB fliessen, als Ersatz, wenn sie gesperrt sind (Toni). Sie deckt den RESTBEDARF: den gemeinsamen Bedarf von
+ * FUSE VOR jeder Sperrentscheidung ([FuseController.jointDemandU]; IOB, unterwegs befindliche SMB und der geplante
+ * Rest dieser TBR stehen zeitabhaengig in der Prognose) abzueglich des SMB dieses Zyklus - verteilt auf den
+ * 30-min-Block wie bei autoISF (Basal + 2 x Restbedarf). Der Faktor ist NUR die Obergrenze: die Rate folgt dem Bedarf
+ * in feinen Stufen von [STAGE_STEP_OF_BASAL] x Profilbasal bis `Faktor x Profilbasal`. Der Kanal darf - als einziger
+ * Weg - an Guard, Schwanz und Exposition vorbei, denn genau die halten die Hochphasen. Die Sicherheit haengt an
+ * Messung und harten Grenzen:
  *
  *  - Einstieg und Stopp nur ueber den gemessenen Verlauf (q1, UKF-Trend);
- *  - harte Stopps (gemessene Lagen, Technik) kommen vom Aufrufer als [Input.hardStop];
+ *  - harte Stopps kommen vom Aufrufer als [Input.hardStop]: gemessene Lagen, Technik, eine Schutz-Null des
+ *    Normalpfads und das Rebound-Totband wie beim SMB;
  *  - maxIOB begrenzt SMB und TBR gemeinsam, und an dieser Grenze weicht die TBR: der SMB dieses Zyklus
  *    ([Input.smbThisCycleU]) zaehlt zuerst, den SMB fasst der Kanal nie an. Ein Kommando geht im selben Zyklus wie der
  *    SMB hinaus (`LoopPlugin` gibt den SMB nur ab, wenn das TBR-Kommando desselben Laufs geklappt hat);
  *  - kein staendiges Umstellen: waehrend ein Block laeuft, sinkt er nur, wenn Bedarf oder maxIOB mindestens eine
- *    halbe Stufe darunter liegen - abgestuft Richtung Profilbasal; hoeher geht es erst bei der Erneuerung.
+ *    Stufe darunter liegen - abgestuft Richtung Profilbasal; hoeher geht es erst bei der Erneuerung.
  *
  * Wie die TBR gesetzt, bestaetigt, erneuert und abgebrochen wird, regelt nicht dieses Objekt, sondern derselbe
  * Lebenszyklus wie bei der Teilbasal-Stufe ([PartialTbrOwnership]) mit eigenem Zustand.
@@ -44,12 +48,14 @@ object SlowCorrectionChannel {
     const val FACTOR_MIN = 1.2
     const val FACTOR_MAX = 5.0
     const val FACTOR_DEFAULT = 2.0
-    const val THRESHOLD_MIN_MGDL = 140.0
+    const val THRESHOLD_MIN_MGDL = 100.0
     const val THRESHOLD_MAX_MGDL = 300.0
     const val THRESHOLD_DEFAULT_MGDL = 180.0
-    const val ENTRY_MIN_MIN = 15
+
+    /** 0 = sofort: Einstieg im ersten Zyklus ueber der Schwelle, der nicht faellt und Bedarf hat (Toni 21.10.). */
+    const val ENTRY_MIN_MIN = 0
     const val ENTRY_MAX_MIN = 90
-    const val ENTRY_DEFAULT_MIN = 30
+    const val ENTRY_DEFAULT_MIN = 0
 
     /** "Nicht gefallen" ueber die Einstiegszeit: hoechstens so viel unter dem Wert von damals [mg/dl]. */
     const val NOT_FALLING_TOLERANCE_MGDL = 5.0
@@ -80,11 +86,17 @@ object SlowCorrectionChannel {
     const val GAP_RESET_MIN = 6
 
     /**
-     * Die Stufen der TBR: der Zusatz bis zur Obergrenze zu 1/4, 2/4, 3/4 oder ganz, darunter Profilbasal. Jede
-     * Aenderung kostet ein Kommando und bewegt mindestens eine Stufe - stufenlos folgte die Rate jedem Zucken des
-     * Bedarfs, und die Pumpe bekaeme fast jede Minute ein neues Kommando.
+     * Die Breite einer Stufe als Anteil des Profilbasals (Toni 21.10.): Stufe k gibt k x 0,25 x Profilbasal zusaetzlich,
+     * bis zur Obergrenze `Faktor x Profilbasal`. So traegt auch ein kleiner Bedarf eine kleine TBR, und der Faktor ist
+     * wirklich nur der Deckel - bis 21.10. war eine Stufe ein Viertel des ganzen Zusatzes, bei Faktor 4 also schon
+     * 0,75 x Profilbasal. Stufenlos ginge es nicht: jede Aenderung kostet ein Kommando, und die Rate folgte jedem
+     * Zucken des Bedarfs.
      */
-    const val STAGES = 4
+    const val STAGE_STEP_OF_BASAL = 0.25
+
+    /** Die Zahl der Stufen bis zum Deckel: Faktor 2 -> 4, Faktor 4 -> 12, Faktor 1,2 -> 1 (dort kleiner als 0,25). */
+    fun stagesFor(factor: Double): Int =
+        max(1, ceil((factor - 1.0) / STAGE_STEP_OF_BASAL - 1e-9).toInt())
 
     data class Settings(
         val enabled: Boolean,
@@ -121,7 +133,7 @@ object SlowCorrectionChannel {
     data class Input(
         val nowTs: Long,
         val q1Mgdl: Double?,
-        /** q1 vor [Settings.entryMin] Minuten; null = nicht bekannt (dann kein Einstieg). */
+        /** q1 vor [Settings.entryMin] Minuten; null = nicht bekannt (dann kein Einstieg). Bei Einstiegszeit 0 ohne Belang. */
         val q1EntryAgoMgdl: Double?,
         val trendMgdlPerMin: Double?,
         val iobU: Double,
@@ -184,7 +196,7 @@ object SlowCorrectionChannel {
         val memory: Memory,
         /** Minuten ununterbrochen ueber der Schwelle (fuer Trail und Viewer). */
         val highForMin: Double,
-        /** Die Stufe der gewuenschten Rate, 1..[STAGES]; 0 = keine TBR. */
+        /** Die Stufe der gewuenschten Rate, 1..[stagesFor] des Faktors; 0 = keine TBR. */
         val stage: Int = 0,
     ) {
         /** Die Zusatzrate ueber dem Profilbasal [U/h]. */
@@ -220,22 +232,27 @@ object SlowCorrectionChannel {
         if (!basal.isFinite() || basal <= 0.0 || !schritt.isFinite() || schritt <= 0.0) return nein(Reason.NO_BASAL)
 
         if (!input.active) {
+            // Mit Einstiegszeit 0 (Toni 21.10.) gibt es keinen Wert "von damals": dann genuegt, dass der Trend gerade
+            // nicht deutlich faellt. Sonst muss der BG die ganze Einstiegszeit oben gewesen und kaum gefallen sein.
             val alt = input.q1EntryAgoMgdl?.takeIf { it.isFinite() }
-            val einstieg = hoch && highForMin >= settings.entryMin && alt != null &&
-                q1 >= alt - NOT_FALLING_TOLERANCE_MGDL &&
+            val nichtGefallen = settings.entryMin == 0 || (alt != null && q1 >= alt - NOT_FALLING_TOLERANCE_MGDL)
+            val einstieg = hoch && highForMin >= settings.entryMin && nichtGefallen &&
                 (trend == null || trend >= ENTRY_TREND_MIN_MGDL_PER_MIN)
             if (!einstieg) return nein(Reason.WAIT_ENTRY)
         }
 
-        // DIE STUFEN. Der Zusatz bis zur Obergrenze, je Stufe auf den Basalschritt abgerundet; Stufe 0 = Profilbasal.
+        // DIE STUFEN. Stufe k gibt k x STAGE_STEP_OF_BASAL x Profilbasal zusaetzlich, hoechstens bis zur Obergrenze,
+        // je Stufe auf den Basalschritt abgerundet; Stufe 0 = Profilbasal.
         val zusatzMax = (settings.factor - 1.0) * basal
+        val stufen = stagesFor(settings.factor)
+        val stufenBreite = STAGE_STEP_OF_BASAL * basal
         fun rateVon(stufe: Int): Double =
-            if (stufe <= 0) basal else floor((basal + zusatzMax * stufe / STAGES) / schritt + 1e-9) * schritt
+            if (stufe <= 0) basal else floor((basal + min(stufenBreite * stufe, zusatzMax)) / schritt + 1e-9) * schritt
         fun traegt(stufe: Int): Boolean = stufe > 0 && rateVon(stufe) - basal >= schritt - 1e-9
         fun passt(stufe: Int, spielraumU: Double): Boolean = (rateVon(stufe) - basal) * BLOCK_MIN / 60.0 <= spielraumU + 1e-9
         // Die hoechste Stufe, deren Zusatz eine Zusatzrate [U/h] traegt - dieselbe Rundung wie [rateVon].
         fun stufeFuer(zusatzUPerH: Double): Int =
-            (STAGES downTo 1).firstOrNull { traegt(it) && rateVon(it) - basal <= zusatzUPerH + 1e-9 } ?: 0
+            (stufen downTo 1).firstOrNull { traegt(it) && rateVon(it) - basal <= zusatzUPerH + 1e-9 } ?: 0
         fun ja(stufe: Int, reason: Reason, detail: String?, rate: Double = rateVon(stufe)) = Step(
             want = true, rateUPerH = rate, reason = reason, detail = detail, memory = neu,
             highForMin = highForMin, stage = stufe,
@@ -252,23 +269,24 @@ object SlowCorrectionChannel {
 
         // ---- EIN BLOCK LAEUFT: halten oder abgestuft senken, nie mitten im Block anheben ------------------------
         if (input.active && laufend != null && restMin > RENEW_REMAINING_MIN) {
-            val stufeLauf = (STAGES downTo 1).firstOrNull { traegt(it) && rateVon(it) <= laufend + schritt / 2.0 } ?: 0
+            val stufeLauf = (stufen downTo 1).firstOrNull { traegt(it) && rateVon(it) <= laufend + schritt / 2.0 } ?: 0
             val offen = max(0.0, laufend - basal) * restMin / 60.0
-            // Was die Restzeit tragen muss: der offene Rest plus der Restbedarf. Eine halbe Stufe Spiel, damit ein
-            // Bedarf knapp unter der Deckung den Block nicht gleich umstellt. Ohne Bedarfsschaetzung bleibt er stehen.
+            // Was die Restzeit tragen muss: der offene Rest plus der Restbedarf. Eine ganze (feine) Stufe Spiel, damit
+            // ein Bedarf knapp unter der Deckung den Block nicht gleich umstellt - bei der feinen Teilung kostete eine
+            // halbe Stufe fast jeden Zyklus ein Kommando. Ohne Bedarfsschaetzung bleibt er stehen.
             val stufeBedarf = if (bedarf == null) stufeLauf
-            else stufeFuer((offen + bedarf - smb) / (restMin / 60.0) + zusatzMax / STAGES / 2.0)
+            else stufeFuer((offen + bedarf - smb) / (restMin / 60.0) + stufenBreite)
             val iobPasst = input.iobU + smb + offen <= input.maxIobU + 1e-9
-            val ueberGrenze = laufend > rateVon(STAGES) + schritt / 2.0
+            val ueberGrenze = laufend > rateVon(stufen) + schritt / 2.0
             // Gehalten wird die LAUFENDE Rate, nicht die Stufenrate: hat AAPS sie gekappt (Max-Basal), loeste eine
             // andere Zahl hier ein Kommando aus, das nichts aendert.
             if (!ueberGrenze && iobPasst && stufeBedarf >= stufeLauf)
                 return ja(stufeLauf, Reason.CONTINUE, if (bedarf == null) "block ohne Bedarf" else "block", rate = laufend)
             // Senken: hoechstens auf die Bedarfsstufe; passt der Rest nicht in maxIOB, mindestens eine Stufe tiefer -
             // ein ganzer Block auf derselben Stufe ist nie kleiner als ihr Rest.
-            val obergrenze = minOf(stufeBedarf, STAGES, if (iobPasst) STAGES else stufeLauf - 1)
+            val obergrenze = minOf(stufeBedarf, stufen, if (iobPasst) stufen else stufeLauf - 1)
             for (s in obergrenze downTo 1) if (traegt(s) && passt(s, spielraum))
-                return ja(s, Reason.CONTINUE, "$s/$STAGES " + if (s < stufeBedarf || !iobPasst) "maxIob" else "bedarf")
+                return ja(s, Reason.CONTINUE, "$s/$stufen " + if (s < stufeBedarf || !iobPasst) "maxIob" else "bedarf")
             return if (stufeBedarf == 0) nein(Reason.NO_DEMAND) else nein(Reason.MAX_IOB, "spielraum=$spielraum")
         }
 
@@ -280,7 +298,7 @@ object SlowCorrectionChannel {
         for (s in stufeZiel downTo 1) if (traegt(s) && passt(s, spielraum))
             return ja(
                 s, if (input.active) Reason.CONTINUE else Reason.START,
-                "$s/$STAGES " + if (s < stufeZiel) "maxIob" else "bedarf",
+                "$s/$stufen " + if (s < stufeZiel) "maxIob" else "bedarf",
             )
         return nein(Reason.MAX_IOB, "spielraum=$spielraum")
     }

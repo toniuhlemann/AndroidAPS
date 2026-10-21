@@ -8114,7 +8114,7 @@ class TransportWiringTest : TestBaseWithProfile() {
             flach = 220.0
             steigungProMin = 0.0
             maxSmbU = 0.3
-            // Obergrenze 5 x 1,0 U/h: je Stufe genau 1,0 U/h Zusatz - so unterscheiden die Stufen den Restbedarf.
+            // Obergrenze 5 x 1,0 U/h: 16 Stufen zu genau 0,25 U/h Zusatz - so unterscheiden die Stufen den Restbedarf.
             langsamerKanal(an = an, faktor = 5.0)
             clock = start
             rigTbr = null
@@ -8133,10 +8133,10 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
         // KEIN DOPPELTER ABZUG, DER SMB DIESES ZYKLUS ABGESTIMMT: beim Einstieg traegt der Block 2 x (Bedarf - SMB dieses
         // Zyklus) je Stunde. Fruehere SMB stehen schon im Bedarf (IOB, Transport) und werden nicht noch einmal
-        // abgezogen. Je Stufe 1,0 U/h, also Stufe = ganze Zahl davon, hoechstens 4.
+        // abgezogen. Je Stufe 0,25 U/h, also Stufe = ganze Zahl davon, hoechstens 16.
         val start = mit.first { it.first.slowChannel?.reason == "START" }.first.slowChannel!!
         assertTrue(mit.indexOfFirst { it.first.slowChannel?.reason == "START" } > 0)
-        val erwartet = minOf(4, floor(2.0 * (start.plannedRemainderU + start.demandU!! - start.smbThisCycleU) + 1e-9).toInt())
+        val erwartet = minOf(16, floor(2.0 * (start.plannedRemainderU + start.demandU!! - start.smbThisCycleU) / 0.25 + 1e-9).toInt())
         assertEquals(erwartet, start.stage) { "Stufe aus Bedarf ${start.demandU}, SMB ${start.smbThisCycleU}\n$bericht" }
         assertTrue(start.smbThisCycleU > 0.0) { "der Einstieg faellt in diesem Verlauf auf einen SMB-Zyklus\n$bericht" }
 
@@ -8255,6 +8255,97 @@ class TransportWiringTest : TestBaseWithProfile() {
         val letzter = lauf.last().first.slowChannel!!
         assertEquals("HARD_STOP", letzter.reason)
         assertEquals("PUMP_GATE_CLOSED", letzter.detail)
+    }
+
+    /**
+     * EINSTIEG OHNE WARTEZEIT (Toni 21.10.): mit Einstiegszeit 0 setzt der Kanal im ersten Zyklus, in dem er ueberhaupt
+     * darf (Signal bereit, ueber der Schwelle, nicht fallend, Bedarf) - nicht erst nach einer Hochphase.
+     */
+    @Test
+    fun `langsamer Kanal - Einstiegszeit 0 setzt im ersten moeglichen Zyklus`(@TempDir dir: File) = runBlocking<Unit> {
+        flach = 220.0
+        steigungProMin = 0.0
+        maxSmbU = 0.0
+        langsamerKanal(an = true, einstieg = 0)
+        clock = start
+        rigTbr = null
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        val lauf = (0 until 20).map { zyklusMitPumpe() }
+        val bericht = kanalBericht(lauf)
+        val ersterMoeglich = lauf.indexOfFirst { (o, _) ->
+            o.slowChannel?.let { it.reason != "HARD_STOP" && it.reason != "NO_SIGNAL" && it.reason != "NO_DEMAND_ESTIMATE" } == true
+        }
+        assertTrue(ersterMoeglich >= 0) { bericht }
+        assertEquals("START", lauf[ersterMoeglich].first.slowChannel!!.reason) { bericht }
+        val kmd = lauf[ersterMoeglich].second
+        assertNotNull(kmd) { bericht }
+        assertTrue(kmd!!.grund.startsWith(FuseTbrTranslator.SLOW_SET_REASON)) { bericht }
+        assertTrue(lauf[ersterMoeglich].first.slowChannel!!.highForMin < 30.0) { bericht }
+    }
+
+    /**
+     * EINE SCHUTZ-NULL SPERRT DEN KANAL (Toni 21.10.): faellt der BG mit zu viel Bolus an Bord und will FUSE deshalb
+     * eine Null - auch die vom Riegel gehaltene -, steht der Kanal hart gesperrt und ueberstimmt sie nicht. Im
+     * gehaltenen Teil ohne gemessenen Fall heisst die Sperre SAFETY_ZERO; dort war der BG ueber der Schwelle.
+     */
+    @Test
+    fun `langsamer Kanal - eine Schutz-Null des Normalpfads sperrt ihn`(@TempDir dir: File) = runBlocking<Unit> {
+        langsamerKanal(an = true, schwelle = 100.0, einstieg = 0)
+        latchLage(dir, an = true)
+        rigTbr = null
+        val lauf = (0 until 45).map { zyklusMitPumpe() }
+        val bericht = kanalBericht(lauf)
+        val nullZyklen = lauf.filter { it.first.decision.tbr == FuseController.TbrAction.ZERO_TEMP }
+        assertTrue(nullZyklen.isNotEmpty()) { "Vorbedingung: der Normalpfad will eine Schutz-Null\n$bericht" }
+        for ((o, _) in nullZyklen) {
+            val sc = o.slowChannel
+            assertNotNull(sc) { bericht }
+            assertFalse(sc!!.want) { bericht }
+            assertEquals("HARD_STOP", sc.reason) { bericht }
+        }
+        val gehalten = nullZyklen.filter { it.first.slowChannel!!.detail == "SAFETY_ZERO" }
+        assertTrue(gehalten.isNotEmpty()) { bericht }
+        assertTrue(gehalten.any { (it.first.signal?.q1 ?: 0.0) > 100.0 }) { "ohne die Sperre waere er eingestiegen\n$bericht" }
+        assertTrue(lauf.none { (_, k) -> k != null && k.grund.startsWith(FuseTbrTranslator.SLOW_SET_REASON) }) { bericht }
+    }
+
+    /**
+     * DAS REBOUND-TOTBAND GILT WIE BEIM SMB (Toni 21.10.): in der Stunde nach einem Tief (hier 45 min) keine positive
+     * TBR unter Ziel + Totband - auch nicht bei Schwelle 100 und Einstiegszeit 0. Danach darf der Kanal wieder.
+     */
+    @Test
+    fun `langsamer Kanal - Rebound-Totband wie beim SMB`(@TempDir dir: File) = runBlocking<Unit> {
+        // Erst knapp unter 75 (Tief fuer das Rebound-Fenster, aber kein gemessenes Tief unter 70), dann ein Anstieg
+        // auf ein Plateau ueber der Schwelle 100, aber unter Ziel + 25.
+        flach = 72.0
+        steigungProMin = 0.0
+        knickAbMin = 10
+        steigungNachKnick = 4.0
+        knick2AbMin = 20
+        steigungNachKnick2 = 0.0
+        maxSmbU = 0.0
+        langsamerKanal(an = true, schwelle = 100.0, einstieg = 0)
+        clock = start
+        rigTbr = null
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        val lauf = (0 until 90).map { zyklusMitPumpe() }
+        val bericht = kanalBericht(lauf)
+        val imBand = lauf.filter { (o, _) ->
+            o.state?.reboundWindow == true && (o.signal?.q1 ?: 0.0) > 100.0 &&
+                (o.signal?.q1 ?: Double.MAX_VALUE) < (o.targetMgdl ?: 0.0) + 25.0
+        }
+        assertTrue(imBand.isNotEmpty()) { "Vorbedingung: ueber der Schwelle im Rebound-Band\n$bericht" }
+        for ((o, _) in imBand) {
+            assertFalse(o.slowChannel!!.want) { bericht }
+            assertEquals("REBOUND_DEADBAND", o.slowChannel!!.detail) { bericht }
+        }
+        val setzen = lauf.withIndex().filter { (_, p) -> p.second?.grund?.startsWith(FuseTbrTranslator.SLOW_SET_REASON) == true }
+        assertTrue(setzen.all { (_, p) -> p.first.state?.reboundWindow != true }) { "Setzen im Rebound-Fenster\n$bericht" }
+        assertTrue(lauf.takeLast(10).none { it.first.slowChannel?.detail == "REBOUND_DEADBAND" }) {
+            "nach dem Fenster sperrt das Band nicht mehr\n$bericht"
+        }
     }
 
     /**

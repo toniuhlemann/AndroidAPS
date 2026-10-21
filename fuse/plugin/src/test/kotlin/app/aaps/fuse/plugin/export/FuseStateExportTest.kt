@@ -693,7 +693,8 @@ class FuseStateExportTest {
         val werte = FuseStateJson.policyValues(an).getJSONObject("slowChannel")
         assertEquals(2.0, werte.getDouble("factor"), 0.0)
         assertEquals(180.0, werte.getDouble("thresholdMgdl"), 0.0)
-        assertEquals(30, werte.getInt("entryMin"))
+        // Vorgabe seit 21.10. (Toni): Einstieg sofort.
+        assertEquals(0, werte.getInt("entryMin"))
         assertTrue(werte.getBoolean("settingsValid"))
 
         val block = record(
