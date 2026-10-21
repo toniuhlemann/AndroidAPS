@@ -242,9 +242,7 @@ class SlowCorrectionChannelTest {
         assertEquals("2/16 bedarf", klein.detail)
         // ... und ist nichts mehr noetig, endet der Block (Profilbasal).
         assertEquals(Reason.NO_DEMAND, laufend(2.5, -0.7).reason)
-        // Knapp ueber der Deckung (eine Stufe Spiel) bleibt er stehen - kein Pendeln; fehlt mehr, sinkt er eine Stufe.
-        assertEquals("block", laufend(1.5, -0.03).detail)
-        assertEquals("7/16 bedarf", laufend(1.5, -0.05).detail)
+        // Das Spiel beim Senken pinnt ein eigener Test (Verhaltensaenderung 21.10.).
         // Mehr Bedarf hebt mitten im Block NICHT an ...
         val mehr = laufend(1.5, 1.0)
         assertEquals(1.5, mehr.rateUPerH, 1e-9)
@@ -255,6 +253,28 @@ class SlowCorrectionChannelTest {
         // Ohne Bedarfsschaetzung laeuft ein Block aus und wird nicht erneuert.
         assertEquals("block ohne Bedarf", laufend(1.5, null).detail)
         assertEquals(Reason.NO_DEMAND_ESTIMATE, laufend(1.5, null, rest = 5).reason)
+    }
+
+    /**
+     * EIGENE VERHALTENSAENDERUNG 21.10. (Toni: gesondert dokumentieren): ein laufender Block sinkt erst, wenn der
+     * Bedarf ueber die Restzeit eine GANZE (feine) Stufe unter seiner Stufe liegt. Vorher war es eine halbe Stufe der
+     * groben Teilung. Gilt nur fuer den Bedarf - an maxIOB sinkt er sofort.
+     */
+    @Test fun `Verhaltensaenderung 21_10 - beim Senken eine ganze Stufe Spiel`() {
+        assertEquals(1.0, SlowCorrectionChannel.LOWER_SLACK_STAGES, 0.0)
+        // Faktor 5 auf 0,5 U/h, Block auf Stufe 8 (1,5 U/h = 1,0 U/h Zusatz), 20 min Rest: offen 0,333 U.
+        val fuenf = Settings(enabled = true, factor = 5.0)
+        val mem = lauf(30, fuenf).memory
+        fun laufend(bedarf: Double) =
+            SlowCorrectionChannel.step(fuenf, input(40, aktiv = true, laeuft = 1.5, rest = 20, bedarf = bedarf), mem)
+        // Fehlen 0,03 U: der Bedarf traegt 0,91 U/h, weniger als eine Stufe (0,125 U/h) unter der Deckung - der Block
+        // bleibt. Mit dem alten Spiel (eine halbe Stufe, 0,0625 U/h) waere er hier schon gesunken.
+        assertEquals("block", laufend(-0.03).detail)
+        // Fehlen 0,05 U (0,85 U/h), liegt er mehr als eine Stufe darunter: eine Stufe tiefer.
+        assertEquals("7/16 bedarf", laufend(-0.05).detail)
+        // An maxIOB gibt es kein Spiel: passt der Rest nicht mehr, sinkt er trotz gedecktem Bedarf.
+        val eng = SlowCorrectionChannel.step(fuenf, input(40, iob = 7.8, aktiv = true, laeuft = 1.5, rest = 20, bedarf = 5.0), mem)
+        assertTrue(eng.rateUPerH < 1.5) { "maxIOB senkt sofort: ${eng.detail}" }
     }
 
     private fun block(rate: Double, abMin: Int) = SlowCorrectionChannel.Block(rate, start + abMin * minute, 30)

@@ -33,12 +33,13 @@ import kotlin.math.min
  *
  *  - Einstieg und Stopp nur ueber den gemessenen Verlauf (q1, UKF-Trend);
  *  - harte Stopps kommen vom Aufrufer als [Input.hardStop]: gemessene Lagen, Technik, eine Schutz-Null des
- *    Normalpfads und das Rebound-Totband wie beim SMB;
+ *    Normalpfads und das Rebound- und Nacht-Totband wie beim SMB (dieselbe Rechnung, dieselben Ausnahmen);
  *  - maxIOB begrenzt SMB und TBR gemeinsam, und an dieser Grenze weicht die TBR: der SMB dieses Zyklus
  *    ([Input.smbThisCycleU]) zaehlt zuerst, den SMB fasst der Kanal nie an. Ein Kommando geht im selben Zyklus wie der
  *    SMB hinaus (`LoopPlugin` gibt den SMB nur ab, wenn das TBR-Kommando desselben Laufs geklappt hat);
- *  - kein staendiges Umstellen: waehrend ein Block laeuft, sinkt er nur, wenn Bedarf oder maxIOB mindestens eine
- *    Stufe darunter liegen - abgestuft Richtung Profilbasal; hoeher geht es erst bei der Erneuerung.
+ *  - kein staendiges Umstellen: waehrend ein Block laeuft, sinkt er, wenn maxIOB es verlangt, oder wenn der Bedarf
+ *    mindestens [LOWER_SLACK_STAGES] Stufen darunter liegt - abgestuft Richtung Profilbasal; hoeher geht es erst bei
+ *    der Erneuerung.
  *
  * Wie die TBR gesetzt, bestaetigt, erneuert und abgebrochen wird, regelt nicht dieses Objekt, sondern derselbe
  * Lebenszyklus wie bei der Teilbasal-Stufe ([PartialTbrOwnership]) mit eigenem Zustand.
@@ -97,6 +98,22 @@ object SlowCorrectionChannel {
     /** Die Zahl der Stufen bis zum Deckel: Faktor 2 -> 4, Faktor 4 -> 12, Faktor 1,2 -> 1 (dort kleiner als 0,25). */
     fun stagesFor(factor: Double): Int =
         max(1, ceil((factor - 1.0) / STAGE_STEP_OF_BASAL - 1e-9).toInt())
+
+    /**
+     * DAS SPIEL BEIM SENKEN, in Stufen - EINE EIGENE VERHALTENSAENDERUNG (21.10., mit den feinen Stufen, von Toni so
+     * gewollt dokumentiert): ein laufender Block sinkt erst, wenn der Bedarf ueber die Restzeit mindestens so viele
+     * Stufen unter seiner Stufe liegt.
+     *
+     * Bis 21.10. war das Spiel eine HALBE Stufe der alten, groben Teilung (ein Viertel des Zusatzes): bei Faktor 4
+     * also 0,375 x Profilbasal, bei Faktor 2 nur 0,125 x Profilbasal. Mit den feinen Stufen (0,25 x Profilbasal)
+     * haette eine halbe Stufe fast jeden Zyklus ein neues Kommando an die Pumpe geschickt; eine ganze Stufe sind
+     * immer 0,25 x Profilbasal - bei Faktor 4 etwas weniger Spiel als vorher, bei Faktor 2 etwas mehr.
+     *
+     * Wirkung: die TBR bleibt bei leicht sinkendem Bedarf etwas laenger auf ihrer Stufe (hoechstens eine Stufe ueber
+     * dem Bedarf), statt jedem Zucken nachzulaufen. Nur der Bedarf hat dieses Spiel - an maxIOB sinkt sie sofort, und
+     * die harten Stopps beenden sie unabhaengig davon.
+     */
+    const val LOWER_SLACK_STAGES = 1.0
 
     data class Settings(
         val enabled: Boolean,
@@ -271,11 +288,11 @@ object SlowCorrectionChannel {
         if (input.active && laufend != null && restMin > RENEW_REMAINING_MIN) {
             val stufeLauf = (stufen downTo 1).firstOrNull { traegt(it) && rateVon(it) <= laufend + schritt / 2.0 } ?: 0
             val offen = max(0.0, laufend - basal) * restMin / 60.0
-            // Was die Restzeit tragen muss: der offene Rest plus der Restbedarf. Eine ganze (feine) Stufe Spiel, damit
-            // ein Bedarf knapp unter der Deckung den Block nicht gleich umstellt - bei der feinen Teilung kostete eine
-            // halbe Stufe fast jeden Zyklus ein Kommando. Ohne Bedarfsschaetzung bleibt er stehen.
+            // Was die Restzeit tragen muss: der offene Rest plus der Restbedarf - mit [LOWER_SLACK_STAGES] Stufen
+            // Spiel, damit ein Bedarf knapp unter der Deckung den Block nicht gleich umstellt (eigene
+            // Verhaltensaenderung 21.10., s. dort). Ohne Bedarfsschaetzung bleibt er stehen.
             val stufeBedarf = if (bedarf == null) stufeLauf
-            else stufeFuer((offen + bedarf - smb) / (restMin / 60.0) + stufenBreite)
+            else stufeFuer((offen + bedarf - smb) / (restMin / 60.0) + stufenBreite * LOWER_SLACK_STAGES)
             val iobPasst = input.iobU + smb + offen <= input.maxIobU + 1e-9
             val ueberGrenze = laufend > rateVon(stufen) + schritt / 2.0
             // Gehalten wird die LAUFENDE Rate, nicht die Stufenrate: hat AAPS sie gekappt (Max-Basal), loeste eine

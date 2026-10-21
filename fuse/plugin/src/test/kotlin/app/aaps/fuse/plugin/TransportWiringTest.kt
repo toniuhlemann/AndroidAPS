@@ -8317,7 +8317,10 @@ class TransportWiringTest : TestBaseWithProfile() {
     @Test
     fun `langsamer Kanal - Rebound-Totband wie beim SMB`(@TempDir dir: File) = runBlocking<Unit> {
         // Erst knapp unter 75 (Tief fuer das Rebound-Fenster, aber kein gemessenes Tief unter 70), dann ein Anstieg
-        // auf ein Plateau ueber der Schwelle 100, aber unter Ziel + 25.
+        // auf ein Plateau ueber der Schwelle 100, aber unter Ziel + 25. Ohne Nachtfenster - die Rig-Uhr steht sonst
+        // in der Nacht, und das groessere Nacht-Totband ueberdeckte das Rebound-Totband.
+        nachtStartMin = 0
+        nachtEndeMin = 0
         flach = 72.0
         steigungProMin = 0.0
         knickAbMin = 10
@@ -8346,6 +8349,44 @@ class TransportWiringTest : TestBaseWithProfile() {
         assertTrue(lauf.takeLast(10).none { it.first.slowChannel?.detail == "REBOUND_DEADBAND" }) {
             "nach dem Fenster sperrt das Band nicht mehr\n$bericht"
         }
+    }
+
+    /**
+     * DAS NACHT-TOTBAND WIE BEIM SMB (Toni 21.10.): dieselbe Rechnung mit denselben Ausnahmen und ohne eigene feste
+     * Nachtgrenze. Unter Ziel + Nacht-Totband sperrt es den Kanal in genau den Zyklen, in denen es den SMB sperrt -
+     * Einstieg wie Fortsetzung; darueber darf der Kanal auch nachts, neben dem SMB.
+     */
+    @Test
+    fun `langsamer Kanal - Nacht-Totband wie beim SMB`(@TempDir dir: File) = runBlocking<Unit> {
+        nachtStartMin = 0
+        nachtEndeMin = 1439
+        flach = 120.0
+        steigungProMin = 0.0
+        maxSmbU = 0.3
+        langsamerKanal(an = true, schwelle = 100.0, einstieg = 0)
+        clock = start
+        rigTbr = null
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) })
+        val imBand = (0 until 30).map { zyklusMitPumpe() }
+        val bericht = kanalBericht(imBand)
+        val nachtSmb = imBand.filter { it.first.decision.bindingLimit == "nightDeadband" }
+        assertTrue(nachtSmb.isNotEmpty()) { "Vorbedingung: das Nacht-Totband sperrt den SMB\n$bericht" }
+        for ((o, _) in nachtSmb) {
+            assertFalse(o.slowChannel!!.want) { bericht }
+            assertEquals("NIGHT_DEADBAND", o.slowChannel!!.detail) { bericht }
+        }
+        // Und umgekehrt: sperrt das Band den Kanal, dann ist es dasselbe Band, das den SMB sperrt.
+        for ((o, _) in imBand.filter { it.first.slowChannel?.detail == "NIGHT_DEADBAND" }) {
+            assertEquals("nightDeadband", o.decision.bindingLimit) { bericht }
+        }
+        assertTrue(imBand.none { (_, k) -> k?.grund?.startsWith(FuseTbrTranslator.SLOW_SET_REASON) == true }) { bericht }
+
+        // Ueber dem Band darf der Kanal auch nachts - keine eigene, feste Nachtgrenze.
+        flach = 220.0
+        val darueber = (0 until 30).map { zyklusMitPumpe() }
+        val bericht2 = kanalBericht(darueber)
+        assertTrue(darueber.any { (_, k) -> k?.grund?.startsWith(FuseTbrTranslator.SLOW_SET_REASON) == true }) { bericht2 }
     }
 
     /**

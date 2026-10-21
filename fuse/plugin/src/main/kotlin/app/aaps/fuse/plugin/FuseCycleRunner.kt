@@ -5329,7 +5329,7 @@ class FuseCycleRunner(
         // kommen aus dem gemessenen Verlauf. Guard, Schwanz und Exposition zu ueberstimmen ist sein Zweck. Harte Sperren
         // sind gemessene Lagen und Technik, dazu seit 21.10. (Toni, mit dem Einstieg ohne Wartezeit): eine Schutz-Null
         // des Normalpfads - faellt der BG mit zu viel Bolus an Bord, endet der Kanal sofort und die Null geht hinaus -
-        // und das Rebound-Totband, genau wie es fuer den SMB gilt.
+        // und das Rebound- und Nacht-Totband, genau wie es fuer den SMB gilt.
         val slowBasal = profile.getBasal(computeTs)
         signal.q1.takeIf { it.isFinite() }?.let { q -> slowQ1Verlauf.addLast(signal.sourceTs to q) }
         while (slowQ1Verlauf.isNotEmpty() && signal.sourceTs - slowQ1Verlauf.first().first > SLOW_VERLAUF_MAX_MIN * 60_000L)
@@ -5338,24 +5338,30 @@ class FuseCycleRunner(
         val slowEinstiegVorher = slowQ1Verlauf
             .filter { abs(it.first - slowZiel) <= SLOW_EINSTIEG_TOLERANZ_MIN * 60_000L }
             .minByOrNull { abs(it.first - slowZiel) }?.second
-        // Das Rebound-Totband in derselben Rechnung wie fuer den SMB (FuseController -> NightWindow): nur der
-        // Rebound-Teil, mit derselben Entwaffnung durch Marker und Evidenz. Das Nacht-Totband gehoert nicht dazu.
-        val slowReboundBand = NightWindow.effectiveDeadbandMgdl(
+        // DIE TOTBAENDER WIE BEIM SMB (Toni 21.10.): Rebound- UND Nacht-Totband in genau der Rechnung des Reglers
+        // (FuseController -> NightWindow.effectiveDeadbandMgdl) - dieselben Eingaben, dieselben Ausnahmen (Marker,
+        // Evidenz im Rebound, Kredit im Mahlzeitfenster bei Nacht), derselbe Anker (q1, s. bgAtAnchor). Der groessere
+        // Grund gilt; keine eigene, feste Nachtgrenze. Es sperrt Einstieg UND Fortsetzung - den SMB beruehrt es hier
+        // nicht, der hat seine eigene, gleiche Pruefung im Regler.
+        val slowBand = NightWindow.effectiveDeadbandMgdl(
             reboundWindow = state.reboundWindow,
             reboundDeadbandMgdl = state.reboundDeadbandMgdl,
-            isNight = false,
-            nightDeadbandMgdl = 0.0,
+            isNight = state.nightWindow,
+            nightDeadbandMgdl = state.nightDeadbandMgdl,
             markerBoost = state.markerBoost,
             reboundOverrideByEvidence = reboundOverrideErlaubt,
-            nightOverrideByEvidence = false,
+            nightOverrideByEvidence = nachtOverrideErlaubt,
         )
+        // Benannt wie im Regler (bindingLimit reboundDeadband / nightDeadband).
+        val slowBandGrund =
+            if (state.reboundWindow && slowBand == state.reboundDeadbandMgdl) "REBOUND_DEADBAND" else "NIGHT_DEADBAND"
         val slowHart = when {
             tempBasalFallback -> "TEMP_BASAL_FALLBACK"
             step.health != Health.READY -> "SIGNAL_NOT_READY"
             measuredLow -> "MEASURED_LOW"
             descentRisk.active -> "DESCENT_RISK"
             decision.tbr == FuseController.TbrAction.ZERO_TEMP -> "SAFETY_ZERO"
-            slowReboundBand > 0.0 && signal.q1 < state.targetMgdl + slowReboundBand -> "REBOUND_DEADBAND"
+            slowBand > 0.0 && signal.q1 < state.targetMgdl + slowBand -> slowBandGrund
             ledgerView.hold -> "LEDGER_HOLD"
             currentTbr?.sourceType == TbrPolicy.SourceType.FAKE_EXTENDED -> "FAKE_EXTENDED"
             !gate.allowed -> "PUMP_GATE_CLOSED"
