@@ -126,8 +126,9 @@ class SlowCorrectionChannelTest {
         assertEquals(Reason.WAIT_ENTRY, lauf(40) { input(it, q1Vorher = 240.0) }.reason)
         // Ohne bekannten Wert von damals auch nicht.
         assertEquals(Reason.WAIT_ENTRY, lauf(40) { input(it, q1Vorher = null) }.reason)
-        // Und nicht, solange der Trend gerade deutlich faellt.
-        assertEquals(Reason.WAIT_ENTRY, lauf(40) { input(it, trend = -0.7) }.reason)
+        // Und nicht, solange der Trend deutlich faellt - seit Hebel 3 (21.10.) mit derselben Grenze wie der Stopp,
+        // also heisst das nach zwei Zyklen Fall-Stopp.
+        assertEquals(Reason.STOP_FALLING, lauf(40) { input(it, trend = -0.7) }.reason)
     }
 
     @Test fun `unter der Schwelle beginnt die Einstiegszeit neu`() {
@@ -155,6 +156,48 @@ class SlowCorrectionChannelTest {
         val zwei = SlowCorrectionChannel.step(an, input(32, trend = -1.5, aktiv = true), mem)
         assertFalse(zwei.want)
         assertEquals(Reason.STOP_FALLING, zwei.reason)
+    }
+
+    /** Toni 21.10.2026, Hebel 3: nach einer Rettung lief der Kanal bei langsamem Fall noch lange weiter. */
+    @Test fun `ein langsamer Fall unter -0,5 stoppt den laufenden Kanal nach zwei Zyklen, darueber laeuft er`() {
+        val mem = lauf(30).memory
+        // -0,4 ist kein deutlicher Fall: er laeuft weiter.
+        val flach = SlowCorrectionChannel.step(an, input(31, trend = -0.4, aktiv = true), mem)
+        assertTrue(flach.want)
+        val einer = SlowCorrectionChannel.step(an, input(32, trend = -0.6, aktiv = true), flach.memory)
+        assertTrue(einer.want)
+        val zwei = SlowCorrectionChannel.step(an, input(33, trend = -0.6, aktiv = true), einer.memory)
+        assertFalse(zwei.want)
+        assertEquals(Reason.STOP_FALLING, zwei.reason)
+    }
+
+    @Test fun `nach einem Fall-Stopp steigt er erst wieder ein, wenn der Zucker nicht mehr faellt`() {
+        var mem = SlowCorrectionChannel.step(sofort, input(0), Memory()).memory
+        mem = SlowCorrectionChannel.step(sofort, input(1, trend = -0.6, aktiv = true), mem).memory
+        val stopp = SlowCorrectionChannel.step(sofort, input(2, trend = -0.6, aktiv = true), mem)
+        assertEquals(Reason.STOP_FALLING, stopp.reason)
+        // Langsamer Fall ueber der Stoppgrenze: ein frischer Kanal duerfte starten, nach dem Fall-Stopp nicht -
+        // sonst flatterte er an der Grenze, mit einem Kommando je Start und Stopp.
+        val langsam = SlowCorrectionChannel.step(sofort, input(3, trend = -0.3), stopp.memory)
+        assertEquals(Reason.WAIT_ENTRY, langsam.reason)
+        assertEquals("nach Fall", langsam.detail)
+        assertEquals(Reason.START, SlowCorrectionChannel.step(sofort, input(3, trend = -0.3), Memory()).reason)
+        // Faellt er nicht mehr, geht es wieder los - und die strengere Regel endet mit dem Einstieg.
+        val wieder = SlowCorrectionChannel.step(sofort, input(4, trend = 0.1), langsam.memory)
+        assertEquals(Reason.START, wieder.reason)
+        assertFalse(wieder.memory.fallStopped)
+    }
+
+    @Test fun `die strengere Regel nach einem Fall endet mit der Hochphase`() {
+        var mem = SlowCorrectionChannel.step(sofort, input(0), Memory()).memory
+        mem = SlowCorrectionChannel.step(sofort, input(1, trend = -0.6, aktiv = true), mem).memory
+        mem = SlowCorrectionChannel.step(sofort, input(2, trend = -0.6, aktiv = true), mem).memory
+        assertTrue(mem.fallStopped)
+        // Unter der Schwelle, aber ueber dem Stopp darunter: die Hochphase ist vorbei.
+        mem = SlowCorrectionChannel.step(sofort, input(3, q1 = 170.0, trend = -0.3), mem).memory
+        assertFalse(mem.fallStopped)
+        // Wieder darueber gilt der normale Einstieg.
+        assertEquals(Reason.START, SlowCorrectionChannel.step(sofort, input(4, trend = -0.3), mem).reason)
     }
 
     @Test fun `ein laufender Kanal stoppt unter Schwelle minus 20 und laeuft darueber weiter`() {

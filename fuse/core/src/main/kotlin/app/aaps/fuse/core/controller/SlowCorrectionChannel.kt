@@ -31,7 +31,8 @@ import kotlin.math.min
  * Weg - an Guard, Schwanz und Exposition vorbei, denn genau die halten die Hochphasen. Die Sicherheit haengt an
  * Messung und harten Grenzen:
  *
- *  - Einstieg und Stopp nur ueber den gemessenen Verlauf (q1, UKF-Trend);
+ *  - Einstieg und Stopp nur ueber den gemessenen Verlauf (q1, UKF-Trend), mit derselben Trendgrenze: er setzt nur fort,
+ *    solange auch ein Einstieg ginge; nach einem Stopp wegen Falls erst wieder, wenn der Zucker nicht mehr faellt;
  *  - harte Stopps kommen vom Aufrufer als [Input.hardStop]: gemessene Lagen, Technik, eine Schutz-Null des
  *    Normalpfads und das Rebound- und Nacht-Totband wie beim SMB (dieselbe Rechnung, dieselben Ausnahmen);
  *  - maxIOB begrenzt SMB und TBR gemeinsam, und an dieser Grenze weicht die TBR: der SMB dieses Zyklus
@@ -64,11 +65,23 @@ object SlowCorrectionChannel {
     /** Einstieg nur, wenn der UKF-Trend gerade nicht deutlich faellt [mg/dl/min]. */
     const val ENTRY_TREND_MIN_MGDL_PER_MIN = -0.5
 
-    /** Stopp: der UKF-Trend faellt so steil [mg/dl/min] ... */
-    const val STOP_TREND_MGDL_PER_MIN = -1.0
+    /**
+     * Stopp: der UKF-Trend faellt deutlich [mg/dl/min] - dieselbe Grenze wie beim Einstieg (Toni 21.10.2026, Hebel 3).
+     * Bis dahin stoppte erst ein Fall unter -1,0: nach einer Rettung lief der Kanal bei langsamem Fall zwischen beiden
+     * Grenzen noch lange weiter, obwohl er so nie eingestiegen waere. Jetzt setzt er nur fort, solange auch ein Einstieg
+     * ginge.
+     */
+    const val STOP_TREND_MGDL_PER_MIN = ENTRY_TREND_MIN_MGDL_PER_MIN
 
     /** ... in so vielen Zyklen nacheinander - ein einzelner Wert ist kein Trend. */
     const val STOP_FALL_CYCLES = 2
+
+    /**
+     * Nach einem Stopp wegen Falls steigt der Kanal in derselben Hochphase erst wieder ein, wenn der Zucker nicht mehr
+     * faellt [mg/dl/min]. Ohne diesen Abstand zur Stoppgrenze flatterte er an ihr - Start, zwei Zyklen, Stopp, Start -
+     * und jedes Mal ginge ein Kommando an die Pumpe.
+     */
+    const val REENTRY_TREND_MIN_MGDL_PER_MIN = 0.0
 
     /** Stopp, sobald der BG so weit unter die Schwelle faellt [mg/dl]. */
     const val STOP_BELOW_THRESHOLD_MGDL = 20.0
@@ -142,9 +155,14 @@ object SlowCorrectionChannel {
     data class Memory(
         /** Seit wann liegt q1 ununterbrochen ueber der Schwelle; 0 = nicht. */
         val highSinceTs: Long = 0L,
-        /** Zyklen in Folge mit steil fallendem Trend. */
+        /** Zyklen in Folge mit deutlich fallendem Trend. */
         val fallStreak: Int = 0,
         val lastTs: Long = 0L,
+        /**
+         * In dieser Hochphase stoppte ein Fall den Kanal (oder hielt ihn zwei Zyklen lang draussen): ein neuer Einstieg
+         * braucht dann [REENTRY_TREND_MIN_MGDL_PER_MIN]. Endet mit dem Einstieg, der Hochphase oder einer Zyklusluecke.
+         */
+        val fallStopped: Boolean = false,
     )
 
     data class Input(
@@ -231,7 +249,8 @@ object SlowCorrectionChannel {
         }
         val trend = input.trendMgdlPerMin?.takeIf { it.isFinite() }
         val fallStreak = if (trend != null && trend < STOP_TREND_MGDL_PER_MIN) (if (luecke) 1 else memory.fallStreak + 1) else 0
-        val neu = Memory(highSinceTs = highSince, fallStreak = fallStreak, lastTs = input.nowTs)
+        val nachFall = hoch && !luecke && (memory.fallStopped || fallStreak >= STOP_FALL_CYCLES)
+        val neu = Memory(highSinceTs = highSince, fallStreak = fallStreak, lastTs = input.nowTs, fallStopped = nachFall)
         val highForMin = if (highSince > 0L) (input.nowTs - highSince) / 60_000.0 else 0.0
 
         fun nein(reason: Reason, detail: String? = null) =
@@ -253,9 +272,11 @@ object SlowCorrectionChannel {
             // nicht deutlich faellt. Sonst muss der BG die ganze Einstiegszeit oben gewesen und kaum gefallen sein.
             val alt = input.q1EntryAgoMgdl?.takeIf { it.isFinite() }
             val nichtGefallen = settings.entryMin == 0 || (alt != null && q1 >= alt - NOT_FALLING_TOLERANCE_MGDL)
-            val einstieg = hoch && highForMin >= settings.entryMin && nichtGefallen &&
-                (trend == null || trend >= ENTRY_TREND_MIN_MGDL_PER_MIN)
-            if (!einstieg) return nein(Reason.WAIT_ENTRY)
+            // Nach einem Fall-Stopp erst wieder, wenn der Zucker nachweislich nicht mehr faellt (Hebel 3).
+            val trendOk = if (nachFall) trend != null && trend >= REENTRY_TREND_MIN_MGDL_PER_MIN
+            else trend == null || trend >= ENTRY_TREND_MIN_MGDL_PER_MIN
+            val einstieg = hoch && highForMin >= settings.entryMin && nichtGefallen && trendOk
+            if (!einstieg) return nein(Reason.WAIT_ENTRY, if (nachFall) "nach Fall" else null)
         }
 
         // DIE STUFEN. Stufe k gibt k x STAGE_STEP_OF_BASAL x Profilbasal zusaetzlich, hoechstens bis zur Obergrenze,
@@ -270,8 +291,10 @@ object SlowCorrectionChannel {
         // Die hoechste Stufe, deren Zusatz eine Zusatzrate [U/h] traegt - dieselbe Rundung wie [rateVon].
         fun stufeFuer(zusatzUPerH: Double): Int =
             (stufen downTo 1).firstOrNull { traegt(it) && rateVon(it) - basal <= zusatzUPerH + 1e-9 } ?: 0
+        // Ein Einstieg beendet die strengere Regel nach einem Fall-Stopp.
         fun ja(stufe: Int, reason: Reason, detail: String?, rate: Double = rateVon(stufe)) = Step(
-            want = true, rateUPerH = rate, reason = reason, detail = detail, memory = neu,
+            want = true, rateUPerH = rate, reason = reason, detail = detail,
+            memory = if (reason == Reason.START) neu.copy(fallStopped = false) else neu,
             highForMin = highForMin, stage = stufe,
         )
 
