@@ -15,10 +15,14 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.aaps.core.data.configuration.Constants
 import app.aaps.core.graph.vico.Square
+import app.aaps.core.interfaces.InterfacesStrings
 import app.aaps.core.interfaces.overview.graph.ActivityGraphData
 import app.aaps.core.interfaces.overview.graph.BasalGraphData
 import app.aaps.core.interfaces.overview.graph.BgDataPoint
@@ -26,9 +30,12 @@ import app.aaps.core.interfaces.overview.graph.BgType
 import app.aaps.core.interfaces.overview.graph.EpsGraphPoint
 import app.aaps.core.interfaces.overview.graph.SeriesType
 import app.aaps.core.interfaces.overview.graph.TargetLineData
+import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.AapsTheme
 import app.aaps.core.ui.compose.LocalDateUtil
+import app.aaps.core.ui.compose.LocalDecimalFormatter
 import app.aaps.core.ui.compose.icons.IcPluginFood
+import app.aaps.core.ui.compose.stringResource
 import app.aaps.core.ui.compose.icons.IcProfile
 import com.patrykandpatrick.vico.compose.cartesian.CartesianChartHost
 import com.patrykandpatrick.vico.compose.cartesian.VicoScrollState
@@ -51,6 +58,7 @@ import com.patrykandpatrick.vico.compose.common.component.TextComponent
 import com.patrykandpatrick.vico.compose.common.component.rememberTextComponent
 import com.patrykandpatrick.vico.compose.common.data.ExtraStore
 import kotlin.concurrent.Volatile
+import kotlin.math.abs
 
 /** Series identifiers */
 /** Basal on BG graph — deprecated, now shown as flipped overlay on IOB graph. Set to true to restore. */
@@ -146,6 +154,10 @@ fun BgGraphCompose(
     val showActivity = SeriesType.ACTIVITY in bgOverlays
     val activityData by viewModel.activityGraphFlow.collectAsStateWithLifecycle()
     val chartConfig by viewModel.chartConfigFlow.collectAsStateWithLifecycle()
+    // Fork (FUSE): the main graph layers (Toni 21.10.2026); null without FUSE or with the layers off. The treatments
+    // are only needed then, for the rings where an SMB run starts.
+    val fuseLayers by viewModel.fuseMainLayers.collectAsStateWithLifecycle()
+    val fuseTreatments = if (fuseLayers != null) viewModel.treatmentGraphFlow.collectAsStateWithLifecycle().value else null
 
     // Use derived time range or fall back to default (last GRAPH_TIME_RANGE_HOURS hours)
     val (minTimestamp, maxTimestamp) = derivedTimeRange ?: run {
@@ -205,7 +217,8 @@ fun BgGraphCompose(
         currentActivityScale: ActivityOverlayScale,
         currentMinBgY: Double,
         currentMaxBgY: Double,
-        currentVisibleTimeRange: Pair<Long, Long>?
+        currentVisibleTimeRange: Pair<Long, Long>?,
+        currentFuseLookup: FuseStateLookup?
     ) {
         val regularPoints = seriesRegistry[SERIES_REGULAR] ?: emptyList()
         val bucketedPoints = seriesRegistry[SERIES_BUCKETED] ?: emptyList()
@@ -338,9 +351,17 @@ fun BgGraphCompose(
             // identical to last time (see BG_VISIBLE_RANGE_KEY doc) — otherwise scrolling/zooming
             // would re-submit the same partials and get silently skipped, never picking up the
             // updated startAxisRangeProvider.
-            extras { it[BG_VISIBLE_RANGE_KEY] = currentVisibleTimeRange?.first to currentVisibleTimeRange?.second }
+            extras {
+                it[BG_VISIBLE_RANGE_KEY] = currentVisibleTimeRange?.first to currentVisibleTimeRange?.second
+                // Fork (FUSE): the state per cycle for FuseBgPointProvider - through the extras, so the BG line keeps
+                // its identity when FUSE adds a cycle.
+                if (currentFuseLookup != null) it[FUSE_BG_STATE_KEY] = currentFuseLookup
+            }
         }
     }
+
+    // Fork (FUSE): the state lookup for the BG points, in this graph's x coordinates.
+    val fuseLookup = remember(fuseLayers, minTimestamp) { fuseLayers?.let { FuseStateLookup.of(it.cycles, minTimestamp) } }
 
     // Split predictions by type into registry
     val predictionsByType = remember(predictions) {
@@ -354,7 +375,7 @@ fun BgGraphCompose(
     }
 
     // Single LaunchedEffect for all data - ensures atomic updates
-    LaunchedEffect(bgReadings, bucketedData, predictionsByType, basalData, targetData, epsPoints, activityData, showActivity, chartConfig, stableTimeRange, visibleTimeRange) {
+    LaunchedEffect(bgReadings, bucketedData, predictionsByType, basalData, targetData, epsPoints, activityData, showActivity, chartConfig, stableTimeRange, visibleTimeRange, fuseLookup) {
         seriesRegistry[SERIES_REGULAR] = bgReadings
         seriesRegistry[SERIES_BUCKETED] = bucketedData
         for ((key, points) in predictionsByType) {
@@ -408,7 +429,7 @@ fun BgGraphCompose(
             roomBelow = chartConfig.lowMark - niceBgScale.min
         )
 
-        rebuildChart(basalData, targetData, epsPoints, activityData, activityScale, minBgY, maxBgY, visibleTimeRange)
+        rebuildChart(basalData, targetData, epsPoints, activityData, activityScale, minBgY, maxBgY, visibleTimeRange, fuseLookup)
     }
 
     // Build lookup map for BUCKETED points: x-value -> BgDataPoint (for PointProvider)
@@ -416,8 +437,9 @@ fun BgGraphCompose(
         bucketedData.associateBy { timestampToX(it.timestamp, minTimestamp) }
     }
 
+    // Fork (FUSE): range colours as before, the FUSE state colour while the main graph layers are on (via the extras).
     val bucketedPointProvider = remember(bucketedLookup, lowColor, inRangeColor, highColor) {
-        BucketedPointProvider(bucketedLookup, lowColor, inRangeColor, highColor)
+        FuseBgPointProvider(bucketedLookup, lowColor, inRangeColor, highColor)
     }
 
     // Time formatter and axis configuration
@@ -614,7 +636,49 @@ fun BgGraphCompose(
             ?.let { FuseMealMarkerLines(it, nowLineColor, strokeWidthPx = 2f * density, icon = mealIcon, iconSizePx = 16f * density) }
     }
 
-    val decorations = remember(inRangeBox, nowLine, inspectLine, fuseMarkerLines) { listOfNotNull(inRangeBox, nowLine, inspectLine, fuseMarkerLines) }
+    // Fork (FUSE): the slow correction channel as bands with their labels, and a ring where an SMB run starts.
+    val textMeasurer = rememberTextMeasurer()
+    val decimalFormatter = LocalDecimalFormatter.current
+    val fuseBandList = fuseLayers?.channelEpisodes.orEmpty().map { episode ->
+        val factor = episode.factor?.let { stringResource(CoreUiStrings.fuse_channel_factor, fuseFactorText(it, decimalFormatter)) }
+        val insulin = episode.deliveredU?.let { stringResource(InterfacesStrings.format_insulin_units, it) }
+        val label = when {
+            factor != null && insulin != null -> stringResource(CoreUiStrings.fuse_channel_band, factor, insulin)
+            else                              -> factor ?: insulin ?: stringResource(CoreUiStrings.fuse_state_channel)
+        }
+        val end = when {
+            episode.running -> stringResource(CoreUiStrings.fuse_channel_running)
+            else            -> episode.end?.let { stringResource(CoreUiStrings.fuse_channel_end, fuseChannelEndText(it)) }
+        }
+        FuseBand(timestampToX(episode.startTime, minTimestamp), timestampToX(episode.endTime, minTimestamp), label, end)
+    }
+    val bandBackground = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)
+    val fuseBands = remember(fuseBandList, textMeasurer, bandBackground, density) {
+        fuseBandList.takeIf { it.isNotEmpty() }?.let {
+            FuseChannelBands(
+                bands = it,
+                textMeasurer = textMeasurer,
+                labelStyle = TextStyle(color = FUSE_CHANNEL_COLOR, fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                endStyle = TextStyle(color = FUSE_CHANNEL_COLOR.copy(alpha = 0.9f), fontSize = 9.sp),
+                labelBackground = bandBackground,
+                density = density
+            )
+        }
+    }
+    val fuseRings = remember(fuseLayers, fuseTreatments, bucketedData, bgReadings, minTimestamp, density) {
+        val layers = fuseLayers ?: return@remember null
+        val boluses = fuseTreatments?.boluses ?: return@remember null
+        val readings = bucketedData.ifEmpty { bgReadings }
+        val rings = fuseSmbRuns(fuseSmbSources(boluses, layers.smbSends)).mapNotNull { run ->
+            val bg = readings.minByOrNull { abs(it.timestamp - run.startTime) }?.takeIf { abs(it.timestamp - run.startTime) <= 3 * 60_000L }
+            bg?.let { timestampToX(run.startTime, minTimestamp) to it.value }
+        }
+        rings.takeIf { it.isNotEmpty() }?.let { FuseSmbRunRings(it, radiusPx = 5f * density, strokePx = 1.6f * density, color = Color.White) }
+    }
+
+    val decorations = remember(inRangeBox, nowLine, inspectLine, fuseMarkerLines, fuseBands, fuseRings) {
+        listOfNotNull(inRangeBox, fuseBands, nowLine, inspectLine, fuseMarkerLines, fuseRings)
+    }
 
     // =========================================================================
     // Range providers — hoisted out of rememberCartesianChart so keys are re-evaluated on recomposition

@@ -15,7 +15,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -346,6 +349,15 @@ fun SecondaryGraphCompose(
         processIobOverlays(lastTreatmentData.value, minTimestamp, minX, maxX)
     }
 
+    // Fork (FUSE): with the main graph layers on, the SMB triangles take the colour of their source (Toni 21.10.2026).
+    val fuseLayers = if (hasIob) viewModel.fuseMainLayers.collectAsStateWithLifecycle().value else null
+    val fuseSmbs = remember(fuseLayers, lastTreatmentData.value) {
+        fuseLayers?.let { fuseSmbSources(lastTreatmentData.value.boluses, it.smbSends) }
+    }
+    val fuseSmbGroupList = remember(fuseSmbs, stableTimeRange) {
+        if (!hasRealTimeRange || fuseSmbs == null) null else fuseSmbGroups(fuseSmbs, minTimestamp, minX, maxX)
+    }
+
     // COB line processing
     val processedCob = remember(cobData, stableTimeRange) {
         if (!hasRealTimeRange || cobData == null) return@remember Pair(emptyList(), emptyList())
@@ -509,7 +521,7 @@ fun SecondaryGraphCompose(
     // stale 0..1 axis until the next recomposition ("renders wrong, then fixes itself").
     val primarySeries = remember(
         processedDeviationLines, processedIob, processedIobTreatments, processedCob,
-        processedCarbs, processedSimpleSeries, processedDevSlopeMin, processedActivityOverlay, processedFuse
+        processedCarbs, processedSimpleSeries, processedDevSlopeMin, processedActivityOverlay, processedFuse, fuseSmbGroupList
     ) {
         buildList {
             // Deviation lines (per-type step lines) — first so other series draw on top
@@ -527,12 +539,19 @@ fun SecondaryGraphCompose(
             if (processedIob.isNotEmpty())
                 add(PrimarySeriesSpec(processedIob.map { it.first }, processedIob.map { it.second }, SeriesSlot.IobLine))
             // IOB overlays: SMBs (small, medium, large), normal boluses, extended boluses
-            if (processedIobTreatments.smallSmbs.isNotEmpty())
-                add(PrimarySeriesSpec(processedIobTreatments.smallSmbs.map { it.first }, processedIobTreatments.smallSmbs.map { it.second }, SeriesSlot.SmallSmb))
-            if (processedIobTreatments.mediumSmbs.isNotEmpty())
-                add(PrimarySeriesSpec(processedIobTreatments.mediumSmbs.map { it.first }, processedIobTreatments.mediumSmbs.map { it.second }, SeriesSlot.MediumSmb))
-            if (processedIobTreatments.largeSmbs.isNotEmpty())
-                add(PrimarySeriesSpec(processedIobTreatments.largeSmbs.map { it.first }, processedIobTreatments.largeSmbs.map { it.second }, SeriesSlot.LargeSmb))
+            if (fuseSmbGroupList != null) {
+                // Fork (FUSE): the same sizes, one series per size and source
+                fuseSmbGroupList.forEach { group ->
+                    add(PrimarySeriesSpec(group.xs, group.xs.map { 0.0 }, SeriesSlot.FuseSmb(group)))
+                }
+            } else {
+                if (processedIobTreatments.smallSmbs.isNotEmpty())
+                    add(PrimarySeriesSpec(processedIobTreatments.smallSmbs.map { it.first }, processedIobTreatments.smallSmbs.map { it.second }, SeriesSlot.SmallSmb))
+                if (processedIobTreatments.mediumSmbs.isNotEmpty())
+                    add(PrimarySeriesSpec(processedIobTreatments.mediumSmbs.map { it.first }, processedIobTreatments.mediumSmbs.map { it.second }, SeriesSlot.MediumSmb))
+                if (processedIobTreatments.largeSmbs.isNotEmpty())
+                    add(PrimarySeriesSpec(processedIobTreatments.largeSmbs.map { it.first }, processedIobTreatments.largeSmbs.map { it.second }, SeriesSlot.LargeSmb))
+            }
             if (processedIobTreatments.normalBoluses.isNotEmpty())
                 add(PrimarySeriesSpec(processedIobTreatments.normalBoluses.map { it.first }, processedIobTreatments.normalBoluses.map { it.second }, SeriesSlot.NormalBolus))
             processedIobTreatments.extBoluses.forEach { (start, end, amount) ->
@@ -593,6 +612,7 @@ fun SecondaryGraphCompose(
                         SeriesSlot.ActivityOverlay  -> createSeriesLine(SeriesType.ACTIVITY, seriesColors)
                         is SeriesSlot.SimpleLine    -> createSeriesLine(slot.type, seriesColors)
                         is SeriesSlot.Fuse          -> fuseLine(slot.style, fuseOnSurface, DEVIATION_COLOR_UAM)
+                        is SeriesSlot.FuseSmb       -> fuseSmbLine(slot.group)
                     }
                 )
             }
@@ -637,8 +657,31 @@ fun SecondaryGraphCompose(
     val inspectLine = rememberInspectLine(inspect)
     // Fork (FUSE): meal marker lines in both FUSE graphs, the account strip in F.GRD
     val fuseDecorations = rememberFuseDecorations(processedFuse, MaterialTheme.colorScheme.onSurface)
-    val decorations = remember(nowLine, visibleRangeReporter, inspectLine, fuseDecorations) {
-        listOfNotNull(nowLine, visibleRangeReporter, inspectLine) + fuseDecorations
+    // Fork (FUSE): in the IOB graph the sum of each SMB run and the strip above the basal (Toni 21.10.2026)
+    val fuseTextMeasurer = rememberTextMeasurer()
+    val fuseDecimalFormatter = LocalDecimalFormatter.current
+    val fuseDensity = LocalDensity.current.density
+    val fuseIobDecorations = remember(fuseSmbs, fuseLayers, stableTimeRange, fuseTextMeasurer, fuseDecimalFormatter, fuseDensity) {
+        if (fuseLayers == null || !hasRealTimeRange) return@remember emptyList()
+        val sums = fuseSmbRuns(fuseSmbs.orEmpty())
+            .filter { it.sumU >= 0.2 }
+            .sortedByDescending { it.sumU }
+            .map { run ->
+                Triple(
+                    (timestampToX(run.startTime, minTimestamp) + timestampToX(run.endTime, minTimestamp)) / 2.0,
+                    fuseDecimalFormatter.to2Decimal(run.sumU),
+                    fuseSourceColor(run.mainSource)
+                )
+            }
+        listOfNotNull(
+            sums.takeIf { it.isNotEmpty() }?.let {
+                FuseSmbRunSums(it, fuseTextMeasurer, TextStyle(fontSize = 10.sp, fontWeight = FontWeight.Bold), liftPx = 12f * fuseDensity)
+            },
+            fuseBasalSegments(fuseLayers.cycles, minTimestamp).takeIf { it.isNotEmpty() }?.let { FuseBasalStrip(it, heightPx = 4f * fuseDensity) }
+        )
+    }
+    val decorations = remember(nowLine, visibleRangeReporter, inspectLine, fuseDecorations, fuseIobDecorations) {
+        listOfNotNull(nowLine, visibleRangeReporter, inspectLine) + fuseDecorations + fuseIobDecorations
     }
 
     // Dual-axis zero alignment.
@@ -999,6 +1042,9 @@ private sealed class SeriesSlot {
     data class SimpleLine(val type: SeriesType) : SeriesSlot()
     data object DevSlopeMin : SeriesSlot()
     data object ActivityOverlay : SeriesSlot()
+
+    /** Fork (FUSE): one group of SMB triangles in the IOB graph, one size and one source. */
+    data class FuseSmb(val group: FuseSmbGroup) : SeriesSlot()
 
     /** Fork (FUSE): one line of F.DRV or F.GRD. */
     data class Fuse(val style: FuseLineStyle) : SeriesSlot()

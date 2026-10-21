@@ -598,6 +598,18 @@ fun GraphsSection(
                         .padding(end = 4.dp, top = 2.dp)
                 )
             }
+            // Fork (FUSE): the legend of the main graph layers opens on demand and takes no room (Toni 21.10.2026)
+            val fuseLayers by graphViewModel.fuseMainLayers.collectAsStateWithLifecycle()
+            var showFuseLegend by remember { mutableStateOf(false) }
+            if (fuseLayers != null) {
+                FuseLegendButton(
+                    onClick = { showFuseLegend = true },
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 34.dp, top = 2.dp)
+                )
+            }
+            if (showFuseLegend) FuseLegendDialog(onDismiss = { showFuseLegend = false })
             // Own composable, so a finger move does not recompose this section
             GraphInspectOverlay(
                 inspect = inspect,

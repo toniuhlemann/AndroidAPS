@@ -46,7 +46,10 @@ import app.aaps.core.interfaces.overview.graph.BgDataPoint
 import app.aaps.core.interfaces.overview.graph.BgRange
 import app.aaps.core.interfaces.overview.graph.BolusGraphPoint
 import app.aaps.core.interfaces.overview.graph.BolusType
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.overview.graph.CarbsGraphPoint
+import app.aaps.core.interfaces.overview.graph.FuseCycleInfo
+import app.aaps.core.interfaces.overview.graph.FuseSmbSend
 import app.aaps.core.interfaces.overview.graph.GraphDataPoint
 import app.aaps.core.interfaces.overview.graph.TbrState
 import app.aaps.core.ui.CoreUiStrings
@@ -250,6 +253,8 @@ fun GraphInspectOverlay(
     val cobGraph by graphViewModel.cobGraphFlow.collectAsStateWithLifecycle()
     val basalGraph by graphViewModel.basalGraphFlow.collectAsStateWithLifecycle()
     val treatmentGraph by graphViewModel.treatmentGraphFlow.collectAsStateWithLifecycle()
+    // Fork (FUSE): the cycle at the inspected time and the source of its SMBs (Toni 21.10.2026)
+    val fuseLayers by graphViewModel.fuseMainLayers.collectAsStateWithLifecycle()
     val currentBgReadings by rememberUpdatedState(bgReadings)
     val currentMinTimestamp by rememberUpdatedState(minTimestamp)
     val haptic = LocalHapticFeedback.current
@@ -266,7 +271,9 @@ fun GraphInspectOverlay(
                 actualBasal = basalGraph.actualBasal,
                 profileBasal = basalGraph.profileBasal,
                 boluses = treatmentGraph.boluses,
-                carbs = treatmentGraph.carbs
+                carbs = treatmentGraph.carbs,
+                fuseCycles = fuseLayers?.cycles.orEmpty(),
+                fuseSends = fuseLayers?.smbSends.orEmpty()
             )
             if (data.timestamp != inspectData?.timestamp) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             inspect.shownX = timestampToX(data.timestamp, min)
@@ -301,7 +308,11 @@ data class InspectData(
     val basal: Double?,
     val tbrState: TbrState,
     val boluses: List<BolusGraphPoint>,
-    val carbs: List<CarbsGraphPoint>
+    val carbs: List<CarbsGraphPoint>,
+    /** Fork (FUSE): the cycle at this reading, while the main graph layers are on. */
+    val fuse: FuseCycleInfo? = null,
+    /** Fork (FUSE): the source of each SMB in [boluses], by its timestamp. */
+    val smbSources: Map<Long, FuseOverviewSource.SmbSource> = emptyMap()
 )
 
 /** The nearest reading to [timestamp], with the values and treatments at its time. */
@@ -313,12 +324,15 @@ fun inspectDataAt(
     actualBasal: List<GraphDataPoint>,
     profileBasal: List<GraphDataPoint>,
     boluses: List<BolusGraphPoint>,
-    carbs: List<CarbsGraphPoint>
+    carbs: List<CarbsGraphPoint>,
+    fuseCycles: List<FuseCycleInfo> = emptyList(),
+    fuseSends: List<FuseSmbSend> = emptyList()
 ): InspectData {
     val bg = bgReadings.nearest(timestamp) { it.timestamp }
     val time = bg?.timestamp ?: timestamp
     // Basal is stored at each change
     val basal = actualBasal.lastOrNull { it.timestamp <= time }?.value
+    val shownBoluses = boluses.filter { it.isValid && abs(it.timestamp - time) <= INSPECT_TREATMENT_MS }
     return InspectData(
         timestamp = time,
         bg = bg,
@@ -326,10 +340,16 @@ fun inspectDataAt(
         cob = cob.nearest(time) { it.timestamp }?.value,
         basal = basal,
         tbrState = tbrState(basal, profileBasal.lastOrNull { it.timestamp <= time }?.value),
-        boluses = boluses.filter { it.isValid && abs(it.timestamp - time) <= INSPECT_TREATMENT_MS },
-        carbs = carbs.filter { it.isValid && abs(it.timestamp - time) <= INSPECT_TREATMENT_MS }
+        boluses = shownBoluses,
+        carbs = carbs.filter { it.isValid && abs(it.timestamp - time) <= INSPECT_TREATMENT_MS },
+        fuse = fuseCycles.minByOrNull { abs(it.timestamp - time) }?.takeIf { abs(it.timestamp - time) <= FUSE_INSPECT_MS },
+        smbSources = if (fuseSends.isEmpty()) emptyMap()
+        else fuseSmbSources(shownBoluses, fuseSends).associate { it.timestamp to it.source }
     )
 }
+
+/** Fork (FUSE): max distance between the reading and its FUSE cycle. */
+private const val FUSE_INSPECT_MS = 3 * 60_000L
 
 /** Same rule as the TBR chip in the overview. */
 internal fun tbrState(basal: Double?, profileBasal: Double?): TbrState = when {
@@ -391,11 +411,24 @@ fun GraphInspectPill(
                 data.basal?.let {
                     PillItem(data.tbrState.toIcon(), stringResource(CoreUiStrings.pump_base_basal_rate, it), ElementType.TEMP_BASAL.color())
                 }
-                // Same triangles as the IOB and COB graphs
+                // Same triangles as the IOB and COB graphs; with FUSE in the colour of the SMB's source
                 data.boluses.forEach { bolus ->
-                    PillTriangleItem(pointsUp = bolus.bolusType == BolusType.SMB, text = bolus.label, color = ElementType.INSULIN.color())
+                    val color = data.smbSources[bolus.timestamp]?.let { fuseSourceColor(it) } ?: ElementType.INSULIN.color()
+                    PillTriangleItem(pointsUp = bolus.bolusType == BolusType.SMB, text = bolus.label, color = color)
                 }
                 data.carbs.forEach { carbs -> PillTriangleItem(pointsUp = false, text = carbs.label, color = ElementType.CARBS.color()) }
+                // Fork (FUSE): what FUSE did in this cycle, what bound it, the demand and the channel
+                data.fuse?.let { cycle ->
+                    PillText(fuseStateText(cycle.state), fuseStateColor(cycle.state))
+                    fuseBindingText(cycle.bindingLimit)?.let { PillText(stringResource(CoreUiStrings.fuse_binding, it), MaterialTheme.colorScheme.onSurfaceVariant) }
+                    cycle.insulinReqU?.let {
+                        PillText(
+                            stringResource(CoreUiStrings.fuse_demand, stringResource(InterfacesStrings.format_insulin_units, it)),
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    cycle.channelFactor?.let { PillText(stringResource(CoreUiStrings.fuse_channel_factor, fuseFactorText(it, decimalFormatter)), FUSE_CHANNEL_COLOR) }
+                }
             }
         }
     }

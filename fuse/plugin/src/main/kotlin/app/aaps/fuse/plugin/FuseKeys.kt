@@ -889,6 +889,12 @@ enum class FuseBooleanKey(
     SlowChannelEnabled("fuse_slow_channel_enabled", false, title = TextRef.AndroidRes(R.string.fuse_slow_channel_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_summary)),
 
     /**
+     * FUSE-EBENEN IM HAUPTGRAPHEN (Toni 21.10.2026): BG-Punkte in der Farbe des FUSE-Zustands, Kanal-Baender,
+     * SMB-Dreiecke nach Quelle, Basalstreifen. NUR ANZEIGE - kein Zyklus liest den Schalter; deshalb ab Werk AN.
+     */
+    MainGraphLayers("fuse_main_graph_layers", true, title = TextRef.AndroidRes(R.string.fuse_main_graph_layers_title), summary = TextRef.AndroidRes(R.string.fuse_main_graph_layers_summary)),
+
+    /**
      * DER MARKER-PRIME-AUFSCHUB - DEFAULT AUS (Punkt 6, Bau-GO Toni 22.08.,
      * KEIN Aktivierungs-GO).
      *

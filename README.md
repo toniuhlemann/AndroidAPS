@@ -152,6 +152,12 @@ its first phase, and measured, still unpaid rise after a meal declaration ("evid
 ## What you see
 
 - **The meal button** on the main screen and in the FUSE tab.
+- **The main graph:** each BG point in the colour of what FUSE did in that cycle (SMB free, guard, another stop,
+  protective zero basal, correction channel; a low stays red), the slow correction channel as a band with factor,
+  delivered insulin and end reason, SMB triangles in the colour of their source (meal account, normal path, other)
+  with the sum per run, and a strip above the basal for protective zero and channel. Press and hold shows the state,
+  the binding limit and the demand of that cycle; a small *Legende* button explains the colours. Display only, with a
+  switch in the FUSE settings.
 - **The FUSE tab:** state, signal, decision, a coloured SMB status (free, or stopped with a named reason), the limit that
   bound, meal and evidence status, budget and profile — and a full settings report under *technical details*.
 - **The trail:** one JSON line per cycle in `Documents/aapsLogs/fuse_state_history.jsonl` — signal, state, forecasts,
@@ -319,6 +325,11 @@ Tief ausdrücklich bestätigt. Ohne Kurve dosiert FUSE wie ohne Marker.
 **Sicherheit.** Alle Prüfungen lesen die pessimistische Bahn. Grenzen unter anderem: Guard-Boden 70 mg/dl,
 Expositionsgrenze je Profil (Korrektur 3,0 U, Mahlzeit 7,0 U), capIOB = max(Netto-IOB, Bolus-IOB), maxIOB, Nacht- und
 Rebound-Totband, AAPS-SMB-Schalter, Pumpen-Freigabeliste und ein Ledger mit Veröffentlichungstor.
+
+**Anzeige.** Im Hauptgraphen trägt jeder BG-Punkt die Farbe dessen, was FUSE in diesem Zyklus durfte oder tat (ein Tief
+bleibt rot); der Korrekturkanal steht als Band mit Faktor, Menge und Ende, die SMB-Dreiecke zeigen ihre Quelle
+(Mahlzeitkonto, Normalweg, andere) samt Summe je Serie. Gedrückt halten zeigt Zustand, Bindung und Bedarf; eine kleine
+Legende erklärt die Farben. Reine Anzeige, abschaltbar.
 
 **Architektur.** `fuse/core` enthält die Dosierlogik in reinem Kotlin ohne Android. `fuse/plugin` verbindet sie mit AAPS:
 Zyklus, Übersetzung in SMB und TBR, Ledger, Trail und Oberfläche. AAPS bleibt Herr über die Pumpe. Jeder Zyklus steht

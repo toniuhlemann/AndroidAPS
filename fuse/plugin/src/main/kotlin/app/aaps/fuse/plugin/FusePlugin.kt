@@ -550,6 +550,28 @@ class FusePlugin(
 
     private var lastLowWarmed = false
 
+    /**
+     * DER WARMSTART LAEUFT IM HINTERGRUND (Toni 21.10.2026: "solang es die Loop-Zyklen nicht beeinflusst").
+     *
+     * Er stand im Zyklus selbst - nach der Rechnung, aber VOR der Uebergabe an AAPS - und parste nach jedem
+     * Prozessstart die ganze aktive Trail-Datei (bis 32 MB, jede Zeile als JSON). Reine Graph-Arbeit auf dem
+     * Dosierweg. Jetzt stoesst der Zyklus ihn nur an; gelesen wird auf einem eigenen Faden, und der Ring nimmt die
+     * alten Punkte VOR den inzwischen live angehaengten auf.
+     */
+    private fun starteGraphWarmstart() {
+        if (graphRingAttempts >= GRAPH_RING_MAX_ATTEMPTS) return
+        if (!graphWarmstartLaeuft.compareAndSet(false, true)) return
+        appScope.launch(Dispatchers.IO) {
+            try {
+                warmGraphRingOnce()
+            } finally {
+                graphWarmstartLaeuft.set(false)
+            }
+        }
+    }
+
+    private val graphWarmstartLaeuft = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private fun warmGraphRingOnce() {
         if (graphRingAttempts >= GRAPH_RING_MAX_ATTEMPTS) return
         graphRingAttempts++
@@ -583,8 +605,18 @@ class FusePlugin(
             // und aus demselben Grund: der Graph ist ein Protokoll, kein
             // Zustandsanzeiger (s. MarkerTimeline).
             val marks = LinkedHashSet<Long>()
-            f.bufferedReader().useLines { lines ->
+            // 24 h ueber die aktive Datei hinaus (Toni 21.10.2026): eine Generation fasst rund 19 h. Die neueste
+            // zuerst; beginnt eine Datei vor der Grenze, reicht keine aeltere mehr ins Fenster. Sortiert wird danach.
+            val dateien = listOf(f) + (1..3).map { java.io.File(f.path + ".$it") }
+            for (datei in dateien) {
+                if (!datei.exists()) break
+                var ersterTs: Long? = null
+                datei.bufferedReader().useLines { lines ->
                 for (line in lines) {
+                    // Vorsieben: eine Zeile vor der Grenze wird nicht geparst (computeTs liegt kurz NACH sourceTs).
+                    val schnell = FuseGraphZyklus.schnellerComputeTs(line)
+                    if (ersterTs == null) ersterTs = schnell
+                    if (schnell != null && schnell < cutoff) continue
                     val j = runCatching { org.json.JSONObject(line) }.getOrNull() ?: continue
                     val ts = j.optLong("sourceTs", 0L)
                     if (ts < cutoff) continue
@@ -642,14 +674,21 @@ class FusePlugin(
                                 )
                             },
                             accountStatus = ekJ?.let { FuseGraphMargin.accountStatus(ekGilt, ekRueckfall, ekStatus) },
-                        )
+                        ).mitHauptgraph(FuseGraphZyklus.felder(j))
                     )
                 }
-            }
-            synchronized(graphRing) {
-                if (graphRing.isEmpty()) {
-                    graphRing.addAll(pts.takeLast(1_500))
                 }
+                if ((ersterTs ?: Long.MAX_VALUE) <= cutoff) break
+            }
+            // Der Warmstart laeuft jetzt im Hintergrund: der Ring kann schon Live-Punkte tragen. Die alten kommen
+            // davor, bei gleichem Zeitstempel gewinnt der Live-Punkt (er traegt die endgueltigen Werte).
+            synchronized(graphRing) {
+                val zusammen = LinkedHashMap<Long, app.aaps.core.interfaces.overview.FuseOverviewSource.Point>()
+                for (p in pts.sortedBy { it.timestamp }) zusammen[p.timestamp] = p
+                for (p in graphRing) zusammen[p.timestamp] = p
+                val geordnet = zusammen.values.sortedBy { it.timestamp }.takeLast(1_500)
+                graphRing.clear()
+                graphRing.addAll(geordnet)
             }
             // Nur nachfuellen, nie ueberschreiben: ein Druck, der seit dem
             // Start passiert ist, steht schon drin und ist der aktuellere.
@@ -675,6 +714,47 @@ class FusePlugin(
 
     override fun fuseGraphPoints(fromTime: Long, endTime: Long): List<app.aaps.core.interfaces.overview.FuseOverviewSource.Point> =
         synchronized(graphRing) { graphRing.filter { it.timestamp in fromTime..endTime } }
+
+    override fun fuseMainGraphLayers(): Boolean = preferences.get(FuseBooleanKey.MainGraphLayers)
+
+    /**
+     * Ein Zyklus in den Graph-Ring - aus dem ENDGUELTIGEN Ausgang ([publizierteSmbU] = die Menge, die AAPS bekam).
+     * Steht nach der Uebergabe an AAPS; ein paar Felder und ein kurzer synchronisierter Block, keine Ein-/Ausgabe.
+     */
+    private fun ringAnhaengen(o: FuseCycleRunner.Outcome, publizierteSmbU: Double?) {
+        val ts = o.sourceTs ?: o.computeTs
+        val sig = o.signal
+        val punkt = app.aaps.core.interfaces.overview.FuseOverviewSource.Point(
+            timestamp = ts,
+            driveMgdlPerMin = sig?.rSigned?.takeIf { it.isFinite() },
+            fastDriveMgdlPerMin = sig?.let { (it.ukfRatePerMin + it.activityAtAnchor * it.isfAtAnchor).takeIf { v -> v.isFinite() } },
+            guardMarginMgdl = FuseGraphMargin.guardMarginMgdl(o.decision.minLowerMgdl, o.policy?.guardFloorMgdl ?: 70.0),
+            // Schwanz-Kante in mg/dl - Regeln s. FuseGraphMargin
+            // (der unphysiologische Ausgang hat KEINEN ISF-Nenner,
+            // sperrt aber; er gehoert auf den unteren Anschlag).
+            tailMarginMgdl = o.decision.tail?.let { t ->
+                FuseGraphMargin.tailMarginMgdl(t.headroomU, t.isfTailMgdlPerU, t.invalidReason)
+            },
+            // Konto: dieselben Regeln wie im Warmstart oben (FuseGraphMargin).
+            mealWindow = o.erwartungskonto?.let { it.gilt || it.rueckfall != null } == true,
+            expectedMealDriveMgdlPerMin = o.erwartungskonto?.takeIf { it.gilt }
+                ?.zyklus?.eval?.early?.expectedDriveMgdlPerMin?.takeIf { it.isFinite() },
+            guardWithMealMarginMgdl = o.erwartungskonto?.fruehUntenMitMahlzeitMgdl
+                ?.let { FuseGraphMargin.guardMarginMgdl(it, o.policy?.guardFloorMgdl ?: 70.0) },
+            tailWithMealMarginMgdl = o.erwartungskonto?.fruehSchwanzMitMahlzeit?.let { t ->
+                FuseGraphMargin.tailMarginMgdl(t.headroomU, t.isfTailMgdlPerU, t.invalidReason)
+            },
+            accountStatus = o.erwartungskonto?.let {
+                FuseGraphMargin.accountStatus(it.gilt, it.rueckfall, it.zyklus?.eval?.status)
+            },
+        ).mitHauptgraph(FuseGraphZyklus.felder(o, publizierteSmbU))
+        synchronized(graphRing) {
+            if (graphRing.lastOrNull()?.timestamp != ts) {
+                graphRing.addLast(punkt)
+                while (graphRing.size > 1_500) graphRing.removeFirst()
+            }
+        }
+    }
 
     /**
      * Derselbe Schluessel wie bei den OpenAPS-Plugins: `ApsSmbMaxIob` ist KEINE
@@ -1586,43 +1666,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             runCatching { cycleRunner().discardSubStepCarry() }
             null
         }
-        warmGraphRingOnce()
+        // Nur anstossen - gelesen wird im Hintergrund (s. starteGraphWarmstart). Der Ringpunkt dieses Zyklus kommt
+        // erst nach dem Publikations-Gate dazu: dann traegt er die Menge, die AAPS wirklich bekam.
+        starteGraphWarmstart()
         lastOutcome = outcome
-        outcome?.let { o ->
-            val ts = o.sourceTs ?: o.computeTs
-            val sig = o.signal
-            synchronized(graphRing) {
-                if (graphRing.lastOrNull()?.timestamp != ts) {
-                    graphRing.addLast(
-                        app.aaps.core.interfaces.overview.FuseOverviewSource.Point(
-                            timestamp = ts,
-                            driveMgdlPerMin = sig?.rSigned?.takeIf { it.isFinite() },
-                            fastDriveMgdlPerMin = sig?.let { (it.ukfRatePerMin + it.activityAtAnchor * it.isfAtAnchor).takeIf { v -> v.isFinite() } },
-                            guardMarginMgdl = FuseGraphMargin.guardMarginMgdl(o.decision.minLowerMgdl, o.policy?.guardFloorMgdl ?: 70.0),
-                            // Schwanz-Kante in mg/dl - Regeln s. FuseGraphMargin
-                            // (der unphysiologische Ausgang hat KEINEN ISF-Nenner,
-                            // sperrt aber; er gehoert auf den unteren Anschlag).
-                            tailMarginMgdl = o.decision.tail?.let { t ->
-                                FuseGraphMargin.tailMarginMgdl(t.headroomU, t.isfTailMgdlPerU, t.invalidReason)
-                            },
-                            // Konto: dieselben Regeln wie im Warmstart oben (FuseGraphMargin).
-                            mealWindow = o.erwartungskonto?.let { it.gilt || it.rueckfall != null } == true,
-                            expectedMealDriveMgdlPerMin = o.erwartungskonto?.takeIf { it.gilt }
-                                ?.zyklus?.eval?.early?.expectedDriveMgdlPerMin?.takeIf { it.isFinite() },
-                            guardWithMealMarginMgdl = o.erwartungskonto?.fruehUntenMitMahlzeitMgdl
-                                ?.let { FuseGraphMargin.guardMarginMgdl(it, o.policy?.guardFloorMgdl ?: 70.0) },
-                            tailWithMealMarginMgdl = o.erwartungskonto?.fruehSchwanzMitMahlzeit?.let { t ->
-                                FuseGraphMargin.tailMarginMgdl(t.headroomU, t.isfTailMgdlPerU, t.invalidReason)
-                            },
-                            accountStatus = o.erwartungskonto?.let {
-                                FuseGraphMargin.accountStatus(it.gilt, it.rueckfall, it.zyklus?.eval?.status)
-                            },
-                        )
-                    )
-                    while (graphRing.size > 1_500) graphRing.removeFirst()
-                }
-            }
-        }
 
         val rt = if (outcome == null) {
             // C7c (Codex-Adjudication D-Tabelle C7 / Frage 2, K2 Punkt 10):
@@ -2032,6 +2079,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // Auch der Schirm bekommt den korrigierten Stand - er zeigt dieselben
         // Mahlzeitenzahlen wie der Trail.
         exportOutcome?.let { lastOutcome = it }
+
+        // Der Graph-Ring - NACH der Uebergabe an AAPS und aus dem endgueltigen Ausgang, also mit derselben Menge wie
+        // der Trail (Toni 21.10.2026: Hauptgraph mit Zustand, SMB-Quelle und Kanal).
+        exportOutcome?.let { ringAnhaengen(it, publishRt.units) }
 
         // NACH den Buchungen dieses Zyklus - der Hold kann genau hier entstanden
         // sein. Davor gemeldet, waere die Meldung eine Generation zu spaet.

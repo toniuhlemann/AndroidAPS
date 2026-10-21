@@ -53,10 +53,59 @@ interface FuseOverviewSource {
         val tailWithMealMarginMgdl: Double? = null,
         /** Zustand des Erwartungskontos fuer den Statusstreifen; `null` = kein Konto in diesem Zyklus. */
         val accountStatus: AccountStatus? = null,
+        /** Main graph (Toni 21.10.2026): what FUSE did in this cycle - the colour of the BG point. `null` = no data. */
+        val cycleState: CycleState? = null,
+        /** The SMB amount handed to AAPS in this cycle [U]; `null` = none. */
+        val smbU: Double? = null,
+        /** Where that SMB came from (`exposure.source`); `null` = no SMB. */
+        val smbSource: SmbSource? = null,
+        /** The slow correction channel in this cycle; `null` = channel off. */
+        val channel: ChannelState? = null,
+        /** The binding limit of the decision as FUSE writes it (`decision.bindingLimit`), for the press-and-hold pill. */
+        val bindingLimit: String? = null,
+        /** insulinReq of the decision [U], for the press-and-hold pill. */
+        val insulinReqU: Double? = null,
     )
 
     /** Zustand des Erwartungskontos je Zyklus - der Streifen am oberen Rand des Guard-Untergraphen. */
     enum class AccountStatus { AKTIV, WARTET, PAUSIERT, EINGEFROREN, GESPERRT, OHNE_KONTO, BEENDET }
+
+    /**
+     * What FUSE did in one cycle, the colour of the BG point in the main graph. Order of precedence: a protective
+     * zero basal before the correction channel, before the guard, before another SMB stop, before free.
+     */
+    enum class CycleState { FREE, GUARD, BLOCKED, ZERO, CHANNEL, UNKNOWN }
+
+    /** Where an SMB came from (`exposure.source`): the expectation account, the normal path, or anything else. */
+    enum class SmbSource { EXPECTATION, NORMAL, OTHER }
+
+    /** The slow correction channel in one cycle, as in the trail block `slowChannel`. */
+    data class ChannelState(
+        /** NONE, PENDING, RUNNING, ENDING, ... */
+        val phase: String,
+        val reason: String? = null,
+        val detail: String? = null,
+        val rateUPerH: Double? = null,
+        /** The part above the profile basal [U/h]; rate / (rate - extra) is the active factor. */
+        val extraUPerH: Double? = null,
+        val deliveredU: Double? = null,
+    ) {
+
+        /** A channel TBR is wanted, pending or ending. */
+        val active: Boolean get() = phase == "PENDING" || phase == "RUNNING" || phase == "ENDING"
+
+        /** The active factor: rate divided by the profile basal; `null` without an extra part. */
+        val factor: Double?
+            get() {
+                val rate = rateUPerH ?: return null
+                val extra = extraUPerH ?: return null
+                val basal = rate - extra
+                return if (extra > 0.0 && basal > 0.0) rate / basal else null
+            }
+    }
+
+    /** Whether the main graph shows the FUSE layers (a FUSE setting). Other sources show none. */
+    fun fuseMainGraphLayers(): Boolean = false
 
     fun fuseGraphPoints(fromTime: Long, endTime: Long): List<Point>
 

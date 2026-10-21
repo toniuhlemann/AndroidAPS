@@ -18,6 +18,10 @@ import app.aaps.core.interfaces.overview.FuseOverviewSource
  * @property tailWithMeal tail margin WITH the announced meal, one line per run
  * @property accountStatus the account state as segments, drawn as a strip at the top of F.GRD
  * @property mealMarkers times of the meal marker presses, vertical lines in the BG graph and in both FUSE graphs
+ * @property mainLayers the FUSE layers of the main graph are on and there is data for them (Toni 21.10.2026)
+ * @property cycles one entry per cycle: state, binding limit, insulinReq - BG point colours and the press-and-hold pill
+ * @property channelEpisodes the slow correction channel, one entry per run, drawn as bands in the BG graph
+ * @property smbSends the cycles that handed an SMB to AAPS, with the source - colours the SMB triangles
  */
 data class FuseGraphData(
     val available: Boolean = false,
@@ -30,7 +34,11 @@ data class FuseGraphData(
     val guardWithMeal: List<List<GraphDataPoint>> = emptyList(),
     val tailWithMeal: List<List<GraphDataPoint>> = emptyList(),
     val accountStatus: List<FuseStatusSegment> = emptyList(),
-    val mealMarkers: List<Long> = emptyList()
+    val mealMarkers: List<Long> = emptyList(),
+    val mainLayers: Boolean = false,
+    val cycles: List<FuseCycleInfo> = emptyList(),
+    val channelEpisodes: List<FuseChannelEpisode> = emptyList(),
+    val smbSends: List<FuseSmbSend> = emptyList()
 )
 
 /** One run of cycles with the same account state, [startTime] until [endTime]. */
@@ -38,4 +46,40 @@ data class FuseStatusSegment(
     val startTime: Long,
     val endTime: Long,
     val status: FuseOverviewSource.AccountStatus
+)
+
+/** One FUSE cycle for the main graph. [channelFactor] is set while a channel TBR is wanted, pending or ending. */
+data class FuseCycleInfo(
+    val timestamp: Long,
+    val state: FuseOverviewSource.CycleState,
+    val bindingLimit: String? = null,
+    val insulinReqU: Double? = null,
+    val channelFactor: Double? = null
+)
+
+/**
+ * One run of the slow correction channel, [startTime] until [endTime] (the last cycle of the run).
+ *
+ * @property factor the highest active factor in the run
+ * @property deliveredU the extra insulin the channel delivered in the run [U]
+ * @property end why the run ended; `null` while it runs or when the data stops without a reason
+ * @property running the run is still going on (it is the newest data)
+ */
+data class FuseChannelEpisode(
+    val startTime: Long,
+    val endTime: Long,
+    val factor: Double?,
+    val deliveredU: Double?,
+    val end: FuseChannelEnd?,
+    val running: Boolean
+)
+
+/** Why a run of the slow correction channel ended. */
+enum class FuseChannelEnd { FALLING, BELOW_THRESHOLD, NO_DEMAND, MAX_IOB, SAFETY_ZERO, DESCENT_RISK, LOW, SIGNAL, REBOUND_DEADBAND, NIGHT_DEADBAND, OTHER_STOP, RESTART }
+
+/** A cycle that handed [units] of SMB to AAPS, and where the SMB came from. */
+data class FuseSmbSend(
+    val timestamp: Long,
+    val units: Double,
+    val source: FuseOverviewSource.SmbSource
 )

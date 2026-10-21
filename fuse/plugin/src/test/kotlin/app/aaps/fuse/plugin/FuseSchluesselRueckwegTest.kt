@@ -99,6 +99,29 @@ class FuseSchluesselRueckwegTest {
         FuseIntKey.SlowChannelEntryMin.key to FuseBooleanKey.SlowChannelEnabled.key,
     )
 
+    /**
+     * Neue Schluessel, die NUR die Anzeige steuern - je mit ihrer Vorgabe. Kein Zyklus liest sie (geprueft unten), also
+     * aendert ihr Fehlen in einer alten Sicherung keine Funktionskombination; die Vorgabe darf deshalb "an" sein.
+     */
+    private val neuNurAnzeige: Map<String, Boolean> = mapOf(
+        // FUSE-Ebenen im Hauptgraphen (Toni 21.10.2026).
+        FuseBooleanKey.MainGraphLayers.key to true,
+    )
+
+    @Test
+    fun `reine Anzeigeschalter stehen auf ihrer Vorgabe und kein Zyklus liest sie`() {
+        for ((key, vorgabe) in neuNurAnzeige) {
+            assertTrue(key !in stand1x) { "$key ist kein neuer Schluessel" }
+            assertEquals(vorgabe, FuseBooleanKey.entries.single { it.key == key }.defaultValue, "Vorgabe von $key")
+        }
+        // Der Regler (Runner und Kern) liest die Anzeigeschalter nicht.
+        val runner = listOf(
+            "src/main/kotlin/app/aaps/fuse/plugin/FuseCycleRunner.kt",
+            "fuse/plugin/src/main/kotlin/app/aaps/fuse/plugin/FuseCycleRunner.kt",
+        ).map(::File).first { it.exists() }.readText()
+        assertTrue(!runner.contains("FuseBooleanKey.MainGraphLayers")) { "der Runner liest einen Anzeigeschalter" }
+    }
+
     private val alle get() = fuseSchluesselKlassen.flatMap { it.enumConstants!!.asIterable() }
 
     /** Was die AAPS-Sicherung mit einem gespeicherten Schluessel tut - dieselbe Regel wie `isExportableKey`. */
@@ -114,7 +137,7 @@ class FuseSchluesselRueckwegTest {
     @Test
     fun `es kommt kein neuer Schluessel hinzu und keiner doppelt`() {
         val schluessel = alle.map { it.key }
-        val neu = schluessel.toSet() - stand1x - neuMitNeutralerVorgabe.keys - neuHinterSchalter.keys
+        val neu = schluessel.toSet() - stand1x - neuMitNeutralerVorgabe.keys - neuHinterSchalter.keys - neuNurAnzeige.keys
         assertTrue(neu.isEmpty()) { "neu - fehlt in jeder alten Sicherung (Uebernahmevertrag pruefen): $neu" }
         assertEquals(schluessel.size, schluessel.toSet().size, "doppelt registriert")
     }

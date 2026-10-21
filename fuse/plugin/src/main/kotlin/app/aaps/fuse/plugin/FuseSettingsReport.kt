@@ -81,6 +81,8 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     // 2.0 (Stufe 1, K3): schnelle Bremsbahn, bedingte Schwanzkante und beide Totbaender sind fest an.
     FuseBooleanKey.OnsetChannelEnabled.key,
     FuseBooleanKey.ExpectationLedgerEnabled.key,
+    // Nur Anzeige (Toni 21.10.2026): FUSE-Ebenen im Hauptgraphen.
+    FuseBooleanKey.MainGraphLayers.key,
     // Konsolidierung 2.0: die Einstellungen ohne Wirkung sind entfernt (s. FuseRetiredKey - registriert nur fuer die
     // Sicherung). Nicht einstellbar, aber wirksam: MarkerAuthorisesRelease (praediktorfreier Markerpfad); gesichert
     // wird er weiter.
@@ -283,6 +285,7 @@ object FuseSettingsReport {
                 // sehen, dass hier nur gemessen wird.
                 "Diagnose" to listOf(
                     schalter(FuseBooleanKey.ExpectationLedgerEnabled, "Erwartungs-Beobachter"),
+                    schalter(FuseBooleanKey.MainGraphLayers, "FUSE im Hauptgraphen"),
                 ),
             ),
         )

@@ -146,6 +146,17 @@ class GraphViewModel(
             .distinctUntilChanged()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), cache.fuseGraphFlow.value.mealMarkers)
     }
+
+    /**
+     * Fork (FUSE): the layers of the main graph (Toni 21.10.2026) - state per cycle, channel runs, SMB sources; `null`
+     * when they are off or FUSE does not run. Lazy, as above.
+     */
+    val fuseMainLayers: StateFlow<FuseMainLayers?> by lazy {
+        cache.fuseGraphFlow
+            .map { FuseMainLayers.of(it) }
+            .distinctUntilChanged()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FuseMainLayers.of(cache.fuseGraphFlow.value))
+    }
     val treatmentGraphFlow = cache.treatmentGraphFlow
     val epsGraphFlow = cache.epsGraphFlow
     val basalGraphFlow = cache.basalGraphFlow

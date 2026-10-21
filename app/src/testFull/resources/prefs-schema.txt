@@ -284,6 +284,7 @@ fuse_liveness_rearm_min|FuseIntKey|true
 fuse_liveness_rebound_evidence_exception_enabled|FuseRetiredKey|true
 fuse_low_gate_horizon_min|FuseDoubleKey|true
 fuse_low_gate_min_benefit_mgdl|FuseDoubleKey|true
+fuse_main_graph_layers|FuseBooleanKey|true
 fuse_marker_authorises_low|FuseBooleanKey|true
 fuse_marker_boost_max_min|FuseIntKey|true
 fuse_marker_prime_descent_horizon_min|FuseDoubleKey|true

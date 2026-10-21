@@ -233,6 +233,8 @@ object FuseSettings {
             "fuse_system", R.string.fuse_section_system,
             // DER ERWARTUNGS-BEOBACHTER dosiert nichts - deshalb hier und in keinem Regelbereich.
             FuseBooleanKey.ExpectationLedgerEnabled,
+            // Ebenso die Anzeige im Hauptgraphen (Toni 21.10.2026).
+            FuseBooleanKey.MainGraphLayers,
             info(
                 "Regler-Takt: 1 Minute",
                 "Jeder neue 1-min-CGM-Wert ist ein Zyklus. Fest - kein Legacy-SMB-Intervall. Geregelt wird mit der insulinbereinigten Stoerungsrate r; Q1 und Rohwert stehen im Reiter nebeneinander.",

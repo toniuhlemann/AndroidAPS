@@ -31,4 +31,51 @@
     <!-- FUSE graphs below BG, short names in the graph menu, as in the fork. -->
     <string name="fuse_drive_shortname">F.DRV</string>
     <string name="fuse_guard_shortname">F.GRD</string>
+    <!-- FUSE in the main graph: what FUSE did in a cycle (colour of the BG point). -->
+    <string name="fuse_state_free">SMB frei</string>
+    <string name="fuse_state_guard">Guard sperrt SMB</string>
+    <string name="fuse_state_blocked">andere Sperre</string>
+    <string name="fuse_state_zero">Schutz-Null</string>
+    <string name="fuse_state_channel">Korrekturkanal</string>
+    <string name="fuse_state_unknown">ohne Eingang</string>
+    <!-- Where an SMB came from. -->
+    <string name="fuse_source_expectation">Mahlzeitkonto</string>
+    <string name="fuse_source_normal">Normalweg</string>
+    <string name="fuse_source_other">Liveness/andere</string>
+    <!-- Why a run of the slow correction channel ended, and labels of the band. -->
+    <string name="fuse_channel_end_falling">Fall</string>
+    <string name="fuse_channel_end_below">unter Schwelle</string>
+    <string name="fuse_channel_end_no_demand">kein Bedarf</string>
+    <string name="fuse_channel_end_max_iob">maxIOB</string>
+    <string name="fuse_channel_end_safety_zero">Schutz-Null</string>
+    <string name="fuse_channel_end_descent">Abwärtsrisiko</string>
+    <string name="fuse_channel_end_low">Tief</string>
+    <string name="fuse_channel_end_signal">Signal</string>
+    <string name="fuse_channel_end_rebound">Rebound-Totband</string>
+    <string name="fuse_channel_end_night">Nacht-Totband</string>
+    <string name="fuse_channel_end_other">Sperre</string>
+    <string name="fuse_channel_end_restart">Neustart</string>
+    <string name="fuse_channel_end" comment="%1$s=reason. Example: Ende: Fall">Ende: %1$s</string>
+    <string name="fuse_channel_running">läuft</string>
+    <string name="fuse_channel_factor" comment="%1$s=active factor of the channel TBR. Example: ×2">×%1$s</string>
+    <string name="fuse_channel_band" comment="%1$s=factor (×2), %2$s=delivered insulin with unit. Example: ×2 · 0,40 U">%1$s · %2$s</string>
+    <!-- The binding limit of a FUSE decision, in the press-and-hold pill. -->
+    <string name="fuse_binding" comment="%1$s=limit. Example: bindet: Guard">bindet: %1$s</string>
+    <string name="fuse_binding_guard">Guard</string>
+    <string name="fuse_binding_safety_hold">Schutzhalt</string>
+    <string name="fuse_binding_tail">Schwanzprüfung</string>
+    <string name="fuse_binding_marker">Marker</string>
+    <string name="fuse_binding_demand_ratio">Bedarfsanteil</string>
+    <string name="fuse_binding_smb_ratio">SMB-Anteil</string>
+    <string name="fuse_binding_exposure">Expositionsgrenze</string>
+    <string name="fuse_binding_signal">Signal unreif</string>
+    <string name="fuse_demand" comment="%1$s=insulin with unit. Example: Bedarf 0,30 U">Bedarf %1$s</string>
+    <!-- Legend of the FUSE layers, opened from the main graph. -->
+    <string name="fuse_legend">Legende</string>
+    <string name="fuse_legend_title">FUSE im Hauptgraphen</string>
+    <string name="fuse_legend_points">BG-Punkte in der Farbe dessen, was FUSE in diesem Zyklus durfte oder tat. Unter der unteren Grenze bleibt ein Punkt rot – das Tief geht vor.</string>
+    <string name="fuse_legend_smb">SMB-Dreiecke in der IOB-Spur in der Farbe ihrer Quelle, die Zahl ist die Summe je Serie. Ein weißer Ring auf den BG-Punkten markiert den Beginn einer Serie.</string>
+    <string name="fuse_legend_channel">Türkises Band: der langsame Korrekturkanal mit Faktor, abgegebener Menge und Ende.</string>
+    <string name="fuse_legend_basal">Streifen über dem Basal: magenta Schutz-Null, türkis Korrekturkanal.</string>
+    <string name="fuse_legend_hold">Gedrückt halten zeigt Zustand, Bindung, Bedarf und Kanal des Zyklus. Abschalten: FUSE-Einstellungen, System.</string>
 </resources>
