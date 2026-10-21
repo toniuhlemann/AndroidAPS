@@ -30,7 +30,6 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.aaps.core.interfaces.overview.FuseOverviewSource
-import app.aaps.core.interfaces.overview.graph.BgDataPoint
 import app.aaps.core.interfaces.overview.graph.BgRange
 import app.aaps.core.interfaces.overview.graph.BolusGraphPoint
 import app.aaps.core.interfaces.overview.graph.BolusType
@@ -149,36 +148,37 @@ class FuseStateLookup internal constructor(private val xs: DoubleArray, private 
     }
 }
 
-/** Passes the FUSE states to the point provider without rebuilding the BG line (see [FuseBgPointProvider]). */
-internal val FUSE_BG_STATE_KEY = ExtraStore.Key<FuseStateLookup>()
+/**
+ * What the FUSE point provider needs per model: the FUSE state per cycle and the range of each drawn reading. Both
+ * come through the model's extras, so the line and its provider stay the same objects when data changes.
+ */
+data class FuseBgPaint(val states: FuseStateLookup, val ranges: Map<Double, BgRange>)
+
+internal val FUSE_BG_PAINT_KEY = ExtraStore.Key<FuseBgPaint>()
 
 /**
- * The BG points in the colour of the FUSE state. The state comes through the model's extras, so the line and this
- * provider stay the same object when FUSE adds a cycle. A low keeps its red (Toni), and a point without a FUSE cycle
- * nearby keeps the usual range colour.
+ * The 1-minute readings in the colour of the FUSE state (Toni 21.10.2026). FUSE works on the 1-minute readings, and its
+ * cycles match them one to one. A low keeps its red, and a reading without a FUSE cycle nearby keeps the usual range
+ * colour.
  */
 @Immutable
-class FuseBgPointProvider(
-    private val dataLookup: Map<Double, BgDataPoint>,
-    lowColor: Color,
-    inRangeColor: Color,
-    highColor: Color
-) : LineCartesianLayer.PointProvider {
+class FuseBgPointProvider(lowColor: Color, inRangeColor: Color, highColor: Color) : LineCartesianLayer.PointProvider {
 
-    private val base = BucketedPointProvider(dataLookup, lowColor, inRangeColor, highColor)
+    private fun filled(color: Color) = LineCartesianLayer.Point(component = ShapeComponent(fill = Fill(color), shape = CircleShape), size = 6.dp)
 
-    private val statePoints = FuseOverviewSource.CycleState.entries.associateWith { state ->
-        LineCartesianLayer.Point(component = ShapeComponent(fill = Fill(fuseStateColor(state)), shape = CircleShape), size = 6.dp)
-    }
+    private val rangePoints = mapOf(BgRange.LOW to filled(lowColor), BgRange.IN_RANGE to filled(inRangeColor), BgRange.HIGH to filled(highColor))
+
+    private val statePoints = FuseOverviewSource.CycleState.entries.associateWith { filled(fuseStateColor(it)) }
 
     override fun getPoint(entry: LineCartesianLayerModel.Entry, extraStore: ExtraStore): LineCartesianLayer.Point? {
-        val lookup = extraStore.getOrNull(FUSE_BG_STATE_KEY) ?: return base.getPoint(entry, extraStore)
-        if (dataLookup[entry.x]?.range == BgRange.LOW) return base.getPoint(entry, extraStore)
-        val state = lookup.at(entry.x) ?: return base.getPoint(entry, extraStore)
+        val paint = extraStore.getOrNull(FUSE_BG_PAINT_KEY) ?: return rangePoints[BgRange.IN_RANGE]
+        val range = paint.ranges[entry.x] ?: BgRange.IN_RANGE
+        if (range == BgRange.LOW) return rangePoints[BgRange.LOW]
+        val state = paint.states.at(entry.x) ?: return rangePoints[range]
         return statePoints[state]
     }
 
-    override fun getLargestPoint(extraStore: ExtraStore): LineCartesianLayer.Point = base.getLargestPoint(extraStore)
+    override fun getLargestPoint(extraStore: ExtraStore): LineCartesianLayer.Point = rangePoints.getValue(BgRange.IN_RANGE)
 }
 
 // =========================================================================

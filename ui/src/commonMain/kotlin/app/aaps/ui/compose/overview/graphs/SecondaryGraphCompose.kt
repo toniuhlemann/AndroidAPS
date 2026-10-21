@@ -989,7 +989,10 @@ fun SecondaryGraphCompose(
             ),
             modelProducer = modelProducer,
             modifier = modifier.fillMaxWidth(),
-            scrollState = scrollState, zoomState = zoomState
+            scrollState = scrollState, zoomState = zoomState,
+            // Fork (Toni 21.10.2026): no difference animation, as in the BG graph - runs of F.DRV/F.GRD lines and
+            // SMB groups otherwise morphed through the bottom on every update.
+            animationSpec = null
         )
     } else if (isDualAxis) {
         val secondaryLayer = rememberLineCartesianLayer(
@@ -1005,7 +1008,10 @@ fun SecondaryGraphCompose(
             ),
             modelProducer = modelProducer,
             modifier = modifier.fillMaxWidth(),
-            scrollState = scrollState, zoomState = zoomState
+            scrollState = scrollState, zoomState = zoomState,
+            // Fork (Toni 21.10.2026): no difference animation, as in the BG graph - runs of F.DRV/F.GRD lines and
+            // SMB groups otherwise morphed through the bottom on every update.
+            animationSpec = null
         )
     } else {
         CartesianChartHost(
@@ -1016,7 +1022,10 @@ fun SecondaryGraphCompose(
             ),
             modelProducer = modelProducer,
             modifier = modifier.fillMaxWidth(),
-            scrollState = scrollState, zoomState = zoomState
+            scrollState = scrollState, zoomState = zoomState,
+            // Fork (Toni 21.10.2026): no difference animation, as in the BG graph - runs of F.DRV/F.GRD lines and
+            // SMB groups otherwise morphed through the bottom on every update.
+            animationSpec = null
         )
     }
 }

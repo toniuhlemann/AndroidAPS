@@ -67,6 +67,9 @@ private const val showBasalOnBgGraph = false
 
 private const val SERIES_REGULAR = "regular"
 private const val SERIES_BUCKETED = "bucketed"
+
+/** Fork (FUSE): the 1-minute readings in the FUSE colours - replaces regular and bucketed while the layers are on. */
+private const val SERIES_FUSE = "fuse"
 private const val SERIES_PRED_IOB = "pred_iob"
 private const val SERIES_PRED_COB = "pred_cob"
 private const val SERIES_PRED_ACOB = "pred_acob"
@@ -232,20 +235,33 @@ fun BgGraphCompose(
             lineModel {
                 val activeSeries = mutableListOf<String>()
 
-                if (regularPoints.isNotEmpty()) {
-                    val dataPoints = regularPoints
-                        .map { timestampToX(it.timestamp, minTimestamp) to it.value }
-                        .sortedBy { it.first }
-                    series(x = dataPoints.map { it.first }, y = dataPoints.map { it.second })
-                    activeSeries.add(SERIES_REGULAR)
-                }
+                if (currentFuseLookup != null) {
+                    // Fork (FUSE, Toni 21.10.2026): the 1-minute readings, filled in the FUSE colours. FUSE works on
+                    // them and its cycles match them one to one. The bucketed 5-minute grid (re-anchored on every
+                    // reading of a 1-minute CGM) and the faint outlined readings are left out.
+                    if (regularPoints.isNotEmpty()) {
+                        val dataPoints = regularPoints
+                            .map { timestampToX(it.timestamp, minTimestamp) to it.value }
+                            .sortedBy { it.first }
+                        series(x = dataPoints.map { it.first }, y = dataPoints.map { it.second })
+                        activeSeries.add(SERIES_FUSE)
+                    }
+                } else {
+                    if (regularPoints.isNotEmpty()) {
+                        val dataPoints = regularPoints
+                            .map { timestampToX(it.timestamp, minTimestamp) to it.value }
+                            .sortedBy { it.first }
+                        series(x = dataPoints.map { it.first }, y = dataPoints.map { it.second })
+                        activeSeries.add(SERIES_REGULAR)
+                    }
 
-                if (bucketedPoints.isNotEmpty()) {
-                    val dataPoints = bucketedPoints
-                        .map { timestampToX(it.timestamp, minTimestamp) to it.value }
-                        .sortedBy { it.first }
-                    series(x = dataPoints.map { it.first }, y = dataPoints.map { it.second })
-                    activeSeries.add(SERIES_BUCKETED)
+                    if (bucketedPoints.isNotEmpty()) {
+                        val dataPoints = bucketedPoints
+                            .map { timestampToX(it.timestamp, minTimestamp) to it.value }
+                            .sortedBy { it.first }
+                        series(x = dataPoints.map { it.first }, y = dataPoints.map { it.second })
+                        activeSeries.add(SERIES_BUCKETED)
+                    }
                 }
 
                 // Prediction series - each type as a separate line
@@ -353,9 +369,14 @@ fun BgGraphCompose(
             // updated startAxisRangeProvider.
             extras {
                 it[BG_VISIBLE_RANGE_KEY] = currentVisibleTimeRange?.first to currentVisibleTimeRange?.second
-                // Fork (FUSE): the state per cycle for FuseBgPointProvider - through the extras, so the BG line keeps
-                // its identity when FUSE adds a cycle.
-                if (currentFuseLookup != null) it[FUSE_BG_STATE_KEY] = currentFuseLookup
+                // Fork (FUSE): the state per cycle and the range per reading for FuseBgPointProvider - through the
+                // extras, so the line and its provider keep their identity when data changes.
+                if (currentFuseLookup != null) {
+                    it[FUSE_BG_PAINT_KEY] = FuseBgPaint(
+                        states = currentFuseLookup,
+                        ranges = regularPoints.associate { p -> timestampToX(p.timestamp, minTimestamp) to p.range }
+                    )
+                }
             }
         }
     }
@@ -437,9 +458,17 @@ fun BgGraphCompose(
         bucketedData.associateBy { timestampToX(it.timestamp, minTimestamp) }
     }
 
-    // Fork (FUSE): range colours as before, the FUSE state colour while the main graph layers are on (via the extras).
     val bucketedPointProvider = remember(bucketedLookup, lowColor, inRangeColor, highColor) {
-        FuseBgPointProvider(bucketedLookup, lowColor, inRangeColor, highColor)
+        BucketedPointProvider(bucketedLookup, lowColor, inRangeColor, highColor)
+    }
+
+    // Fork (FUSE): one stable line for the 1-minute readings in the FUSE colours; the data comes through the extras.
+    val fuseLine = remember(lowColor, inRangeColor, highColor) {
+        LineCartesianLayer.Line(
+            fill = LineCartesianLayer.LineFill.single(Fill(Color.Transparent)),
+            areaFill = null,
+            pointProvider = FuseBgPointProvider(lowColor, inRangeColor, highColor)
+        )
     }
 
     // Time formatter and axis configuration
@@ -486,8 +515,9 @@ fun BgGraphCompose(
     val ztPredLine = remember(ztPredColor) { createPredictionLine(ztPredColor) }
 
     val activeSeries by activeSeriesState
-    val bgLines = remember(activeSeries, regularLine, bucketedLine, iobPredLine, cobPredLine, aCobPredLine, uamPredLine, ztPredLine, normalizerLine) {
+    val bgLines = remember(activeSeries, regularLine, bucketedLine, iobPredLine, cobPredLine, aCobPredLine, uamPredLine, ztPredLine, normalizerLine, fuseLine) {
         buildList {
+            if (SERIES_FUSE in activeSeries) add(fuseLine)
             if (SERIES_REGULAR in activeSeries) add(regularLine)
             if (SERIES_BUCKETED in activeSeries) add(bucketedLine)
             if (SERIES_PRED_IOB in activeSeries) add(iobPredLine)
@@ -668,7 +698,7 @@ fun BgGraphCompose(
     val fuseRings = remember(fuseLayers, fuseTreatments, bucketedData, bgReadings, minTimestamp, density) {
         val layers = fuseLayers ?: return@remember null
         val boluses = fuseTreatments?.boluses ?: return@remember null
-        val readings = bucketedData.ifEmpty { bgReadings }
+        val readings = bgReadings.ifEmpty { bucketedData }
         val rings = fuseSmbRuns(fuseSmbSources(boluses, layers.smbSends)).mapNotNull { run ->
             val bg = readings.minByOrNull { abs(it.timestamp - run.startTime) }?.takeIf { abs(it.timestamp - run.startTime) <= 3 * 60_000L }
             bg?.let { timestampToX(run.startTime, minTimestamp) to it.value }
@@ -751,6 +781,10 @@ fun BgGraphCompose(
         modelProducer = modelProducer,
         modifier = modifier.fillMaxWidth(),
         scrollState = scrollState,
-        zoomState = zoomState
+        zoomState = zoomState,
+        // Fork (Toni 21.10.2026): no difference animation. Vico matches old and new points by their x; the bucketed
+        // grid of a 1-minute CGM moves on every reading, so its points had no partner and grew from the bottom on
+        // every update. A data graph that updates every minute should simply show the new state.
+        animationSpec = null
     )
 }
