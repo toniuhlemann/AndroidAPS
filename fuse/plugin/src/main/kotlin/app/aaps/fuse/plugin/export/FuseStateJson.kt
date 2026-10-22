@@ -2508,11 +2508,12 @@ object FuseStateJson {
                     .put("switchesPinned", g(f.switches))
                     .put("switchesNow", g(z.fruehSchalter))
                     .put("withdrawn", f.withdrawn)
-                    // Tief-Sperre (Toni): gesperrt seit, danach alles IOB angerechnet, Bestaetigung, Grund im Zyklus.
+                    // Tief-Sperre (Toni): gesperrt seit, Tief in dieser Mahlzeit, Grund im Zyklus. Toni 22.10.: die Sperre
+                    // faellt von selbst - die Bestaetigung ist entfallen, ihr Feld bleibt fuer den Trail und steht auf null.
                     .put("lowLocked", s.earlyLowLocked)
                     .put("lowLockSinceTs", if (s.earlyLowLockSinceTs > 0L) s.earlyLowLockSinceTs else JSONObject.NULL)
                     .put("afterLow", s.earlyAfterLow)
-                    .put("lowConfirmTs", if (z.bestaetigtNachTiefTs > 0L) z.bestaetigtNachTiefTs else JSONObject.NULL)
+                    .put("lowConfirmTs", JSONObject.NULL)
                     .put("lowReason", z.tiefGrund ?: JSONObject.NULL)
                     .put("initialDone", s.initialDone)
                     .put("portionsInBookU", fin(s.portions.sumOf { it.amountU }))
@@ -2533,6 +2534,8 @@ object FuseStateJson {
                     .put("tailCapU", fin(x.fruehSchwanzKappeU))
                     // Schritt 2: laeuft die Mahlzeit (weitere Portionen), die Fortsetzung im Bedarf, am Riegel vorbei.
                     .put("mealRunning", z.mahlzeitLaeuft)
+                    // Toni 22.10.: die Mahlzeit steigt - die weitere Portion ohne Guard und Schwanz (G1/G2).
+                    .put("mealRising", z.mahlzeitSteigt)
                     .put("followUpStableSinceTs", x.folgeStabilSeitTs ?: JSONObject.NULL)
                     .put("mealRunningMinR", fin(x.mahlzeitLaeuftAbR))
                     .put("stableMealRunning", z.stabilFolge)

@@ -1764,6 +1764,8 @@ class FuseCycleRunner(
             if (step?.safetyReasons?.isNotEmpty() == true) {
                 ekStabilSeit = null
                 ekFolgeStabilSeit = null
+                // Toni 22.10.: ebenso die Reihe steigender Messwerte - "steigt" zaehlt erst nach dem Tief neu.
+                ekSteigt = ExpectationAccount.Rising()
                 episodes.expectation?.takeIf { it.released || it.early != null }?.let { ekRuecknahmeOffenFuerAuth = it.authId }
             }
             // Codex 22.08.: ein Abbruchzyklus ist fuer den Liveness-Kanal
@@ -3253,6 +3255,7 @@ class FuseCycleRunner(
             tieftorNurUeberdeckung = lowThreatResult.verdict == LowThreatGate.Verdict.FALLING_WITH_BOLUS_OVERCOVERAGE,
             faellt = !signal.ukfRatePerMin.isFinite() || signal.ukfRatePerMin < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN,
             ukfRateMgdlPerMin = signal.ukfRatePerMin,
+            messTs = signal.sourceTs,
             technisch = listOfNotNull(
                 "HEALTH".takeIf { step.health != Health.READY },
                 "REJOIN".takeIf { signal.rejoin.active },
@@ -3527,10 +3530,21 @@ class FuseCycleRunner(
         val fruehAnfang = fruehZyklus?.eval?.early?.initial == true
         val fruehGemessenFreiU = fruehZyklus?.let { kotlin.math.min(vetted.smbU, ExpectationAccount.measuredShareU(it.eval)) } ?: 0.0
         val fruehAnteilU = fruehZyklus?.let { ExpectationAccount.expectationShareU(it.eval) } ?: 0.0
+        // TONI 22.10.: steigt die Mahlzeit, pruefen Guard und Schwanz die weitere Portion nicht - wie bei der
+        // Anfangsportion, mit denselben Schaltern G1/G2. Ist einer davon aus, gilt fuer diesen Teil die Pruefung MIT
+        // Erwartung (G3/G4) wie sonst.
+        val fruehSteigt = !fruehAnfang && fruehZyklus?.mahlzeitSteigt == true
         val fruehHebung = fruehZyklus?.fruehSchalter?.takeIf { fruehAnteilU > 0.0 }?.let { g ->
             if (fruehAnfang) app.aaps.fuse.core.controller.AuthorizedLift.EarlyLift(guardLift = g.initialLiftsGuard, tailLift = g.initialLiftsTail)
-            else app.aaps.fuse.core.controller.AuthorizedLift.EarlyLift(guardLift = g.guardWithExpectation, tailLift = g.tailWithExpectation)
+            else app.aaps.fuse.core.controller.AuthorizedLift.EarlyLift(
+                guardLift = g.guardWithExpectation || (fruehSteigt && g.initialLiftsGuard),
+                tailLift = g.tailWithExpectation || (fruehSteigt && g.initialLiftsTail),
+            )
         }
+        // Was die Portion nicht prueft: Guard bzw. Schwanz bei der Anfangsportion mit G1/G2 - und ebenso bei der
+        // steigenden weiteren Portion.
+        val fruehOhneGuard = (fruehAnfang || fruehSteigt) && fruehZyklus?.fruehSchalter?.initialLiftsGuard == true
+        val fruehOhneSchwanz = (fruehAnfang || fruehSteigt) && fruehZyklus?.fruehSchalter?.initialLiftsTail == true
         val fruehBodenU = if (fruehHebung != null) fruehGemessenFreiU + fruehAnteilU else 0.0
         // A: traegt der Normalbedarf schon mindestens diesen Boden, bleibt es seine Menge. Eine Anhebung gaebe es
         // nicht, aber ihr Grant buchte die Normalmenge gegen das Budget.
@@ -3610,8 +3624,8 @@ class FuseCycleRunner(
             )
         }
         val fruehSchwanzKappeU: Double? = when {
-            // G2: die Markerautorisierung hebt den Schwanz der Anfangsportion.
-            fruehAnfang && fruehHebung?.tailLift == true -> null
+            // G2: die Markerautorisierung hebt den Schwanz der Anfangsportion - und der steigenden weiteren (Toni 22.10.).
+            fruehOhneSchwanz -> null
             // G4: die Kappe ist der Spielraum MIT Erwartung.
             !fruehAnfang && tailMitErwartung != null -> tailMitErwartung.takeIf { it.usable }?.headroomU
             else -> tail?.takeIf { it.usable }?.headroomU
@@ -3827,22 +3841,23 @@ class FuseCycleRunner(
         // Portion. Technische Integritaet immer. Guard: bei der Anfangsportion
         // mit G1 durch die Markerautorisierung gehoben, bei weiteren Portionen
         // mit G3 MIT Erwartung geprueft, sonst unveraendert. Schwanz dasselbe
-        // mit G2/G4. Wiederhergestellt wird hoechstens der groesste
-        // Pumpenschritt, der alles traegt.
+        // mit G2/G4. Steigt die Mahlzeit, gilt fuer die weitere Portion G1/G2
+        // wie fuer die Anfangsportion (Toni 22.10.). Wiederhergestellt wird
+        // hoechstens der groesste Pumpenschritt, der alles traegt.
         fun fruehEndpruefung(u: Double): String? {
             val k = kernelFinal ?: return CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT.name
             val h = fruehHebung ?: return null
             CandidateSearch.verifyTechnicalIntegrity(
                 prediction, k, built.input.isfSlots, candidateBand, u, restraint = restraint,
             )?.let { return it.name }
-            if (!(fruehAnfang && h.guardLift)) {
+            if (!fruehOhneGuard) {
                 val mitErwartung = !fruehAnfang && h.guardLift && predictionMitErwartung != null
                 CandidateSearch.verifyGuardFloor(
                     if (mitErwartung) predictionMitErwartung!! else prediction, k, built.input.isfSlots, candidateBand, u,
                     restraint = if (mitErwartung) restraintMitErwartung else restraint,
                 )?.let { return it.name }
             }
-            if (!(fruehAnfang && h.tailLift)) {
+            if (!fruehOhneSchwanz) {
                 val bericht = if (!fruehAnfang && h.tailLift && tailBaseMitErwartung != null) tailAus(tailBaseMitErwartung, u)
                 else tailWith(u)
                 bericht?.takeIf { it.usable && it.headroomU < -TAIL_VETO_EPS_U }?.let { return TAIL_VETO }
@@ -4007,9 +4022,9 @@ class FuseCycleRunner(
         // Fallgrenze. Am Riegel bleiben ein gemessenes Tief und ein Signalfehler hart (MEASURED_LOW, OTHER). Hoechstens
         // die Menge der Anfangsportion; der Normalpfad geht wie bisher durch den Riegel.
         //
-        // SCHRITT 2 (Toni): solange die Mahlzeit laeuft, passiert auch eine WEITERE Portion des Kontos den ALTEN Riegel
-        // (Gefahr vorbei, Hysterese laeuft) - hoechstens ihre Menge. Fuer sie bleiben ein aktuelles Abwaertsrisiko, ein
-        // gemessenes Tief und ein Signalfehler hart. Nach einem gemessenen Tief der Mahlzeit gilt das nicht (s. Konto).
+        // SCHRITT 2 (Toni): solange die Mahlzeit laeuft oder steigt (Toni 22.10.), passiert auch eine WEITERE Portion des
+        // Kontos den ALTEN Riegel (Gefahr vorbei, Hysterese laeuft) - hoechstens ihre Menge. Fuer sie bleiben ein
+        // aktuelles Abwaertsrisiko, ein gemessenes Tief und ein Signalfehler hart.
         val riegelUrsacheVorher = MeasuredDescentGate.causeOf(descentLatch.blocksPositive, descentLatch.reason)
         val anfangGrantU = bodenGrant
             ?.takeIf { fruehAnfang && it.source == app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION }
@@ -4019,7 +4034,7 @@ class FuseCycleRunner(
                 riegelUrsacheVorher == MeasuredDescentGate.Cause.CURRENT_DESCENT_RISK)
         val folgeGrantU = bodenGrant
             ?.takeIf {
-                !fruehAnfang && fruehZyklus?.mahlzeitLaeuft == true &&
+                !fruehAnfang && (fruehZyklus?.mahlzeitLaeuft == true || fruehZyklus?.mahlzeitSteigt == true) &&
                     it.source == app.aaps.fuse.core.controller.AuthorizedLift.Source.EXPECTATION
             }
             ?.amountU ?: 0.0
@@ -6117,8 +6132,6 @@ class FuseCycleRunner(
         val ruecknahmeGrund: String? = null,
         /** v2: das gemessene Tief, das in DIESEM Zyklus die fruehe Versorgung sperrt (LOW, LOW_ON_ABORT); sonst null. */
         val tiefGrund: String? = null,
-        /** v2: die fuer diese Mahlzeit geltende Bestaetigung nach einem Tief [ms]; 0 = keine. */
-        val bestaetigtNachTiefTs: Long = 0L,
         /** E-034 v2: G1..G4, die jetzt gelten; `null` = Konto v1. */
         val fruehSchalter: app.aaps.fuse.core.controller.EarlySupply.Switches? = null,
         /**
@@ -6130,6 +6143,12 @@ class FuseCycleRunner(
         val stabilFolge: Boolean = false,
         /** KANDIDAT W (Pruefstand): die Wende dieses Zyklus; `null` = ohne W (Produkt). */
         val wende: ExpectationAccount.Turn? = null,
+        /**
+         * Toni 22.10.: fuer die weiteren Portionen galt in DIESEM Zyklus "die Mahlzeit steigt" - Guard und Schwanz pruefen
+         * die Portion dann nicht (wie die Anfangsportion, mit G1/G2), und der alte Riegel haelt sie nicht auf (wie bei
+         * [mahlzeitLaeuft]).
+         */
+        val mahlzeitSteigt: Boolean = false,
     )
 
     /** E-034: alles, was der Trail-Block des Kontos braucht - ein Zyklus. */
@@ -6268,6 +6287,8 @@ class FuseCycleRunner(
          * streng: eine Wende stoppt die weiteren Portionen (kein Stacking).
          */
         ukfRateMgdlPerMin: Double,
+        /** Toni 22.10.: Messzeit des juengsten CGM-Werts [ms] - "die Mahlzeit steigt" zaehlt je Messwert. */
+        messTs: Long,
         /** Signal-, Pumpen-, Ledger- und Bahnzustaende (Namen); leer = keine. */
         technisch: List<String>,
         /** Gemessenes Tief in diesem Zyklus (K5): nimmt die Freigabe zurueck. */
@@ -6285,7 +6306,7 @@ class FuseCycleRunner(
          * Schwelle "Mahlzeit laeuft ab r" (0 = die Rampen-Unterkante). Dann gilt fuer die WEITEREN Portionen: Fallen erst ab der
          * eingestellten Fallgrenze, und der alte Abwaertsriegel ([riegelHistorisch]) haelt sie nicht auf - weder als
          * Pause noch ueber die Freigabe. Ein aktuelles Abwaertsrisiko, das Tieftor, gemessene Sperren und technische
-         * Gruende halten weiter auf. Nach einem gemessenen Tief dieser Mahlzeit gilt das nicht.
+         * Gruende halten weiter auf. Toni 22.10.: auch nach einem gemessenen Tief dieser Mahlzeit.
          */
         mahlzeitLaeuft: Boolean = false,
         /** Der Abwaertsriegel steht nur noch historisch: Gefahr vorbei, die Hysterese laeuft ([MeasuredDescentGate.Cause]). */
@@ -6326,6 +6347,8 @@ class FuseCycleRunner(
             ekStabilSeit, computeTs, bgMgdl, grenzeBg, falling = faelltFuerStrecke, measuredLock = gemesseneSperre,
         )
         val stabil = ExpectationAccount.Stability.stable(ekStabilSeit, computeTs, dauerMin)
+        // Toni 22.10.: die Reihe steigender Messwerte laeuft wie die Strecke in JEDEM Zyklus mit.
+        ekSteigt = ekSteigt.next(messTs, ukfRateMgdlPerMin)
         // DIE ANFANGSPORTION KOMMT BEIM DRUCK (Toni: "auch das Druecken des Markers ist meine Entscheidung",
         // "die erste Dosis ist die wichtigste und die muss frueh kommen"). Fuer die offene Anfangsportion zaehlt nicht die
         // Strecke (Dauer, alter Riegel, vorhergesagtes Abwaertsrisiko, Ueberdeckungsbefund), sondern nur: Zucker ueber der
@@ -6395,11 +6418,11 @@ class FuseCycleRunner(
         // laeuft weiter.
         // Gemessene Sperren (Tief, Abwaertsrisiko, Safety, Riegel) bleiben hart. Solange die Anfangsportion offen ist,
         // gilt fuers Fallen die Fallgrenze; nach ihr wieder die strenge Kanalkonstante - ausser die Mahlzeit laeuft
-        // (Schritt 2, unten). Nach einem Tief immer die Kanalkonstante.
+        // (Schritt 2, unten), auch nach einem Tief (Toni 22.10.).
         val anfangOffen = konto.early != null && !konto.initialDone &&
             computeTs - konto.authId < (app.aaps.fuse.core.controller.EarlySupply.INITIAL_WINDOW_MIN * 60_000.0).toLong()
         // KANDIDAT W (Pruefstand): die Wende zur naechsten Welle und die Wende nach unten - nur mit dem Pruefarm W, im
-        // Produkt null. Eine Wendephase gibt es nur nach dem Anfang, ab der Anpassung, ohne Tief dieser Mahlzeit und ueber
+        // Produkt null. Eine Wendephase gibt es nur nach dem Anfang, ab der Anpassung, ohne Tief-Sperre und ueber
         // der Stabilitaetsgrenze. Gemessene Sperren und technische Gruende pausieren sie wie jede Portion, beenden sie
         // aber nicht - ein Zyklus "Pumpe beschaeftigt" beendete sonst die Phase samt Sperre. In der Wendephase gilt fuer
         // die weiteren Portionen, was bei laufender Mahlzeit gilt (Fallgrenze, alter Riegel, Fortsetzung, eigene Strecke).
@@ -6408,7 +6431,7 @@ class FuseCycleRunner(
                 wendeZustand = app.aaps.fuse.core.controller.TurnDetector.State()
                 wendeFuerAuth = konto.authId
             }
-            val erlaubt = !anfangOffen && !konto.earlyAfterLow && !konto.earlyLowLocked && bgMgdl > grenzeBg && !gemessenesTief &&
+            val erlaubt = !anfangOffen && !konto.earlyLowLocked && bgMgdl > grenzeBg && !gemessenesTief &&
                 (computeTs - konto.authId) / 60_000.0 >= app.aaps.fuse.core.controller.EarlySupply.ADAPT_FROM_MIN
             val w = app.aaps.fuse.core.controller.TurnDetector.step(
                 wendeZustand, wendeVerlauf.toList(), computeTs, upAllowed = erlaubt, stopAllowed = !anfangOffen,
@@ -6423,17 +6446,29 @@ class FuseCycleRunner(
             )
         }
         val wendeAktiv = wende?.active == true
+        // TONI 22.10.: DIE MAHLZEIT STEIGT - "waehrend aktiver Mahlzeiten darf nichts blockieren, solange Bedarf da ist und
+        // BG steigt muss FUSE entsprechend Mahlzeitenbudget liefern". UKF-Trend mindestens +1 in zwei Messwerten
+        // hintereinander (ein einzelner Ausreisser zaehlt nicht), nur fuer die weiteren Portionen, ueber der
+        // Stabilitaetsgrenze, ohne gemessenes Tief, im Fenster und mit Budgetrest. Dann wartet die Freigabe nicht auf die
+        // Strecke, das Einfrieren haelt nicht auf, der alte Riegel haelt nicht (wie bei laufender Mahlzeit), und Guard und
+        // Schwanz pruefen die Portion nicht (G1/G2 wie bei der Anfangsportion). Weiter halten: ein gemessenes Tief, das
+        // gemessene Abwaertsrisiko (Schutz-Null), technische Gruende, maxIOB, iobTH, die Expositionsgrenze und die
+        // Portionsdeckel. Steigt der Zucker nicht mehr, gilt wieder alles wie bisher.
+        val steigt = konto.early != null && !anfangOffen && ekSteigt.rising && bgMgdl > grenzeBg && !gemessenesTief &&
+            konto.restU > 0.0 && computeTs < konto.windowEndTs
         // SCHRITT 2 (Toni): laeuft die Mahlzeit, gelten fuer die weiteren Portionen die eingestellte Fallgrenze statt der
-        // Kanalkonstante, und der alte Riegel haelt sie nicht auf. Nicht nach einem gemessenen Tief dieser Mahlzeit.
-        val folgeImLauf = konto.early != null && !anfangOffen && (mahlzeitLaeuft || wendeAktiv) && !konto.earlyAfterLow
-        val faelltFuerPause = if (anfangOffen || folgeImLauf) faelltFuerStrecke else faellt
+        // Kanalkonstante, und der alte Riegel haelt sie nicht auf. Toni 22.10.: auch nach einem gemessenen Tief dieser
+        // Mahlzeit.
+        val folgeImLauf = konto.early != null && !anfangOffen && (mahlzeitLaeuft || wendeAktiv)
+        val folgeFrei = folgeImLauf || steigt
+        val faelltFuerPause = if (anfangOffen || folgeFrei) faelltFuerStrecke else faellt
         // Ebenso die Pause (Toni): die offene Anfangsportion halten nur gemessene Sperren auf (Tief, Tieftor
         // MEASURED_LOW) - weder der alte Riegel noch ein vorhergesagtes Abwaertsrisiko noch der Ueberdeckungsbefund. Das
         // Fallen prueft FALLING mit der Fallgrenze, dazu die technischen Gruende. Nach ihr gelten alle Sperren wie bisher;
-        // bei laufender Mahlzeit ohne den alten Riegel.
+        // bei laufender oder steigender Mahlzeit ohne den alten Riegel.
         val sperrenFuerPause = when {
             anfangOffen -> sperrenAnfang
-            folgeImLauf && riegelHistorisch -> sperren.filter { it != "LATCH" }
+            folgeFrei && riegelHistorisch -> sperren.filter { it != "LATCH" }
             else -> sperren
         }
         // Die Freigabe der weiteren Portionen bei laufender Mahlzeit: eine eigene Strecke mit derselben Dauer - ueber der
@@ -6462,9 +6497,6 @@ class FuseCycleRunner(
         }
         ekRuecknahmeOffenFuerAuth = 0L
         val tiefGrund = ruecknahmeGrund.takeIf { it == "LOW" || it == "LOW_ON_ABORT" }
-        // v2 (Toni): die ausdrueckliche Bestaetigung der Mahlzeit nach einem Tief - nur fuer DIESE Autorisierung.
-        val bestaetigtNachTief = if (konto.early == null) 0L
-        else preferences.get(FuseLongKey.EarlySupplyLowConfirmTs).takeIf { it >= konto.authId } ?: 0L
         val (neu, eval) = ExpectationAccount.step(
             konto,
             ExpectationAccount.Inputs(
@@ -6480,7 +6512,7 @@ class FuseCycleRunner(
                 measuredLow = ruecknahmeGrund != null,
                 // v2: nur ein GEMESSENES Tief sperrt die fruehe Versorgung - der Neustart nimmt nur die Freigabe.
                 lowLocksEarlySupply = tiefGrund != null,
-                confirmedAfterLowTs = bestaetigtNachTief,
+                rising = steigt,
                 early = if (konto.early != null) fruehEingaben else null,
                 // KANDIDAT W (Pruefstand): in der Wendephase zaehlt die beobachtete Fortsetzung schon unter der Schwelle.
                 continuation = (fortsetzung ?: if (wendeAktiv) ekFortsetzung(rSigned, isfMgdlPerU, cfg, ohneSchwelle = true) else null)
@@ -6508,12 +6540,12 @@ class FuseCycleRunner(
             pausenGruende = pausenGruende,
             ruecknahmeGrund = ruecknahmeGrund.takeIf { eval.releaseRevoked },
             tiefGrund = tiefGrund.takeIf { gefuehrt.early != null },
-            bestaetigtNachTiefTs = bestaetigtNachTief,
             // G1..G4: festgehalten UND bisher nie abgeschaltet (s. oben).
             fruehSchalter = gefuehrt.early?.switches,
             mahlzeitLaeuft = folgeImLauf,
             stabilFolge = stabilFolge,
             wende = wende,
+            mahlzeitSteigt = steigt,
         )
     }
 
@@ -6912,6 +6944,7 @@ class FuseCycleRunner(
             ),
             faellt = !signal.ukfRatePerMin.isFinite() || signal.ukfRatePerMin < LivenessChannel.UKF_FLOOR_MGDL_PER_MIN,
             ukfRateMgdlPerMin = signal.ukfRatePerMin,
+            messTs = signal.sourceTs,
             technisch = listOf("NO_TRAJECTORY"),
             // K5: ohne Bahn kein Null-Tor - der gemessene Rohwert-Befund genuegt.
             gemessenesTief = step.safetyReasons.isNotEmpty(),
@@ -7539,6 +7572,10 @@ class FuseCycleRunner(
     /** Schritt 2: Beginn der Strecke der weiteren Portionen bei laufender Mahlzeit (ohne den alten Riegel) oder null;
      *  nur im Speicher - nach einem Neustart beginnt sie neu wie [ekStabilSeit]. */
     private var ekFolgeStabilSeit: Long? = null
+
+    /** Toni 22.10.: die Reihe steigender Messwerte ("die Mahlzeit steigt"); nur im Speicher - nach einem Neustart
+     *  beginnt sie neu wie [ekStabilSeit]. */
+    private var ekSteigt = ExpectationAccount.Rising()
 
     /** E-034 (Codex-Befund P0): die Freigabe dieser Autorisierung ist IN DIESEM
      *  Prozess bestaetigt (stabiler Start beim Buchen oder erfuellte Strecke).

@@ -26,9 +26,13 @@ import kotlin.math.min
  *
  * WANN KEIN d_erw: vor erfuellter Stabilitaet (Start nach Tief oder im Fallen, und nach einem gemessenen Tief in
  * der Episode erneut), in jeder Pause (gemessene Sperre, Signal-, Pumpen- oder Ledgerzustand), bei eingefrorenem
- * Rest (Ruecknahme bei ausbleibender Stoerung), nach einem gemessenen Tief bis zur ausdruecklichen Bestaetigung
- * (Tief-Sperre), nach dem Entzug durch den Hauptschalter und nach dem Fensterende. Unverbrauchte Erlaubnis
- * verpflichtet nie zur Lieferung.
+ * Rest (Ruecknahme bei ausbleibender Stoerung), nach einem gemessenen Tief, bis es vorbei und die Freigabe wieder
+ * erreicht ist (Tief-Sperre, ohne Bestaetigung), nach dem Entzug durch den Hauptschalter und nach dem Fensterende.
+ * Unverbrauchte Erlaubnis verpflichtet nie zur Lieferung.
+ *
+ * STEIGT DIE MAHLZEIT (Toni 22.10., [Inputs.rising]): "solange Bedarf da ist und BG steigt, muss FUSE entsprechend
+ * Mahlzeitenbudget liefern". Dann wartet eine weitere Portion weder auf die Strecke noch auf das Einfrieren; aufhalten
+ * koennen sie nur noch die Pause (gemessene und technische Gruende) und die Mengengrenzen.
  *
  * REINE FUNKTIONEN. Die Verdrahtung und die Sperren leben im Runner; hier stehen nur Rechnung, Buchung und Zustand.
  * Alle gepinnten Groessen liegen im [State], damit eine spaetere Aenderung der Einstellung eine laufende Episode
@@ -50,6 +54,11 @@ object ExpectationAccount {
 
     /** Ab diesem Markeralter [min] wird die Ruecknahme geprueft. */
     const val RELEASE_CHECK_AGE_MIN = 30.0
+
+    /**
+     * Toni 22.10.: ab diesem UKF-Trend [mg/dl/min] steigt die Mahlzeit - in zwei Messwerten hintereinander ([Rising]).
+     */
+    const val RISING_MGDL_PER_MIN = 1.0
 
     private const val EPS_U = 1e-9
 
@@ -255,16 +264,17 @@ object ExpectationAccount {
         val portions: List<EarlySupply.Portion> = emptyList(),
         /**
          * v2 (Toni): ein gemessenes Tief SPERRT den Erwartungsanteil dieser Mahlzeit - vor oder nach der Freigabe.
-         * Die Ankuendigung verfaellt nicht: aufheben kann die Sperre nur eine ausdrueckliche Bestaetigung ab
-         * [earlyLowLockSinceTs], und erst wenn das Tief vorbei und die Strecke erfuellt ist. Ein Anstieg allein nie.
+         * Die Ankuendigung verfaellt nicht. Toni 22.10.: die Sperre faellt VON SELBST, sobald das Tief vorbei und die
+         * Freigabe wieder erreicht ist (Strecke erfuellt oder die Mahlzeit steigt) - die Bestaetigung ist entfallen.
          */
         val earlyLowLocked: Boolean = false,
-        /** v2: Beginn der laufenden Sperre [ms]; eine Bestaetigung zaehlt erst ab hier. 0 = nie gesperrt. */
+        /** v2: Beginn der laufenden Sperre [ms] (Trail und Anzeige). 0 = nie gesperrt. */
         val earlyLowLockSinceTs: Long = 0L,
         /**
-         * v2: in dieser Mahlzeit gab es ein gemessenes Tief. Danach keine Anfangsportion, und die weiteren Portionen rechnen
-         * ALLES vorhandene Insulin an (Toni). Nie zurueck. Guard und Schwanz (G3/G4) rechnen die Mahlzeit nicht an,
-         * solange die Sperre gilt - nach Tonis ausdruecklicher Bestaetigung wieder, soweit sie sich zeigt (Option A).
+         * v2: in dieser Mahlzeit gab es ein gemessenes Tief. Danach keine Anfangsportion mehr, auch nicht ueber ein Storno
+         * ([cancel]). Nie zurueck. Toni 22.10.: sonst rechnen die weiteren Portionen danach wie vor dem Tief - nur das
+         * freie IOB, mit Fortsetzung (bis dahin: alles IOB, keine Fortsetzung). Guard und Schwanz (G3/G4) rechnen die
+         * Mahlzeit nicht an, solange die Sperre gilt.
          */
         val earlyAfterLow: Boolean = false,
     ) {
@@ -400,13 +410,18 @@ object ExpectationAccount {
          * fruehe Versorgung dieser Mahlzeit, auch vor der Freigabe.
          */
         val lowLocksEarlySupply: Boolean = false,
-        /** v2: die ausdrueckliche Bestaetigung der Mahlzeit nach einem Tief [ms]; 0 = keine. */
-        val confirmedAfterLowTs: Long = 0L,
+        /**
+         * TONI 22.10.: die Mahlzeit steigt ([Rising]) - nur fuer weitere Portionen, ueber der Stabilitaetsgrenze, ohne
+         * gemessenes Tief (das prueft der Aufrufer). Dann gibt sie die Freigabe wie eine erfuellte Strecke, und das
+         * Einfrieren haelt die Portion nicht auf. Die Pause meldet der Aufrufer dann nur aus gemessenen und technischen
+         * Gruenden.
+         */
+        val rising: Boolean = false,
         /** v2: die Geraetegroessen der fruehen Versorgung; `null` = in diesem Zyklus keine. */
         val early: EarlyInputs? = null,
         /**
          * Schritt 2 (Toni): die beobachtete Fortsetzung der laufenden Mahlzeit ([EarlySupply.demandU]); `null` = die
-         * Mahlzeit laeuft nicht. Sie zaehlt nur fuer weitere Portionen und nie nach einem gemessenen Tief.
+         * Mahlzeit laeuft nicht. Sie zaehlt nur fuer weitere Portionen - seit 22.10. auch nach einem gemessenen Tief.
          */
         val continuation: EarlySupply.Continuation? = null,
         /** KANDIDAT W (Pruefstand): Wendephase, Rampe und Abwaertsstopp; `null` = ohne W (Produkt). */
@@ -516,12 +531,12 @@ object ExpectationAccount {
             earlyAfterLow = true,
             initialDone = true,
         )
-        if (!s.released && inputs.stableNow && !inputs.measuredLow && !expired) s = s.copy(released = true)
-        // v2: die Ankuendigung verfaellt nicht. Die Sperre hebt NUR eine ausdrueckliche Bestaetigung ab Sperrbeginn
-        //   auf - und erst, wenn das Tief vorbei und die Strecke erfuellt ist. Kein neues Budget.
-        if (s.earlyLowLocked && s.released && !inputs.measuredLow && !expired &&
-            inputs.confirmedAfterLowTs > 0L && inputs.confirmedAfterLowTs >= s.earlyLowLockSinceTs
-        ) s = s.copy(earlyLowLocked = false)
+        // Toni 22.10.: steigt die Mahlzeit, gibt das die Freigabe wie eine erfuellte Strecke.
+        if (!s.released && (inputs.stableNow || inputs.rising) && !inputs.measuredLow && !expired) s = s.copy(released = true)
+        // v2: die Ankuendigung verfaellt nicht. Toni 22.10.: die Sperre faellt VON SELBST, sobald das Tief vorbei und die
+        //   Freigabe wieder erreicht ist - ohne Bestaetigung ("die Bestaetigung ist Mist, da ich es erst sehe, wenn ich aufs
+        //   Handy schaue"). Kein neues Budget, keine Anfangsportion.
+        if (s.earlyLowLocked && s.released && !inputs.measuredLow && !expired) s = s.copy(earlyLowLocked = false)
 
         // 3 Ruecknahme: bei +30 pruefen, danach Wiederfreigabe bei erreichter Schwelle.
         val bestaetigt = s.disturbanceValid && s.disturbanceU >= s.releaseThresholdU
@@ -546,7 +561,8 @@ object ExpectationAccount {
      *  - Lieferbarer Erwartungsanteil: Anfangsportion `alpha * B` bis [EarlySupply.INITIAL_WINDOW_MIN], danach je Zyklus
      *    `min(Budgetrest, maximale Portion, Rest der Menge je Zeitraum)`. Kein Ansparen: der Zeitraumrest kommt aus dem
      *    tatsaechlich Gelieferten, nicht aus verpassten Zyklen. Pause, fehlende Freigabe, Ruecknahme oder Fensterende
-     *    = 0 (die Anforderung X bleibt sichtbar, verpflichtet aber nie).
+     *    = 0 (die Anforderung X bleibt sichtbar, verpflichtet aber nie). Steigt die Mahlzeit ([Inputs.rising]), haelt das
+     *    Einfrieren eine weitere Portion nicht auf (Toni 22.10.).
      */
     private fun stepEarly(
         state: State,
@@ -567,21 +583,22 @@ object ExpectationAccount {
         else EarlySupply.effectiveScale(s.phi0, inputs.ageMin, s.disturbanceU, s.disturbanceValid, curve)
         val e = inputs.early
         val anfang = !s.initialDone
-        // Schritt 2 (Toni): die beobachtete Fortsetzung zaehlt nur fuer weitere Portionen und nie nach einem Tief.
-        val fortsetzung = inputs.continuation?.takeIf { !anfang && !s.earlyAfterLow }
-        // Nach einem Tief rechnet die Anforderung ALLES vorhandene Insulin an, nicht nur das freie (Toni).
+        // Schritt 2 (Toni): die beobachtete Fortsetzung zaehlt nur fuer weitere Portionen. Toni 22.10.: nach einem Tief
+        // geht es weiter wie davor - mit Fortsetzung, und angerechnet wird nur das freie IOB (bis dahin: alles IOB).
+        val fortsetzung = inputs.continuation?.takeIf { !anfang }
         val x = if (expired || curve == null || e == null) 0.0 else EarlySupply.demandU(
-            curve, s.horizonMin, inputs.ageMin, scaleEff, e.iobU, if (s.earlyAfterLow) e.iobU else e.freeIobU,
-            e.existingActionU, e.unitAction, fortsetzung,
+            curve, s.horizonMin, inputs.ageMin, scaleEff, e.iobU, e.freeIobU, e.existingActionU, e.unitAction, fortsetzung,
         )
         val rMess = (inputs.bgMgdl - inputs.targetMgdl) / inputs.isfMgdlPerU - inputs.iobTotalU
         val mess = if (rMess.isFinite()) max(0.0, rMess) else 0.0
         // KANDIDAT W (Pruefstand): nur weitere Portionen - nach einer Wende nach unten keine, in der Wendephase hoechstens
         // Rampe mal eingestellte Rate je Zyklus (klein beginnen, nach Beschleunigung steigern), nie mehr als die
         // Anforderung. Ohne W unveraendert.
-        val wende = inputs.turn?.takeIf { !anfang && !s.earlyAfterLow }
+        val wende = inputs.turn?.takeIf { !anfang }
+        // Toni 22.10.: steigt die Mahlzeit, haelt das Einfrieren eine weitere Portion nicht auf.
+        val eingefroren = s.frozen && !(inputs.rising && !anfang)
         val restEff = when {
-            expired || inputs.paused || !s.released || s.frozen || e == null || pins.withdrawn || s.earlyLowLocked -> 0.0
+            expired || inputs.paused || !s.released || eingefroren || e == null || pins.withdrawn || s.earlyLowLocked -> 0.0
             anfang -> min(s.restU, pins.initialShare * s.a0U)
             wende?.stop == true -> 0.0
             wende?.active == true -> min(
@@ -598,7 +615,7 @@ object ExpectationAccount {
             pins.withdrawn -> "WITHDRAWN"
             !s.released -> "WAITING_FOR_STABILITY"
             inputs.paused -> "PAUSED"
-            s.frozen -> "FROZEN"
+            eingefroren -> "FROZEN"
             s.restU <= EPS_U -> "BUDGET_USED"
             e == null -> "NO_MODEL"
             anfang -> "INITIAL"
@@ -610,9 +627,9 @@ object ExpectationAccount {
             releaseRevoked = revoked, atTs = inputs.nowTs,
             early = EarlyEvaluation(
                 demandU = x, scaleEff = scaleEff, initial = anfang, periodLeftU = zeitraumRestU,
-                // Option A (Toni): nach einem Tief rechnen Guard und Schwanz die Mahlzeit erst wieder an, wenn er sie
-                // ausdruecklich bestaetigt hat und die Sperre aufgehoben ist - dann wie sonst, soweit sie sich zeigt und
-                // hoechstens die Kurve. Solange die Sperre gilt (unbestaetigt oder ein neues Tief), keine Anrechnung.
+                // Nach einem Tief rechnen Guard und Schwanz die Mahlzeit erst wieder an, wenn die Sperre gefallen ist (Toni
+                // 22.10.: von selbst) - dann wie sonst, soweit sie sich zeigt und hoechstens die Kurve. Solange sie gilt,
+                // keine Anrechnung.
                 guardScale = if (curve == null || expired || s.earlyLowLocked) 0.0
                 // KANDIDAT W (Pruefstand): bis zur gebuchten Skalierung nur in der Wendephase.
                 else if (wende?.active == true)
@@ -739,6 +756,35 @@ object ExpectationAccount {
 
         fun stable(sinceTs: Long?, nowTs: Long, minDurationMin: Int): Boolean =
             sinceTs != null && nowTs - sinceTs >= minDurationMin * 60_000L
+    }
+
+    /**
+     * TONI 22.10.: STEIGT DIE MAHLZEIT? Der UKF-Trend ist mindestens [RISING_MGDL_PER_MIN] - in zwei Messwerten
+     * hintereinander, damit ein einzelner Ausreisser nicht zaehlt. Gezaehlt wird je Messwert, nicht je Rechnung: zweimal
+     * auf denselben Wert gerechnet bleibt ein Messwert. Eine Luecke ueber [MAX_OBSERVATION_GAP_MIN] beginnt neu.
+     */
+    data class Rising(
+        /** Messzeit des ersten steigenden Werts der laufenden Reihe [ms]; 0 = keine Reihe. */
+        val sinceTs: Long = 0L,
+        /** Messzeit des zuletzt gezaehlten Werts [ms]; 0 = keiner. */
+        val lastTs: Long = 0L,
+    ) {
+
+        /** Mindestens zwei steigende Messwerte hintereinander. */
+        val rising: Boolean get() = sinceTs > 0L && lastTs > sinceTs
+
+        /** Die Reihe nach dem Messwert zur Zeit [sampleTs] mit dem UKF-Trend [ukfMgdlPerMin]. */
+        fun next(sampleTs: Long, ukfMgdlPerMin: Double): Rising {
+            if (sampleTs <= 0L || sampleTs < lastTs) return Rising()
+            if (sampleTs == lastTs) return this
+            val steigt = ukfMgdlPerMin.isFinite() && ukfMgdlPerMin >= RISING_MGDL_PER_MIN
+            val luecke = lastTs > 0L && sampleTs - lastTs > MAX_OBSERVATION_GAP_MIN * 60_000L
+            return when {
+                !steigt -> Rising(sinceTs = 0L, lastTs = sampleTs)
+                sinceTs > 0L && !luecke -> copy(lastTs = sampleTs)
+                else -> Rising(sinceTs = sampleTs, lastTs = sampleTs)
+            }
+        }
     }
 
     /** Fingerabdruck der Kurve fuer den Export (nicht kryptographisch). */

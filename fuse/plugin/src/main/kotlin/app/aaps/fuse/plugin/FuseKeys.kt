@@ -751,12 +751,6 @@ enum class FuseLongKey(
      *  wird nur noch mitgefuehrt. Lebt und stirbt mit [MealMarkerArmedTs] wie
      *  [MealMarkerNoPrime]. */
     MealMarkerExpectationOnly("fuse_meal_marker_expectation_only", 0, exportable = false),
-    /** EPISODENZUSTAND, kein Setting (E-034 v2, Toni): die ausdrueckliche
-     *  Bestaetigung "Mahlzeit nach Tief" [ms]. Hebt die Tief-Sperre der
-     *  fruehen Versorgung auf, wenn sie nach Sperrbeginn kam und das Tief
-     *  vorbei ist; zaehlt nur fuer die Autorisierung, die nach ihr begann
-     *  oder sie umfasst (Zeitpunkt ab Marker). */
-    EarlySupplyLowConfirmTs("fuse_early_supply_low_confirm_ts", 0, exportable = false),
 
     /**
      * ALTBESTAND, nur noch LESEND: `armedTs*10 + Stufe`.
@@ -1083,6 +1077,7 @@ enum class FuseStringKey(
  * Liste verloere jede Sicherung aus 2.0 diese Werte still - und der Rueckweg ueber die 1.x-APK, die sie wieder
  * liest, fiele auf deren Vorgaben zurueck. 2.0 entfernt Code, keine gespeicherten Einstellungen. Eine alte
  * Sicherung mit diesen Schluesseln laedt unveraendert: sie werden zurueckgeschrieben und bleiben ungelesen.
+ * Ein entfallener ZUSTAND (nicht exportierbar) bleibt ebenso registriert und ebenso nicht exportierbar wie vorher.
  *
  * Kein Einstellungstyp: die Sicherung behandelt jeden gespeicherten Wert gleich, Grenzen und Vorgaben braucht
  * nur ein Schluessel, der gelesen wird.
@@ -1132,6 +1127,10 @@ enum class FuseRetiredKey(
     FastRestraintEnabled("fuse_fast_restraint_enabled"),
     NightDeadbandEnabled("fuse_night_deadband_enabled"),
     ReboundDeadbandEnabled("fuse_rebound_deadband_enabled"),
+
+    // Toni 22.10.2026: die Bestaetigung "Mahlzeit nach Tief" [ms] ist entfallen - die Tief-Sperre faellt von selbst.
+    // ZUSTAND, keine Einstellung: wie im 1.x-Stand nie exportiert.
+    EarlySupplyLowConfirmTs("fuse_early_supply_low_confirm_ts", exportable = false),
 }
 
 /**

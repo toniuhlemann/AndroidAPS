@@ -4,9 +4,9 @@ import app.aaps.fuse.core.controller.ExpectationAccount
 
 /**
  * Konsolidierung 2.0: das MAHLZEITFENSTER des laufenden Kontos - das Ende seiner Autorisierung (Tonis Mahlzeitfrist),
- * solange der Marker, auf den es gebucht wurde, noch gesetzt ist. Massgeblich fuer die Bestaetigung nach Tief und die
- * Anzeige des Fensters; NICHT mehr das 90-min-Markerfenster aus 1.x (`OnsetChannel.MARKER_WINDOW_MIN`), mit dem der
- * Bestaetigungsknopf nach 90 min verschwand, waehrend das Konto noch gesperrt war und das Fenster weiterlief.
+ * solange der Marker, auf den es gebucht wurde, noch gesetzt ist. Massgeblich fuer die Anzeige des Fensters und das
+ * Nacht-Sonderrecht der Evidenz; NICHT mehr das 90-min-Markerfenster aus 1.x (`OnsetChannel.MARKER_WINDOW_MIN`).
+ * (Toni 22.10.: die Bestaetigung nach Tief, fuer die es auch galt, ist entfallen.)
  */
 object MahlzeitFenster {
 
@@ -16,11 +16,4 @@ object MahlzeitFenster {
 
     /** Laeuft das Fenster des Kontos zum gesetzten Marker jetzt noch? */
     fun laeuft(konto: ExpectationAccount.State?, markerTs: Long, now: Long): Boolean = now < endeTs(konto, markerTs)
-
-    /**
-     * Die fruehe Versorgung der laufenden Mahlzeit ist durch ein gemessenes Tief gesperrt, und es gibt ein Budget, das die
-     * Bestaetigung wieder freigeben koennte - im GANZEN Fenster. Ein Konto mit Budget 0 hat nichts freizugeben.
-     */
-    fun gesperrtNachTief(konto: ExpectationAccount.State?, markerTs: Long, now: Long): Boolean =
-        konto != null && laeuft(konto, markerTs, now) && konto.early != null && konto.earlyLowLocked && konto.a0U > 0.0
 }

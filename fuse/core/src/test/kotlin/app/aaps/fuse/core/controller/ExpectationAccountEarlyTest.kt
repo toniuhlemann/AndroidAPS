@@ -114,9 +114,12 @@ class ExpectationAccountEarlyTest {
         assertEquals(summe, s.bookedU, 1e-9)
     }
 
-    /** Schritt 2 (Toni): die beobachtete Fortsetzung der laufenden Mahlzeit - nur fuer weitere Portionen. */
+    /**
+     * Schritt 2 (Toni): die beobachtete Fortsetzung der laufenden Mahlzeit - nur fuer weitere Portionen. Toni 22.10.:
+     * auch nach einem gemessenen Tief der Mahlzeit (bis dahin dort nie).
+     */
     @Test
-    fun `die Fortsetzung zaehlt nur fuer weitere Portionen, nie nach einem Tief und nie nach dem Fenster`() {
+    fun `die Fortsetzung zaehlt nur fuer weitere Portionen - auch nach einem Tief, nie nach dem Fenster`() {
         val f = EarlySupply.Continuation(0.05, 60.0)
         fun mit(s: ExpectationAccount.State, min: Int, bg: Double) = ExpectationAccount.step(
             s,
@@ -142,10 +145,10 @@ class ExpectationAccountEarlyTest {
         assertTrue(laeuft.early!!.demandU > 0.0) { "keine Anforderung trotz laufender Mahlzeit" }
         assertEquals(0.05, laeuft.early!!.continuationUPerMin, 0.0)
         assertTrue(ExpectationAccount.expectationShareU(laeuft) > 0.0)
-        // Nach einem gemessenen Tief in dieser Mahlzeit nicht.
+        // Nach einem gemessenen Tief in dieser Mahlzeit ebenso - die Mahlzeit geht weiter wie davor (Toni 22.10.).
         val (_, nachTief) = mit(s.copy(earlyAfterLow = true), 100, 200.0)
-        assertEquals(0.0, nachTief.early!!.demandU, 0.0)
-        assertEquals(0.0, nachTief.early!!.continuationUPerMin, 0.0)
+        assertEquals(laeuft.early!!.demandU, nachTief.early!!.demandU, 0.0)
+        assertEquals(0.05, nachTief.early!!.continuationUPerMin, 0.0)
         // Nach dem Fenster der Vollmacht nicht.
         var t = s
         for (m in 100..119) t = schritt(t, m, bg = 200.0).first
@@ -208,16 +211,16 @@ class ExpectationAccountEarlyTest {
 
     private fun ts(min: Int) = t0 + min * 60_000L
 
-    /** Ein Zyklus mit den Groessen der Tief-Regel: gemessenes Tief, Neustart, Strecke, Bestaetigung nach Tief. */
+    /** Ein Zyklus mit den Groessen der Tief-Regel: gemessenes Tief, Neustart, Strecke, steigende Mahlzeit. */
     private fun zyklus(
         s: ExpectationAccount.State, min: Int, bg: Double = 120.0, tief: Boolean = false, neustart: Boolean = false,
-        stabil: Boolean = true, bestaetigt: Long = 0L, early: ExpectationAccount.EarlyInputs? = eingaben(),
+        stabil: Boolean = true, steigt: Boolean = false, early: ExpectationAccount.EarlyInputs? = eingaben(),
     ) = ExpectationAccount.step(
         s,
         ExpectationAccount.Inputs(
             nowTs = ts(min), ageMin = min.toDouble(), bgMgdl = bg, targetMgdl = 100.0, isfMgdlPerU = 50.0,
             iobTotalU = early?.iobU ?: 0.0, activityUPerMin = 0.0, paused = false, stableNow = stabil,
-            measuredLow = tief || neustart, lowLocksEarlySupply = tief, confirmedAfterLowTs = bestaetigt, early = early,
+            measuredLow = tief || neustart, lowLocksEarlySupply = tief, rising = steigt, early = early,
         ),
     )
 
@@ -231,18 +234,30 @@ class ExpectationAccountEarlyTest {
         val (wieder, eW) = schritt(nachNeustart, 6)
         assertTrue(wieder.released)
         assertTrue(eW.restEffU > 0.0)
-        // Gemessenes Tief: gesperrt - auch nach neuer Strecke und steigendem Zucker (Rescue) kein Erwartungsanteil.
+        // Gemessenes Tief: gesperrt, solange es misst und bis die Strecke wieder erfuellt ist - auch bei steigendem
+        // Zucker ohne Strecke (Rescue) kein Erwartungsanteil.
         s = zyklus(s, 5, tief = true).first
         assertTrue(s.earlyLowLocked && s.earlyAfterLow && s.initialDone)
         assertEquals(ts(5), s.earlyLowLockSinceTs)
-        for (m in 6..40) {
-            val (s2, e) = schritt(s, m, bg = 100.0 + 3.0 * (m - 5))
+        for (m in 6..8) {
+            val (s2, e) = zyklus(s, m, bg = 60.0, tief = true)
+            assertEquals(0.0, e.restEffU, 0.0, "Minute $m")
+            assertEquals("LOCKED_BY_LOW", e.status)
+            s = s2
+        }
+        for (m in 9..20) {
+            val (s2, e) = zyklus(s, m, bg = 60.0 + 3.0 * (m - 8), stabil = false)
             assertEquals(0.0, e.restEffU, 0.0, "Minute $m")
             assertEquals(0.0, e.early!!.guardScale, 0.0)
             assertEquals("LOCKED_BY_LOW", e.status)
             s = s2
         }
-        assertTrue(s.released) { "Probe zeigt nichts: die Strecke gibt die Freigabe zurueck, nur die Sperre haelt" }
+        assertTrue(s.earlyLowLocked)
+        // Toni 22.10.: ist das Tief vorbei und die Strecke erfuellt, faellt die Sperre von selbst - ohne Bestaetigung.
+        val (frei, e) = zyklus(s, 21, bg = 100.0)
+        assertFalse(frei.earlyLowLocked)
+        assertEquals("ACTIVE", e.status)
+        assertTrue(e.restEffU > 0.0)
         // Konsolidierung 2.0: das Konto v1 (ohne die Regel) ist entfallen - auch ein Konto ohne Budget sperrt.
         val ohneBudget = ExpectationAccount.armWithoutExpectation(t0, t0 + 120 * 60_000L, true, t0, 100.0, 50.0)
         assertTrue(zyklus(schritt(ohneBudget, 0).first, 5, tief = true).first.earlyLowLocked)
@@ -250,36 +265,43 @@ class ExpectationAccountEarlyTest {
 
     /** Bank N2, W3: das Tief kam, waehrend die Freigabe noch auf die Strecke wartete - es sperrte bisher nichts. */
     @Test
-    fun `ein Tief vor der Freigabe sperrt ebenso - kein Anstieg allein gibt sie frei`() {
+    fun `ein Tief vor der Freigabe sperrt ebenso - bis es vorbei und die Freigabe erreicht ist`() {
         var s = zyklus(konto(stabil = false), 0, bg = 95.0, stabil = false).first
         assertFalse(s.released)
         s = zyklus(s, 5, bg = 60.0, tief = true, stabil = false).first
         assertTrue(s.earlyLowLocked && s.initialDone)
-        for (m in 6..60) {
-            val (s2, e) = zyklus(s, m, bg = 60.0 + 2.0 * (m - 5))
+        // Ein Anstieg ohne Strecke und ohne "die Mahlzeit steigt" gibt nichts frei (Rescue unter der Grenze).
+        for (m in 6..30) {
+            val (s2, e) = zyklus(s, m, bg = 60.0 + 2.0 * (m - 5), stabil = false)
             assertEquals(0.0, e.restEffU, 0.0, "Minute $m")
             assertEquals("LOCKED_BY_LOW", e.status)
             s = s2
         }
-        assertTrue(s.released) { "Probe zeigt nichts: ohne Sperre floesse der Rescue-Anstieg als Mahlzeit" }
+        assertFalse(s.released)
+        // Toni 22.10.: steigt die Mahlzeit (ueber der Grenze, ohne Tief - das prueft der Runner), gibt das die Freigabe,
+        // und die Sperre faellt von selbst.
+        val (frei, e) = zyklus(s, 31, bg = 112.0, stabil = false, steigt = true)
+        assertTrue(frei.released)
+        assertFalse(frei.earlyLowLocked)
+        assertTrue(e.restEffU > 0.0)
     }
 
     @Test
-    fun `die Bestaetigung hebt die Sperre auf - erst nach dem Tief, ohne neues Budget und ohne Anfangsportion`() {
+    fun `die Sperre faellt von selbst - erst nach dem Tief, ohne neues Budget und ohne Anfangsportion`() {
         var s = zyklus(konto(stabil = false), 0, bg = 95.0, stabil = false).first
         val budget = s.a0U
         s = zyklus(s, 5, bg = 62.0, tief = true, stabil = false).first
-        // Bestaetigt waehrend des Tiefs: gesperrt, solange es misst ...
+        // Gesperrt, solange das Tief misst - auch wenn der Aufrufer (falsch) Stabilitaet meldet ...
         for (m in 6..8) {
-            val (s2, e) = zyklus(s, m, bg = 60.0, tief = true, stabil = false, bestaetigt = ts(6))
+            val (s2, e) = zyklus(s, m, bg = 60.0, tief = true)
             assertEquals(0.0, e.restEffU, 0.0, "Minute $m")
             assertTrue(s2.earlyLowLocked)
             s = s2
         }
         // ... und bis die Strecke erfuellt ist.
-        s = zyklus(s, 9, bg = 95.0, stabil = false, bestaetigt = ts(6)).first
+        s = zyklus(s, 9, bg = 95.0, stabil = false).first
         assertTrue(s.earlyLowLocked)
-        val (frei, e) = zyklus(s, 10, bg = 130.0, bestaetigt = ts(6))
+        val (frei, e) = zyklus(s, 10, bg = 130.0)
         assertFalse(frei.earlyLowLocked)
         assertTrue(e.restEffU > 0.0)
         assertEquals("ACTIVE", e.status)
@@ -288,47 +310,95 @@ class ExpectationAccountEarlyTest {
         assertEquals(budget, frei.a0U, 0.0)
         // Vor +20 rechnen Guard und Schwanz ohnehin nichts an.
         assertEquals(0.0, e.early!!.guardScale, 0.0)
-        // Option A (Toni): nach der Bestaetigung rechnen sie die Mahlzeit wieder an, soweit sie sich zeigt (steigender
-        // Zucker), hoechstens die Kurve. Waehrend der Sperre (oben) nie.
+        // Danach rechnen sie die Mahlzeit wieder an, soweit sie sich zeigt (steigender Zucker), hoechstens die Kurve.
+        // Waehrend der Sperre (oben) nie.
         var t = frei
         var spaet = e
         for (m in 11..30) {
-            val (t2, e2) = zyklus(t, m, bg = 130.0 + 4.0 * (m - 10), bestaetigt = ts(6))
+            val (t2, e2) = zyklus(t, m, bg = 130.0 + 4.0 * (m - 10))
             t = t2
             spaet = e2
         }
         assertTrue(t.earlyAfterLow && !t.earlyLowLocked)
-        assertTrue(spaet.early!!.guardScale > 0.0) { "nach der Bestaetigung keine Anrechnung im Guard" }
+        assertTrue(spaet.early!!.guardScale > 0.0) { "nach der Sperre keine Anrechnung im Guard" }
         assertTrue(spaet.early!!.guardScale <= 1.0)
     }
 
     @Test
-    fun `eine Bestaetigung vor dem Sperrbeginn zaehlt nicht - ein neues Tief sperrt erneut`() {
+    fun `ein neues Tief sperrt erneut - und die Sperre faellt wieder von selbst`() {
         var s = zyklus(konto(stabil = false), 0, bg = 95.0, stabil = false).first
         s = zyklus(s, 5, bg = 62.0, tief = true, stabil = false).first
-        s = zyklus(s, 10, bestaetigt = ts(6)).first
+        s = zyklus(s, 10).first
         assertFalse(s.earlyLowLocked)
-        s = zyklus(s, 20, bg = 60.0, tief = true, bestaetigt = ts(6)).first
+        s = zyklus(s, 20, bg = 60.0, tief = true).first
         assertTrue(s.earlyLowLocked)
         assertEquals(ts(20), s.earlyLowLockSinceTs)
-        // Die alte Bestaetigung liegt vor dem neuen Sperrbeginn.
-        for (m in 21..30) s = zyklus(s, m, bestaetigt = ts(6)).first.also { assertTrue(it.earlyLowLocked, "Minute $m") }
-        assertFalse(zyklus(s, 31, bestaetigt = ts(30)).first.earlyLowLocked)
+        for (m in 21..30) s = zyklus(s, m, stabil = false).first.also { assertTrue(it.earlyLowLocked, "Minute $m") }
+        assertFalse(zyklus(s, 31).first.earlyLowLocked)
     }
 
+    /** Toni 22.10.: nach einem Tief geht es weiter wie davor - bis dahin rechnete die Anforderung alles IOB an. */
     @Test
-    fun `nach einem Tief rechnet die Anforderung alles vorhandene Insulin an`() {
+    fun `nach einem Tief rechnet die Anforderung wie davor nur das freie Insulin an`() {
         val mitIob = ExpectationAccount.EarlyInputs(
             iobU = 2.0, freeIobU = 0.5, existingActionU = { t -> 2.0 * wirkung(t) }, unitAction = wirkung,
         )
         var s = zyklus(konto(stabil = false), 0, bg = 95.0, stabil = false).first
         s = zyklus(s, 5, bg = 62.0, tief = true, stabil = false).first
-        val (_, e) = zyklus(s, 10, bestaetigt = ts(6), early = mitIob)
+        val (frei, e) = zyklus(s, 10, early = mitIob)
+        assertTrue(frei.earlyAfterLow && !frei.earlyLowLocked)
         val kurve = requireNotNull(ExpectationAccount.Curve.of(werte))
         val alles = EarlySupply.demandU(kurve, 120, 10.0, e.early!!.scaleEff, 2.0, 2.0, mitIob.existingActionU, wirkung)
         val nurFrei = EarlySupply.demandU(kurve, 120, 10.0, e.early!!.scaleEff, 2.0, 0.5, mitIob.existingActionU, wirkung)
-        assertEquals(alles, e.early!!.demandU, 1e-12)
+        assertEquals(nurFrei, e.early!!.demandU, 1e-12)
         assertTrue(alles < nurFrei) { "Probe zeigt nichts: alles = $alles, nur frei = $nurFrei" }
+    }
+
+    // ---- Toni 22.10.: die Mahlzeit steigt ------------------------------------------------------------------------
+
+    @Test
+    fun `die Mahlzeit steigt erst nach zwei steigenden Messwerten hintereinander`() {
+        val r1 = ExpectationAccount.Rising().next(ts(1), 1.5)
+        assertFalse(r1.rising) { "ein einzelner Messwert" }
+        assertFalse(r1.next(ts(1), 1.5).rising) { "zweimal auf denselben Messwert gerechnet" }
+        val r2 = r1.next(ts(2), ExpectationAccount.RISING_MGDL_PER_MIN)
+        assertTrue(r2.rising)
+        assertTrue(r2.next(ts(3), 2.0).rising)
+        // Unter der Schwelle (auch knapp) oder nicht rechenbar: die Reihe beginnt neu.
+        assertFalse(r2.next(ts(3), 0.99).rising)
+        assertFalse(r2.next(ts(3), 0.99).next(ts(4), 1.2).rising)
+        assertFalse(r2.next(ts(3), Double.NaN).rising)
+        // Eine Luecke ueber 10 min beginnt neu, ebenso ein Messwert aus der Vergangenheit oder ohne Zeit.
+        assertFalse(r1.next(ts(12), 1.5).rising)
+        assertTrue(r1.next(ts(11), 1.5).rising)
+        assertFalse(r2.next(ts(1), 1.5).rising)
+        assertFalse(r1.next(0L, 1.5).rising)
+    }
+
+    @Test
+    fun `steigt die Mahlzeit, gibt das die Freigabe wie eine erfuellte Strecke - nie im Zyklus eines Tiefs`() {
+        var s = konto(stabil = false)
+        for (m in 0..25) s = zyklus(s, m, bg = 95.0, stabil = false).first
+        assertFalse(s.released)
+        val (frei, e) = zyklus(s, 26, bg = 110.0, stabil = false, steigt = true)
+        assertTrue(frei.released)
+        assertFalse(e.early!!.initial)
+        assertTrue(e.restEffU > 0.0)
+        assertFalse(zyklus(s, 26, bg = 60.0, tief = true, stabil = false, steigt = true).first.released)
+    }
+
+    @Test
+    fun `steigt die Mahlzeit, haelt das Einfrieren die weitere Portion nicht auf`() {
+        var s = konto()
+        for (m in 0..30) s = schritt(s, m).first
+        assertTrue(s.frozen)
+        val (_, eingefroren) = schritt(s, 31)
+        assertEquals(0.0, eingefroren.restEffU, 0.0)
+        assertEquals("FROZEN", eingefroren.status)
+        val (s2, steigend) = zyklus(s, 31, bg = 100.0, steigt = true)
+        assertTrue(s2.frozen) { "die Ruecknahme bleibt stehen - sie haelt nur nicht auf, solange der Zucker steigt" }
+        assertTrue(steigend.restEffU > 0.0)
+        assertEquals("ACTIVE", steigend.status)
     }
 
     /** Toni: Freigabe und Skalierer sind zwei Fragen - ein Fallen bei hohem Zucker ist kein Start nach Tief. */
@@ -386,12 +456,12 @@ class ExpectationAccountEarlyTest {
             nachTief, erwU = e0.restEffU, bookedAtTs = e0.atTs, initialNeverSent = true,
         )
         assertTrue(storno.initialDone)
-        val (_, e) = schritt(storno, 4)
+        // Toni 22.10.: die Sperre faellt von selbst - danach weitere Portionen, aber nie wieder die Anfangsportion.
+        val (frei, e) = schritt(storno, 4)
+        assertFalse(frei.earlyLowLocked)
+        assertTrue(frei.initialDone)
         assertFalse(e.early!!.initial)
-        assertEquals(0.0, e.restEffU, 0.0)
-        // Auch die Bestaetigung nach dem Tief bringt keine Anfangsportion zurueck.
-        val bestaetigt = zyklus(storno, 30, bestaetigt = ts(25)).first
-        assertTrue(bestaetigt.initialDone)
+        assertTrue(e.restEffU <= einstellung.maxPortionU + 1e-12)
     }
 
     /** Ein Beweis nach dem Ende des Anfangsfensters: es bleibt bei Portionen. */
@@ -486,9 +556,9 @@ class ExpectationAccountEarlyTest {
         assertEquals(0.0, ExpectationAccount.expectationShareU(stopp), 0.0)
         // Ohne Wende (Produkt) unveraendert.
         assertEquals(ohne, mitWende(s, 40, 180.0, null).second)
-        // Nach einem Tief dieser Mahlzeit gilt die Wende nicht.
+        // Toni 22.10.: nach einem Tief dieser Mahlzeit wie davor - auch die Wende gilt.
         val nachTief = s.copy(earlyAfterLow = true)
-        assertEquals(schritt(nachTief, 40, bg = 180.0).second, mitWende(nachTief, 40, 180.0, wendeStopp).second)
+        assertEquals(stopp, mitWende(nachTief, 40, 180.0, wendeStopp).second)
     }
 
     @Test

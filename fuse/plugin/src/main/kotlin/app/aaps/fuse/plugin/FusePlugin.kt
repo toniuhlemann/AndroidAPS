@@ -949,8 +949,6 @@ class FusePlugin(
         preferences.put(FuseLongKey.MealMarkerNoPrime, if (ohneVorschuss) 1L else 0L)
         // "Ohne Vorschuss" geht vor: beide zugleich heisst ohne Vorschuss.
         preferences.put(FuseLongKey.MealMarkerExpectationOnly, if (nurErwartung && !ohneVorschuss) 1L else 0L)
-        // Eine Bestaetigung nach Tief gehoert zur vorigen Mahlzeit (sie zaehlt ohnehin nur ab Marker) - aufraeumen.
-        preferences.put(FuseLongKey.EarlySupplyLowConfirmTs, 0L)
         // DER EINZIGE ORT, an dem ein Druck als BEOBACHTET gilt. Er steht
         // absichtlich hier und nicht beim Nachfuellen des Marker-Rings: der
         // liest den Trail und kennt Druecke von vor zwei Stunden.
@@ -1338,34 +1336,12 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
 
     override fun fuseMarkerEreignis(): String = markerEreignisKennung()
 
-    /**
-     * E-034 v2 (Toni): die fruehe Versorgung der laufenden Mahlzeit ist durch ein gemessenes Tief gesperrt - und es
-     * gibt ein Budget, das die Bestaetigung wieder freigeben koennte. Ein Konto mit Budget 0 ("Nur Marker", fruehe
-     * Versorgung aus) liefert ohnehin keinen Erwartungsanteil; der Knopf haette dort nichts freizugeben.
-     *
-     * Im GANZEN Mahlzeitfenster des Kontos ([MahlzeitFenster]) - bisher nur im 90-min-Markerfenster aus 1.x: danach
-     * verschwand der Knopf, waehrend das Konto gesperrt blieb und das Fenster weiterlief (Geraetebefund).
-     */
-    fun fruehGesperrtNachTief(now: Long): Boolean =
-        MahlzeitFenster.gesperrtNachTief(ledgerAdapter.episodes.expectation, mealMarkerArmedTs(), now)
-
     /** Ende des Mahlzeitfensters des laufenden Kontos [ms] (Tonis Frist); 0 = kein laufendes Konto zum gesetzten Marker. */
     fun mahlzeitFensterEndeTs(): Long = MahlzeitFenster.endeTs(ledgerAdapter.episodes.expectation, mealMarkerArmedTs())
 
-    /** Die Sperre ist schon bestaetigt (ab Sperrbeginn) - sie faellt, sobald das Tief vorbei und die Strecke erfuellt ist. */
-    fun fruehNachTiefBestaetigt(): Boolean {
-        val k = ledgerAdapter.episodes.expectation ?: return false
-        val t = preferences.get(FuseLongKey.EarlySupplyLowConfirmTs)
-        return k.earlyLowLocked && t > 0L && t >= k.earlyLowLockSinceTs
-    }
-
-    /**
-     * Toni: "Mahlzeit nach Tief bestaetigen" - die ausdrueckliche Wiederfreigabe. Kein neues Budget; die Sperre faellt
-     * erst, wenn das Tief vorbei und die Strecke erfuellt ist, und die weiteren Portionen rechnen alles IOB an.
-     */
-    fun bestaetigeMahlzeitNachTief(now: Long) {
-        if (fruehGesperrtNachTief(now)) preferences.put(FuseLongKey.EarlySupplyLowConfirmTs, now)
-    }
+    // Toni 22.10.: "Mahlzeit nach Tief bestaetigen" ist entfallen - die Tief-Sperre faellt von selbst, sobald das Tief
+    // vorbei und die Freigabe wieder erreicht ist ("die Bestaetigung ist Mist, da ich es erst sehe, wenn ich aufs Handy
+    // schaue").
 
     fun mealMarkerActive(now: Long): Boolean {
         val ts = mealMarkerArmedTs()

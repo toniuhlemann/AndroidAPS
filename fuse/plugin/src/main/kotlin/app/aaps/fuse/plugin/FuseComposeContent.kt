@@ -48,8 +48,8 @@ import kotlinx.coroutines.withContext
 
 /**
  * Der FUSE-Reiter (v4: Compose statt FuseFragment). Inhalt und Bedienung wie im Fork: Betriebssicht aus
- * [FuseDashboardModel], Mahlzeiten-Knopf mit Rueckfrage und Ruecknahme-Frist, "Mahlzeit nach Tief
- * bestaetigen", Einstellungen, und die Details aus [FuseScreenModel].
+ * [FuseDashboardModel], Mahlzeiten-Knopf mit Rueckfrage und Ruecknahme-Frist, Einstellungen, und die Details aus
+ * [FuseScreenModel]. Toni 22.10.: "Mahlzeit nach Tief bestaetigen" ist entfallen - die Tief-Sperre faellt von selbst.
  */
 class FuseComposeContent(
     private val plugin: FusePlugin,
@@ -70,8 +70,6 @@ private class FuseAnsicht(
     val markerAktiv: Boolean,
     /** Das Mahlzeitfenster des Kontos laeuft noch (nach den ersten 90 min startet ein Druck dann eine NEUE Mahlzeit). */
     val fensterLaeuft: Boolean,
-    val fruehGesperrt: Boolean,
-    val fruehBestaetigt: Boolean,
 )
 
 private suspend fun ansicht(plugin: FusePlugin, now: Long): FuseAnsicht {
@@ -93,8 +91,7 @@ private suspend fun ansicht(plugin: FusePlugin, now: Long): FuseAnsicht {
         plugin.lastOutcome, plugin.lastAPSResult, now, marker, ledger,
         settings = FuseSettingsReport.build(plugin.preferences),
     )
-    val gesperrt = plugin.fruehGesperrtNachTief(now)
-    return FuseAnsicht(dashboard, details, plugin.mealMarkerActive(now), fensterEnde > now, gesperrt, gesperrt && plugin.fruehNachTiefBestaetigt())
+    return FuseAnsicht(dashboard, details, plugin.mealMarkerActive(now), fensterEnde > now)
 }
 
 @Composable
@@ -106,7 +103,6 @@ private fun FuseScreen(plugin: FusePlugin, dateUtil: DateUtil, rxBus: RxBus, onS
     var rueckfrage by remember { mutableStateOf<Pair<FuseOverviewSource.MarkerPromptFacts, String>?>(null) }
     var ruecknahmeFaellig by remember { mutableStateOf<Long?>(null) }
     var meldung by remember { mutableStateOf<String?>(null) }
-    var tiefBestaetigen by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { rxBus.toFlow(EventAPSCalculationFinished::class).collect { aktualisierung++ } }
     LaunchedEffect(aktualisierung) {
@@ -173,11 +169,6 @@ private fun FuseScreen(plugin: FusePlugin, dateUtil: DateUtil, rxBus: RxBus, onS
                 }
             }
         }
-        if (s?.fruehGesperrt == true) {
-            Button(onClick = { tiefBestaetigen = true }, enabled = !s.fruehBestaetigt, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(TextRef.AndroidRes(if (s.fruehBestaetigt) R.string.fuse_early_low_confirm_waiting else R.string.fuse_early_low_confirm)))
-            }
-        }
         if (s == null) Text("...")
         else {
             val d = s.dashboard
@@ -233,21 +224,6 @@ private fun FuseScreen(plugin: FusePlugin, dateUtil: DateUtil, rxBus: RxBus, onS
                 }
             },
             onCancel = { rueckfrage = null },
-        )
-    }
-    if (tiefBestaetigen) {
-        AlertDialog(
-            onDismissRequest = { tiefBestaetigen = false },
-            title = { Text(stringResource(TextRef.AndroidRes(R.string.fuse_early_low_confirm_title))) },
-            text = { Text(stringResource(TextRef.AndroidRes(R.string.fuse_early_low_confirm_message))) },
-            confirmButton = {
-                TextButton(onClick = {
-                    tiefBestaetigen = false
-                    plugin.bestaetigeMahlzeitNachTief(dateUtil.now())
-                    aktualisierung++
-                }) { Text(stringResource(CoreUiStrings.ok)) }
-            },
-            dismissButton = { TextButton(onClick = { tiefBestaetigen = false }) { Text(stringResource(CoreUiStrings.cancel)) } },
         )
     }
     meldung?.let { text ->

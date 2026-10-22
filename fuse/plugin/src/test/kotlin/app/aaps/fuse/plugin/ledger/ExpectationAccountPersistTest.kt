@@ -189,7 +189,7 @@ class ExpectationAccountPersistTest {
         val gesperrt = k.copy(earlyLowLocked = true, earlyLowLockSinceTs = k.authId + 300_000L, earlyAfterLow = true)
         val json = LedgerCodec.encodeEpisodes(episoden(gesperrt))
         assertEquals(gesperrt, LedgerCodec.decodeEpisodes(json).expectation)
-        // Wieder frei nach Bestaetigung: das "nach Tief" bleibt.
+        // Wieder frei (Toni 22.10.: von selbst, nach dem Tief): das "nach Tief" bleibt.
         val frei = gesperrt.copy(earlyLowLocked = false)
         assertEquals(frei, LedgerCodec.decodeEpisodes(LedgerCodec.encodeEpisodes(episoden(frei))).expectation)
         val f = json.getJSONObject("earlySupply")
@@ -197,7 +197,7 @@ class ExpectationAccountPersistTest {
         val ohne = LedgerCodec.decodeEpisodes(json).expectation!!
         assertEquals(false, ohne.earlyLowLocked)
         assertEquals(false, ohne.earlyAfterLow)
-        // Ein v2-Stand mit dem frueheren Ende fuer immer: gesperrt seit dem Marker, nur eine Bestaetigung hebt es auf.
+        // Ein v2-Stand mit dem frueheren Ende fuer immer: gesperrt seit dem Marker, bis die Freigabe wieder erreicht ist.
         f.put("endedByLow", true)
         val alt = LedgerCodec.decodeEpisodes(json).expectation!!
         assertEquals(true, alt.earlyLowLocked)

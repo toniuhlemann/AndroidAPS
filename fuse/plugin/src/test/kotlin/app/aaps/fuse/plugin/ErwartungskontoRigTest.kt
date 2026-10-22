@@ -23,6 +23,8 @@ import app.aaps.core.objects.constraints.ConstraintObject
 import app.aaps.core.objects.extensions.combine
 import app.aaps.core.objects.extensions.round
 import app.aaps.core.objects.profile.ProfileSealed
+import app.aaps.fuse.core.controller.AuthorizedLift
+import app.aaps.fuse.core.controller.EarlySupply
 import app.aaps.fuse.core.controller.ExpectationAccount
 import app.aaps.fuse.core.controller.LivenessChannel
 import app.aaps.fuse.core.controller.LowThreatGate
@@ -83,8 +85,6 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     private var smbSchalterAn = true
     private var ohneVorschuss = false
     private var nurErwartung = false
-    /** E-034 v2: die Bestaetigung "Mahlzeit nach Tief" [ms]; 0 = keine. */
-    private var bestaetigtNachTief = 0L
 
     /** Erzwungene Ablehnung der Bahn (predictorfreier Markerpfad), `null` = echte Bahn. */
     private var predictReject: app.aaps.fuse.core.predictor.PredictorReason? = null
@@ -218,7 +218,6 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenAnswer { markerAt }
         whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenAnswer { if (ohneVorschuss) 1L else 0L }
         whenever(preferences.get(FuseLongKey.MealMarkerExpectationOnly)).thenAnswer { if (nurErwartung) 1L else 0L }
-        whenever(preferences.get(FuseLongKey.EarlySupplyLowConfirmTs)).thenAnswer { bestaetigtNachTief }
     }
 
     private fun druecken(t: Long) {
@@ -456,7 +455,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             val k = vorher ?: throw AssertionError("${f.name}: Vorbedingung - vor dem Neustart ein Konto")
             assertEquals(k, nachher, "${f.name}: das gespeicherte Konto kommt unveraendert zurueck")
             if (f === fStabil) assertTrue(k.bookedU > 0.0 && k.initialDone) { "${f.name}: Vorbedingung - Verbrauch" }
-            if (f === fTiefNachDruck) assertTrue(k.earlyLowLocked && k.earlyAfterLow) { "${f.name}: Vorbedingung - Sperre" }
+            if (f === fTiefNachDruck) assertTrue(k.earlyAfterLow && k.earlyLowLockSinceTs > 0L) { "${f.name}: Vorbedingung - Tief vermerkt" }
             val danach = zyklen.filter { it.minute in neustartMin until 120 }
             assertTrue(danach.isNotEmpty())
             for (z in danach) {
@@ -471,7 +470,9 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
                 assertTrue(n.portions.containsAll(k.portions.filter { it.ts > z.o.computeTs - 30 * 60_000L })) {
                     "${f.name} Minute ${z.minute}: Portionen verloren"
                 }
-                if (k.earlyLowLocked) assertTrue(n.earlyLowLocked) { "${f.name} Minute ${z.minute}: Sperre verloren" }
+                assertTrue(n.earlyAfterLow || !k.earlyAfterLow) { "${f.name} Minute ${z.minute}: Tief-Vermerk verloren" }
+                // Im ersten Zyklus danach nimmt der Neustart die Freigabe - eine Sperre kann dort nicht fallen.
+                if (k.earlyLowLocked && z === danach.first()) assertTrue(n.earlyLowLocked) { "${f.name}: Sperre beim Neustart verloren" }
             }
         }
     }
@@ -872,11 +873,13 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
     /**
      * Gemeinsamer Ablauf der Tief-Proben (v2, Toni): freigegeben vor dem Tief, Ruecknahme mit dem erwarteten Grund,
-     * und ab da SPERRT das Tief den Erwartungsanteil der Mahlzeit - auch wenn die Strecke die Freigabe zurueckgibt,
-     * auch ueber einen Neustart. Aufheben koennte nur eine ausdrueckliche Bestaetigung (hier keine).
+     * und ab da SPERRT das Tief den Erwartungsanteil der Mahlzeit, bis die Freigabe wieder erreicht ist - auch ueber
+     * einen Neustart. Toni 22.10.: dann faellt die Sperre von selbst, ohne Bestaetigung, und nie, solange das Tief misst.
      */
     private suspend fun pruefeTief(dir: File, abbruch: IntRange?, neustartMin: Int?, grund: String) {
         nurErwartung = true
+        var vorNeustart: ExpectationAccount.State? = null
+        var nachNeustart: ExpectationAccount.State? = null
         val alle = try {
             markerAt = 0L
             markerPress = 0L
@@ -885,10 +888,19 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
                 whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(
                     if (abbruch != null && m in abbruch) UNGUELTIGE_REBOUND_DAUER else FuseIntKey.ReboundWindowMin.defaultValue,
                 )
-                if (m == neustartMin) neustart(dir, fTiefNachDruck, null)
+                if (m == neustartMin) {
+                    vorNeustart = ledger.episodes.expectation
+                    neustart(dir, fTiefNachDruck, null)
+                    nachNeustart = ledger.episodes.expectation
+                }
             })
         } finally {
             nurErwartung = false
+        }
+        if (neustartMin != null) {
+            val k = vorNeustart ?: throw AssertionError("vor dem Neustart kein Konto")
+            assertTrue(k.earlyAfterLow) { "Probe zeigt nichts: das Tief ist vor dem Neustart nicht vermerkt" }
+            assertEquals(k, nachNeustart, "das Konto samt Tief-Vermerk und Sperre kommt unveraendert zurueck")
         }
         val tief = alle.filter { it.o.step?.safetyReasons?.isNotEmpty() == true }
         assertTrue(tief.isNotEmpty()) { "die Probe erreicht kein gemessenes Tief" }
@@ -905,14 +917,20 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         val ruecknahme = voll.first { it.o.computeTs >= ersterTiefTs && it.o.erwartungskonto!!.zyklus!!.eval.releaseRevoked }
         assertEquals(grund, ruecknahme.o.erwartungskonto!!.zyklus!!.ruecknahmeGrund)
         val danach = voll.filter { it.o.computeTs >= ruecknahme.o.computeTs }
-        assertTrue(danach.all { it.konto?.earlyLowLocked == true && it.konto?.earlyAfterLow == true }) { "nicht gesperrt" }
-        assertEquals(0.0, danach.sumOf { it.dErw() }, 0.0)
-        // Gegenprobe: die Strecke gibt die Freigabe zurueck - nur die Sperre haelt den Erwartungsanteil.
-        assertTrue(danach.any { it.o.erwartungskonto!!.zyklus!!.eval.released }) { "keine Wiederfreigabe - Probe zeigt nichts" }
+        assertTrue(danach.all { it.konto?.earlyAfterLow == true }) { "das Tief ist nicht vermerkt" }
+        assertTrue(danach.first().konto?.earlyLowLocked == true) { "nicht gesperrt" }
+        // Toni 22.10.: die Sperre faellt von selbst - mit der Wiederfreigabe, nie im gemessenen Tief.
+        val frei = danach.firstOrNull { it.konto?.earlyLowLocked == false } ?: throw AssertionError("die Sperre faellt nie")
+        assertTrue(frei.o.erwartungskonto!!.zyklus!!.eval.released) { "Sperre ohne Freigabe gefallen" }
+        assertTrue(frei.o.step?.safetyReasons?.isEmpty() == true) { "Sperre gefallen, obwohl das Tief noch misst" }
+        val gesperrt = danach.filter { it.o.computeTs < frei.o.computeTs }
+        assertTrue(gesperrt.all { it.konto?.earlyLowLocked == true }) { "Sperre zwischendurch gefallen" }
+        assertEquals(0.0, gesperrt.sumOf { it.dErw() }, 0.0)
+        assertTrue(alle.filter { it.o.step?.safetyReasons?.isNotEmpty() == true }.none { it.dErw() > 0.0 }) { "Portion im Tief" }
     }
 
     @Test
-    fun `ein gemessenes Tief nimmt die Freigabe zurueck und sperrt den Erwartungsanteil`(@TempDir dir: File) =
+    fun `ein gemessenes Tief nimmt die Freigabe zurueck und sperrt, bis die Freigabe wieder erreicht ist`(@TempDir dir: File) =
         runBlocking<Unit> { pruefeTief(dir, abbruch = null, neustartMin = null, grund = "LOW") }
 
     /** Codex-Befund P0: das Tief faellt nur in Abbruchzyklen vor dem Kontoschritt. */
@@ -920,12 +938,15 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     fun `ein Tief in Abbruchzyklen sperrt ebenso`(@TempDir dir: File) =
         runBlocking<Unit> { pruefeTief(dir, abbruch = 5..13, neustartMin = null, grund = "LOW_ON_ABORT") }
 
-    /** Codex-Befund P0: Tief in Abbruchzyklen, danach ein Neustart - die Sperre geht nicht verloren. */
+    /** Codex-Befund P0: Tief in Abbruchzyklen, danach ein Neustart - Tief-Vermerk und Sperre gehen nicht verloren. */
     @Test
-    fun `nach Tief im Abbruch und Neustart bleibt die Sperre`(@TempDir dir: File) =
+    fun `nach Tief im Abbruch und Neustart geht nichts verloren`(@TempDir dir: File) =
         runBlocking<Unit> { pruefeTief(dir, abbruch = 5..13, neustartMin = 16, grund = "LOW_ON_ABORT") }
 
-    /** Codex-Befund P0: auch ohne Tief verlangt eine nach dem Neustart noch freigegebene Episode die Strecke neu. */
+    /**
+     * Codex-Befund P0: auch ohne Tief verlangt eine nach dem Neustart noch freigegebene Episode die Strecke neu - oder,
+     * seit Toni 22.10., eine steigende Mahlzeit (zwei steigende Messwerte nach dem Neustart).
+     */
     @Test
     fun `nach einem Neustart braucht eine freigegebene Episode die Strecke neu`(@TempDir dir: File) = runBlocking<Unit> {
         val neustartMin = 30
@@ -938,9 +959,12 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertEquals("RESTART", erster.o.erwartungskonto!!.zyklus!!.ruecknahmeGrund)
         val wieder = voll.firstOrNull { it.minute > neustartMin && it.o.erwartungskonto!!.zyklus!!.eval.released }
             ?: throw AssertionError("keine Wiederfreigabe nach dem Neustart")
-        assertTrue(wieder.o.computeTs - fStabil.ts(neustartMin) >= FuseIntKey.ExpectationStabilityMin.defaultValue * 60_000L) {
-            "Freigabe ohne volle Strecke nach dem Neustart"
+        // Die volle Strecke - oder (Toni 22.10.) die Mahlzeit steigt: zwei steigende Messwerte NACH dem Neustart.
+        val steigt = wieder.o.erwartungskonto!!.zyklus!!.mahlzeitSteigt
+        assertTrue(steigt || wieder.o.computeTs - fStabil.ts(neustartMin) >= FuseIntKey.ExpectationStabilityMin.defaultValue * 60_000L) {
+            "Freigabe ohne volle Strecke und ohne Anstieg nach dem Neustart"
         }
+        assertTrue(wieder.minute > erster.minute) { "Freigabe schon im ersten Zyklus nach dem Neustart" }
         for (z in voll.filter { it.minute >= neustartMin && it.o.computeTs < wieder.o.computeTs }) {
             assertEquals(0.0, z.dErw(), 0.0, "Minute ${z.minute}: d_erw ohne Freigabe")
         }
@@ -979,7 +1003,6 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         f: Fuse20Folgen.Folge, dir: File, vorZyklus: suspend (Int) -> Unit = {}, einstellen: suspend () -> Unit,
     ): List<Zyklus> {
         nurErwartung = true
-        bestaetigtNachTief = 0L
         try {
             markerAt = 0L
             markerPress = 0L
@@ -1016,11 +1039,29 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             val imZeitraum = weitere.filter { it.minute in (z.minute - ZEITRAUM_MIN + 1)..z.minute }.sumOf { it.dErw() }
             assertTrue(imZeitraum <= zeitraumU + 1e-9) { "Minute ${z.minute}: $imZeitraum je Zeitraum > $zeitraumU" }
         }
-        // Erwartungsanteil nur, wenn das Konto ihn erlaubt (nicht pausiert, freigegeben, nicht eingefroren).
+        // Erwartungsanteil nur, wenn das Konto ihn erlaubt (nicht pausiert, freigegeben, nicht eingefroren - ausser die
+        // Mahlzeit steigt, Toni 22.10. -, nicht gesperrt) und nie in einem gemessenen Tief.
         for (z in zyklen.filter { it.dErw() > 0.0 }) {
             val k = z.o.erwartungskonto!!.zyklus!!
             assertFalse(k.pausiert, "Minute ${z.minute}: Portion in Pause ${k.pausenGruende}")
-            assertTrue(k.eval.released && !k.eval.frozen && !k.eval.expired) { "Minute ${z.minute}: Portion ohne Freigabe" }
+            assertTrue(k.eval.released && (!k.eval.frozen || k.mahlzeitSteigt) && !k.eval.expired) {
+                "Minute ${z.minute}: Portion ohne Freigabe"
+            }
+            assertFalse(k.state.earlyLowLocked) { "Minute ${z.minute}: Portion trotz Tief-Sperre" }
+            assertTrue(z.o.step?.safetyReasons?.isEmpty() == true) { "Minute ${z.minute}: Portion im gemessenen Tief" }
+        }
+        // Toni 22.10.: "die Mahlzeit steigt" nur fuer weitere Portionen, ueber der Stabilitaetsgrenze, ohne gemessenes
+        // Tief, mit zwei steigenden Messwerten hintereinander.
+        for ((i, z) in zyklen.withIndex()) {
+            val k = z.o.erwartungskonto?.zyklus?.takeIf { it.mahlzeitSteigt } ?: continue
+            assertFalse(k.eval.early?.initial == true) { "Minute ${z.minute}: steigt in der Anfangsportion" }
+            assertTrue((z.o.signal?.q1 ?: 0.0) > k.state.stabilityBgMgdl) { "Minute ${z.minute}: steigt unter der Grenze" }
+            assertTrue(z.o.step?.safetyReasons?.isEmpty() == true) { "Minute ${z.minute}: steigt im gemessenen Tief" }
+            val vorher = zyklen.getOrNull(i - 1)
+            assertTrue((z.o.signal?.ukfRatePerMin ?: 0.0) >= ExpectationAccount.RISING_MGDL_PER_MIN) { "Minute ${z.minute}: Trend" }
+            assertTrue(vorher != null && (vorher.o.signal?.ukfRatePerMin ?: 0.0) >= ExpectationAccount.RISING_MGDL_PER_MIN) {
+                "Minute ${z.minute}: nur ein steigender Messwert"
+            }
         }
     }
 
@@ -1220,27 +1261,29 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         pruefeMechanik(locker, 0.5, 1.0, 2.0)
     }
 
-    /** Bank N2, W3: Rescue-KH nach einem Tief sind keine bestaetigte Mahlzeit - das Tief sperrt die fruehe Versorgung. */
+    /**
+     * Toni 22.10. (ersetzt Bank N2, W3 "Rescue-KH nach einem Tief sind keine bestaetigte Mahlzeit"): nach einem
+     * gemessenen Tief geht die Mahlzeit von selbst weiter, sobald das Tief vorbei und die Freigabe wieder erreicht ist -
+     * wie vor dem Tief: der Rest steht zur Verfuegung, Schritt 2 (laufende Mahlzeit, Fortsetzung) gilt wieder.
+     */
     @Test
-    fun `ein gemessenes Tief nach der Freigabe sperrt die fruehe Versorgung der Mahlzeit`(@TempDir dir: File) = runBlocking<Unit> {
+    fun `nach einem gemessenen Tief geht die Mahlzeit von selbst weiter - wie vor dem Tief`(@TempDir dir: File) = runBlocking<Unit> {
         val zyklen = fruehLauf(fTiefNachDruck, dir) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
         pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
         val tief = zyklen.firstOrNull { it.o.erwartungskonto?.zyklus?.ruecknahmeGrund == "LOW" }
         assertNotNull(tief) { "die Probe erreicht kein gemessenes Tief nach der Freigabe" }
         val danach = zyklen.filter { it.minute >= tief!!.minute && it.o.erwartungskonto?.zyklus != null }
-        assertTrue(danach.all { it.konto?.earlyLowLocked == true }) { "nicht gesperrt" }
-        assertEquals(0.0, danach.sumOf { it.dErw() }, 0.0)
-        assertTrue(danach.filter { it.o.erwartungskonto!!.zyklus!!.eval.status != "EXPIRED" }
-            .all { it.o.erwartungskonto!!.zyklus!!.eval.status == "LOCKED_BY_LOW" })
-        // Gegenprobe: die Strecke gibt die Freigabe zurueck - ohne die Regel floessen wieder Portionen.
-        assertTrue(danach.any { it.o.erwartungskonto!!.zyklus!!.eval.released }) { "keine Wiederfreigabe - Probe zeigt nichts" }
-        // Schritt 2 gilt nach dem Tief nicht: keine laufende Mahlzeit, keine Fortsetzung - auch wenn r ueber der Rampe liegt.
-        val spaeter = danach.filter { it.minute > tief!!.minute }
-        assertTrue(spaeter.any { (it.o.signal?.rSigned ?: 0.0) >= FuseDoubleKey.RiseRampLowR.defaultValue }) {
-            "Probe zeigt nichts: nach dem Tief kein r ueber der Rampe"
-        }
-        assertTrue(spaeter.none { it.o.erwartungskonto!!.zyklus!!.mahlzeitLaeuft }) { "Schritt 2 nach einem Tief" }
-        assertTrue(spaeter.all { (it.frueh()?.continuationUPerMin ?: 0.0) == 0.0 }) { "Fortsetzung nach einem Tief" }
+        assertEquals("LOCKED_BY_LOW", danach.first().o.erwartungskonto!!.zyklus!!.eval.status)
+        val frei = danach.firstOrNull { it.konto?.earlyLowLocked == false } ?: throw AssertionError("die Sperre faellt nie")
+        assertEquals(0.0, danach.filter { it.minute < frei.minute }.sumOf { it.dErw() }, 0.0)
+        val spaeter = danach.filter { it.minute >= frei.minute }
+        assertTrue(spaeter.none { it.o.erwartungskonto!!.zyklus!!.eval.status == "LOCKED_BY_LOW" }) { "neu gesperrt ohne Tief" }
+        assertTrue(spaeter.any { (it.o.erwartungskonto!!.zyklus!!.eval.restEffU) > 0.0 }) { "der Rest steht nicht zur Verfuegung" }
+        // Schritt 2 gilt nach dem Tief wieder: laufende Mahlzeit und Fortsetzung, sobald r ueber der Rampe liegt.
+        val laufend = spaeter.filter { (it.o.signal?.rSigned ?: 0.0) >= FuseDoubleKey.RiseRampLowR.defaultValue }
+        assertTrue(laufend.isNotEmpty()) { "Probe zeigt nichts: nach dem Tief kein r ueber der Rampe" }
+        assertTrue(laufend.all { it.o.erwartungskonto!!.zyklus!!.mahlzeitLaeuft }) { "Schritt 2 gilt nach dem Tief nicht" }
+        assertTrue(laufend.any { (it.frueh()?.continuationUPerMin ?: 0.0) > 0.0 }) { "keine Fortsetzung nach dem Tief" }
     }
 
     /** Leichtes Fallen am Druck, weit ueber der Grenze: unter der Kanalkonstante, aber langsamer als die Fallgrenze. */
@@ -1434,8 +1477,10 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         val anfang = zyklen.first { it.frueh()?.initial == true && it.dErw() > 0.0 }
         assertTrue(anfang.minute <= start.minute + 1) { "Anfangsportion erst in Minute ${anfang.minute}" }
         assertTrue((anfang.o.smbActuatedU ?: 0.0) > 0.0) { "Anfangsportion vom Endriegel genullt" }
-        // Danach, solange der Riegel steht: keine weitere Portion.
-        val danach = zyklen.filter { it.minute > anfang.minute && it.o.descentLatchActive && it.o.erwartungskonto?.zyklus != null }
+        // Danach, solange der Riegel steht: keine weitere Portion - ausser die Mahlzeit steigt (Toni 22.10., eigene Probe).
+        val danach = zyklen.filter {
+            it.minute > anfang.minute && it.o.descentLatchActive && it.o.erwartungskonto?.zyklus?.mahlzeitSteigt == false
+        }
         assertTrue(danach.isNotEmpty()) { "Probe zeigt nichts: nach der Anfangsportion kein Riegel mehr" }
         assertTrue(danach.none { it.o.erwartungskonto!!.zyklus!!.mahlzeitLaeuft }) { "Mahlzeit gilt trotz Rampe ueber r als laufend" }
         assertTrue(danach.all { "LATCH" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) { "Riegel bremst nach der Anfangsportion nicht" }
@@ -1511,7 +1556,10 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
         val ohne = lauf("ohne", ohneLauf = true)
         pruefeMechanik(ohne, 0.5, 1.0, 2.0)
-        val gehalten = ohne.filter { it.frueh()?.initial == false && it.o.descentLatchActive && it.o.erwartungskonto?.zyklus != null }
+        // Ohne laufende Mahlzeit - und ohne Anstieg (Toni 22.10.: steigt die Mahlzeit, haelt der alte Riegel ebenfalls nicht).
+        val gehalten = ohne.filter {
+            it.frueh()?.initial == false && it.o.descentLatchActive && it.o.erwartungskonto?.zyklus?.mahlzeitSteigt == false
+        }
         assertTrue(gehalten.isNotEmpty()) { "Probe zeigt nichts: ohne laufende Mahlzeit kein Riegel nach dem Anfang" }
         assertTrue(gehalten.none { it.o.erwartungskonto!!.zyklus!!.mahlzeitLaeuft })
         assertTrue(gehalten.all { "LATCH" in it.o.erwartungskonto!!.zyklus!!.pausenGruende }) { "Riegel haelt ohne laufende Mahlzeit nicht" }
@@ -1661,6 +1709,50 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         }
     }
 
+    /**
+     * TONI 22.10.: "waehrend aktiver Mahlzeiten darf nichts blockieren, solange Bedarf da ist und BG steigt". Steigt der
+     * Zucker (UKF mindestens +1 in zwei Messwerten hintereinander), pruefen Guard und Schwanz die weitere Portion nicht -
+     * wie bei der Anfangsportion, mit G1/G2. Steigt er nicht, gilt G3/G4 wie bisher. Gegenprobe ohne G1/G2: auch beim
+     * Anstieg die Pruefung mit Erwartung. Synthetisches Budget und synthetischer Skalierer; die Schwanzpruefung ist an
+     * (im Gestell sonst aus), damit ihre Kappe zeigt, welche Pruefung galt.
+     */
+    @Test
+    fun `steigt die Mahlzeit, pruefen Guard und Schwanz die weitere Portion nicht - Gegenprobe ohne G1 und G2`(@TempDir dir: File) = runBlocking<Unit> {
+        suspend fun lauf(name: String, g12: Boolean) = fruehLauf(fSpaet, File(dir, name)) {
+            fruehKonfiguration(g1 = g12, g2 = g12, g3 = true, g4 = true, budgetU = EarlySupply.MAX_BUDGET_U)
+            whenever(preferences.get(FuseDoubleKey.EarlySupplyScaleStable)).thenReturn(EarlySupply.MAX_SCALE)
+            whenever(preferences.get(FuseBooleanKey.TailGuardEnabled)).thenReturn(true)
+        }
+        fun steigt(z: Zyklus) = z.o.erwartungskonto?.zyklus?.mahlzeitSteigt == true
+        fun mitPortion(z: Zyklus) = z.o.erwartungskonto?.fruehHebung != null && z.frueh()?.initial == false
+        fun schwanzMitErwartung(z: Zyklus) = z.o.erwartungskonto!!.fruehSchwanzMitErwartungU
+
+        val mit = lauf("mit", g12 = true)
+        pruefeMechanik(mit, 0.5, 1.0, 2.0)
+        val steigend = mit.filter { steigt(it) && mitPortion(it) }
+        assertTrue(steigend.isNotEmpty()) { "Probe zeigt nichts: keine weitere Portion beim Anstieg" }
+        for (z in steigend) {
+            val x = z.o.erwartungskonto!!
+            assertEquals(AuthorizedLift.EarlyLift(guardLift = true, tailLift = true), x.fruehHebung, "Minute ${z.minute}")
+            assertNull(x.fruehSchwanzKappeU, "Minute ${z.minute}: Schwanzkappe beim Anstieg")
+            assertNull(x.fruehEndgrund, "Minute ${z.minute}: Endpruefung beim Anstieg")
+        }
+        assertTrue(steigend.sumOf { it.dErw() } > 0.0) { "beim Anstieg kein Erwartungsanteil" }
+        // Steigt der Zucker nicht, prueft der Schwanz mit Erwartung wie bisher (G4).
+        for (z in mit.filter { !steigt(it) && mitPortion(it) && schwanzMitErwartung(it) != null }) {
+            assertEquals(schwanzMitErwartung(z), z.o.erwartungskonto!!.fruehSchwanzKappeU, "Minute ${z.minute}")
+        }
+
+        // Gegenprobe ohne G1/G2: auch beim Anstieg die Pruefung mit Erwartung (G3/G4), nichts uebersprungen.
+        val ohne = lauf("ohne", g12 = false)
+        pruefeMechanik(ohne, 0.5, 1.0, 2.0)
+        val ohneSteigend = ohne.filter { steigt(it) && mitPortion(it) && schwanzMitErwartung(it) != null }
+        assertTrue(ohneSteigend.isNotEmpty()) { "Probe zeigt nichts: ohne G1/G2 keine weitere Portion beim Anstieg" }
+        for (z in ohneSteigend) {
+            assertEquals(schwanzMitErwartung(z), z.o.erwartungskonto!!.fruehSchwanzKappeU, "Minute ${z.minute}")
+        }
+    }
+
     /** Zucker am Druck knapp unter der Stabilitaetsgrenze, ohne gemessenes Tief. */
     private val fUnterGrenze = Fuse20Folgen.Folge(
         "UNTERGRENZE", 1_701_165_600_000L, -90, 180,
@@ -1716,61 +1808,52 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         return sperre
     }
 
-    /** Gegenfall 1: Tief, dann echte Mahlzeit, ausdruecklich bestaetigt - sie bleibt versorgbar. */
+    /** Gegenfall 1: Tief, dann echte Mahlzeit - sie bleibt versorgbar, Toni 22.10.: ohne Bestaetigung. */
     @Test
-    fun `Gegenfall Tief mit anschliessender echter Mahlzeit bleibt nach Bestaetigung versorgbar`(@TempDir dir: File) = runBlocking<Unit> {
-        val bestaetigungMin = 18
-        val zyklen = fruehLauf(fTiefDannMahlzeit, File(dir, "mit"), vorZyklus = { m ->
-            if (m == bestaetigungMin) bestaetigtNachTief = fTiefDannMahlzeit.ts(m)
-        }) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+    fun `Gegenfall Tief mit anschliessender echter Mahlzeit bleibt versorgbar - ohne Bestaetigung`(@TempDir dir: File) = runBlocking<Unit> {
+        val zyklen = fruehLauf(fTiefDannMahlzeit, dir) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
         val sperre = pruefeTiefVorFreigabe(zyklen)
-        assertTrue(sperre.minute < bestaetigungMin) { "bestaetigt vor dem Sperrbeginn - die Probe prueft den Fall nicht" }
         val frei = zyklen.firstOrNull { it.minute > sperre.minute && it.konto?.earlyLowLocked == false }
-            ?: throw AssertionError("die Bestaetigung hebt die Sperre nie auf")
+            ?: throw AssertionError("die Sperre faellt nie")
         // Waehrend des Tiefs und bis zur Wiederfreigabe kein Erwartungsanteil.
         assertEquals(0.0, zyklen.filter { it.minute < frei.minute }.sumOf { it.dErw() }, 0.0)
         assertTrue(zyklen.filter { it.o.step?.safetyReasons?.isNotEmpty() == true }.none { it.dErw() > 0.0 }) { "Portion im Tief" }
         assertTrue(frei.o.step?.safetyReasons?.isEmpty() == true) { "frei, obwohl das Tief noch misst" }
-        // Versorgbar: nach der Bestaetigung steht der Rest des gebuchten Budgets wieder zur Verfuegung, und die Mahlzeit
-        // wird versorgt - aus dem Konto oder, wo er mehr traegt, aus dem Normalbedarf (A).
+        assertTrue(frei.o.erwartungskonto!!.zyklus!!.eval.released) { "frei ohne Freigabe" }
+        // Versorgbar: danach steht der Rest des gebuchten Budgets wieder zur Verfuegung, und die Mahlzeit wird versorgt -
+        // aus dem Konto oder, wo er mehr traegt, aus dem Normalbedarf (A).
         val konto = zyklen.mapNotNull { it.konto }.last()
         val nachFrei = zyklen.filter { it.minute >= frei.minute }
         assertTrue(nachFrei.any { (it.o.erwartungskonto?.zyklus?.eval?.restEffU ?: 0.0) > 0.0 }) {
-            "der Rest steht nach der Bestaetigung nicht zur Verfuegung"
+            "der Rest steht nach der Sperre nicht zur Verfuegung"
         }
         val nachher = nachFrei.sumOf { it.geliefertU }
-        assertTrue(nachher >= 1.0) { "nach der Bestaetigung nur $nachher U" }
+        assertTrue(nachher >= 1.0) { "nach der Sperre nur $nachher U" }
+        assertTrue(nachFrei.sumOf { it.dErw() } > 0.0) { "nach der Sperre kein Erwartungsanteil" }
         assertTrue(nachFrei.sumOf { it.dErw() } <= konto.a0U + 1e-9)
         assertTrue(konto.earlyAfterLow)
-        // Option A (Toni): nach der Bestaetigung rechnet der Guard die Mahlzeit wieder an - ab +20, soweit sie sich zeigt.
-        assertTrue(nachFrei.any { (it.frueh()?.guardScale ?: 0.0) > 0.0 }) { "nach der Bestaetigung keine Anrechnung im Guard" }
+        // Danach rechnet der Guard die Mahlzeit wieder an - ab +20, soweit sie sich zeigt; solange die Sperre gilt, nie.
+        assertTrue(nachFrei.any { (it.frueh()?.guardScale ?: 0.0) > 0.0 }) { "nach der Sperre keine Anrechnung im Guard" }
         assertTrue(zyklen.filter { it.konto?.earlyLowLocked == true }.all { (it.frueh()?.guardScale ?: 0.0) == 0.0 }) {
             "Anrechnung im Guard, solange die Sperre gilt"
         }
-        // Gegenprobe: dieselbe Folge OHNE Bestaetigung liefert keinen Erwartungsanteil, der Rest bleibt gesperrt.
-        val ohne = fruehLauf(fTiefDannMahlzeit, File(dir, "ohne")) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
-        assertEquals(0.0, ohne.sumOf { it.dErw() }, 0.0)
-        assertTrue(ohne.none { (it.o.erwartungskonto?.zyklus?.eval?.restEffU ?: 0.0) > 0.0 }) {
-            "ohne Bestaetigung steht der Rest zur Verfuegung"
-        }
-        assertTrue(ohne.any { it.o.erwartungskonto?.zyklus?.eval?.released == true }) { "Probe zeigt nichts: keine Strecke" }
-        // Ohne Bestaetigung rechnet der Guard die Mahlzeit nach dem Tief nie an.
-        assertTrue(ohne.filter { it.konto?.earlyAfterLow == true }.all { (it.frueh()?.guardScale ?: 0.0) == 0.0 }) {
-            "ohne Bestaetigung Anrechnung im Guard"
-        }
     }
 
-    /** Gegenfall 2: Tief, nur Hypo-Behandlung, keine Bestaetigung - keine erwartungsbasierte Abgabe. */
+    /**
+     * Gegenfall 2: Tief, nur Hypo-Behandlung. Toni 22.10. nimmt bewusst in Kauf, dass das Konto nach dem Tief weiterlaeuft
+     * ("nach Traubenzucker doset FUSE dagegen, sobald der Zucker steigt"). Es bleibt: waehrend des Tiefs und bis zur
+     * Wiederfreigabe kein Erwartungsanteil, keine Anfangsportion, und das Budget deckelt.
+     */
     @Test
-    fun `Gegenfall Tief mit ausschliesslich Hypo-Behandlung loest keine erwartungsbasierte Abgabe aus`(@TempDir dir: File) = runBlocking<Unit> {
+    fun `Gegenfall Tief mit ausschliesslich Hypo-Behandlung - kein Erwartungsanteil bis zur Wiederfreigabe`(@TempDir dir: File) = runBlocking<Unit> {
         val zyklen = fruehLauf(fTiefNurHypo, dir) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
         val sperre = pruefeTiefVorFreigabe(zyklen)
-        assertEquals(0.0, zyklen.sumOf { it.dErw() }, 0.0)
-        val danach = zyklen.filter { it.minute >= sperre.minute && it.o.erwartungskonto?.zyklus != null }
-        assertTrue(danach.all { it.konto?.earlyLowLocked == true }) { "die Sperre faellt ohne Bestaetigung" }
-        assertTrue(danach.any { it.o.erwartungskonto!!.zyklus!!.eval.released }) {
-            "Probe zeigt nichts: der Rescue-Anstieg erfuellt die Strecke nie"
+        val frei = zyklen.firstOrNull { it.minute > sperre.minute && it.konto?.earlyLowLocked == false }
+            ?: throw AssertionError("die Sperre faellt nie")
+        assertTrue(frei.o.erwartungskonto!!.zyklus!!.eval.released && frei.o.step?.safetyReasons?.isEmpty() == true) {
+            "Sperre ohne Freigabe oder im Tief gefallen"
         }
+        assertEquals(0.0, zyklen.filter { it.minute < frei.minute }.sumOf { it.dErw() }, 0.0)
         // Derselbe Fall, das Tief nur in Abbruchzyklen (wie der Safety-Halt der Bank): der Vermerk sperrt auch vor der
         // Freigabe - bisher hinterliess er dort keine Spur.
         val abbruch = 5..40
@@ -1779,12 +1862,13 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
                 if (m in abbruch) UNGUELTIGE_REBOUND_DAUER else FuseIntKey.ReboundWindowMin.defaultValue,
             )
         }) { fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) }
+        pruefeMechanik(imAbbruch, 0.5, 1.0, 2.0)
         assertTrue(imAbbruch.none { it.minute in abbruch }) { "ein Zyklus im Abbruchbereich lief bis zum Konto" }
         val erster = imAbbruch.first { it.minute > abbruch.last && it.o.erwartungskonto?.zyklus != null }
         assertEquals("LOW_ON_ABORT", erster.o.erwartungskonto!!.zyklus!!.tiefGrund)
         assertTrue(erster.konto?.earlyLowLocked == true) { "das Tief im Abbruch sperrt nicht" }
-        assertEquals(0.0, imAbbruch.sumOf { it.dErw() }, 0.0)
-        assertTrue(imAbbruch.any { it.o.erwartungskonto?.zyklus?.eval?.released == true }) { "Probe zeigt nichts: keine Strecke" }
+        assertEquals(0.0, erster.dErw(), 0.0)
+        assertTrue(imAbbruch.none { it.frueh()?.initial == true && it.dErw() > 0.0 }) { "Anfangsportion trotz Tief" }
     }
 
     @Test

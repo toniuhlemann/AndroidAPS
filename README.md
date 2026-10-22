@@ -114,11 +114,17 @@ You describe your typical meal once, as an **expectation curve**: how much insul
 3. **The rest follows as the meal shows itself.** Each cycle the demand is the measured part plus the expected part from
    the curve. Portions have their own limits per cycle and per period.
 4. **The expectation is only corrected downwards.** From 20 minutes on, FUSE compares what it sees with what the curve
-   expected and scales down, never up. If nothing has shown by 30 minutes, the rest is frozen until the meal appears.
-5. **A low locks the expectation.** After a measured low during the meal, the expected part stops — rescue carbs must
-   never look like a meal. Only an explicit **"confirm meal after low"** button opens it again, and it brings no new
-   budget.
-6. **The account ends with the authorization.** Unused budget is never given.
+   expected and scales down, never up. If nothing has shown by 30 minutes, the rest is frozen until the meal appears or
+   glucose rises.
+5. **A low pauses the expectation.** After a measured low during the meal, the expected part stops until the low is
+   over and the release is reached again (stable glucose, or rising glucose). Then the account goes on by itself, as
+   before the low: no button, no new budget, no second initial portion.
+6. **Rising glucose gets insulin.** When glucose rises by at least 1 mg/dl per minute in two readings in a row (above
+   the stability limit, no low), the next portions come from the remaining budget without waiting for the stability
+   stretch, and the guard and tail checks do not block them (switches G1/G2, as for the initial portion). A measured
+   low, a measured fall risk, maxIOB and the portion limits still stop them. When glucose stops rising, all checks apply
+   again.
+7. **The account ends with the authorization.** Unused budget is never given.
 
 Without a valid curve (the factory state) the button still declares the meal, but FUSE doses as without a marker
 ("fallback"). The button and the FUSE tab show this.
@@ -259,7 +265,7 @@ FUSE 2 is a **consolidation**: fewer mechanisms, each easier to explain.
 | General pump support | not available | — |
 | Clinical efficacy or safety claim | **none** | — |
 
-About 2,450 automated tests cover `fuse/**` (about 1,270 in `fuse/core` and 1,180 in `fuse/plugin`). That number is not
+About 2,470 automated tests cover `fuse/**` (about 1,280 in `fuse/core` and 1,190 in `fuse/plugin`). That number is not
 a quality claim. The user interface counts as checked only after someone has looked at the device.
 
 ### What FUSE deliberately does not do
@@ -319,8 +325,10 @@ Nacht- und Rebound-Totband —, der Liveness-Kanal und die stufenweise Rückkehr
 **Mahlzeiten.** Ein Knopf erklärt „jetzt kommt eine Mahlzeit“ — ohne Kohlenhydrate. Für die Mahlzeit-Frist (Vorgabe
 120 min) gelten die größeren MEAL-Grenzen. Mit einer **Erwartungskurve** (Wirkung nach 30/60/90/120 min) öffnet der
 Knopf ein **Erwartungskonto**: ein einmal gebuchtes Budget, ein erster Teil sofort bei stabilem Zucker, der Rest, wenn
-sich die Mahlzeit zeigt. Korrigiert wird nur nach unten; ein Tief sperrt die Erwartung, bis man die Mahlzeit nach dem
-Tief ausdrücklich bestätigt. Ohne Kurve dosiert FUSE wie ohne Marker.
+sich die Mahlzeit zeigt. Korrigiert wird nur nach unten; ein Tief sperrt die Erwartung, bis es vorbei ist — danach läuft
+das Konto von selbst weiter, ohne Bestätigung. Steigt der Zucker (mindestens +1 mg/dl pro Minute in zwei Werten
+hintereinander), kommen die weiteren Portionen ohne Guard und Schwanz; ein gemessenes Tief, das gemessene
+Abwärtsrisiko, maxIOB und die Portionsgrenzen halten weiter. Ohne Kurve dosiert FUSE wie ohne Marker.
 
 **Sicherheit.** Alle Prüfungen lesen die pessimistische Bahn. Grenzen unter anderem: Guard-Boden 70 mg/dl,
 Expositionsgrenze je Profil (Korrektur 3,0 U, Mahlzeit 7,0 U), capIOB = max(Netto-IOB, Bolus-IOB), maxIOB, Nacht- und

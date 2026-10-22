@@ -193,6 +193,8 @@ class FuseSchluesselRueckwegTest {
             }
             .map { it.name }.toList()
         assertTrue(leser.isEmpty()) { "liest eine entfernte Einstellung: $leser" }
-        assertTrue(FuseRetiredKey.entries.isNotEmpty() && FuseRetiredKey.entries.all { it.exportable })
+        // Entfallene Einstellungen exportierbar, entfallener Zustand (Toni 22.10.: die Bestaetigung nach Tief) wie in 1.x nicht.
+        assertTrue(FuseRetiredKey.entries.isNotEmpty())
+        for (k in FuseRetiredKey.entries) assertEquals(k.key !in nichtExportierbar1x, k.exportable, "Exportierbarkeit von ${k.key}")
     }
 }
