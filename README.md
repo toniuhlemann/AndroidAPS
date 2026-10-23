@@ -108,7 +108,7 @@ You describe your typical meal once, as an **expectation curve**: how much insul
 90 and 120 minutes (cumulative, in units). With this curve set:
 
 1. **A budget is booked once, at the press.** It comes from the curve and the insulin model, and it is capped. It is
-   only used up, never refilled, and never an obligation to deliver.
+   only used up, never refilled, and never an obligation to deliver. Only a bigger meal can add a top-up (point 7).
 2. **A first part may flow at once** (the *initial portion*) — but only if glucose is above a stability limit, not
    falling fast and not low.
 3. **The rest follows as the meal shows itself.** Each cycle the demand is the measured part plus the expected part from
@@ -120,11 +120,16 @@ You describe your typical meal once, as an **expectation curve**: how much insul
    over and the release is reached again (stable glucose, or rising glucose). Then the account goes on by itself, as
    before the low: no button, no new budget, no second initial portion.
 6. **Rising glucose gets insulin.** When glucose rises by at least 1 mg/dl per minute in two readings in a row (above
-   the stability limit, no low), the next portions come from the remaining budget without waiting for the stability
-   stretch, and the guard and tail checks do not block them (switches G1/G2, as for the initial portion). A measured
-   low, a measured fall risk, maxIOB and the portion limits still stop them. When glucose stops rising, all checks apply
-   again.
-7. **The account ends with the authorization.** Unused budget is never given.
+   the stability limit and above the setting *Mahlzeit steigt ab* — "meal rises from", 0 = the stability limit — and
+   no low), the next portions come from the remaining budget without waiting for the stability stretch, and the guard
+   and tail checks do not block them (switches G1/G2, as for the initial portion). A measured low, a measured fall risk,
+   maxIOB and the portion limits still stop them. When glucose stops rising, all checks apply again. A bounce after a
+   fall below the set level is not a rising meal.
+7. **A bigger meal can get a top-up.** If the meal shows more effect than the curve expected, the account may give this
+   excess on top of the budget, at most the set share of the budget (*Nachschlag*, 0 = off, the factory setting). It
+   only raises the limit: demand, checks and portion limits still decide what flows. Lowering the setting takes effect
+   at once, raising it from the next press.
+8. **The account ends with the authorization.** Unused budget is never given.
 
 Without a valid curve (the factory state) the button still declares the meal, but FUSE doses as without a marker
 ("fallback"). The button and the FUSE tab show this.
@@ -327,8 +332,10 @@ Nacht- und Rebound-Totband —, der Liveness-Kanal und die stufenweise Rückkehr
 Knopf ein **Erwartungskonto**: ein einmal gebuchtes Budget, ein erster Teil sofort bei stabilem Zucker, der Rest, wenn
 sich die Mahlzeit zeigt. Korrigiert wird nur nach unten; ein Tief sperrt die Erwartung, bis es vorbei ist — danach läuft
 das Konto von selbst weiter, ohne Bestätigung. Steigt der Zucker (mindestens +1 mg/dl pro Minute in zwei Werten
-hintereinander), kommen die weiteren Portionen ohne Guard und Schwanz; ein gemessenes Tief, das gemessene
-Abwärtsrisiko, maxIOB und die Portionsgrenzen halten weiter. Ohne Kurve dosiert FUSE wie ohne Marker.
+hintereinander, über der Einstellung „Mahlzeit steigt ab“), kommen die weiteren Portionen ohne Guard und Schwanz; ein
+gemessenes Tief, das gemessene Abwärtsrisiko, maxIOB und die Portionsgrenzen halten weiter. Zeigt sich die Mahlzeit
+größer als die Kurve, darf das Konto den Überschuss zusätzlich geben, höchstens den eingestellten **Nachschlag** (Anteil
+des Budgets, ab Werk 0 = aus). Ohne Kurve dosiert FUSE wie ohne Marker.
 
 **Sicherheit.** Alle Prüfungen lesen die pessimistische Bahn. Grenzen unter anderem: Guard-Boden 70 mg/dl,
 Expositionsgrenze je Profil (Korrektur 3,0 U, Mahlzeit 7,0 U), capIOB = max(Netto-IOB, Bolus-IOB), maxIOB, Nacht- und

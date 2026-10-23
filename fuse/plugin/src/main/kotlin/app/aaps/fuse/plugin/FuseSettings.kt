@@ -128,6 +128,7 @@ object FuseSettings {
             info("Freigabe und Schutz", "Ob der Start stabil ist und wann sich die Mahlzeit gezeigt hat."),
             FuseDoubleKey.ExpectationStabilityBgMgdl, FuseIntKey.ExpectationStabilityMin,
             FuseDoubleKey.ExpectationStabilityFallMgdlPerMin, FuseDoubleKey.MealRunningMinR,
+            FuseDoubleKey.MealRisingMinBgMgdl,
             FuseDoubleKey.ExpectationReleaseThresholdU,
             // Leer ist erlaubt und der Standard: Erwartung aus.
             FuseStringKey.ExpectationCurve,
@@ -138,6 +139,7 @@ object FuseSettings {
             FuseBooleanKey.EarlySupplyEnabled, FuseDoubleKey.EarlySupplyBudgetMaxU, FuseDoubleKey.EarlySupplyScaleStable,
             FuseDoubleKey.EarlySupplyScaleAfterLow, FuseDoubleKey.EarlySupplyInitialShare, FuseDoubleKey.EarlySupplyMaxPortionU,
             FuseDoubleKey.EarlySupplyMaxPerPeriodU, FuseIntKey.EarlySupplyPeriodMin,
+            FuseDoubleKey.EarlySupplyTopUpShare,
             info("Anrechnung bei Guard und Schwanzpruefung", "Wann die Mahlzeit Guard und Schwanz heben darf."),
             FuseBooleanKey.EarlySupplyInitialLiftsGuard, FuseBooleanKey.EarlySupplyInitialLiftsTail,
             FuseBooleanKey.EarlySupplyGuardWithExpectation, FuseBooleanKey.EarlySupplyTailWithExpectation,

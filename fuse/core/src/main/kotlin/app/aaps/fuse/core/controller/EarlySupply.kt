@@ -57,18 +57,21 @@ object EarlySupply {
         val maxPortionU: Double,
         val maxPerPeriodU: Double,
         val periodMin: Int,
+        /** Toni 23.10.: Nachschlag hoechstens, als Anteil des Budgets (0..1); 0 = kein Nachschlag ([Pins.topUpShare]). */
+        val topUpShare: Double = 0.0,
     ) {
         companion object {
             fun of(
                 scaleStable: Double, scaleAfterLow: Double, budgetMaxU: Double, initialShare: Double,
-                maxPortionU: Double, maxPerPeriodU: Double, periodMin: Int,
+                maxPortionU: Double, maxPerPeriodU: Double, periodMin: Int, topUpShare: Double = 0.0,
             ): Settings? {
                 fun inRange(x: Double, hi: Double) = x.isFinite() && x >= 0.0 && x <= hi
                 if (!inRange(scaleStable, MAX_SCALE) || !inRange(scaleAfterLow, MAX_SCALE)) return null
                 if (!inRange(budgetMaxU, MAX_BUDGET_U) || !inRange(initialShare, 1.0)) return null
                 if (!inRange(maxPortionU, MAX_PORTION_U) || !inRange(maxPerPeriodU, MAX_PER_PERIOD_U)) return null
                 if (periodMin !in MIN_PERIOD_MIN..MAX_PERIOD_MIN) return null
-                return Settings(scaleStable, scaleAfterLow, budgetMaxU, initialShare, maxPortionU, maxPerPeriodU, periodMin)
+                if (!inRange(topUpShare, 1.0)) return null
+                return Settings(scaleStable, scaleAfterLow, budgetMaxU, initialShare, maxPortionU, maxPerPeriodU, periodMin, topUpShare)
             }
 
             /**
@@ -126,6 +129,13 @@ object EarlySupply {
         val periodMin: Int,
         val switches: Switches,
         val withdrawn: Boolean = false,
+        /**
+         * NACHSCHLAG hoechstens (Toni 23.10.), als Anteil des Budgets (0..1): so viel darf das Konto zusaetzlich geben,
+         * wenn sich die Mahlzeit groesser zeigt als erwartet ([ExpectationAccount.State.topUpU]). Am Marker festgehalten;
+         * herunterstellen wirkt sofort (der Aufrufer fuehrt den Wert nach unten), heraufstellen ab dem naechsten Marker.
+         * 0 = kein Nachschlag.
+         */
+        val topUpShare: Double = 0.0,
     ) {
         companion object {
             /**

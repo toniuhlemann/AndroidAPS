@@ -387,6 +387,66 @@ class ExpectationAccountEarlyTest {
         assertFalse(zyklus(s, 26, bg = 60.0, tief = true, stabil = false, steigt = true).first.released)
     }
 
+    // ---- Toni 23.10.: der Nachschlag -----------------------------------------------------------------------------
+
+    private fun kontoMitNachschlag(anteil: Double) = ExpectationAccount.armEarly(
+        authId = t0, windowEndTs = t0 + 180 * 60_000L, params = params, settings = einstellung.copy(topUpShare = anteil),
+        switches = alle, startStable = true, nowTs = t0, bgMgdl = 100.0, isfMgdlPerU = 50.0, unitAction = wirkung,
+    )
+
+    @Test
+    fun `der Nachschlag waechst mit der Mahlzeit ueber der Erwartung - hoechstens Anteil mal Budget, nie zurueck`() {
+        var s = kontoMitNachschlag(0.5)
+        assertEquals(0.5, s.early!!.topUpShare, 0.0)
+        // Die Mahlzeit zeigt sich staerker als die Kurve: BG steigt 4 mg/dl je Minute (ISF 50, Kurve 1 U je 30 min).
+        for (m in 0..60) s = schritt(s, m, bg = 100.0 + 4.0 * m).first
+        val kurve = requireNotNull(ExpectationAccount.Curve.of(werte))
+        val ueberschuss = s.disturbanceU - s.phi0 * kurve.at(60.0)
+        assertTrue(ueberschuss > 0.0) { "Probe zeigt nichts: kein Ueberschuss" }
+        assertTrue(ueberschuss < 0.5 * s.a0U) { "Probe zeigt nichts: der Deckel bindet schon" }
+        assertEquals(ueberschuss, s.topUpU, 1e-9)
+        assertEquals(s.a0U + s.topUpU - s.bookedU, s.restU, 1e-9)
+        // Faellt der Zucker danach, bleibt er (einmal erlaubt, bleibt erlaubt).
+        val vorher = s.topUpU
+        for (m in 61..80) s = schritt(s, m, bg = 340.0 - 6.0 * (m - 60)).first
+        assertEquals(vorher, s.topUpU, 1e-12)
+        // Weit ueber der Kurve: hoechstens der eingestellte Anteil des Budgets.
+        var t = kontoMitNachschlag(0.5)
+        for (m in 0..119) t = schritt(t, m, bg = 100.0 + 6.0 * m).first
+        assertEquals(0.5 * t.a0U, t.topUpU, 1e-9)
+    }
+
+    @Test
+    fun `ohne Nachschlag-Einstellung bleibt das Budget die Grenze - ohne gueltige Beobachtung kein Nachschlag`() {
+        var s = konto()
+        for (m in 0..60) s = schritt(s, m, bg = 100.0 + 4.0 * m).first
+        assertEquals(0.0, s.topUpU, 0.0)
+        assertEquals(maxOf(0.0, s.a0U - s.bookedU), s.restU, 1e-12)
+        // Eine Luecke ueber 10 min macht die Beobachtung ungueltig: dann waechst nichts.
+        var t = kontoMitNachschlag(0.5)
+        for (m in 0..20) t = schritt(t, m, bg = 100.0).first
+        t = schritt(t, 40, bg = 260.0).first
+        assertFalse(t.disturbanceValid)
+        assertEquals(0.0, t.topUpU, 0.0)
+    }
+
+    @Test
+    fun `mit Nachschlag fliessen Portionen ueber das Budget hinaus - nie mehr als Budget plus Nachschlag`() {
+        var s = kontoMitNachschlag(0.5)
+        var summe = 0.0
+        for (m in 0..119) {
+            val (s2, e) = schritt(s, m, bg = 100.0 + 6.0 * m)
+            // Alles als Erwartungsanteil gebucht (der Normalpfad gab vom gemessenen Anteil nichts frei).
+            val (s3, split) = ExpectationAccount.book(s2, e, ExpectationAccount.expectationShareU(e), 0.0)
+            assertEquals(0.0, split.violationU, 0.0)
+            summe += split.dErwU
+            s = s3
+        }
+        assertTrue(summe > s.a0U + 1e-9) { "Probe zeigt nichts: nicht ueber das Budget ($summe von ${s.a0U})" }
+        assertTrue(summe <= s.a0U + s.topUpU + 1e-9) { "ueber Budget plus Nachschlag: $summe" }
+        assertEquals(summe, s.bookedU, 1e-9)
+    }
+
     @Test
     fun `steigt die Mahlzeit, haelt das Einfrieren die weitere Portion nicht auf`() {
         var s = konto()

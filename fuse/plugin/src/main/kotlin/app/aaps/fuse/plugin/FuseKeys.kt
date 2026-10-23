@@ -400,6 +400,12 @@ enum class FuseDoubleKey(
      */
     MealRunningMinR("fuse_meal_running_min_r", 0.0, 0.0, 10.0, title = TextRef.AndroidRes(R.string.fuse_meal_running_min_r_title), summary = TextRef.AndroidRes(R.string.fuse_meal_running_min_r_summary), unitType = UnitType.DOUBLE_2),
     /**
+     * Toni 23.10.: ab welchem Zucker [mg/dl] "die Mahlzeit steigt" gilt - erst darueber kommen weitere Portionen beim
+     * Steigen ohne Warten auf die Strecke und (mit G1/G2) ohne Guard und Schwanz. 0 (Standard) = die
+     * Stabilitaetsgrenze, wie bisher; ein Wert darunter zaehlt wie die Stabilitaetsgrenze. Gilt sofort.
+     */
+    MealRisingMinBgMgdl("fuse_meal_rising_min_bg_mgdl", 0.0, 0.0, 250.0, title = TextRef.AndroidRes(R.string.fuse_meal_rising_min_bg_title), summary = TextRef.AndroidRes(R.string.fuse_meal_rising_min_bg_summary), unitType = UnitType.MGDL),
+    /**
      * DIE ERWARTUNGSKURVE IN VIER ECKWERTEN (Toni): erwartete
      * Mahlzeitwirkung [U] nach 30, 60, 90 und 120 min ab Marker, dazwischen
      * linear. Vorrang vor der Expertenzeile [FuseStringKey.ExpectationCurve];
@@ -434,6 +440,13 @@ enum class FuseDoubleKey(
 
     /** Hoechstmenge der weiteren Portionen je Zeitraum [U]. Standard 0 = keine weiteren Portionen. */
     EarlySupplyMaxPerPeriodU("fuse_early_supply_max_per_period_u", 0.0, 0.0, app.aaps.fuse.core.controller.EarlySupply.MAX_PER_PERIOD_U, title = TextRef.AndroidRes(R.string.fuse_early_supply_max_per_period_title), summary = TextRef.AndroidRes(R.string.fuse_early_supply_max_per_period_summary), unitType = UnitType.DOUBLE_2),
+
+    /**
+     * Toni 23.10.: NACHSCHLAG hoechstens, als Anteil des Budgets (0..1) - so viel darf das Konto zusaetzlich geben, wenn
+     * sich die Mahlzeit groesser zeigt als erwartet. Standard 0 = kein Nachschlag, wie bisher. Herunterstellen wirkt
+     * sofort, heraufstellen ab dem naechsten Marker.
+     */
+    EarlySupplyTopUpShare("fuse_early_supply_top_up_share", 0.0, 0.0, 1.0, title = TextRef.AndroidRes(R.string.fuse_early_supply_top_up_title), summary = TextRef.AndroidRes(R.string.fuse_early_supply_top_up_summary), unitType = UnitType.DOUBLE_2),
 }
 
 enum class FuseIntKey(

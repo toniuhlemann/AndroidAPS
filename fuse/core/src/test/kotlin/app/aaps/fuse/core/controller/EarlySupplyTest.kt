@@ -342,5 +342,10 @@ class EarlySupplyTest {
         assertNull(EarlySupply.Settings.of(1.0, 0.5, 8.0, 1.2, 1.5, 4.0, 10))
         assertNull(EarlySupply.Settings.of(1.0, 0.5, 8.0, 0.5, 1.5, 4.0, 2))
         assertNull(EarlySupply.Settings.of(Double.NaN, 0.5, 8.0, 0.5, 1.5, 4.0, 10))
+        // Nachschlag (Toni 23.10.): Anteil des Budgets 0..1.
+        assertEquals(0.5, EarlySupply.Settings.of(1.0, 0.5, 8.0, 0.5, 1.5, 4.0, 10, 0.5)?.topUpShare)
+        assertNull(EarlySupply.Settings.of(1.0, 0.5, 8.0, 0.5, 1.5, 4.0, 10, 1.5))
+        assertNull(EarlySupply.Settings.of(1.0, 0.5, 8.0, 0.5, 1.5, 4.0, 10, -0.1))
+        assertNull(EarlySupply.Settings.of(1.0, 0.5, 8.0, 0.5, 1.5, 4.0, 10, Double.NaN))
     }
 }

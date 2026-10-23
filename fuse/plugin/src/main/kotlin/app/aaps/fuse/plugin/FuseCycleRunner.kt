@@ -92,6 +92,7 @@ import app.aaps.fuse.core.predictor.minSafetyLowerOf
 import kotlinx.coroutines.runBlocking
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -435,6 +436,7 @@ class FuseCycleRunner(
             require(it.riseRampHighR.isFinite() && it.riseRampHighR in FuseDoubleKey.RiseRampHighR.min..FuseDoubleKey.RiseRampHighR.max) { "riseRampHighR=${it.riseRampHighR}" }
             require(it.riseRampHighR > it.riseRampLowR) { "riseRamp ${it.riseRampLowR}..${it.riseRampHighR} invertiert" }
             require(it.mealRunningMinR.isFinite() && it.mealRunningMinR in FuseDoubleKey.MealRunningMinR.min..FuseDoubleKey.MealRunningMinR.max) { "mealRunningMinR=${it.mealRunningMinR}" }
+            require(it.mealRisingMinBgMgdl.isFinite() && it.mealRisingMinBgMgdl in FuseDoubleKey.MealRisingMinBgMgdl.min..FuseDoubleKey.MealRisingMinBgMgdl.max) { "mealRisingMinBgMgdl=${it.mealRisingMinBgMgdl}" }
             require(it.maxSmbU.isFinite() && it.maxSmbU in FuseDoubleKey.MaxSmbU.min..FuseDoubleKey.MaxSmbU.max) { "maxSmbU=${it.maxSmbU}" }
             require(it.guardFloorMgdl.isFinite() && it.guardFloorMgdl in FuseDoubleKey.GuardFloorMgdl.min..FuseDoubleKey.GuardFloorMgdl.max) { "guardFloorMgdl=${it.guardFloorMgdl}" }
             require(
@@ -6449,13 +6451,16 @@ class FuseCycleRunner(
         // TONI 22.10.: DIE MAHLZEIT STEIGT - "waehrend aktiver Mahlzeiten darf nichts blockieren, solange Bedarf da ist und
         // BG steigt muss FUSE entsprechend Mahlzeitenbudget liefern". UKF-Trend mindestens +1 in zwei Messwerten
         // hintereinander (ein einzelner Ausreisser zaehlt nicht), nur fuer die weiteren Portionen, ueber der
-        // Stabilitaetsgrenze, ohne gemessenes Tief, im Fenster und mit Budgetrest. Dann wartet die Freigabe nicht auf die
-        // Strecke, das Einfrieren haelt nicht auf, der alte Riegel haelt nicht (wie bei laufender Mahlzeit), und Guard und
-        // Schwanz pruefen die Portion nicht (G1/G2 wie bei der Anfangsportion). Weiter halten: ein gemessenes Tief, das
-        // gemessene Abwaertsrisiko (Schutz-Null), technische Gruende, maxIOB, iobTH, die Expositionsgrenze und die
-        // Portionsdeckel. Steigt der Zucker nicht mehr, gilt wieder alles wie bisher.
-        val steigt = konto.early != null && !anfangOffen && ekSteigt.rising && bgMgdl > grenzeBg && !gemessenesTief &&
-            konto.restU > 0.0 && computeTs < konto.windowEndTs
+        // Stabilitaetsgrenze und ueber "Mahlzeit steigt ab" (Toni 23.10.: ein Hochfedern nach einem Abfall ist kein
+        // Anstieg der Mahlzeit), ohne gemessenes Tief und im Fenster. Dann wartet die Freigabe nicht auf die Strecke, das
+        // Einfrieren haelt nicht auf, der alte Riegel haelt nicht (wie bei laufender Mahlzeit), und Guard und Schwanz
+        // pruefen die Portion nicht (G1/G2 wie bei der Anfangsportion). Weiter halten: ein gemessenes Tief, das gemessene
+        // Abwaertsrisiko (Schutz-Null), technische Gruende, maxIOB, iobTH, die Expositionsgrenze und die Portionsdeckel.
+        // Steigt der Zucker nicht mehr, gilt wieder alles wie bisher. Ob noch etwas fliessen darf, sagt der Rest im Konto
+        // (mit Nachschlag erst nach dem Schritt bekannt).
+        val steigtAbBg = max(grenzeBg, cfg.mealRisingMinBgMgdl)
+        val steigt = konto.early != null && !anfangOffen && ekSteigt.rising && bgMgdl > steigtAbBg && !gemessenesTief &&
+            computeTs < konto.windowEndTs
         // SCHRITT 2 (Toni): laeuft die Mahlzeit, gelten fuer die weiteren Portionen die eingestellte Fallgrenze statt der
         // Kanalkonstante, und der alte Riegel haelt sie nicht auf. Toni 22.10.: auch nach einem gemessenen Tief dieser
         // Mahlzeit.
@@ -6497,6 +6502,13 @@ class FuseCycleRunner(
         }
         ekRuecknahmeOffenFuerAuth = 0L
         val tiefGrund = ruecknahmeGrund.takeIf { it == "LOW" || it == "LOW_ON_ABORT" }
+        // Toni 23.10.: den Nachschlag herunterstellen wirkt sofort - schon in diesem Zyklus, also vor dem Schritt;
+        // heraufstellen erst ab dem naechsten Marker.
+        val fruehPins = konto.early
+        val nachschlag = min(fruehPins?.topUpShare ?: 0.0, cfg.earlySupplySettings?.topUpShare ?: 0.0)
+        if (fruehPins != null && nachschlag != fruehPins.topUpShare) konto = konto.copy(
+            early = fruehPins.copy(topUpShare = nachschlag), topUpU = min(konto.topUpU, nachschlag * konto.a0U),
+        )
         val (neu, eval) = ExpectationAccount.step(
             konto,
             ExpectationAccount.Inputs(
@@ -8006,6 +8018,8 @@ class FuseCycleRunner(
         val expectationStabilityFallMgdlPerMin: Double = FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.defaultValue,
         /** Schritt 2: eigene Schwelle "Mahlzeit laeuft ab r" [mg/dl/min]; 0 = die Rampen-Unterkante ([mahlzeitLaeuftAbR]). */
         val mealRunningMinR: Double = FuseDoubleKey.MealRunningMinR.defaultValue,
+        /** Toni 23.10.: "die Mahlzeit steigt" erst ueber diesem Zucker [mg/dl]; 0 = die Stabilitaetsgrenze. */
+        val mealRisingMinBgMgdl: Double = FuseDoubleKey.MealRisingMinBgMgdl.defaultValue,
         val expectationReleaseThresholdU: Double = FuseDoubleKey.ExpectationReleaseThresholdU.defaultValue,
         val expectationHorizonMin: Int = FuseIntKey.ExpectationHorizonMin.defaultValue,
         /** Die Kurve als Einstellungstext, unveraendert (Export: konfiguriert). */
@@ -8056,6 +8070,7 @@ class FuseCycleRunner(
         riseRampLowR = preferences.get(FuseDoubleKey.RiseRampLowR),
         riseRampHighR = preferences.get(FuseDoubleKey.RiseRampHighR),
         mealRunningMinR = preferences.get(FuseDoubleKey.MealRunningMinR),
+        mealRisingMinBgMgdl = preferences.get(FuseDoubleKey.MealRisingMinBgMgdl),
         maxSmbU = preferences.get(FuseDoubleKey.MaxSmbU),
         guardFloorMgdl = preferences.get(FuseDoubleKey.GuardFloorMgdl),
         lowGateMinBenefitMgdl = preferences.get(FuseDoubleKey.LowGateMinBenefitMgdl),
@@ -8175,6 +8190,7 @@ class FuseCycleRunner(
                 maxPortionU = preferences.get(FuseDoubleKey.EarlySupplyMaxPortionU),
                 maxPerPeriodU = preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU),
                 periodMin = preferences.get(FuseIntKey.EarlySupplyPeriodMin),
+                topUpShare = preferences.get(FuseDoubleKey.EarlySupplyTopUpShare),
             ),
             earlySupplySwitches = app.aaps.fuse.core.controller.EarlySupply.Switches(
                 initialLiftsGuard = preferences.get(FuseBooleanKey.EarlySupplyInitialLiftsGuard),

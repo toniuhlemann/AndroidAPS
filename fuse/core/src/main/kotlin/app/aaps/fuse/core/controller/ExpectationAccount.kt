@@ -34,6 +34,9 @@ import kotlin.math.min
  * Mahlzeitenbudget liefern". Dann wartet eine weitere Portion weder auf die Strecke noch auf das Einfrieren; aufhalten
  * koennen sie nur noch die Pause (gemessene und technische Gruende) und die Mengengrenzen.
  *
+ * NACHSCHLAG (Toni 23.10., [State.topUpU]): zeigt sich die Mahlzeit groesser als erwartet, waechst die Grenze um den
+ * Ueberschuss, hoechstens um den eingestellten Anteil des Budgets. Ohne Einstellung (0) bleibt das Budget die Grenze.
+ *
  * REINE FUNKTIONEN. Die Verdrahtung und die Sperren leben im Runner; hier stehen nur Rechnung, Buchung und Zustand.
  * Alle gepinnten Groessen liegen im [State], damit eine spaetere Aenderung der Einstellung eine laufende Episode
  * nicht verschiebt.
@@ -277,8 +280,16 @@ object ExpectationAccount {
          * Mahlzeit nicht an, solange die Sperre gilt.
          */
         val earlyAfterLow: Boolean = false,
+        /**
+         * NACHSCHLAG (Toni 23.10.: "Peaks ueber 180 verhindern - nicht zuviel bremsen, dafuer besser verteilen"): was das
+         * Konto ueber das gebuchte Budget hinaus geben darf [U], weil sich die Mahlzeit groesser zeigt als erwartet - die
+         * beobachtete Stoerung ueber Skalierer mal Kurve, hoechstens [EarlySupply.Pins.topUpShare] mal Budget. Waechst
+         * nur mit der Beobachtung und sinkt nur mit dem Deckel. Verpflichtet nie zur Abgabe.
+         */
+        val topUpU: Double = 0.0,
     ) {
-        val restU: Double get() = max(0.0, a0U - bookedU)
+        /** Was noch fliessen darf: Budget plus Nachschlag, abzueglich des Verbrauchten. */
+        val restU: Double get() = max(0.0, a0U + topUpU - bookedU)
     }
 
     /**
@@ -369,6 +380,7 @@ object ExpectationAccount {
                 maxPerPeriodU = settings.maxPerPeriodU,
                 periodMin = settings.periodMin,
                 switches = switches,
+                topUpShare = settings.topUpShare,
             ),
         )
     }
@@ -579,6 +591,18 @@ object ExpectationAccount {
         val zeitraumRestU = max(0.0, pins.maxPerPeriodU - imZeitraumU)
 
         val curve = Curve.of(s.curveValues)
+        // NACHSCHLAG (Toni 23.10.): zeigt sich die Mahlzeit groesser als erwartet - beobachtete Stoerung ueber Skalierer
+        // mal Kurve, nach dem Kurvenende ihr Endwert -, darf das Konto den Ueberschuss zusaetzlich geben, hoechstens den
+        // festgehaltenen Anteil des Budgets. Nur mit gueltiger Beobachtung; einmal erlaubt, bleibt er, ausser der Deckel
+        // sinkt. Er hebt nur die Grenze - wie viel fliesst, sagen weiter Anforderung, Pruefungen und Portionsdeckel.
+        if (curve != null && !expired) {
+            val deckel = max(0.0, pins.topUpShare) * s.a0U
+            val ueberschuss = if (s.disturbanceValid && s.disturbanceU.isFinite()) {
+                max(0.0, s.disturbanceU - s.phi0 * curve.at(inputs.ageMin))
+            } else 0.0
+            val nachschlag = min(deckel, max(s.topUpU, ueberschuss))
+            if (nachschlag != s.topUpU) s = s.copy(topUpU = nachschlag)
+        }
         val scaleEff = if (curve == null) 0.0
         else EarlySupply.effectiveScale(s.phi0, inputs.ageMin, s.disturbanceU, s.disturbanceValid, curve)
         val e = inputs.early

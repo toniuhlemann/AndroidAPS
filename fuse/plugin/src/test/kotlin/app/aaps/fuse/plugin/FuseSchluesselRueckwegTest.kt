@@ -86,6 +86,11 @@ class FuseSchluesselRueckwegTest {
         // Langsamer Korrekturkanal (Toni 20.10.2026): ab Werk AUS, und aus ist er bitgleich mit dem Stand davor
         // (FuseTbrTranslator.ueberlagereLangsamenKanal greift nur, wenn er beteiligt ist).
         FuseBooleanKey.SlowChannelEnabled.key to false,
+        // Toni 23.10.2026: 0 = "Mahlzeit steigt" ab der Stabilitaetsgrenze wie vorher - der Runner nimmt
+        // max(Stabilitaetsgrenze, Einstellung).
+        FuseDoubleKey.MealRisingMinBgMgdl.key to 0.0,
+        // Toni 23.10.2026: 0 = kein Nachschlag - der Deckel 0 mal Budget laesst die Grenze beim Budget wie vorher.
+        FuseDoubleKey.EarlySupplyTopUpShare.key to 0.0,
     )
 
     /**

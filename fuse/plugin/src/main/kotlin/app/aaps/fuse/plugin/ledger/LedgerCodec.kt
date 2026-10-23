@@ -725,7 +725,10 @@ object LedgerCodec {
                     .put("g2", f.switches.initialLiftsTail)
                     .put("g3", f.switches.guardWithExpectation)
                     .put("g4", f.switches.tailWithExpectation)
-                    .put("withdrawn", f.withdrawn))
+                    .put("withdrawn", f.withdrawn)
+                    // Toni 23.10.: nur gesetzt geschrieben - ein Konto ohne Nachschlag bleibt bytegleich zu frueher.
+                    .apply { if (f.topUpShare > 0.0) put("topUpShare", zahl(f.topUpShare)) })
+                if (s.topUpU > 0.0) put("topUpU", zahl(s.topUpU))
                 put("initialDone", s.initialDone)
                 put("lowLocked", s.earlyLowLocked)
                 if (s.earlyLowLockSinceTs > 0L) put("lowLockSinceTs", s.earlyLowLockSinceTs)
@@ -842,6 +845,10 @@ object LedgerCodec {
                 )
             }
             require(!ausnahme) { "v2 ohne Guard-Ausnahme" }
+            // Optional (Toni 23.10.): fehlt der Nachschlag, galt keiner. Nie mehr als der festgehaltene Anteil des Budgets.
+            val nachschlagAnteil = if (!f.has("topUpShare")) 0.0 else anteil("topUpShare")
+            val nachschlagU = if (!o.has("topUpU")) 0.0 else menge("topUpU")
+            require(nachschlagU <= nachschlagAnteil * basis.a0U + 1e-9) { "topUpU $nachschlagU" }
             basis.copy(
                 early = app.aaps.fuse.core.controller.EarlySupply.Pins(
                     initialShare = anteil("initialShare"),
@@ -855,11 +862,13 @@ object LedgerCodec {
                         tailWithExpectation = f.getBoolean("g4"),
                     ),
                     withdrawn = f.getBoolean("withdrawn"),
+                    topUpShare = nachschlagAnteil,
                 ),
                 initialDone = schalter("initialDone"),
                 portions = portionen,
+                topUpU = nachschlagU,
                 // Optional: aeltere v2-Staende kennen die Felder nicht. Ihr "endedByLow" (Ende fuer immer) wird zur
-                // Sperre seit dem Marker - aufheben kann sie dann nur eine Bestaetigung in dieser Mahlzeit.
+                // Sperre seit dem Marker - seit Toni 22.10. faellt sie, sobald die Freigabe wieder erreicht ist.
                 earlyLowLocked = o.optBoolean("lowLocked", o.optBoolean("endedByLow", false)),
                 earlyLowLockSinceTs = o.optLong(
                     "lowLockSinceTs",

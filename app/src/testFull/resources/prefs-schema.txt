@@ -249,6 +249,7 @@ fuse_early_supply_period_min|FuseIntKey|true
 fuse_early_supply_scale_after_low|FuseDoubleKey|true
 fuse_early_supply_scale_stable|FuseDoubleKey|true
 fuse_early_supply_tail_with_expectation|FuseBooleanKey|true
+fuse_early_supply_top_up_share|FuseDoubleKey|true
 fuse_evidence_rebound_override_max_min|FuseIntKey|true
 fuse_expectation_account_enabled|FuseRetiredKey|true
 fuse_expectation_curve_120_u|FuseDoubleKey|true
@@ -304,6 +305,7 @@ fuse_meal_marker_withdraw_due_ts|FuseLongKey|false
 fuse_meal_marker_withdraw_for_ts|FuseLongKey|false
 fuse_meal_marker_withdraw_ordnung|FuseLongKey|false
 fuse_meal_marker_withdraw_quelle|FuseLongKey|false
+fuse_meal_rising_min_bg_mgdl|FuseDoubleKey|true
 fuse_meal_running_min_r|FuseDoubleKey|true
 fuse_night_deadband_enabled|FuseRetiredKey|true
 fuse_night_deadband_mgdl|FuseDoubleKey|true

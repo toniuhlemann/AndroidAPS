@@ -68,6 +68,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 import java.io.File
 
 /**
@@ -1319,6 +1320,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             maxPortionU = preferences.get(FuseDoubleKey.EarlySupplyMaxPortionU),
             maxPerPeriodU = preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU),
             periodMin = preferences.get(FuseIntKey.EarlySupplyPeriodMin),
+            topUpShare = preferences.get(FuseDoubleKey.EarlySupplyTopUpShare),
         ) ?: return null
         val jetzt = dateUtil.now()
         val kern = einheitskernJetzt(jetzt) ?: return null
@@ -2778,12 +2780,13 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             FuseDoubleKey.ExpectationCurveAt90U.key, FuseDoubleKey.ExpectationCurveAt120U.key,
             FuseDoubleKey.ExpectationStabilityBgMgdl.key, FuseIntKey.ExpectationStabilityMin.key,
             FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.key, FuseDoubleKey.ExpectationReleaseThresholdU.key,
-            FuseDoubleKey.MealRunningMinR.key,
+            FuseDoubleKey.MealRunningMinR.key, FuseDoubleKey.MealRisingMinBgMgdl.key,
             FuseIntKey.ExpectationHorizonMin.key, FuseStringKey.ExpectationCurve.key,
             FuseBooleanKey.EarlySupplyEnabled.key, FuseDoubleKey.EarlySupplyBudgetMaxU.key,
             FuseDoubleKey.EarlySupplyScaleStable.key, FuseDoubleKey.EarlySupplyScaleAfterLow.key,
             FuseDoubleKey.EarlySupplyInitialShare.key, FuseDoubleKey.EarlySupplyMaxPortionU.key,
             FuseDoubleKey.EarlySupplyMaxPerPeriodU.key, FuseIntKey.EarlySupplyPeriodMin.key,
+            FuseDoubleKey.EarlySupplyTopUpShare.key,
             FuseBooleanKey.EarlySupplyInitialLiftsGuard.key, FuseBooleanKey.EarlySupplyInitialLiftsTail.key,
             FuseBooleanKey.EarlySupplyGuardWithExpectation.key, FuseBooleanKey.EarlySupplyTailWithExpectation.key,
         )
@@ -2810,6 +2813,11 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 if (s > 0.0) z(s, 2) + " mg/dl/min - nur Folgeportionen im Mahlzeitfenster; SMB-Rampe unberuehrt"
                 else "0 - wie Rampe unten (" + z(d(FuseDoubleKey.RiseRampLowR), 2) + " mg/dl/min)"
             }
+            FuseDoubleKey.MealRisingMinBgMgdl.key -> d(FuseDoubleKey.MealRisingMinBgMgdl).let { s ->
+                val grenze = d(FuseDoubleKey.ExpectationStabilityBgMgdl)
+                if (s > grenze) z(s, 0) + " mg/dl - Extra-Portionen beim Steigen erst darueber"
+                else "0 - wie die Stabilitaetsgrenze (" + z(grenze, 0) + " mg/dl)"
+            }
             FuseDoubleKey.ExpectationReleaseThresholdU.key ->
                 z(d(FuseDoubleKey.ExpectationReleaseThresholdU), 2) + " U - zeigt sich bis +30 min weniger, friert der Rest ein"
             FuseIntKey.ExpectationHorizonMin.key -> "${preferences.get(FuseIntKey.ExpectationHorizonMin)} min"
@@ -2828,6 +2836,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 d(FuseDoubleKey.EarlySupplyMaxPerPeriodU), preferences.get(FuseIntKey.EarlySupplyPeriodMin), d(FuseDoubleKey.EarlySupplyMaxPortionU),
             )
             FuseIntKey.EarlySupplyPeriodMin.key -> "${preferences.get(FuseIntKey.EarlySupplyPeriodMin)} min - das gleitende Fenster fuer 'je Zeitraum'"
+            FuseDoubleKey.EarlySupplyTopUpShare.key -> d(FuseDoubleKey.EarlySupplyTopUpShare).let { s ->
+                if (s > 0.0) "${(s * 100).roundToInt()} % des Budgets zusaetzlich, wenn die Mahlzeit groesser ist als erwartet"
+                else "0 - kein Nachschlag"
+            }
             FuseBooleanKey.EarlySupplyInitialLiftsGuard.key -> FruehVersorgungText.G1
             FuseBooleanKey.EarlySupplyInitialLiftsTail.key -> FruehVersorgungText.G2
             FuseBooleanKey.EarlySupplyGuardWithExpectation.key -> FruehVersorgungText.G3
@@ -2891,6 +2903,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             preferences.get(FuseDoubleKey.EarlySupplyBudgetMaxU), preferences.get(FuseDoubleKey.EarlySupplyInitialShare),
             preferences.get(FuseDoubleKey.EarlySupplyMaxPortionU), preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU),
             preferences.get(FuseIntKey.EarlySupplyPeriodMin), preferences.get(FuseDoubleKey.MealExposureLimitU),
+            preferences.get(FuseDoubleKey.EarlySupplyTopUpShare),
             fruehModellSchluessel() ?: "-",
         ).joinToString("|")
         fruehLageCache?.takeIf { it.first == stand }?.let { return it.second }
@@ -2937,6 +2950,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 maxPortionU = preferences.get(FuseDoubleKey.EarlySupplyMaxPortionU),
                 maxPerPeriodU = preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU),
                 periodMin = preferences.get(FuseIntKey.EarlySupplyPeriodMin),
+                topUpShare = preferences.get(FuseDoubleKey.EarlySupplyTopUpShare),
             ),
             expositionU = preferences.get(FuseDoubleKey.MealExposureLimitU),
         )

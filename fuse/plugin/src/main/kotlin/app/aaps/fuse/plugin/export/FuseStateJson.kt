@@ -2076,6 +2076,11 @@ object FuseStateJson {
                     .put("releaseThresholdU", fin(p.expectationReleaseThresholdU))
                     .put("stabilityFallMgdlPerMin", fin(p.expectationStabilityFallMgdlPerMin))
                     .put("mealRunningMinR", fin(p.mealRunningMinR))
+                    // Toni 23.10.: "Mahlzeit steigt ab" nur, wenn gesetzt - sonst bleibt der Block bitgleich.
+                    .apply {
+                        if (p.mealRisingMinBgMgdl != app.aaps.fuse.plugin.FuseDoubleKey.MealRisingMinBgMgdl.defaultValue)
+                            put("mealRisingMinBgMgdl", fin(p.mealRisingMinBgMgdl))
+                    }
                     .put("horizonMin", p.expectationHorizonMin)
                     .put("curveVersion", app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(p.expectationCurveText)
                         ?.let { app.aaps.fuse.core.controller.ExpectationAccount.curveVersion(it.values()) } ?: JSONObject.NULL)
@@ -2253,6 +2258,9 @@ object FuseStateJson {
                 ?.let { "stabilityFall:" + Sha.lossless(it) },
             // Schritt 2: die eigene Schwelle "Mahlzeit laeuft" ebenso nur, wenn gesetzt.
             p.mealRunningMinR.takeIf { it != app.aaps.fuse.plugin.FuseDoubleKey.MealRunningMinR.defaultValue }?.let { "mealRunning:" + Sha.lossless(it) },
+            // Toni 23.10.: "Mahlzeit steigt ab" ebenso nur, wenn gesetzt.
+            p.mealRisingMinBgMgdl.takeIf { it != app.aaps.fuse.plugin.FuseDoubleKey.MealRisingMinBgMgdl.defaultValue }
+                ?.let { "risingFrom:" + Sha.lossless(it) },
         ) + kontoZahlen.map { Sha.lossless(it) } + listOf(
             app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(p.expectationCurveText)
                 ?.values()?.joinToString(",") { Sha.lossless(it) } ?: "curve:none",
@@ -2269,7 +2277,10 @@ object FuseStateJson {
             ) + p.earlySupplySwitches.let { g ->
             listOf(g.initialLiftsGuard, g.initialLiftsTail, g.guardWithExpectation, g.tailWithExpectation)
                 .joinToString("", prefix = "G1-4:") { if (it) "1" else "0" }
-        }
+        } + listOfNotNull(
+            // Toni 23.10.: der Nachschlag nur, wenn eingestellt - ohne ihn bleibt jeder bisherige Hash bitgleich.
+            frueh?.topUpShare?.takeIf { it != 0.0 }?.let { "topUp:" + Sha.lossless(it) },
+        )
         // v38-ABSCHLUSS (A5-Neutralitaet, Toni 29.08.): die Hash-Eingaenge
         // sind CENTRAL-only die vier Profilwerte (+ die MEAL-Schwelle als
         // eigener Zustand). Der Konstanten-Marker "legacyProfileCaps:
@@ -2508,6 +2519,9 @@ object FuseStateJson {
                     .put("switchesPinned", g(f.switches))
                     .put("switchesNow", g(z.fruehSchalter))
                     .put("withdrawn", f.withdrawn)
+                    // Toni 23.10.: der Nachschlag - Deckel (Anteil des Budgets) und was davon jetzt erlaubt ist [U].
+                    .put("topUpShare", fin(f.topUpShare))
+                    .put("topUpU", fin(s.topUpU))
                     // Tief-Sperre (Toni): gesperrt seit, Tief in dieser Mahlzeit, Grund im Zyklus. Toni 22.10.: die Sperre
                     // faellt von selbst - die Bestaetigung ist entfallen, ihr Feld bleibt fuer den Trail und steht auf null.
                     .put("lowLocked", s.earlyLowLocked)

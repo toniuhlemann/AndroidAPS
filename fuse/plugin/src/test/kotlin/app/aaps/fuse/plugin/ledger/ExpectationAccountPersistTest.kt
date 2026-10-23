@@ -206,6 +206,28 @@ class ExpectationAccountPersistTest {
     }
 
     @Test
+    fun `der Nachschlag ueberlebt den Rundlauf, fehlt er, galt keiner, mehr als der Anteil verwirft das Konto`() {
+        val k = fruehesKonto()
+        assertFalse(LedgerCodec.encodeEpisodes(episoden(k)).getJSONObject("earlySupply").has("topUpU"))
+        val mit = k.copy(early = k.early!!.copy(topUpShare = 0.5), topUpU = 0.25 * k.a0U)
+        val json = LedgerCodec.encodeEpisodes(episoden(mit))
+        assertEquals(mit, LedgerCodec.decodeEpisodes(json).expectation)
+        val f = json.getJSONObject("earlySupply")
+        // Ein aelterer Stand ohne die Felder: kein Nachschlag.
+        f.remove("topUpU")
+        f.getJSONObject("early").remove("topUpShare")
+        assertEquals(k, LedgerCodec.decodeEpisodes(json).expectation)
+        // Mehr Nachschlag, als der festgehaltene Anteil erlaubt: das Konto wird verworfen, nie still uebernommen.
+        f.put("topUpU", 0.1)
+        val zurueck = LedgerCodec.decodeEpisodes(json)
+        assertNull(zurueck.expectation)
+        assertTrue(zurueck.expectationDropped)
+        f.getJSONObject("early").put("topUpShare", 1.5)
+        f.remove("topUpU")
+        assertNull(LedgerCodec.decodeEpisodes(json).expectation)
+    }
+
+    @Test
     fun `ein ungueltiges v2-Konto wird verworfen und die Generation bleibt gueltig`() {
         val faelle = listOf<(JSONObject) -> Unit>(
             { it.put("phi0", 2.5) },

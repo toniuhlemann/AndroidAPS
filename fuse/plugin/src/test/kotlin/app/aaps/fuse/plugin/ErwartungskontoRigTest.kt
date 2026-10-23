@@ -1021,9 +1021,11 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         val konto = zyklen.mapNotNull { it.konto }.last()
         assertNotNull(konto.early) { "kein v2-Konto" }
         // Konsolidierung 2.0: die Proben auf v1-Ausnahme und Direktdosis-Quellen sind entfallen - es gibt beide nicht mehr.
-        // Budget nie ueberschritten.
+        // Budget nie ueberschritten - mit Nachschlag (Toni 23.10.) hoechstens Budget plus Nachschlag.
         val summe = zyklen.sumOf { it.dErw() }
-        assertTrue(summe <= konto.a0U + 1e-9) { "Budget ueberschritten: $summe > ${konto.a0U}" }
+        val nachschlag = zyklen.mapNotNull { it.konto?.topUpU }.maxOrNull() ?: 0.0
+        assertTrue(nachschlag <= konto.early!!.topUpShare * konto.a0U + 1e-9) { "Nachschlag $nachschlag ueber dem Deckel" }
+        assertTrue(summe <= konto.a0U + nachschlag + 1e-9) { "Budget ueberschritten: $summe > ${konto.a0U} + $nachschlag" }
         assertTrue(zyklen.all { (it.o.erwartungskonto?.buchung?.split?.violationU ?: 0.0) == 0.0 }) { "Verstoss gebucht" }
         // Anfangsportion hoechstens einmal, hoechstens alpha * B, nur im Fenster.
         val anfang = zyklen.filter { it.frueh()?.initial == true && it.dErw() > 0.0 }
@@ -1751,6 +1753,82 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         for (z in ohneSteigend) {
             assertEquals(schwanzMitErwartung(z), z.o.erwartungskonto!!.fruehSchwanzKappeU, "Minute ${z.minute}")
         }
+    }
+
+    /**
+     * TONI 23.10.: "Mahlzeit steigt ab" - die Mahlzeit steigt erst ueber der eingestellten Schwelle (ein Hochfedern
+     * knapp ueber der Stabilitaetsgrenze nach einem Abfall ist kein Anstieg der Mahlzeit). Gegenprobe ab Werk (0 = die
+     * Stabilitaetsgrenze): dort steigt sie schon darunter.
+     */
+    @Test
+    fun `die Mahlzeit steigt erst ueber der eingestellten Schwelle - Gegenprobe ab Werk`(@TempDir dir: File) = runBlocking<Unit> {
+        val schwelleBg = 180.0
+        suspend fun lauf(name: String, schwelle: Double) = fruehLauf(fSpaet, File(dir, name)) {
+            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
+            whenever(preferences.get(FuseDoubleKey.MealRisingMinBgMgdl)).thenReturn(schwelle)
+        }
+        fun steigtBei(z: List<Zyklus>) =
+            z.filter { it.o.erwartungskonto?.zyklus?.mahlzeitSteigt == true }.map { requireNotNull(it.o.signal?.q1) }
+
+        val abWerk = lauf("abWerk", 0.0)
+        pruefeMechanik(abWerk, 0.5, 1.0, 2.0)
+        assertTrue(steigtBei(abWerk).any { it <= schwelleBg }) { "Probe zeigt nichts: ab Werk steigt sie nie unter $schwelleBg" }
+
+        val mit = lauf("mit", schwelleBg)
+        pruefeMechanik(mit, 0.5, 1.0, 2.0)
+        val bg = steigtBei(mit)
+        assertTrue(bg.isNotEmpty()) { "ueber der Schwelle steigt die Mahlzeit nie" }
+        assertTrue(bg.all { it > schwelleBg }) { "steigt unter der Schwelle: $bg" }
+    }
+
+    /**
+     * TONI 23.10.: der NACHSCHLAG. Zeigt sich die Mahlzeit groesser als die Kurve, gibt das Konto ueber das Budget hinaus,
+     * hoechstens den eingestellten Anteil des Budgets ([pruefeMechanik]). Kleines synthetisches Budget, damit es sicher
+     * aufgebraucht wird. Gegenprobe ab Werk (0 = kein Nachschlag): das Budget bleibt die Grenze. Herunterstellen wirkt
+     * sofort, schon im selben Zyklus.
+     */
+    @Test
+    fun `mit Nachschlag gibt das Konto ueber das Budget hinaus, hoechstens den Anteil - Gegenprobe ab Werk`(@TempDir dir: File) = runBlocking<Unit> {
+        suspend fun lauf(name: String, anteil: Double, vorZyklus: suspend (Int) -> Unit = {}) =
+            fruehLauf(fSpaet, File(dir, name), vorZyklus = vorZyklus) {
+                fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true, budgetU = 2.0)
+                whenever(preferences.get(FuseDoubleKey.EarlySupplyTopUpShare)).thenReturn(anteil)
+            }
+
+        val ohne = lauf("ohne", 0.0)
+        pruefeMechanik(ohne, 0.5, 1.0, 2.0)
+        val kontoOhne = ohne.mapNotNull { it.konto }.last()
+        assertEquals(0.0, kontoOhne.topUpU, 0.0)
+        val summeOhne = ohne.sumOf { it.dErw() }
+        assertTrue(summeOhne >= kontoOhne.a0U - 0.1) { "Probe zeigt nichts: Budget nicht aufgebraucht ($summeOhne von ${kontoOhne.a0U})" }
+
+        val mit = lauf("mit", 0.5)
+        pruefeMechanik(mit, 0.5, 1.0, 2.0)
+        val konto = mit.mapNotNull { it.konto }.last()
+        assertEquals(0.5, konto.early!!.topUpShare, 0.0)
+        assertTrue(konto.topUpU > 0.0) { "kein Nachschlag, obwohl die Mahlzeit ueber der Kurve liegt" }
+        val summe = mit.sumOf { it.dErw() }
+        assertTrue(summe > konto.a0U + 1e-9) { "nicht ueber das Budget: $summe von ${konto.a0U}" }
+
+        // Herunterstellen: ab dieser Minute gilt der kleinere Deckel - im selben Zyklus, ohne neuen Marker.
+        val abMin = requireNotNull(mit.firstOrNull { (it.konto?.topUpU ?: 0.0) > 0.2 * konto.a0U }?.minute) {
+            "Probe zeigt nichts: der Nachschlag waechst nie ueber den kleineren Deckel"
+        }
+        val runter = lauf("runter", 0.5) { min ->
+            if (min >= abMin) whenever(preferences.get(FuseDoubleKey.EarlySupplyTopUpShare)).thenReturn(0.2)
+        }
+        val danach = runter.filter { it.minute >= abMin && it.konto != null }
+        assertTrue(danach.isNotEmpty()) { "Probe zeigt nichts: nach dem Herunterstellen kein Zyklus" }
+        for (z in danach) {
+            val k = z.konto!!
+            assertEquals(0.2, k.early!!.topUpShare, 0.0, "Minute ${z.minute}")
+            assertTrue(k.topUpU <= 0.2 * k.a0U + 1e-9) { "Minute ${z.minute}: Nachschlag ${k.topUpU} ueber dem kleineren Deckel" }
+        }
+        // Was danach noch fliesst, passt unter den kleineren Deckel.
+        val a0U = danach.first().konto!!.a0U
+        val vorher = runter.filter { it.minute < abMin }.sumOf { it.dErw() }
+        val nachher = danach.sumOf { it.dErw() }
+        assertTrue(nachher <= maxOf(0.0, 1.2 * a0U - vorher) + 1e-9) { "nach dem Herunterstellen $nachher, vorher $vorher, Budget $a0U" }
     }
 
     /** Zucker am Druck knapp unter der Stabilitaetsgrenze, ohne gemessenes Tief. */
