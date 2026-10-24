@@ -91,7 +91,28 @@ class FuseSchluesselRueckwegTest {
         FuseDoubleKey.MealRisingMinBgMgdl.key to 0.0,
         // Toni 23.10.2026: 0 = kein Nachschlag - der Deckel 0 mal Budget laesst die Grenze beim Budget wie vorher.
         FuseDoubleKey.EarlySupplyTopUpShare.key to 0.0,
+        // Toni 24.10.2026: der Snack-Skalierer wirkt nur bei der neuen Wahl "Snack" am Marker (FuseCycleRunner,
+        // ekFruehEinstellungen) - "Mahlzeit" und "Nur Marker" rechnen mit jedem Wert wie vorher. Ein Snack bucht nie mehr
+        // als eine Mahlzeit (EarlySupply.Settings.forSnack).
+        FuseDoubleKey.EarlySupplySnackScale.key to 1.0,
     )
+
+    /**
+     * Neuer ZUSTAND nach dem 1.x-Stand, keine Einstellung: nicht exportierbar, also in keiner Sicherung - weder in einer
+     * alten noch in einer neuen. Nach einem Import fehlt er immer, und das ist der Normalfall (kein Marker aktiv).
+     */
+    private val neuZustand: Set<String> = setOf(
+        // Toni 24.10.2026: die Wahl "Snack" am Marker - sie stirbt mit dem Marker wie "Mahlzeit" und "Nur Marker".
+        FuseLongKey.MealMarkerSnack.key,
+    )
+
+    @Test
+    fun `neuer Zustand ist nicht exportierbar`() {
+        for (k in neuZustand) {
+            assertTrue(k !in stand1x) { "$k ist kein neuer Schluessel" }
+            assertEquals(false, exportierbar(k), "Exportierbarkeit von $k")
+        }
+    }
 
     /**
      * Neue Regler, die NUR hinter einem neuen Schalter mit neutraler Vorgabe wirken - je mit diesem Schalter. Fehlen
@@ -142,7 +163,7 @@ class FuseSchluesselRueckwegTest {
     @Test
     fun `es kommt kein neuer Schluessel hinzu und keiner doppelt`() {
         val schluessel = alle.map { it.key }
-        val neu = schluessel.toSet() - stand1x - neuMitNeutralerVorgabe.keys - neuHinterSchalter.keys - neuNurAnzeige.keys
+        val neu = schluessel.toSet() - stand1x - neuMitNeutralerVorgabe.keys - neuHinterSchalter.keys - neuNurAnzeige.keys - neuZustand
         assertTrue(neu.isEmpty()) { "neu - fehlt in jeder alten Sicherung (Uebernahmevertrag pruefen): $neu" }
         assertEquals(schluessel.size, schluessel.toSet().size, "doppelt registriert")
     }

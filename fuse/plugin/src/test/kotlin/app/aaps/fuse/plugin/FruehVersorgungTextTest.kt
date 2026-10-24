@@ -72,6 +72,18 @@ class FruehVersorgungTextTest {
     }
 
     @Test
+    fun `Snack-Skalierer zeigt Budget und Anfangsportion, nie mehr als eine Mahlzeit`() {
+        val l = lage()
+        assertEquals("1,0 - Snack-Budget 5,5 U, am Druck 2,2 U", FruehVersorgungText.snackSkalierer(1.0, l))
+        // Groesser als der Mahlzeit-Skalierer: es gilt der der Mahlzeit.
+        assertEquals(
+            "1,4 - Snack-Budget 6,6 U, am Druck 2,6 U (hoechstens wie Mahlzeit, Skalierer 1,2)",
+            FruehVersorgungText.snackSkalierer(1.4, l),
+        )
+        assertEquals("0,0 - kein Snack-Knopf: ein Snack bekaeme kein Budget", FruehVersorgungText.snackSkalierer(0.0, l))
+    }
+
+    @Test
     fun `Portion und je Zeitraum sagen, was sie erlauben`() {
         val l = lage()
         assertEquals("1,0 U je Zyklus - Rest 4,0 U in mindestens 4 Gaben", FruehVersorgungText.portion(1.0, l))
@@ -89,7 +101,7 @@ class FruehVersorgungTextTest {
         assertEquals("An - Budget heute 6,6 U stabil, 4,4 U nach Tief", FruehVersorgungText.hauptschalter(lage()))
         assertEquals("An, aber wirkungslos: das Erwartungskonto ist aus", FruehVersorgungText.hauptschalter(lage(kontoAn = false)))
         assertEquals(
-            "Aus - 'Nur Erwartung' laeuft ueber das Konto ohne fruehe Versorgung",
+            "Aus - 'Mahlzeit' und 'Snack' laufen ueber das Konto ohne fruehe Versorgung",
             FruehVersorgungText.hauptschalter(lage(fruehAn = false)),
         )
     }

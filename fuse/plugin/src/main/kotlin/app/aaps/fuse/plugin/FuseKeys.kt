@@ -419,7 +419,7 @@ enum class FuseDoubleKey(
 
     // ---- FRUEHE VERSORGUNG (E-034 v2), nur mit Erwartungskonto und Hauptschalter ----
     //
-    // Gilt nur fuer Mahlzeiten mit "Nur Erwartung" am Marker. Alle Mengen stehen
+    // Gilt nur fuer Mahlzeiten mit "Mahlzeit" oder "Snack" am Marker. Alle Mengen stehen
     // ab Werk auf 0 (= keine fruehe Versorgung): persoenliche Werte stehen nur auf
     // dem Geraet. Ein ungueltiger Wert schaltet die fruehe Versorgung ab.
 
@@ -428,6 +428,12 @@ enum class FuseDoubleKey(
 
     /** Derselbe Skalierer bei Start nach Tief oder im Fallen. Standard 0: dann keine fruehe Versorgung. */
     EarlySupplyScaleAfterLow("fuse_early_supply_scale_after_low", 0.0, 0.0, app.aaps.fuse.core.controller.EarlySupply.MAX_SCALE, title = TextRef.AndroidRes(R.string.fuse_early_supply_scale_after_low_title), summary = TextRef.AndroidRes(R.string.fuse_early_supply_scale_after_low_summary), unitType = UnitType.DOUBLE_2),
+
+    /**
+     * Toni 24.10.2026: der Skalierer bei der Wahl "Snack" am Marker (0..2) - fuer kleinere Mahlzeiten ein kleineres
+     * Budget. Hoechstens der Skalierer, der sonst gilt (stabil bzw. nach Tief). Nur mit "Snack" wirksam.
+     */
+    EarlySupplySnackScale("fuse_early_supply_snack_scale", 1.0, 0.0, app.aaps.fuse.core.controller.EarlySupply.MAX_SCALE, title = TextRef.AndroidRes(R.string.fuse_early_supply_snack_scale_title), summary = TextRef.AndroidRes(R.string.fuse_early_supply_snack_scale_summary), unitType = UnitType.DOUBLE_2),
 
     /** Obergrenze des Gesamtbudgets je Mahlzeit [U]. Standard 0 = keine fruehe Versorgung. */
     EarlySupplyBudgetMaxU("fuse_early_supply_budget_max_u", 0.0, 0.0, app.aaps.fuse.core.controller.EarlySupply.MAX_BUDGET_U, title = TextRef.AndroidRes(R.string.fuse_early_supply_budget_max_title), summary = TextRef.AndroidRes(R.string.fuse_early_supply_budget_max_summary), unitType = UnitType.DOUBLE_2),
@@ -764,6 +770,10 @@ enum class FuseLongKey(
      *  wird nur noch mitgefuehrt. Lebt und stirbt mit [MealMarkerArmedTs] wie
      *  [MealMarkerNoPrime]. */
     MealMarkerExpectationOnly("fuse_meal_marker_expectation_only", 0, exportable = false),
+    /** EPISODENZUSTAND, kein Setting (Toni 24.10.2026): die Wahl "Snack" im Marker-Dialog - das Konto bucht mit dem
+     *  Snack-Skalierer ([FuseDoubleKey.EarlySupplySnackScale]). Lebt und stirbt mit [MealMarkerArmedTs] wie
+     *  [MealMarkerNoPrime]; "Nur Marker" geht vor. */
+    MealMarkerSnack("fuse_meal_marker_snack", 0, exportable = false),
 
     /**
      * ALTBESTAND, nur noch LESEND: `armedTs*10 + Stufe`.

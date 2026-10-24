@@ -1711,6 +1711,8 @@ object FuseStateJson {
                 // Toni: die Wahl "nur Erwartung" - nur wenn getroffen,
                 // damit Laeufe ohne sie bitgleich bleiben.
                 .apply { if (outcome.state?.markerExpectationOnly == true) put("markerExpectationOnly", true) }
+                // Toni 24.10.2026: die Wahl "Snack" ebenso nur, wenn getroffen.
+                .apply { if (outcome.state?.markerSnack == true) put("markerSnack", true) }
                 .put("markerBoost", outcome.state?.markerBoost ?: JSONObject.NULL)
                 .put("mealWindow", outcome.state?.mealWindow ?: JSONObject.NULL)
                 .put("smbRatioEffective", fin(outcome.state?.effectiveSmbRatio))
@@ -2280,6 +2282,9 @@ object FuseStateJson {
         } + listOfNotNull(
             // Toni 23.10.: der Nachschlag nur, wenn eingestellt - ohne ihn bleibt jeder bisherige Hash bitgleich.
             frueh?.topUpShare?.takeIf { it != 0.0 }?.let { "topUp:" + Sha.lossless(it) },
+            // Toni 24.10.2026: der Snack-Skalierer ebenso nur, wenn abweichend.
+            p.earlySupplySnackScale.takeIf { it != app.aaps.fuse.plugin.FuseDoubleKey.EarlySupplySnackScale.defaultValue }
+                ?.let { "snack:" + Sha.lossless(it) },
         )
         // v38-ABSCHLUSS (A5-Neutralitaet, Toni 29.08.): die Hash-Eingaenge
         // sind CENTRAL-only die vier Profilwerte (+ die MEAL-Schwelle als

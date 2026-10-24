@@ -990,13 +990,16 @@ class MainViewModel(
         }
     }
 
-    /** One of the two answers: "Nur Erwartung" ([expectationOnly]) or "Nur Marker - 0 U". */
-    fun confirmFuseMeal(expectationOnly: Boolean) {
+    /**
+     * One of the answers: "Mahlzeit" ([expectationOnly]), "Snack" ([expectationOnly] and [snack]: the same account with
+     * the smaller snack scale) or "Nur Marker - 0 U".
+     */
+    fun confirmFuseMeal(expectationOnly: Boolean, snack: Boolean = false) {
         val prompt = _fuseMealPrompt.value ?: return
         _fuseMealPrompt.value = null
         val source = fuseSource() ?: return
         viewModelScope.launch {
-            if (expectationOnly) source.fuseMarkerToggle(prompt.pressedAt, ereignisId = prompt.eventId, nurErwartung = true)
+            if (expectationOnly) source.fuseMarkerToggle(prompt.pressedAt, ereignisId = prompt.eventId, nurErwartung = true, snack = snack)
             else source.fuseMarkerToggle(prompt.pressedAt, ohneVorschuss = true, ereignisId = prompt.eventId)
             refreshQuickLaunch()
         }

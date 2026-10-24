@@ -1642,6 +1642,9 @@ class FuseCycleRunner(
         // Direktdosis mehr - jeder Marker ohne "Nur Marker" ist "Nur Erwartung", auch ein Altbestand-Stempel ohne Wahl.
         // "Nur Marker" geht vor.
         val markerNurErwartung = markerTs > 0L && !markerNoPrime
+        // "Snack" (Toni 24.10.): eine "Mahlzeit" mit dem kleineren Snack-Skalierer. Ein Altbestand-Stempel kennt
+        // die Wahl nicht und laeuft als Mahlzeit.
+        val markerSnack = markerNurErwartung && preferences.get(FuseLongKey.MealMarkerSnack) != 0L
         val episodes = ledger.episodes
         // DER WIRKSAME EPISODENDECKEL (Toni 16.08., Fall 1 des Audit-Nachtrags).
         //
@@ -2753,6 +2756,7 @@ class FuseCycleRunner(
                     markerArmedTs = markerTs,
                     markerNoPrime = markerNoPrime,
                     markerExpectationOnly = markerNurErwartung,
+                    markerSnack = markerSnack,
                     reboundSuppressedByMarker = reboundSuppressedByMarker,
                     mealWindow = mealWindow,
                     rSignedMgdlPerMin = ratioDrive,
@@ -2943,7 +2947,7 @@ class FuseCycleRunner(
                 isf, target, targetSource, iobTotal,
                 maxIobU, transportModelledU, ledgerView, episodes, onset, band,
                 built.discount, built.input.trajectory.model, sensorEpoch, calibrationEpoch, gate,
-                ekGilt = ekGilt, ekVorschau = ekVorschau, markerNoPrime = markerNoPrime,
+                ekGilt = ekGilt, ekVorschau = ekVorschau, markerNoPrime = markerNoPrime, markerSnack = markerSnack,
             )
         }
         // AB HIER ist die Bahn vorhanden. Einmal ausgepackt statt an dreissig
@@ -3229,6 +3233,7 @@ class FuseCycleRunner(
             ekGilt = ekGilt, vorschau = ekVorschau, dosingCtx = dosingCtx, cfg = cfg, episodes = episodes,
             computeTs = computeTs,
             nurErwartung = markerNurErwartung,
+            snack = markerSnack,
             // E-034 v2: die Geraetegroessen der fruehen Versorgung - aus DEMSELBEN
             // Einheitskern und denselben IOB-Arrays wie Bahn und Kandidatensuche.
             fruehEingabenVon = {
@@ -6295,8 +6300,10 @@ class FuseCycleRunner(
         technisch: List<String>,
         /** Gemessenes Tief in diesem Zyklus (K5): nimmt die Freigabe zurueck. */
         gemessenesTief: Boolean,
-        /** E-034 v2: "Nur Erwartung" am Marker - nur dann gilt die fruehe Versorgung. */
+        /** E-034 v2: "Mahlzeit" (frueher "Nur Erwartung") am Marker - nur dann gilt die fruehe Versorgung. */
         nurErwartung: Boolean = false,
+        /** Toni 24.10.2026: "Snack" am Marker - die fruehe Versorgung mit dem Snack-Skalierer (nur mit [nurErwartung]). */
+        snack: Boolean = false,
         /**
          * v2: die Geraetegroessen dieses Zyklus; `null` = kein Insulinmodell.
          * TRAEGE: gerechnet nur, wenn ein v2-Konto gebucht oder fortgeschrieben
@@ -6375,7 +6382,7 @@ class FuseCycleRunner(
             // gemessene Anteil. Konsolidierung 2.0: das Konto v1 ist entfallen - ist die fruehe Versorgung aus oder
             // ungueltig eingestellt, bucht der Druck ein v2-Konto mit Budget 0 und neutralen Pins (keine Portion,
             // kein Schalter); bei ungueltigen Kontoparametern ein Konto ohne Erwartung. Weniger Insulin, nie mehr.
-            val frueh = ekFruehEinstellungen(cfg, nurErwartung)
+            val frueh = ekFruehEinstellungen(cfg, nurErwartung, snack)
             val schalter =
                 if (cfg.earlySupplySettings != null) cfg.earlySupplySwitches
                 else app.aaps.fuse.core.controller.EarlySupply.Switches.NONE
@@ -6580,9 +6587,17 @@ class FuseCycleRunner(
         }
             ?.let { app.aaps.fuse.core.controller.EarlySupply.Continuation(it / isfMgdlPerU, cfg.driveTauMin.toDouble()) }
 
-    private fun ekFruehEinstellungen(cfg: Config, nurErwartung: Boolean): app.aaps.fuse.core.controller.EarlySupply.Settings =
-        cfg.earlySupplySettings?.let { s -> if (nurErwartung && cfg.earlySupplyEnabled) s else s.copy(budgetMaxU = 0.0) }
-            ?: app.aaps.fuse.core.controller.EarlySupply.Settings.NEUTRAL
+    /** Was der Druck bucht: "Mahlzeit" die Einstellungen, "Snack" mit dem Snack-Skalierer, "Nur Marker" Budget 0. */
+    private fun ekFruehEinstellungen(
+        cfg: Config, nurErwartung: Boolean, snack: Boolean = false,
+    ): app.aaps.fuse.core.controller.EarlySupply.Settings =
+        cfg.earlySupplySettings?.let { s ->
+            when {
+                !nurErwartung || !cfg.earlySupplyEnabled -> s.copy(budgetMaxU = 0.0)
+                snack -> s.forSnack(cfg.earlySupplySnackScale)
+                else -> s
+            }
+        } ?: app.aaps.fuse.core.controller.EarlySupply.Settings.NEUTRAL
 
     /** E-034 v2: braucht die Buchung jetzt das Insulinmodell? Nur ein moegliches Budget > 0 braucht es. */
     private fun ekBuchungBrauchtModell(cfg: Config, nurErwartung: Boolean): Boolean =
@@ -6921,6 +6936,7 @@ class FuseCycleRunner(
         ekGilt: Boolean = false,
         ekVorschau: app.aaps.fuse.core.controller.DosingContext.Decision? = null,
         markerNoPrime: Boolean = false,
+        markerSnack: Boolean = false,
     ): Outcome {
         // A1: derselbe zentrale Kontext auch im predictorfreien Pfad -
         // ein Zyklus, EINE Entscheidung, egal welcher Weg ihn traegt.
@@ -6944,6 +6960,7 @@ class FuseCycleRunner(
             // v2 ohne Bahn: gebucht wird erst mit Insulinmodell im Hauptpfad,
             // ein Erwartungsanteil fliesst hier nie (NO_TRAJECTORY pausiert).
             nurErwartung = mealMarkerActive && !markerNoPrime,
+            snack = mealMarkerActive && !markerNoPrime && markerSnack,
             bgMgdl = signal.q1, targetMgdl = state.targetMgdl, isfMgdlPerU = state.isfMgdlPerU,
             iobTotalU = iobTotal.iob + transportModelledU, activityUPerMin = iobTotal.activity,
             sperren = listOfNotNull(
@@ -8033,6 +8050,8 @@ class FuseCycleRunner(
         val earlySupplySettings: app.aaps.fuse.core.controller.EarlySupply.Settings? = null,
         /** G1..G4, wie JETZT eingestellt: Abschalten wirkt sofort, Einschalten ab dem naechsten Marker. */
         val earlySupplySwitches: app.aaps.fuse.core.controller.EarlySupply.Switches = app.aaps.fuse.core.controller.EarlySupply.Switches.NONE,
+        /** Toni 24.10.2026: der Skalierer bei "Snack" - s. [FuseDoubleKey.EarlySupplySnackScale]; geprueft in `forSnack`. */
+        val earlySupplySnackScale: Double = FuseDoubleKey.EarlySupplySnackScale.defaultValue,
     ) {
         /** Schritt 2: die geltende Schwelle "Mahlzeit laeuft" - die eigene, sonst die Rampen-Unterkante. */
         val mahlzeitLaeuftAbR: Double get() = if (mealRunningMinR > 0.0) mealRunningMinR else riseRampLowR
@@ -8198,6 +8217,7 @@ class FuseCycleRunner(
                 guardWithExpectation = preferences.get(FuseBooleanKey.EarlySupplyGuardWithExpectation),
                 tailWithExpectation = preferences.get(FuseBooleanKey.EarlySupplyTailWithExpectation),
             ),
+            earlySupplySnackScale = preferences.get(FuseDoubleKey.EarlySupplySnackScale),
         )
 
     /**

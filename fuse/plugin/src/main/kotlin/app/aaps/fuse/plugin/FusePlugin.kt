@@ -806,8 +806,10 @@ class FusePlugin(
         ereignisId: String? = null,
         /** Woher der Druck kam - nur fuer Log und Trail ([FuseStateJson.MarkerEvent]). */
         quelle: String = MarkerRuecknahme.Quelle.UNBEKANNT.text,
-        /** Wahl "nur Erwartung" (Toni): keine Direktdosis, die Huelle traegt das Konto. */
+        /** Wahl "Mahlzeit" (Toni, frueher "nur Erwartung"): keine Direktdosis, die Huelle traegt das Konto. */
         nurErwartung: Boolean = false,
+        /** Wahl "Snack" (Toni 24.10.): wie "Mahlzeit", das Budget mit dem kleineren Snack-Skalierer. */
+        snack: Boolean = false,
     ): Boolean {
         // KI-177: UNTER DER LAUFSPERRE. Der Druck aendert Episodenfelder des
         // Ledgers und schreibt ihn; ohne Sperre konnte er das mitten in einem
@@ -821,13 +823,14 @@ class FusePlugin(
             val gewartetMs = (System.nanoTime() - warteBeginn) / 1_000_000L
             if (gewartetMs >= markerWartenMeldenMs)
                 aapsLogger.warn(LTag.APS, "FUSE Marker wartete $gewartetMs ms auf den laufenden Zyklus")
-            toggleMealMarkerUnterSperre(now, ohneVorschuss, ereignisId, quelle, nurErwartung)
+            toggleMealMarkerUnterSperre(now, ohneVorschuss, ereignisId, quelle, nurErwartung, snack)
         }
     }
 
     /** Der eigentliche Umschaltvorgang. Nur ueber [toggleMealMarker] erreichbar, also nur unter [laufSperre]. */
     private fun toggleMealMarkerUnterSperre(
         now: Long, ohneVorschuss: Boolean, ereignisId: String?, quelle: String, nurErwartung: Boolean = false,
+        snack: Boolean = false,
     ): Boolean {
         val armed = mealMarkerActive(now)
         val ordnung = MarkerReauthorization.ordnungVon(ereignisId)
@@ -873,6 +876,7 @@ class FusePlugin(
             // beginnt immer bei der vollen Huelle.
             preferences.put(FuseLongKey.MealMarkerNoPrime, 0L)
             preferences.put(FuseLongKey.MealMarkerExpectationOnly, 0L)
+            preferences.put(FuseLongKey.MealMarkerSnack, 0L)
             // Der Altbestand-Stempel wird mitgeloescht: bliebe er stehen,
             // liesse der Lese-Ruecktausch unten einen zurueckgenommenen
             // Marker wieder auferstehen.
@@ -950,6 +954,9 @@ class FusePlugin(
         preferences.put(FuseLongKey.MealMarkerNoPrime, if (ohneVorschuss) 1L else 0L)
         // "Ohne Vorschuss" geht vor: beide zugleich heisst ohne Vorschuss.
         preferences.put(FuseLongKey.MealMarkerExpectationOnly, if (nurErwartung && !ohneVorschuss) 1L else 0L)
+        // Snack ist eine Form von "Mahlzeit": ohne sie gilt er nicht.
+        val alsSnack = snack && nurErwartung && !ohneVorschuss
+        preferences.put(FuseLongKey.MealMarkerSnack, if (alsSnack) 1L else 0L)
         // DER EINZIGE ORT, an dem ein Druck als BEOBACHTET gilt. Er steht
         // absichtlich hier und nicht beim Nachfuellen des Marker-Rings: der
         // liest den Trail und kennt Druecke von vor zwei Stunden.
@@ -962,7 +969,7 @@ class FusePlugin(
         // dieser Version ist der Schluessel endgueltig leer.
         preferences.put(FuseLongKey.MealMarkerStamp, 0L)
         synchronized(markerPressRing) { MarkerTimeline.add(markerPressRing, now) }
-        aapsLogger.info(LTag.APS, "FUSE Marker gesetzt: quelle=$quelle marker=$now ohneVorschuss=$ohneVorschuss nurErwartung=$nurErwartung")
+        aapsLogger.info(LTag.APS, "FUSE Marker gesetzt: quelle=$quelle marker=$now ohneVorschuss=$ohneVorschuss nurErwartung=$nurErwartung snack=$alsSnack")
         markerEreignis("ARMED", now, quelle, now)
         // Eine Vormerkung galt dem alten Marker - der neue beginnt ohne.
         speichereRuecknahmeVormerkung(null)
@@ -1239,7 +1246,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
     /**
      * Die Zahlen fuer die Rueckfrage - aus dem LETZTEN Zyklus, nicht neu gerechnet. Ein zweiter Rechenweg fuer
      * dieselbe Groesse waere eine zweite Wahrheit, und der Dialog wuerde Zahlen zeigen, die der Regler so nie gesehen
-     * hat. Die Groessenordnung nennt das Erwartungskonto ([nurErwartungBisU], dieselbe Regel wie beim Buchen).
+     * hat. Die Groessenordnung nennt das Erwartungskonto ([markerAngebote], dieselbe Regel wie beim Buchen).
      */
     override suspend fun fuseMarkerPrompt(now: Long): FuseOverviewSource.MarkerPromptFacts? {
         val letzter = lastOutcome
@@ -1272,17 +1279,23 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             },
         )
         return MarkerPrompt.required(armed = mealMarkerActive(now), facts = fakten)?.let {
+            val (mahlzeit, snack) = markerAngebote()
             FuseOverviewSource.MarkerPromptFacts(
                 measuredLow = it.measuredLow,
                 foreignBolusU = it.foreignBolusU,
                 episodeRestMin = it.episodeRestMin,
-                expectationOnlyMaxU = nurErwartungBisU(),
+                expectationOnlyMaxU = mahlzeit?.budgetU,
+                expectationOnlyInitialU = mahlzeit?.anfangU,
+                snackMaxU = snack?.budgetU,
+                snackInitialU = snack?.anfangU,
             )
         }
     }
 
-    override suspend fun fuseMarkerToggle(now: Long, ohneVorschuss: Boolean, ereignisId: String?, nurErwartung: Boolean): Boolean =
-        toggleMealMarker(now, ohneVorschuss, ereignisId, quelle = MarkerRuecknahme.Quelle.UEBERSICHT.text, nurErwartung = nurErwartung)
+    override suspend fun fuseMarkerToggle(now: Long, ohneVorschuss: Boolean, ereignisId: String?, nurErwartung: Boolean, snack: Boolean): Boolean =
+        toggleMealMarker(
+            now, ohneVorschuss, ereignisId, quelle = MarkerRuecknahme.Quelle.UEBERSICHT.text, nurErwartung = nurErwartung, snack = snack,
+        )
 
     /** Welche Erwartungskurve gilt (Toni) - dieselbe Regel wie im Regler. */
     private fun wirksameKurve(): ExpectationCurveText.Wirksam = ExpectationCurveText.wirksam(
@@ -1293,25 +1306,22 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         f120U = preferences.get(FuseDoubleKey.ExpectationCurveAt120U),
     )
 
-    /**
-     * Bis zu wie viel [U] die Wahl "nur Erwartung" am Marker buchen kann: das Gesamtbudget der fruehen Versorgung
-     * bei stabilem Start - `null`, wenn sie nicht angeboten wird: keine gueltige Kurve, fruehe Versorgung aus oder
-     * Budget 0. Konsolidierung 2.0: der Vorgriff phi_0 des Kontos v1 ist entfallen - ohne fruehe Versorgung bucht das
-     * Konto kein Erwartungsbudget.
-     */
-    private suspend fun nurErwartungBisU(): Double? {
-        val kurve = app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(wirksameKurve().text) ?: return null
-        if (!preferences.get(FuseBooleanKey.EarlySupplyEnabled)) return null
-        return fruehesBudgetU(kurve)
-    }
+    /** Was eine Wahl am Marker bei stabilem Start bucht [U]: das Budget und davon die Anfangsportion (steht am Knopf). */
+    private data class MarkerAngebot(val budgetU: Double, val anfangU: Double)
 
     /**
-     * E-034 v2: das Gesamtbudget bei stabilem Start, wie der Regler es am
-     * Marker buchen wuerde - mit DEMSELBEN Einheitskern-Bau (aktives Insulin,
-     * Profil-DIA). `null` = keine fruehe Versorgung (Einstellung ungueltig,
-     * kein Profil oder Modell, Budget 0).
+     * Was "Mahlzeit" und "Snack" am Marker buchen koennen: das Gesamtbudget der fruehen Versorgung bei stabilem Start
+     * und davon die Anfangsportion - je `null`, wenn die Wahl nicht angeboten wird: keine gueltige Kurve, fruehe
+     * Versorgung aus oder ungueltig, kein Profil oder Modell, Budget 0. Ohne "Mahlzeit" auch kein "Snack".
+     * Konsolidierung 2.0: ohne fruehe Versorgung bucht das Konto kein Erwartungsbudget.
+     *
+     * E-034 v2: wie der Regler es am Marker buchen wuerde - mit DEMSELBEN Einheitskern-Bau (aktives Insulin,
+     * Profil-DIA) und derselben Snack-Regel ([app.aaps.fuse.core.controller.EarlySupply.Settings.forSnack]).
      */
-    private suspend fun fruehesBudgetU(kurve: app.aaps.fuse.core.controller.ExpectationAccount.Curve): Double? {
+    private suspend fun markerAngebote(): Pair<MarkerAngebot?, MarkerAngebot?> {
+        val keine = null to null
+        val kurve = app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(wirksameKurve().text) ?: return keine
+        if (!preferences.get(FuseBooleanKey.EarlySupplyEnabled)) return keine
         val einstellung = app.aaps.fuse.core.controller.EarlySupply.Settings.of(
             scaleStable = preferences.get(FuseDoubleKey.EarlySupplyScaleStable),
             scaleAfterLow = preferences.get(FuseDoubleKey.EarlySupplyScaleAfterLow),
@@ -1321,13 +1331,15 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             maxPerPeriodU = preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU),
             periodMin = preferences.get(FuseIntKey.EarlySupplyPeriodMin),
             topUpShare = preferences.get(FuseDoubleKey.EarlySupplyTopUpShare),
-        ) ?: return null
-        val jetzt = dateUtil.now()
-        val kern = einheitskernJetzt(jetzt) ?: return null
-        return app.aaps.fuse.core.controller.EarlySupply.budgetU(
-            kurve, preferences.get(FuseIntKey.ExpectationHorizonMin), einstellung.scaleStable, einstellung.budgetMaxU,
-            app.aaps.fuse.core.controller.EarlySupply.unitActionOf(kern.kernel),
-        ).takeIf { it > 0.0 }
+        ) ?: return keine
+        val kern = einheitskernJetzt(dateUtil.now()) ?: return keine
+        val wirkung = app.aaps.fuse.core.controller.EarlySupply.unitActionOf(kern.kernel)
+        val horizont = preferences.get(FuseIntKey.ExpectationHorizonMin)
+        fun angebot(s: app.aaps.fuse.core.controller.EarlySupply.Settings): MarkerAngebot? =
+            app.aaps.fuse.core.controller.EarlySupply.budgetU(kurve, horizont, s.scaleStable, s.budgetMaxU, wirkung)
+                .takeIf { it > 0.0 }?.let { MarkerAngebot(budgetU = it, anfangU = s.initialShare * it) }
+        val mahlzeit = angebot(einstellung) ?: return keine
+        return mahlzeit to angebot(einstellung.forSnack(preferences.get(FuseDoubleKey.EarlySupplySnackScale)))
     }
 
     override suspend fun fuseMarkerRuecknahmeVormerken(now: Long, ereignisId: String?): Long? =
@@ -2784,6 +2796,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             FuseIntKey.ExpectationHorizonMin.key, FuseStringKey.ExpectationCurve.key,
             FuseBooleanKey.EarlySupplyEnabled.key, FuseDoubleKey.EarlySupplyBudgetMaxU.key,
             FuseDoubleKey.EarlySupplyScaleStable.key, FuseDoubleKey.EarlySupplyScaleAfterLow.key,
+            FuseDoubleKey.EarlySupplySnackScale.key,
             FuseDoubleKey.EarlySupplyInitialShare.key, FuseDoubleKey.EarlySupplyMaxPortionU.key,
             FuseDoubleKey.EarlySupplyMaxPerPeriodU.key, FuseIntKey.EarlySupplyPeriodMin.key,
             FuseDoubleKey.EarlySupplyTopUpShare.key,
@@ -2830,6 +2843,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             FuseDoubleKey.EarlySupplyBudgetMaxU.key -> FruehVersorgungText.budgetMax(d(FuseDoubleKey.EarlySupplyBudgetMaxU), l)
             FuseDoubleKey.EarlySupplyScaleStable.key -> FruehVersorgungText.skalierer(d(FuseDoubleKey.EarlySupplyScaleStable), false, l)
             FuseDoubleKey.EarlySupplyScaleAfterLow.key -> FruehVersorgungText.skalierer(d(FuseDoubleKey.EarlySupplyScaleAfterLow), true, l)
+            FuseDoubleKey.EarlySupplySnackScale.key -> FruehVersorgungText.snackSkalierer(d(FuseDoubleKey.EarlySupplySnackScale), l)
             FuseDoubleKey.EarlySupplyInitialShare.key -> FruehVersorgungText.anfangsanteil(d(FuseDoubleKey.EarlySupplyInitialShare), l)
             FuseDoubleKey.EarlySupplyMaxPortionU.key -> FruehVersorgungText.portion(d(FuseDoubleKey.EarlySupplyMaxPortionU), l)
             FuseDoubleKey.EarlySupplyMaxPerPeriodU.key -> FruehVersorgungText.jeZeitraum(

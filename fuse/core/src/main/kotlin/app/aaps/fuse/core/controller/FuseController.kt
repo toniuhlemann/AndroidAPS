@@ -207,6 +207,9 @@ object FuseController {
         /** Episoden-Wahl "nur Erwartung" (Toni): keine Direktdosis in
          *  dieser Mahlzeit, die Huelle traegt das Erwartungskonto. */
         val markerExpectationOnly: Boolean = false,
+        /** Episoden-Wahl "Snack" (Toni 24.10.2026): wie "Mahlzeit", das Budget mit
+         *  dem Snack-Skalierer. Reines Messfeld - der Regler liest es nicht. */
+        val markerSnack: Boolean = false,
         /** Rebound-Bedingung lag an, wurde aber durch einen aktiven Marker
          *  entwaffnet (Gas-vor-Bremse NUR fuer erklaertes Wissen, 08.08.):
          *  das Fenster schuetzt vor dem Jagen UNANGEKUENDIGTER Hypo-

@@ -137,7 +137,8 @@ object FuseSettings {
             "fuse_expectation_early", R.string.fuse_section_expectation_early,
             absatz(FruehVersorgungText.BLOCK_FRUEH),
             FuseBooleanKey.EarlySupplyEnabled, FuseDoubleKey.EarlySupplyBudgetMaxU, FuseDoubleKey.EarlySupplyScaleStable,
-            FuseDoubleKey.EarlySupplyScaleAfterLow, FuseDoubleKey.EarlySupplyInitialShare, FuseDoubleKey.EarlySupplyMaxPortionU,
+            FuseDoubleKey.EarlySupplyScaleAfterLow, FuseDoubleKey.EarlySupplySnackScale,
+            FuseDoubleKey.EarlySupplyInitialShare, FuseDoubleKey.EarlySupplyMaxPortionU,
             FuseDoubleKey.EarlySupplyMaxPerPeriodU, FuseIntKey.EarlySupplyPeriodMin,
             FuseDoubleKey.EarlySupplyTopUpShare,
             info("Anrechnung bei Guard und Schwanzpruefung", "Wann die Mahlzeit Guard und Schwanz heben darf."),
@@ -147,7 +148,7 @@ object FuseSettings {
         section(
             "fuse_expectation_coupled", R.string.fuse_section_expectation_coupled,
             absatz(
-                "Aus dem alten Mahlzeitenweg, wirkt aber auch bei \"Nur Erwartung\": Huelle und " +
+                "Aus dem alten Mahlzeitenweg, wirkt aber auch bei \"Mahlzeit\" und \"Snack\": Huelle und " +
                     "Kreditfenster bilden die Kante, bis zu der das Konto die Schwanzpruefung heben darf. Der " +
                     "Aufschub pausiert das Konto bei Abwaertsrisiko. Der Marker-Boost haelt Nacht-Totband und " +
                     "Fenster offen.",

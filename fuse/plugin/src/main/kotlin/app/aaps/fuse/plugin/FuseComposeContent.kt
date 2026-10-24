@@ -224,6 +224,13 @@ private fun FuseScreen(plugin: FusePlugin, dateUtil: DateUtil, rxBus: RxBus, onS
                 }
             },
             onCancel = { rueckfrage = null },
+            onSnack = {
+                rueckfrage = null
+                scope.launch {
+                    plugin.toggleMealMarker(dateUtil.now(), ereignisId = ereignis, quelle = quelle.text, nurErwartung = true, snack = true)
+                    aktualisierung++
+                }
+            },
         )
     }
     meldung?.let { text ->

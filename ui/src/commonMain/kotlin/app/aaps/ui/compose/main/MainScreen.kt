@@ -567,7 +567,8 @@ fun MainScreen(
             facts = prompt.facts,
             onExpectationOnly = { mainViewModel.confirmFuseMeal(expectationOnly = true) },
             onNoPrime = { mainViewModel.confirmFuseMeal(expectationOnly = false) },
-            onCancel = { mainViewModel.cancelFuseMeal() }
+            onCancel = { mainViewModel.cancelFuseMeal() },
+            onSnack = { mainViewModel.confirmFuseMeal(expectationOnly = true, snack = true) }
         )
     }
     // Fork (FUSE): a noted withdrawal - "Rueckgaengig" until the deadline. The bar is only the display: the withdrawal

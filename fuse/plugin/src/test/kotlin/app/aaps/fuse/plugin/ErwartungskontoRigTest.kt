@@ -85,6 +85,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     private var smbSchalterAn = true
     private var ohneVorschuss = false
     private var nurErwartung = false
+    private var snack = false
 
     /** Erzwungene Ablehnung der Bahn (predictorfreier Markerpfad), `null` = echte Bahn. */
     private var predictReject: app.aaps.fuse.core.predictor.PredictorReason? = null
@@ -218,6 +219,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         whenever(preferences.get(FuseLongKey.MealMarkerArmedTs)).thenAnswer { markerAt }
         whenever(preferences.get(FuseLongKey.MealMarkerNoPrime)).thenAnswer { if (ohneVorschuss) 1L else 0L }
         whenever(preferences.get(FuseLongKey.MealMarkerExpectationOnly)).thenAnswer { if (nurErwartung) 1L else 0L }
+        whenever(preferences.get(FuseLongKey.MealMarkerSnack)).thenAnswer { if (snack) 1L else 0L }
     }
 
     private fun druecken(t: Long) {
@@ -2162,6 +2164,44 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         }
     }
 
+    /**
+     * Toni 24.10.2026: "Snack" bucht mit dem Snack-Skalierer - das Budget im Verhaeltnis kleiner, die Anfangsportion ihr
+     * Anteil davon. Ein Snack-Skalierer ueber dem der Mahlzeit gibt nicht mehr als eine Mahlzeit.
+     */
+    @Test
+    fun `Snack bucht mit dem Snack-Skalierer, nie mehr als eine Mahlzeit`(@TempDir dir: File) = runBlocking<Unit> {
+        fun armiert(z: List<Zyklus>) = z.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }
+        val mahlzeit = armiert(fruehLauf(fStabil, File(dir, "mahlzeit")) {
+            fruehKonfiguration(g1 = true, g2 = true, budgetU = SNACK_PROBE_BUDGET_U)
+        }).konto!!
+        assertTrue(mahlzeit.a0U > 0.0 && mahlzeit.a0U < SNACK_PROBE_BUDGET_U - 1e-9) { "Probe zeigt nichts: Budget ${mahlzeit.a0U}" }
+        assertEquals(1.0, mahlzeit.phi0, 0.0)
+        snack = true
+        try {
+            val zyklen = fruehLauf(fStabil, File(dir, "snack")) {
+                fruehKonfiguration(g1 = true, g2 = true, budgetU = SNACK_PROBE_BUDGET_U)
+                whenever(preferences.get(FuseDoubleKey.EarlySupplySnackScale)).thenReturn(SNACK_SKALA)
+            }
+            val gebucht = armiert(zyklen)
+            assertTrue(gebucht.o.state?.markerSnack == true) { "die Wahl Snack steht nicht im Zustand" }
+            val k = gebucht.konto!!
+            assertEquals(SNACK_SKALA, k.phi0, 0.0)
+            assertEquals(mahlzeit.a0U * SNACK_SKALA, k.a0U, 1e-6)
+            val anfang = zyklen.filter { it.frueh()?.initial == true }.sumOf { it.dErw() }
+            assertTrue(anfang > 0.0 && anfang <= 0.5 * k.a0U + 1e-9) { "Anfangsportion $anfang bei Snack-Budget ${k.a0U}" }
+            pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+            // Groesser als der Skalierer der Mahlzeit: es gilt der der Mahlzeit.
+            val gross = armiert(fruehLauf(fStabil, File(dir, "gross")) {
+                fruehKonfiguration(g1 = true, g2 = true, budgetU = SNACK_PROBE_BUDGET_U)
+                whenever(preferences.get(FuseDoubleKey.EarlySupplySnackScale)).thenReturn(EarlySupply.MAX_SCALE)
+            }).konto!!
+            assertEquals(1.0, gross.phi0, 0.0)
+            assertEquals(mahlzeit.a0U, gross.a0U, 1e-9)
+        } finally {
+            snack = false
+        }
+    }
+
     private companion object {
 
         /** Synthetisches maxIOB des Gestells. */
@@ -2180,5 +2220,11 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
         /** Synthetischer Zeitraum der v2-Proben [min]. */
         const val ZEITRAUM_MIN = 10
+
+        /** Synthetischer Snack-Skalierer der Probe. */
+        const val SNACK_SKALA = 0.6
+
+        /** Synthetische Budgetgrenze der Snack-Probe [U]: so hoch, dass sie die Mahlzeit nicht deckelt. */
+        const val SNACK_PROBE_BUDGET_U = 15.0
     }
 }

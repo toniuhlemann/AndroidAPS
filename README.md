@@ -91,11 +91,14 @@ statement (the meal button) or demand that is already proven — and they are st
 The meal button sits on the AAPS main screen (while FUSE is the active APS) and in the FUSE tab. Pressing it is a
 **statement by a human**: *a meal is starting now*. It creates no carbs, no COB and no meal size.
 
-**The dialog offers two choices:**
+**The dialog offers three choices.** Each button shows the amount that goes out at once at most (the initial portion,
+with stable glucose):
 
-- **"Nur Erwartung"** (*expectation only*) — opens an **expectation account** for this meal (see below). Only offered
-  when the account is set up.
-- **"Nur Marker · 0 U"** (*marker only*) — declares the meal with a budget of zero. Useful for snacks or uncertain meals.
+- **"Mahlzeit"** (*meal*) — opens an **expectation account** for this meal (see below). Only offered when the account
+  is set up.
+- **"Snack"** — the same account, but the budget uses the smaller *snack scale* (setting *Skalierer bei Snack*, factory
+  1.0). A snack never books more than a meal.
+- **"Nur Marker · 0 U"** (*marker only*) — declares the meal with a budget of zero. Useful for uncertain meals.
 
 **What a press changes.** For the meal authorization (default **120 minutes**) each cycle runs in the **MEAL** dosing
 profile with a larger exposure limit, and the rebound window after a low no longer blocks meal dosing. Afterwards FUSE
@@ -335,7 +338,9 @@ das Konto von selbst weiter, ohne Bestätigung. Steigt der Zucker (mindestens +1
 hintereinander, über der Einstellung „Mahlzeit steigt ab“), kommen die weiteren Portionen ohne Guard und Schwanz; ein
 gemessenes Tief, das gemessene Abwärtsrisiko, maxIOB und die Portionsgrenzen halten weiter. Zeigt sich die Mahlzeit
 größer als die Kurve, darf das Konto den Überschuss zusätzlich geben, höchstens den eingestellten **Nachschlag** (Anteil
-des Budgets, ab Werk 0 = aus). Ohne Kurve dosiert FUSE wie ohne Marker.
+des Budgets, ab Werk 0 = aus). Am Knopf wählt man „Mahlzeit“, „Snack“ (dasselbe Konto mit dem kleineren
+Snack-Skalierer, ab Werk 1,0 — nie mehr als eine Mahlzeit) oder „Nur Marker · 0 U“; jeder Knopf zeigt, wie viel
+höchstens sofort abgeht. Ohne Kurve dosiert FUSE wie ohne Marker.
 
 **Sicherheit.** Alle Prüfungen lesen die pessimistische Bahn. Grenzen unter anderem: Guard-Boden 70 mg/dl,
 Expositionsgrenze je Profil (Korrektur 3,0 U, Mahlzeit 7,0 U), capIOB = max(Netto-IOB, Bolus-IOB), maxIOB, Nacht- und

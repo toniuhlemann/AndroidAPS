@@ -140,11 +140,20 @@ interface FuseOverviewSource {
          *  oder noch reichlich Zeit. */
         val episodeRestMin: Int? = null,
         /**
-         * Die Wahl "Nur Erwartung" (Toni): das Erwartungskonto traegt die Mahlzeit - bis zu dieser Menge [U] nach
-         * Kurve. `null` = nicht angeboten (keine gueltige Kurve, kein Profil oder Insulinmodell); dann bleibt nur
-         * "Nur Marker - 0 U".
+         * Die Wahl "Mahlzeit" (bis 24.10.2026 "Nur Erwartung"): das Erwartungskonto traegt die Mahlzeit - bis zu
+         * dieser Menge [U] nach Kurve. `null` = nicht angeboten (keine gueltige Kurve, kein Profil oder Insulinmodell);
+         * dann bleibt nur "Nur Marker - 0 U".
          */
         val expectationOnlyMaxU: Double? = null,
+        /** Davon hoechstens sofort am Druck (die Anfangsportion bei stabilem Start) [U] - steht am Knopf (Toni). */
+        val expectationOnlyInitialU: Double? = null,
+        /**
+         * Die Wahl "Snack" (Toni 24.10.2026): dasselbe Konto mit dem kleineren Snack-Skalierer - bis zu dieser Menge
+         * [U]. `null` = nicht angeboten (wie bei "Mahlzeit").
+         */
+        val snackMaxU: Double? = null,
+        /** Davon hoechstens sofort am Druck [U] - steht am Knopf. */
+        val snackInitialU: Double? = null,
     )
 
     fun fuseMarkerArmed(now: Long): Boolean
@@ -200,8 +209,10 @@ interface FuseOverviewSource {
          * ungeschuetzt.
          */
         ereignisId: String? = null,
-        /** Wahl "Nur Erwartung" (Toni): das Erwartungskonto traegt die Mahlzeit. */
+        /** Wahl "Mahlzeit" (bis 24.10.2026 "Nur Erwartung"): das Erwartungskonto traegt die Mahlzeit. */
         nurErwartung: Boolean = false,
+        /** Wahl "Snack" (Toni 24.10.2026): wie "Mahlzeit", aber das Budget mit dem Snack-Skalierer. */
+        snack: Boolean = false,
     ): Boolean
 
     /**

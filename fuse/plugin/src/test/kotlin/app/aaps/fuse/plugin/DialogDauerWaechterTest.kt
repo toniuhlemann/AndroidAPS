@@ -42,18 +42,31 @@ class DialogDauerWaechterTest {
      * Der Dialog nennt die Groessenordnung des Kontos als PARAMETER, nicht als Ziffer - die Menge haengt an Kurve,
      * Skalierer und Budgetgrenze, ein fester Wert im Text waere nach der naechsten Einstellung falsch.
      */
+    /** Der Text eines Strings ohne seine Attribute - die Uebersetzerhinweise duerfen Beispielzahlen nennen. */
+    private fun inhalt(name: String): String {
+        val zeile = uiStrings().lines().first { it.contains("name=\"$name\"") }
+        return zeile.substringAfter('>').substringBeforeLast("</string>")
+    }
+
     @Test
     fun `der Marker-Dialog nennt die Kontomenge als Parameter`() {
-        val zeile = uiStrings().lines().first { it.contains("fuse_meal_confirm_expectation_only_text\"") }
-        assertTrue(zeile.contains("%1\$.2f")) { "die Menge fehlt als Parameter: $zeile" }
-        assertFalse(Regex("""\d+([.,]\d+)?\s*U\b""").containsMatchIn(zeile.replace("%1\$.2f U", ""))) {
-            "eine feste Menge im Dialogtext: $zeile"
+        // Toni 24.10.2026: auch die Knoepfe "Mahlzeit" und "Snack" nennen ihre Menge - als Parameter.
+        for (name in listOf(
+            "fuse_meal_confirm_expectation_only_text", "fuse_meal_confirm_snack_text",
+            "fuse_meal_confirm_expectation_only", "fuse_meal_confirm_snack",
+        )) {
+            val text = inhalt(name)
+            assertTrue(text.contains("%1\$.2f")) { "die Menge fehlt als Parameter: $name = $text" }
+            assertFalse(Regex("""\d+([.,]\d+)?\s*U\b""").containsMatchIn(text.replace("%1\$.2f U", ""))) {
+                "eine feste Menge im Dialogtext: $name = $text"
+            }
         }
     }
 
     /**
-     * Seit der Konsolidierung zwei Wege (Toni): "Nur Erwartung" und "Nur Marker - 0 U". Die Nullwahl nennt 0 U
-     * unmissverstaendlich, und ein Knopf, der Insulin direkt freigibt, kommt nicht zurueck.
+     * Seit der Konsolidierung zwei Wege (Toni): das Konto ("Mahlzeit", seit 24.10.2026 auch "Snack" mit dem kleineren
+     * Skalierer) und "Nur Marker - 0 U". Die Nullwahl nennt 0 U unmissverstaendlich, und ein Knopf, der Insulin direkt
+     * freigibt, kommt nicht zurueck.
      */
     @Test
     fun `der Dialog kennt nur Konto und Nullwahl`() {
@@ -61,6 +74,7 @@ class DialogDauerWaechterTest {
         val null0 = s.lines().first { it.contains("fuse_meal_confirm_no_prime\"") }
         assertTrue(null0.contains("0 U")) { "die Nullwahl muss unmissverstaendlich 0 U nennen: $null0" }
         assertTrue(s.contains("fuse_meal_confirm_expectation_only\"")) { "der Knopf fuer das Konto fehlt" }
+        assertTrue(s.contains("fuse_meal_confirm_snack\"")) { "der Knopf fuer den Snack fehlt" }
         assertFalse(s.contains("fuse_meal_confirm_release\"")) { "der Freigabe-Knopf der Direktdosis ist zurueck" }
         assertFalse(s.contains("fuse_meal_confirm_upfront\"")) { "eine Direktdosis-Zeile ist zurueck" }
     }

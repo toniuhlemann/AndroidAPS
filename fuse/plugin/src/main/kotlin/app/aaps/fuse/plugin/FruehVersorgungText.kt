@@ -54,9 +54,10 @@ object FruehVersorgungText {
 
     /** Beschreibung des v2-Blocks - einmal, ueber den Feldern. */
     const val BLOCK_FRUEH =
-        "Gilt nur, wenn du am Marker 'Nur Erwartung' waehlst. Budget = die fruehe Gabe, die deine Kurve rechtzeitig " +
-            "deckt, mal Skalierer. Davon fliesst der Anfangsanteil sofort; der Rest ab +20 min nur, wenn sich die " +
-            "Mahlzeit zeigt. Ein gemessenes Tief, maxIOB, iobTH und die Expositionsgrenze bleiben immer hart."
+        "Gilt nur, wenn du am Marker 'Mahlzeit' oder 'Snack' waehlst. Budget = die fruehe Gabe, die deine Kurve " +
+            "rechtzeitig deckt, mal Skalierer (bei 'Snack' der Snack-Skalierer). Davon fliesst der Anfangsanteil " +
+            "sofort; der Rest ab +20 min nur, wenn sich die Mahlzeit zeigt. Ein gemessenes Tief, maxIOB, iobTH und die " +
+            "Expositionsgrenze bleiben immer hart."
 
     /** Ein Eckpunkt der Kurve: eigener Wert und ob/ab wann er das Budget bestimmt. */
     fun kurvenpunkt(index: Int, lage: Lage): String {
@@ -99,6 +100,22 @@ object FruehVersorgungText {
         return "$eigen - frueher Bedarf ${u(b.rawU)} x ${z(wert)} = Budget ${u(budget)}"
     }
 
+    /**
+     * Toni 24.10.2026: der Skalierer bei "Snack" - was ein Snack bei stabilem Start bucht und davon am Druck abgibt.
+     * Ein Snack bucht nie mehr als eine Mahlzeit ([EarlySupply.Settings.forSnack]).
+     */
+    fun snackSkalierer(wert: Double, lage: Lage): String {
+        val eigen = z(wert)
+        val e = lage.einstellung ?: return eigen
+        val b = lage.bedarf ?: return eigen
+        val snack = e.forSnack(wert)
+        val budget = max(0.0, min(e.budgetMaxU, snack.scaleStable * b.rawU))
+        if (budget <= 0.0) return "$eigen - kein Snack-Knopf: ein Snack bekaeme kein Budget"
+        val text = StringBuilder("$eigen - Snack-Budget ${u(budget)}, am Druck ${u(e.initialShare * budget)}")
+        if (wert > e.scaleStable) text.append(" (hoechstens wie Mahlzeit, Skalierer ${z(e.scaleStable)})")
+        return text.toString()
+    }
+
     fun anfangsanteil(wert: Double, lage: Lage): String {
         val eigen = z(wert, 2)
         val stabil = lage.budgetStabilU ?: return eigen
@@ -130,7 +147,7 @@ object FruehVersorgungText {
     }
 
     fun hauptschalter(lage: Lage): String {
-        if (!lage.fruehAn) return "Aus - 'Nur Erwartung' laeuft ueber das Konto ohne fruehe Versorgung"
+        if (!lage.fruehAn) return "Aus - 'Mahlzeit' und 'Snack' laufen ueber das Konto ohne fruehe Versorgung"
         if (!lage.kontoAn) return "An, aber wirkungslos: das Erwartungskonto ist aus"
         val s = lage.budgetStabilU ?: return "An - Budget nicht berechenbar (Kurve oder Werte pruefen)"
         val t = lage.budgetTiefU

@@ -60,6 +60,16 @@ object EarlySupply {
         /** Toni 23.10.: Nachschlag hoechstens, als Anteil des Budgets (0..1); 0 = kein Nachschlag ([Pins.topUpShare]). */
         val topUpShare: Double = 0.0,
     ) {
+        /**
+         * Toni 24.10.2026: die Wahl "Snack" am Marker - dieselben Einstellungen, beide Skalierer hoechstens [snackScale].
+         * Ein Snack bucht nie mehr als eine Mahlzeit. Ein ungueltiger Snack-Skalierer gilt als 0 (kein Budget) - weniger
+         * Insulin, nie mehr.
+         */
+        fun forSnack(snackScale: Double): Settings {
+            val s = if (snackScale.isFinite() && snackScale >= 0.0 && snackScale <= MAX_SCALE) snackScale else 0.0
+            return copy(scaleStable = min(scaleStable, s), scaleAfterLow = min(scaleAfterLow, s))
+        }
+
         companion object {
             fun of(
                 scaleStable: Double, scaleAfterLow: Double, budgetMaxU: Double, initialShare: Double,
