@@ -1713,16 +1713,28 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         }
     }
 
+    /** Synthetisch: steiler Anstieg schon am Druck - "steigt" gilt in den ersten Minuten, vor jeder Anrechnung. */
+    private val fSteilSofort = Fuse20Folgen.Folge(
+        "STEIL_SOFORT", 1_700_733_600_000L, -90, 240,
+        listOf(
+            -90 to 115.0, -10 to 116.0, 0 to 122.0, 5 to 138.0, 10 to 154.0, 20 to 174.0, 30 to 184.0, 45 to 182.0,
+            60 to 166.0, 90 to 130.0, 120 to 110.0, 180 to 112.0, 240 to 116.0,
+        ),
+        markerMin = 0,
+    )
+
     /**
      * TONI 22.10.: "waehrend aktiver Mahlzeiten darf nichts blockieren, solange Bedarf da ist und BG steigt". Steigt der
-     * Zucker (UKF mindestens +1 in zwei Messwerten hintereinander), pruefen Guard und Schwanz die weitere Portion nicht -
-     * wie bei der Anfangsportion, mit G1/G2. Steigt er nicht, gilt G3/G4 wie bisher. Gegenprobe ohne G1/G2: auch beim
-     * Anstieg die Pruefung mit Erwartung. Synthetisches Budget und synthetischer Skalierer; die Schwanzpruefung ist an
-     * (im Gestell sonst aus), damit ihre Kappe zeigt, welche Pruefung galt.
+     * Zucker (UKF mindestens +1 in zwei Messwerten hintereinander), kommt die weitere Portion ohne Strecke, Einfrieren und
+     * alten Riegel, und mit G2 prueft der Schwanz sie nicht - wie die Anfangsportion. TONI 25.10.: den Guard prueft sie
+     * wieder, MIT der angekuendigten Mahlzeit (wie G3); sieht er damit eine Unterschreitung, gibt es keine Portion (vorher
+     * fiel mit G1 auch der Guard weg). Steigt er nicht, gilt G3/G4 wie bisher. Gegenprobe ohne G1/G2: auch der Schwanz
+     * prueft beim Anstieg mit Erwartung. Synthetisches Budget und synthetischer Skalierer; die Schwanzpruefung ist an (im
+     * Gestell sonst aus), damit ihre Kappe zeigt, welche Pruefung galt.
      */
     @Test
-    fun `steigt die Mahlzeit, pruefen Guard und Schwanz die weitere Portion nicht - Gegenprobe ohne G1 und G2`(@TempDir dir: File) = runBlocking<Unit> {
-        suspend fun lauf(name: String, g12: Boolean) = fruehLauf(fSpaet, File(dir, name)) {
+    fun `steigt die Mahlzeit, prueft der Guard die weitere Portion mit der Mahlzeit, der Schwanz nicht - Gegenprobe ohne G1 und G2`(@TempDir dir: File) = runBlocking<Unit> {
+        suspend fun lauf(f: Fuse20Folgen.Folge, name: String, g12: Boolean) = fruehLauf(f, File(dir, name)) {
             fruehKonfiguration(g1 = g12, g2 = g12, g3 = true, g4 = true, budgetU = EarlySupply.MAX_BUDGET_U)
             whenever(preferences.get(FuseDoubleKey.EarlySupplyScaleStable)).thenReturn(EarlySupply.MAX_SCALE)
             whenever(preferences.get(FuseBooleanKey.TailGuardEnabled)).thenReturn(true)
@@ -1730,25 +1742,43 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         fun steigt(z: Zyklus) = z.o.erwartungskonto?.zyklus?.mahlzeitSteigt == true
         fun mitPortion(z: Zyklus) = z.o.erwartungskonto?.fruehHebung != null && z.frueh()?.initial == false
         fun schwanzMitErwartung(z: Zyklus) = z.o.erwartungskonto!!.fruehSchwanzMitErwartungU
+        val boden = FuseDoubleKey.GuardFloorMgdl.defaultValue
+        fun tabelle(z: List<Zyklus>) = z.joinToString(" | ") {
+            val x = it.o.erwartungskonto!!
+            "${it.minute}: gS=${it.frueh()?.guardScale} unten=${x.fruehUntenMitErwartungMgdl} grund=${x.fruehEndgrund} " +
+                "dErw=${it.dErw()} geliefert=${it.geliefertU}"
+        }
 
-        val mit = lauf("mit", g12 = true)
-        pruefeMechanik(mit, 0.5, 1.0, 2.0)
-        val steigend = mit.filter { steigt(it) && mitPortion(it) }
-        assertTrue(steigend.isNotEmpty()) { "Probe zeigt nichts: keine weitere Portion beim Anstieg" }
-        for (z in steigend) {
-            val x = z.o.erwartungskonto!!
-            assertEquals(AuthorizedLift.EarlyLift(guardLift = true, tailLift = true), x.fruehHebung, "Minute ${z.minute}")
-            assertNull(x.fruehSchwanzKappeU, "Minute ${z.minute}: Schwanzkappe beim Anstieg")
-            assertNull(x.fruehEndgrund, "Minute ${z.minute}: Endpruefung beim Anstieg")
+        var guardHielt = false
+        for ((f, name) in listOf(fSpaet to "spaet", fSteilSofort to "steil")) {
+            val mit = lauf(f, "$name-mit", g12 = true)
+            pruefeMechanik(mit, 0.5, 1.0, 2.0)
+            val steigend = mit.filter { steigt(it) && mitPortion(it) }
+            assertTrue(steigend.isNotEmpty()) { "$name: Probe zeigt nichts - keine weitere Portion beim Anstieg" }
+            for (z in steigend) {
+                val x = z.o.erwartungskonto!!
+                assertEquals(AuthorizedLift.EarlyLift(guardLift = true, tailLift = true), x.fruehHebung, "$name Minute ${z.minute}")
+                // Der Schwanz prueft die steigende Portion nicht (G2) ...
+                assertNull(x.fruehSchwanzKappeU, "$name Minute ${z.minute}: Schwanzkappe beim Anstieg")
+                assertTrue(x.fruehEndgrund != FuseCycleRunner.TAIL_VETO) { "$name Minute ${z.minute}: Schwanz-Veto beim Anstieg" }
+                // ... der Guard mit Mahlzeit schon: sieht er die Unterschreitung schon ohne die Portion, fliesst nichts.
+                val unten = x.fruehUntenMitErwartungMgdl
+                assertNotNull(unten) { "$name Minute ${z.minute}: Guard mit Mahlzeit nicht gerechnet" }
+                if (unten!! < boden) assertEquals(0.0, z.dErw(), 0.0, "$name Minute ${z.minute}: Portion trotz Guard mit Mahlzeit $unten")
+                if (x.fruehEndgrund != null) guardHielt = true
+            }
+            assertTrue(steigend.sumOf { it.dErw() } > 0.0) { "$name: beim Anstieg kein Erwartungsanteil - " + tabelle(steigend) }
+            // Steigt der Zucker nicht, prueft der Schwanz mit Erwartung wie bisher (G4).
+            for (z in mit.filter { !steigt(it) && mitPortion(it) && schwanzMitErwartung(it) != null }) {
+                assertEquals(schwanzMitErwartung(z), z.o.erwartungskonto!!.fruehSchwanzKappeU, "$name Minute ${z.minute}")
+            }
         }
-        assertTrue(steigend.sumOf { it.dErw() } > 0.0) { "beim Anstieg kein Erwartungsanteil" }
-        // Steigt der Zucker nicht, prueft der Schwanz mit Erwartung wie bisher (G4).
-        for (z in mit.filter { !steigt(it) && mitPortion(it) && schwanzMitErwartung(it) != null }) {
-            assertEquals(schwanzMitErwartung(z), z.o.erwartungskonto!!.fruehSchwanzKappeU, "Minute ${z.minute}")
-        }
+        // Gegenprobe zur Regel vom 22.10. (dort war die Endpruefung beim Anstieg immer leer): der Guard hat beim Anstieg
+        // mindestens einmal gehalten oder gekuerzt.
+        assertTrue(guardHielt) { "Probe zeigt nichts: der Guard mit Mahlzeit hat beim Anstieg nie gehalten" }
 
         // Gegenprobe ohne G1/G2: auch beim Anstieg die Pruefung mit Erwartung (G3/G4), nichts uebersprungen.
-        val ohne = lauf("ohne", g12 = false)
+        val ohne = lauf(fSpaet, "ohne", g12 = false)
         pruefeMechanik(ohne, 0.5, 1.0, 2.0)
         val ohneSteigend = ohne.filter { steigt(it) && mitPortion(it) && schwanzMitErwartung(it) != null }
         assertTrue(ohneSteigend.isNotEmpty()) { "Probe zeigt nichts: ohne G1/G2 keine weitere Portion beim Anstieg" }

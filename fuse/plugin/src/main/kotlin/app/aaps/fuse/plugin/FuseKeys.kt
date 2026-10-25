@@ -402,7 +402,8 @@ enum class FuseDoubleKey(
     MealRunningMinR("fuse_meal_running_min_r", 0.0, 0.0, 10.0, title = TextRef.AndroidRes(R.string.fuse_meal_running_min_r_title), summary = TextRef.AndroidRes(R.string.fuse_meal_running_min_r_summary), unitType = UnitType.DOUBLE_2),
     /**
      * Toni 23.10.: ab welchem Zucker [mg/dl] "die Mahlzeit steigt" gilt - erst darueber kommen weitere Portionen beim
-     * Steigen ohne Warten auf die Strecke und (mit G1/G2) ohne Guard und Schwanz. 0 (Standard) = die
+     * Steigen ohne Warten auf die Strecke und (mit G2) ohne Schwanzpruefung; den Guard prueft jede Portion MIT der
+     * angekuendigten Mahlzeit (Toni 25.10.). 0 (Standard) = die
      * Stabilitaetsgrenze, wie bisher; ein Wert darunter zaehlt wie die Stabilitaetsgrenze. Gilt sofort.
      */
     MealRisingMinBgMgdl("fuse_meal_rising_min_bg_mgdl", 0.0, 0.0, 250.0, title = TextRef.AndroidRes(R.string.fuse_meal_rising_min_bg_title), summary = TextRef.AndroidRes(R.string.fuse_meal_rising_min_bg_summary), unitType = UnitType.MGDL),

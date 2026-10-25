@@ -3572,9 +3572,10 @@ class FuseCycleRunner(
         val fruehAnfang = fruehZyklus?.eval?.early?.initial == true
         val fruehGemessenFreiU = fruehZyklus?.let { kotlin.math.min(vetted.smbU, ExpectationAccount.measuredShareU(it.eval)) } ?: 0.0
         val fruehAnteilU = fruehZyklus?.let { ExpectationAccount.expectationShareU(it.eval) } ?: 0.0
-        // TONI 22.10.: steigt die Mahlzeit, pruefen Guard und Schwanz die weitere Portion nicht - wie bei der
-        // Anfangsportion, mit denselben Schaltern G1/G2. Ist einer davon aus, gilt fuer diesen Teil die Pruefung MIT
-        // Erwartung (G3/G4) wie sonst.
+        // TONI 22.10.: steigt die Mahlzeit, prueft der Schwanz die weitere Portion nicht - wie bei der Anfangsportion,
+        // mit demselben Schalter G2. TONI 25.10.: den Guard prueft sie wieder, und zwar MIT der angekuendigten Mahlzeit
+        // (wie G3, mit G1 auch bei G3 aus) - Geraetebefund: steigende Portionen kamen, obwohl der Guard mit Mahlzeit
+        // die Unterschreitung schon sah. Ist G1 bzw. G2 aus, gilt fuer diesen Teil G3/G4 wie sonst.
         val fruehSteigt = !fruehAnfang && fruehZyklus?.mahlzeitSteigt == true
         val fruehHebung = fruehZyklus?.fruehSchalter?.takeIf { fruehAnteilU > 0.0 }?.let { g ->
             if (fruehAnfang) app.aaps.fuse.core.controller.AuthorizedLift.EarlyLift(guardLift = g.initialLiftsGuard, tailLift = g.initialLiftsTail)
@@ -3583,9 +3584,9 @@ class FuseCycleRunner(
                 tailLift = g.tailWithExpectation || (fruehSteigt && g.initialLiftsTail),
             )
         }
-        // Was die Portion nicht prueft: Guard bzw. Schwanz bei der Anfangsportion mit G1/G2 - und ebenso bei der
-        // steigenden weiteren Portion.
-        val fruehOhneGuard = (fruehAnfang || fruehSteigt) && fruehZyklus?.fruehSchalter?.initialLiftsGuard == true
+        // Was die Portion nicht prueft: Guard bzw. Schwanz bei der Anfangsportion mit G1/G2 - bei der steigenden
+        // weiteren Portion nur den Schwanz (G2).
+        val fruehOhneGuard = fruehAnfang && fruehZyklus?.fruehSchalter?.initialLiftsGuard == true
         val fruehOhneSchwanz = (fruehAnfang || fruehSteigt) && fruehZyklus?.fruehSchalter?.initialLiftsTail == true
         val fruehBodenU = if (fruehHebung != null) fruehGemessenFreiU + fruehAnteilU else 0.0
         // A: traegt der Normalbedarf schon mindestens diesen Boden, bleibt es seine Menge. Eine Anhebung gaebe es
@@ -3898,9 +3899,10 @@ class FuseCycleRunner(
         // Portion. Technische Integritaet immer. Guard: bei der Anfangsportion
         // mit G1 durch die Markerautorisierung gehoben, bei weiteren Portionen
         // mit G3 MIT Erwartung geprueft, sonst unveraendert. Schwanz dasselbe
-        // mit G2/G4. Steigt die Mahlzeit, gilt fuer die weitere Portion G1/G2
-        // wie fuer die Anfangsportion (Toni 22.10.). Wiederhergestellt wird
-        // hoechstens der groesste Pumpenschritt, der alles traegt.
+        // mit G2/G4. Steigt die Mahlzeit, entfaellt fuer die weitere Portion
+        // mit G2 der Schwanz (Toni 22.10.); den Guard prueft sie MIT Erwartung
+        // (Toni 25.10.). Wiederhergestellt wird hoechstens der groesste
+        // Pumpenschritt, der alles traegt.
         fun fruehEndpruefung(u: Double): String? {
             val k = kernelFinal ?: return CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT.name
             val h = fruehHebung ?: return null
@@ -6223,9 +6225,9 @@ class FuseCycleRunner(
         /** KANDIDAT W (Pruefstand): die Wende dieses Zyklus; `null` = ohne W (Produkt). */
         val wende: ExpectationAccount.Turn? = null,
         /**
-         * Toni 22.10.: fuer die weiteren Portionen galt in DIESEM Zyklus "die Mahlzeit steigt" - Guard und Schwanz pruefen
-         * die Portion dann nicht (wie die Anfangsportion, mit G1/G2), und der alte Riegel haelt sie nicht auf (wie bei
-         * [mahlzeitLaeuft]).
+         * Toni 22.10.: fuer die weiteren Portionen galt in DIESEM Zyklus "die Mahlzeit steigt" - der Schwanz prueft die
+         * Portion dann nicht (wie die Anfangsportion, mit G2), und der alte Riegel haelt sie nicht auf (wie bei
+         * [mahlzeitLaeuft]). Den Guard prueft sie MIT Erwartung (Toni 25.10.).
          */
         val mahlzeitSteigt: Boolean = false,
     )

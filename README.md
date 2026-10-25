@@ -124,9 +124,10 @@ You describe your typical meal once, as an **expectation curve**: how much insul
    before the low: no button, no new budget, no second initial portion.
 6. **Rising glucose gets insulin.** When glucose rises by at least 1 mg/dl per minute in two readings in a row (above
    the stability limit and above the setting *Mahlzeit steigt ab* — "meal rises from", 0 = the stability limit — and
-   no low), the next portions come from the remaining budget without waiting for the stability stretch, and the guard
-   and tail checks do not block them (switches G1/G2, as for the initial portion). A measured low, a measured fall risk,
-   maxIOB and the portion limits still stop them. When glucose stops rising, all checks apply again. A bounce after a
+   no low), the next portions come from the remaining budget without waiting for the stability stretch, and the tail
+   check does not block them (switch G2, as for the initial portion). The guard still checks each of them, with the
+   announced meal counted in (as with G3). A measured low, a measured fall risk, maxIOB and the portion limits still
+   stop them. When glucose stops rising, all checks apply again. A bounce after a
    fall below the set level is not a rising meal.
 7. **A bigger meal can get a top-up.** If the meal shows more effect than the curve expected, the account may give this
    excess on top of the budget, at most the set share of the budget (*Nachschlag*, 0 = off, the factory setting). It
@@ -335,8 +336,8 @@ Nacht- und Rebound-Totband —, der Liveness-Kanal und die stufenweise Rückkehr
 Knopf ein **Erwartungskonto**: ein einmal gebuchtes Budget, ein erster Teil sofort bei stabilem Zucker, der Rest, wenn
 sich die Mahlzeit zeigt. Korrigiert wird nur nach unten; ein Tief sperrt die Erwartung, bis es vorbei ist — danach läuft
 das Konto von selbst weiter, ohne Bestätigung. Steigt der Zucker (mindestens +1 mg/dl pro Minute in zwei Werten
-hintereinander, über der Einstellung „Mahlzeit steigt ab“), kommen die weiteren Portionen ohne Guard und Schwanz; ein
-gemessenes Tief, das gemessene Abwärtsrisiko, maxIOB und die Portionsgrenzen halten weiter. Zeigt sich die Mahlzeit
+hintereinander, über der Einstellung „Mahlzeit steigt ab“), kommen die weiteren Portionen ohne Schwanzprüfung; den Guard
+prüft jede mit der angekündigten Mahlzeit. Ein gemessenes Tief, das gemessene Abwärtsrisiko, maxIOB und die Portionsgrenzen halten weiter. Zeigt sich die Mahlzeit
 größer als die Kurve, darf das Konto den Überschuss zusätzlich geben, höchstens den eingestellten **Nachschlag** (Anteil
 des Budgets, ab Werk 0 = aus). Am Knopf wählt man „Mahlzeit“, „Snack“ (dasselbe Konto mit dem kleineren
 Snack-Skalierer, ab Werk 1,0 — nie mehr als eine Mahlzeit) oder „Nur Marker · 0 U“; jeder Knopf zeigt, wie viel

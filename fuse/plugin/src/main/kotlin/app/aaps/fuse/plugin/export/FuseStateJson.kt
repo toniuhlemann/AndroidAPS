@@ -2588,7 +2588,8 @@ object FuseStateJson {
                     .put("tailCapU", fin(x.fruehSchwanzKappeU))
                     // Schritt 2: laeuft die Mahlzeit (weitere Portionen), die Fortsetzung im Bedarf, am Riegel vorbei.
                     .put("mealRunning", z.mahlzeitLaeuft)
-                    // Toni 22.10.: die Mahlzeit steigt - die weitere Portion ohne Guard und Schwanz (G1/G2).
+                    // Toni 22.10.: die Mahlzeit steigt - die weitere Portion ohne Schwanz (G2); den Guard prueft sie MIT
+                    // Erwartung (Toni 25.10.).
                     .put("mealRising", z.mahlzeitSteigt)
                     .put("followUpStableSinceTs", x.folgeStabilSeitTs ?: JSONObject.NULL)
                     .put("mealRunningMinR", fin(x.mahlzeitLaeuftAbR))
