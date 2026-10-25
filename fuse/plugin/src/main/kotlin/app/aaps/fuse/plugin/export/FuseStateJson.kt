@@ -641,6 +641,8 @@ object FuseStateJson {
             // Langsamer Korrekturkanal (Toni 20.10.2026): nur, wenn er an ist oder noch etwas von ihm laeuft - aus
             // bleibt der Datensatz bitgleich.
             .apply { outcome.slowChannel?.let { put("slowChannel", slowChannelJson(it)) } }
+            // HCL Stufe 2 (Toni 25.10.2026): nur bei einem Marker aus dem Bolusrechner - sonst bleibt der Datensatz bitgleich.
+            .apply { outcome.hcl?.let { put("hcl", hclJson(it)) } }
             .put("mealFoundation", JSONObject()
                 .put("armed", false)
                 .put("armedTs", 0L)
@@ -1721,6 +1723,14 @@ object FuseStateJson {
                 .apply { if (outcome.state?.markerExpectationOnly == true) put("markerExpectationOnly", true) }
                 // Toni 24.10.2026: die Wahl "Snack" ebenso nur, wenn getroffen.
                 .apply { if (outcome.state?.markerSnack == true) put("markerSnack", true) }
+                // HCL Stufe 2 (Toni 25.10.2026): die Rechnung des Bolusrechners zum Marker - die eindeutige Zuordnung
+                // fuer den Viewer. Nur bei einem solchen Marker, sonst bleibt der Datensatz bitgleich.
+                .apply {
+                    outcome.state?.takeIf { it.markerHclCalcTs > 0L }?.let {
+                        put("markerHclCalcTs", it.markerHclCalcTs)
+                        put("markerHclMerged", it.markerHclMerged)
+                    }
+                }
                 .put("markerBoost", outcome.state?.markerBoost ?: JSONObject.NULL)
                 .put("mealWindow", outcome.state?.mealWindow ?: JSONObject.NULL)
                 .put("smbRatioEffective", fin(outcome.state?.effectiveSmbRatio))
@@ -2294,6 +2304,9 @@ object FuseStateJson {
             p.earlySupplySnackScale.takeIf { it != app.aaps.fuse.plugin.FuseDoubleKey.EarlySupplySnackScale.defaultValue }
                 ?.let { "snack:" + Sha.lossless(it) },
         )
+        // HCL Stufe 2 (Toni 25.10.2026): die Anrechnung der Bolusrechner-Mahlzeiten nur, wenn sie gilt (Konto UND
+        // Schalter) - sonst bleibt jeder bisherige Hash bitgleich.
+        val hclTeile = if (p.expectationAccountEnabled && p.hclMealsEnabled) listOf("hclMeals:on") else emptyList()
         // v38-ABSCHLUSS (A5-Neutralitaet, Toni 29.08.): die Hash-Eingaenge
         // sind CENTRAL-only die vier Profilwerte (+ die MEAL-Schwelle als
         // eigener Zustand). Der Konstanten-Marker "legacyProfileCaps:
@@ -2406,7 +2419,7 @@ object FuseStateJson {
                 true,
                 p.absorptionCreditWindowMin,
                 p.markerBoostMaxMin,
-            ).map { it.toString() } + modusTeile + kontoTeile + fruehTeile + slowTeile(p)
+            ).map { it.toString() } + modusTeile + kontoTeile + fruehTeile + slowTeile(p) + hclTeile
         return Sha.of(parts.joinToString("|"))
     }
 
@@ -2448,6 +2461,20 @@ object FuseStateJson {
         .put("factor", fin(x.factor))
         .put("thresholdMgdl", fin(x.thresholdMgdl))
         .put("entryMin", x.entryMin)
+
+    /** HCL Stufe 2: der Trail-Block der Anrechnung einer Mahlzeit aus dem Bolusrechner (s. [FuseCycleRunner.HclExport]). */
+    private fun hclJson(x: FuseCycleRunner.HclExport): JSONObject = JSONObject()
+        .put("calcTs", x.calcTs)
+        .put("merged", x.merged)
+        .put("applied", x.applied)
+        .put("reason", x.reason ?: JSONObject.NULL)
+        .put("scale", fin(x.scale))
+        .put("guardScale", fin(x.guardScale))
+        .put("minLowerWithoutMgdl", fin(x.minLowerWithoutMgdl))
+        .put("minLowerWithMgdl", fin(x.minLowerWithMgdl))
+        .put("tailHeadroomWithoutU", fin(x.tailHeadroomWithoutU))
+        .put("tailHeadroomWithU", fin(x.tailHeadroomWithU))
+        .put("onlyByCreditU", fin(x.onlyByCreditU))
 
     private fun fin(d: Double?): Any = if (d != null && d.isFinite()) d else JSONObject.NULL
 

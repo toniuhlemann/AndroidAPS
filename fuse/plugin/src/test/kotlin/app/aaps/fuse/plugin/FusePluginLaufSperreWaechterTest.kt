@@ -71,9 +71,10 @@ class FusePluginLaufSperreWaechterTest {
      * muss den GANZEN Umschaltvorgang unter derselben Sperre fuehren - nicht
      * nur das Speichern, denn die Episodenfelder aendert er vorher.
      *
-     * v4: zwei Aufrufer des Umschaltvorgangs - der Knopf ([FusePlugin.toggleMealMarker],
-     * sperrend) und die faellige Ruecknahme (`faelligeRuecknahmeUnterSperre`, die
-     * selbst nur unter der Sperre laeuft, siehe unten).
+     * v4: drei Aufrufer des Umschaltvorgangs - der Knopf ([FusePlugin.toggleMealMarker],
+     * sperrend), die faellige Ruecknahme (`faelligeRuecknahmeUnterSperre`, die
+     * selbst nur unter der Sperre laeuft, siehe unten) und seit HCL Stufe 2 der
+     * Bolusrechner (`hclMarkerUnterSperre`, ebenso nur unter der Sperre).
      */
     @Test
     fun `der Marker-Druck laeuft ganz unter der Laufsperre`() {
@@ -85,11 +86,26 @@ class FusePluginLaufSperreWaechterTest {
             "toggleMealMarker ruft den Umschaltvorgang nicht mehr unter laufSperre.withLock auf."
         }
         val ruecknahme = rumpf(code, RUECKNAHME_UNTER_SPERRE_DEKLARATION)
+        val hcl = rumpf(code, HCL_DEKLARATION)
         assertEquals(1, MARKER_AUFRUF.findAll(huelle).count()) { "toggleMealMarker ruft den Umschaltvorgang mehrfach" }
-        assertEquals(2, MARKER_AUFRUF.findAll(code).count()) {
-            "toggleMealMarkerUnterSperre darf genau zweimal aufgerufen werden - in toggleMealMarker und in der faelligen Ruecknahme."
+        assertEquals(3, MARKER_AUFRUF.findAll(code).count()) {
+            "toggleMealMarkerUnterSperre darf genau dreimal aufgerufen werden - in toggleMealMarker, in der faelligen " +
+                "Ruecknahme und in der Uebernahme des Bolusrechners."
         }
         assertEquals(1, MARKER_AUFRUF.findAll(ruecknahme).count()) { "die faellige Ruecknahme ruft den Umschaltvorgang nicht (mehr) genau einmal" }
+        assertEquals(1, MARKER_AUFRUF.findAll(hcl).count()) { "die Uebernahme des Bolusrechners ruft den Umschaltvorgang nicht (mehr) genau einmal" }
+    }
+
+    /** HCL Stufe 2: die Uebernahme des Bolusrechners laeuft nur unter der Laufsperre - aus der Meldung des Bolus-Kerns. */
+    @Test
+    fun `die Uebernahme des Bolusrechners laeuft nur unter der Laufsperre`() {
+        val code = quelle()
+        val aufrufe = HCL_AUFRUF.findAll(code).toList()
+        assertEquals(1, aufrufe.size) { "hclMarkerUnterSperre: erwartet genau einen Aufrufer, gefunden ${aufrufe.size}" }
+        val meldung = rumpf(code, HCL_MELDUNG)
+        val sperre = meldung.indexOf("laufSperre.withLock")
+        val aufruf = HCL_AUFRUF.find(meldung)?.range?.first ?: -1
+        assertTrue(sperre >= 0 && aufruf > sperre) { "fuseWizardBolus ruft die Uebernahme nicht unter laufSperre.withLock" }
     }
 
     /** Die faellige Ruecknahme laeuft nur unter der Sperre: ueber ihre sperrende Huelle oder aus dem Lauf. */
@@ -113,7 +129,7 @@ class FusePluginLaufSperreWaechterTest {
     @Test
     fun `unter der Sperre wird nie wieder gesperrt`() {
         val code = quelle()
-        for (d in listOf(DEKLARATION, MARKER_DEKLARATION, RUECKNAHME_UNTER_SPERRE_DEKLARATION)) {
+        for (d in listOf(DEKLARATION, MARKER_DEKLARATION, RUECKNAHME_UNTER_SPERRE_DEKLARATION, HCL_DEKLARATION)) {
             val r = rumpf(code, d)
             assertFalse(r.contains("laufSperre.")) { "${d.pattern}: greift unter der Sperre erneut auf laufSperre zu" }
             for (sperrend in SPERRENDE_FASSUNGEN) {
@@ -155,6 +171,9 @@ class FusePluginLaufSperreWaechterTest {
         assertTrue(RUECKNAHME_UNTER_SPERRE_DEKLARATION.containsMatchIn(code)) { "faelligeRuecknahmeUnterSperre nicht gefunden" }
         assertTrue(PERSIST_AUFRUF.containsMatchIn(code)) { "persistiereMarkerZustand-Aufruf nicht gefunden" }
         assertTrue(SPERRENDE_FASSUNGEN.all { it.containsMatchIn(code) }) { "ein Muster der sperrenden Fassungen findet nichts" }
+        assertTrue(HCL_DEKLARATION.containsMatchIn(code)) { "hclMarkerUnterSperre nicht gefunden" }
+        assertTrue(HCL_MELDUNG.containsMatchIn(code)) { "fuseWizardBolus nicht gefunden" }
+        assertTrue(HCL_AUFRUF.containsMatchIn(code)) { "hclMarkerUnterSperre-Aufruf nicht gefunden" }
     }
 
     private companion object {
@@ -190,6 +209,13 @@ class FusePluginLaufSperreWaechterTest {
         val RUECKNAHME_UNTER_SPERRE_AUFRUF = Regex("""(?<!fun\s)\bfaelligeRuecknahmeUnterSperre\s*\(""")
 
         val PERSIST_AUFRUF = Regex("""(?<!fun\s)\bpersistiereMarkerZustand\s*\(""")
+
+        /** HCL Stufe 2: die Uebernahme des Bolusrechners und die Meldung des Bolus-Kerns, die sie ausloest. */
+        val HCL_DEKLARATION = Regex("""private\s+fun\s+hclMarkerUnterSperre\s*\(""")
+
+        val HCL_AUFRUF = Regex("""(?<!fun\s)\bhclMarkerUnterSperre\s*\(""")
+
+        val HCL_MELDUNG = Regex("""override\s+fun\s+fuseWizardBolus\s*\(""")
 
         /** Die sperrenden Fassungen - unter der Sperre verboten. */
         val SPERRENDE_FASSUNGEN = listOf(

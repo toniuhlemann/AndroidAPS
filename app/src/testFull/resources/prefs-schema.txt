@@ -270,6 +270,7 @@ fuse_expectation_stability_min|FuseIntKey|true
 fuse_fast_restraint_enabled|FuseRetiredKey|true
 fuse_forecast_shadow_collection_enabled|FuseRetiredKey|true
 fuse_guard_floor_mgdl|FuseDoubleKey|true
+fuse_hcl_meals_enabled|FuseBooleanKey|true
 fuse_hcl_meals|FuseStringNonKey|false
 fuse_iob_th_percent|FuseIntKey|true
 fuse_ledger_reparatur|FuseIntentKey|false
@@ -301,6 +302,8 @@ fuse_meal_foundation_phase_a_share|FuseRetiredKey|true
 fuse_meal_foundation_phase_a_upfront_share|FuseRetiredKey|true
 fuse_meal_marker_armed_ts|FuseLongKey|false
 fuse_meal_marker_expectation_only|FuseLongKey|false
+fuse_meal_marker_hcl_calc_ts|FuseLongKey|false
+fuse_meal_marker_hcl_merged|FuseLongKey|false
 fuse_meal_marker_no_prime|FuseLongKey|false
 fuse_meal_marker_snack|FuseLongKey|false
 fuse_meal_marker_stamp|FuseLongKey|false

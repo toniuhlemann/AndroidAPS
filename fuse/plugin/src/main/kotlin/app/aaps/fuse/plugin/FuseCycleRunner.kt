@@ -1465,6 +1465,9 @@ class FuseCycleRunner(
         /** Der langsame Korrekturkanal in diesem Zyklus - `null`, wenn er aus ist und nichts von ihm laeuft. */
         val slowChannel: SlowChannelExport? get() = bloecke.slowChannel
 
+        /** HCL Stufe 2: die Anrechnung der Mahlzeit aus dem Bolusrechner - `null` ohne Marker aus dem Bolusrechner. */
+        val hcl: HclExport? get() = bloecke.hcl
+
         /** Verlustursache der entfallenen Rebound-Evidenz-Ausnahme - Konsolidierung 2.0: neutral (null). */
         val livenessEvidenceLossCause: String? get() = livenessBookingDiagnosis.lossCause
 
@@ -1645,6 +1648,10 @@ class FuseCycleRunner(
         // "Snack" (Toni 24.10.): eine "Mahlzeit" mit dem kleineren Snack-Skalierer. Ein Altbestand-Stempel kennt
         // die Wahl nicht und laeuft als Mahlzeit.
         val markerSnack = markerNurErwartung && preferences.get(FuseLongKey.MealMarkerSnack) != 0L
+        // HCL STUFE 2 (Toni 25.10.2026): der Marker gehoert zu einer Rechnung des Bolusrechners - und ob sie mit einem
+        // schon laufenden Marker zusammengefuehrt wurde. Beide leben und sterben mit dem Marker (FusePlugin).
+        val markerHclCalcTs = if (markerTs > 0L) preferences.get(FuseLongKey.MealMarkerHclCalcTs).coerceAtLeast(0L) else 0L
+        val markerHclMerged = markerHclCalcTs > 0L && preferences.get(FuseLongKey.MealMarkerHclMerged) != 0L
         val episodes = ledger.episodes
         // DER WIRKSAME EPISODENDECKEL (Toni 16.08., Fall 1 des Audit-Nachtrags).
         //
@@ -2757,6 +2764,8 @@ class FuseCycleRunner(
                     markerNoPrime = markerNoPrime,
                     markerExpectationOnly = markerNurErwartung,
                     markerSnack = markerSnack,
+                    markerHclCalcTs = markerHclCalcTs,
+                    markerHclMerged = markerHclMerged,
                     reboundSuppressedByMarker = reboundSuppressedByMarker,
                     mealWindow = mealWindow,
                     rSignedMgdlPerMin = ratioDrive,
@@ -2948,6 +2957,7 @@ class FuseCycleRunner(
                 maxIobU, transportModelledU, ledgerView, episodes, onset, band,
                 built.discount, built.input.trajectory.model, sensorEpoch, calibrationEpoch, gate,
                 ekGilt = ekGilt, ekVorschau = ekVorschau, markerNoPrime = markerNoPrime, markerSnack = markerSnack,
+                markerHclCalcTs = markerHclCalcTs, markerHclMerged = markerHclMerged,
             )
         }
         // AB HIER ist die Bahn vorhanden. Einmal ausgepackt statt an dreissig
@@ -3284,6 +3294,8 @@ class FuseCycleRunner(
                 MeasuredDescentGate.Cause.HISTORICAL_LATCH,
             fortsetzung = ekFortsetzung(signal.rSigned, state.isfMgdlPerU, cfg),
             rSigned = signal.rSigned,
+            hclCalcTs = markerHclCalcTs,
+            hclMerged = markerHclMerged,
         )
         ekZyklusThisCycle = ekZyklus
         // ---- DAS NACHT-SONDERRECHT DER EVIDENZ (Toni) ----------------------
@@ -3302,10 +3314,28 @@ class FuseCycleRunner(
         )
         // Der Kontobedarf dieses Zyklus - fuer die Entscheidung UND fuer den langsamen Kanal (gemeinsamer Bedarf).
         val ekBedarfU = ekZyklus?.let { ExpectationAccount.deliverableU(it.eval) }
+        // ---- HCL STUFE 2 (Toni 25.10.2026, Entwurf B): DIE MAHLZEIT AUS DEM BOLUSRECHNER BEI GUARD UND SCHWANZ ----
+        //
+        // Nach einem Rechner-Bolus traegt die Bahn viel IOB und keine KH - Guard und Schwanz sperrten damit jede
+        // Antwort auf einen Anstieg, den der Bolus nicht deckt. Hier pruefen sie den normalen Anstiegsweg MIT der
+        // bestaetigten Mahlzeit: dieselbe Rechnung wie G3/G4 der fruehen Versorgung, angerechnet nur, was sich zeigt
+        // (ab +20 min, hoechstens beobachtet, hoechstens die Kurve). Der Bedarf bleibt auf der Bahn ohne Mahlzeit -
+        // kein Rest bis KH/IC, kein zweites Einrechnen, kein zweiter IOB-Abzug. Nie bei einem Low-Befund, einem
+        // gemessenen Tief, Abwaertsrisiko oder -riegel: die Null-TBR des Low-Tors und die Riegel bleiben, wie sie sind.
+        // Ohne HCL-Marker oder mit Schalter aus `null` - dann rechnet der Zyklus bitgleich wie bisher.
+        val hcl = hclAnrechnung(
+            cfg = cfg, calcTs = markerHclCalcTs, merged = markerHclMerged, z = ekZyklus, computeTs = computeTs,
+            prediction = prediction, restraint = restraint, tailBase = tailBase, tailAn = tail != null,
+            lowThreat = lowThreatWirksam,
+            gemessenGesperrt = step.safetyReasons.isNotEmpty() || descentRisk.active || descentLatch.blocksPositive,
+            rSigned = signal.rSigned, isfFallback = state.isfMgdlPerU,
+        )
+        val hclBahnen = hcl?.bahnen
         val baseDecision = FuseController.decide(
             state, prediction,
             FuseController.Limits(guardFloorMgdl = cfg.guardFloorMgdl, releaseHorizonMin = cfg.releaseHorizonMin),
-            tail,
+            // HCL Stufe 2: der Schwanz MIT der bestaetigten Mahlzeit, sonst wie bisher.
+            if (hclBahnen != null) hclBahnen.tail else tail,
             restraint,
             // Fliessender Kredit entwaffnet das Nacht-Totband - eine
             // markereroeffnete Episode mit versiegelter unbezahlter Stoerung
@@ -3325,6 +3355,9 @@ class FuseCycleRunner(
             onsetCapU = if (onset.active) onset.remainingU else null,
             // E-034: im Mahlzeitkontext des Kontos kommt der Bedarf aus dem Konto.
             expectationDemandU = ekBedarfU,
+            // HCL Stufe 2: nur der Guard sieht die Mahlzeit, der Bedarf nicht.
+            guardPrediction = hclBahnen?.prediction,
+            guardRestraint = hclBahnen?.restraint,
         )
 
         // KANDIDATENPRUEFUNG (Audit: schon eine kleine SMB senkt die Bahn
@@ -3437,7 +3470,9 @@ class FuseCycleRunner(
                 baseDecision
             } else {
                 candidateResult = CandidateSearch.search(
-                    prediction = prediction,
+                    // HCL Stufe 2: die Bahn MIT der bestaetigten Mahlzeit. Die Suche prueft hier nur Guard und Grenzen -
+                    // mit Anrechnung gilt immer das Konto, also ohne Zielband (targetChecks = false unten).
+                    prediction = hclBahnen?.prediction ?: prediction,
                     kernel = k,
                     isfSlots = built.input.isfSlots,
                     // E-034: ohne Zielband-Pruefung im Mahlzeitkontext des Kontos.
@@ -3466,7 +3501,7 @@ class FuseCycleRunner(
                     // Kandidatenwirkung geprueft, nicht nur ohne. Bisher
                     // sah nur der Baseline-Guard sie; Hauptbahn-lower 95 /
                     // Bremsbahn-lower 74 / Wirkung -5 / Boden 70 passierte.
-                    restraint = restraint,
+                    restraint = if (hclBahnen != null) hclBahnen.restraint else restraint,
                 )
                 CandidateGate.apply(baseDecision, candidateResult, bolusStep)
             }
@@ -3697,7 +3732,8 @@ class FuseCycleRunner(
                 )
             )
         }
-        fun tailWith(u: Double): TailLiability.Report? = tailAus(tailBase, u)
+        // HCL Stufe 2: mit Anrechnung traegt der Schwanz MIT der bestaetigten Mahlzeit - Endpruefung und Bericht.
+        fun tailWith(u: Double): TailLiability.Report? = tailAus(hclBahnen?.tailBase ?: tailBase, u)
 
         // C1/C2: DASSELBE Zeugnis wie in der Suche - beide Bahnen, prior-frei.
         // Das ist der Riegel, an dem KEINE positive Menge vorbeikommt: auch der
@@ -3715,10 +3751,23 @@ class FuseCycleRunner(
             // den Riegel fuer die GANZE Menge auf, also auch fuer den
             // Teil, der ueber die Autorisierung hinausgeht (Rest-Zaehler).
             // Autorisiert ist aber nur, was der Marker finanziert hat.
+            // HCL Stufe 2: mit Anrechnung DIESELBE Pruefung auf den Bahnen MIT der bestaetigten Mahlzeit.
             CandidateSearch.verifyGuardFloor(
-                prediction, kernelFinal, built.input.isfSlots, candidateBand, u, restraint = restraint,
+                hclBahnen?.prediction ?: prediction, kernelFinal, built.input.isfSlots, candidateBand, u,
+                restraint = if (hclBahnen != null) hclBahnen.restraint else restraint,
             )?.let { return it.name }
             tailWith(u)?.takeIf { it.usable && it.headroomU < -TAIL_VETO_EPS_U }?.let { return TAIL_VETO }
+            return null
+        }
+        // HCL Stufe 2: DIESELBE Endpruefung OHNE Anrechnung - nur fuer den Trail: welcher Teil der Endmenge allein
+        // durch die Mahlzeitanrechnung frei wurde. Dazu gehoeren die beiden Sperren des Reglers vor jeder Menge.
+        fun vetoOhneHcl(u: Double): String? {
+            val k = kernelFinal ?: return CandidateSearch.Reject.MODEL_HORIZON_TOO_SHORT.name
+            if (minSafetyLowerOf(prediction, restraint) < cfg.guardFloorMgdl) return CandidateSearch.Reject.GUARD_FLOOR.name
+            if (tail != null && tail.usable && tail.headroomU <= 0.0) return TAIL_VETO
+            CandidateSearch.verifyGuardFloor(prediction, k, built.input.isfSlots, candidateBand, u, restraint = restraint)
+                ?.let { return it.name }
+            tailAus(tailBase, u)?.takeIf { it.usable && it.headroomU < -TAIL_VETO_EPS_U }?.let { return TAIL_VETO }
             return null
         }
         // REST-ZAEHLER (Toni 09.08.): was die Pumpenschritt-Rasterung verwirft,
@@ -3747,7 +3796,8 @@ class FuseCycleRunner(
             kontextDemandRatioCap?.let { (lifted.insulinReqU ?: 0.0) * it } ?: Double.MAX_VALUE,
             exposure.iobThHeadroomU,
             exposure.maxIobHeadroomU,
-            tail?.takeIf { it.usable }?.headroomU ?: Double.MAX_VALUE,
+            // HCL Stufe 2: der Spielraum des Schwanzes MIT der bestaetigten Mahlzeit, wenn sie angerechnet wird.
+            (if (hclBahnen != null) hclBahnen.tail else tail)?.takeIf { it.usable }?.headroomU ?: Double.MAX_VALUE,
             if (onset.active) onset.remainingU else Double.MAX_VALUE,
         )
         // SUB-01 (P0, Codex Fix-Pass-5-Closure): die Kappen muessen die
@@ -5616,6 +5666,13 @@ class FuseCycleRunner(
         // Zyklus belastete die Huelle, ohne dass eine Einheit floss
         // (Zaehlfalle rowId, 06.08.).
         val actuatedU = if (gate.allowed) combined.decision.smbU else 0.0
+        // HCL Stufe 2 (Codex): die Menge, die ALLEIN die Mahlzeitanrechnung freigab - die Endmenge abzueglich der
+        // groessten, die Guard und Schwanz ohne Anrechnung getragen haetten. Nur Trail, dosierneutral.
+        val hclNurDurchAnrechnungU = if (hclBahnen == null || actuatedU <= 0.0) 0.0 else {
+            val ohneTragbarU = if (vetoOhneHcl(actuatedU) == null) actuatedU
+            else groessteBestehendeMenge(actuatedU, bolusStep) { vetoOhneHcl(it) == null }
+            kotlin.math.max(0.0, actuatedU - ohneTragbarU)
+        }
         val buchung = buche(
             episodes, actuatedU, primeWindowOpen, onset.active, mealMarkerActive,
             mealPowerActive = dosingCtx.mealAuthorized, sourceTs = signal.sourceTs,
@@ -5704,6 +5761,21 @@ class FuseCycleRunner(
             configGeneration = app.aaps.fuse.plugin.export.FuseStateJson.hashOf(cfg).orEmpty(),
             bloecke = Bloecke(
                 slowChannel = slowExportThisCycle,
+                hcl = hcl?.let { h ->
+                    HclExport(
+                        calcTs = h.calcTs,
+                        merged = h.merged,
+                        applied = h.bahnen != null,
+                        reason = h.grund,
+                        scale = h.skalierer,
+                        guardScale = h.skala,
+                        minLowerWithoutMgdl = minSafetyLowerOf(prediction, restraint).takeIf { it.isFinite() },
+                        minLowerWithMgdl = h.bahnen?.let { b -> minSafetyLowerOf(b.prediction, b.restraint) }?.takeIf { it.isFinite() },
+                        tailHeadroomWithoutU = tail?.takeIf { it.usable }?.headroomU,
+                        tailHeadroomWithU = h.bahnen?.tail?.takeIf { it.usable }?.headroomU,
+                        onlyByCreditU = hclNurDurchAnrechnungU,
+                    )
+                },
                 // E-034: bei eingeschaltetem Konto - und im Rueckfall ohne Konto (keine gueltige Kurve) auch ohne, damit
                 // der Ausfall im Trail steht (Toni: "den Ausfall deutlich melden").
                 erwartungskonto = if (!cfg.expectationAccountEnabled && !kontoRueckfall) null else ErwartungskontoExport(
@@ -6324,6 +6396,14 @@ class FuseCycleRunner(
         fortsetzung: app.aaps.fuse.core.controller.EarlySupply.Continuation? = null,
         /** KANDIDAT W (Pruefstand): r dieses Zyklus fuer die Wendeerkennung; gelesen nur mit dem Pruefarm W. */
         rSigned: Double? = null,
+        /**
+         * HCL STUFE 2 (Toni 25.10.2026): die Rechnung des Bolusrechners, zu der der Marker gehoert; 0 = keine. Ein
+         * solcher Marker bucht sein Konto mit dem HCL-Skalierer ([EarlySupply.hclScale]) und sonst nichts
+         * ([EarlySupply.Settings.forHcl], keine Schalter G1..G4).
+         */
+        hclCalcTs: Long = 0L,
+        /** HCL Stufe 2: die Rechnung wurde mit dem laufenden Marker zusammengefuehrt - seine fruehe Versorgung entfaellt. */
+        hclMerged: Boolean = false,
     ): ErwartungskontoZyklus? {
         val fruehEingaben by lazy(LazyThreadSafetyMode.NONE) { fruehEingabenVon() }
         // KANDIDAT W (Pruefstand): die Vorgeschichte der Wendeerkennung in JEDEM Zyklus - nur mit dem Pruefarm W.
@@ -6382,11 +6462,18 @@ class FuseCycleRunner(
             // gemessene Anteil. Konsolidierung 2.0: das Konto v1 ist entfallen - ist die fruehe Versorgung aus oder
             // ungueltig eingestellt, bucht der Druck ein v2-Konto mit Budget 0 und neutralen Pins (keine Portion,
             // kein Schalter); bei ungueltigen Kontoparametern ein Konto ohne Erwartung. Weniger Insulin, nie mehr.
-            val frueh = ekFruehEinstellungen(cfg, nurErwartung, snack)
-            val schalter =
-                if (cfg.earlySupplySettings != null) cfg.earlySupplySwitches
-                else app.aaps.fuse.core.controller.EarlySupply.Switches.NONE
             val params = cfg.expectationParams
+            // HCL Stufe 2: der Marker aus dem Bolusrechner bucht nur den Skalierer der Rechnung - kein Budget, keine
+            // Portion, keine Schalter. Fehlt die Rechnung (nicht mehr gespeichert), ist er 0: keine Anrechnung.
+            val hclSkalierer = if (hclCalcTs <= 0L || hclMerged) null else params?.let { p ->
+                hclMahlzeiten.rechnung(hclCalcTs)
+                    ?.let { app.aaps.fuse.core.controller.EarlySupply.hclScale(it.carbsInsulinU, p.curve) } ?: 0.0
+            }
+            val frueh = if (hclSkalierer != null) app.aaps.fuse.core.controller.EarlySupply.Settings.forHcl(hclSkalierer)
+            else ekFruehEinstellungen(cfg, nurErwartung, snack)
+            val schalter =
+                if (hclSkalierer == null && cfg.earlySupplySettings != null) cfg.earlySupplySwitches
+                else app.aaps.fuse.core.controller.EarlySupply.Switches.NONE
             konto = if (params != null) {
                 // Ein Budget braucht das Insulinmodell. Fehlt es, wird jetzt
                 // nicht gebucht (kein stiller Wechsel der Regel fuer die ganze
@@ -6493,7 +6580,9 @@ class FuseCycleRunner(
         )
         val stabilFolge = folgeImLauf && ExpectationAccount.Stability.stable(ekFolgeStabilSeit, computeTs, dauerMin)
         val pausenGruende = sperrenFuerPause + listOfNotNull("FALLING".takeIf { faelltFuerPause }) + technisch +
-            listOfNotNull("EARLY_SUPPLY_OFF".takeIf { konto.early?.let { it.withdrawn || !cfg.earlySupplyEnabled } == true })
+            listOfNotNull("EARLY_SUPPLY_OFF".takeIf { konto.early?.let { it.withdrawn || !cfg.earlySupplyEnabled } == true }) +
+            // HCL Stufe 2: mit dem Bolusrechner zusammengefuehrt - schon in diesem Zyklus keine Portion mehr.
+            listOfNotNull("HCL_MERGED".takeIf { hclMerged && konto.early != null })
         val pausiert = pausenGruende.isNotEmpty()
         // RUECKNAHME DER FREIGABE (K5b; Codex-Befund P0): das gemessene Tief
         // dieses Zyklus, ein Tief aus einem Abbruchzyklus dieser Autorisierung
@@ -6548,7 +6637,9 @@ class FuseCycleRunner(
         // einzelner Schalter G1..G4 sein Recht, jeweils fuer den Rest der Mahlzeit.
         val gefuehrt = neu.early?.let { e ->
             val schalter = e.switches.and(cfg.earlySupplySwitches)
-            val entzogen = e.withdrawn || !cfg.earlySupplyEnabled
+            // HCL Stufe 2: die Zusammenfuehrung mit dem Bolusrechner entzieht die fruehe Versorgung fuer den Rest der
+            // Mahlzeit - wie der Hauptschalter (Codex: Rechner und Knopf bei derselben Mahlzeit zusammenfuehren).
+            val entzogen = e.withdrawn || !cfg.earlySupplyEnabled || hclMerged
             if (schalter == e.switches && entzogen == e.withdrawn) neu
             else neu.copy(early = e.copy(switches = schalter, withdrawn = entzogen))
         } ?: neu
@@ -6586,6 +6677,84 @@ class FuseCycleRunner(
             it.isFinite() && it > 0.0 && (ohneSchwelle || it >= cfg.mahlzeitLaeuftAbR) && isfMgdlPerU.isFinite() && isfMgdlPerU > 0.0
         }
             ?.let { app.aaps.fuse.core.controller.EarlySupply.Continuation(it / isfMgdlPerU, cfg.driveTauMin.toDouble()) }
+
+    /** HCL Stufe 2: die Bahnen MIT der bestaetigten Mahlzeit aus dem Bolusrechner, die Guard und Schwanz pruefen. */
+    private class HclBahnen(
+        val prediction: PredictorResult,
+        val restraint: PredictorResult?,
+        val tailBase: TailLiability.Input,
+        /** `null` = Schwanz-Guard aus. */
+        val tail: TailLiability.Report?,
+    )
+
+    /** HCL Stufe 2: die Anrechnung dieses Zyklus fuer einen Marker aus dem Bolusrechner. */
+    private class HclZyklus(
+        val calcTs: Long,
+        val merged: Boolean,
+        /** Warum nicht angerechnet wird; `null` = die Anrechnung gilt ([bahnen] gesetzt). */
+        val grund: String?,
+        /** Der Skalierer des Kontos (KH-Insulin / Kurvenende), 0 ohne Konto. */
+        val skalierer: Double,
+        /** Was Guard und Schwanz davon anrechnen ([EarlySupply.hclGuardScale]). */
+        val skala: Double,
+        val bahnen: HclBahnen?,
+    )
+
+    /**
+     * HCL STUFE 2 (Toni 25.10.2026, Entwurf B): die Bahnen MIT der bestaetigten Mahlzeit fuer Guard und Schwanz -
+     * dieselbe Rechnung wie G3/G4 der fruehen Versorgung ([EarlySupply.withExpectation],
+     * [EarlySupply.tailLowerWithExpectation]), mit der HCL-Anrechnung ([EarlySupply.hclGuardScale]) und, solange die
+     * Mahlzeit laeuft, ihrer beobachteten Fortsetzung wie dort. `null` = der Marker kommt nicht aus dem Bolusrechner;
+     * ein Ergebnis ohne [HclZyklus.bahnen] nennt den Grund, warum in diesem Zyklus nicht angerechnet wird.
+     */
+    @Suppress("LongParameterList")
+    private fun hclAnrechnung(
+        cfg: Config,
+        calcTs: Long,
+        merged: Boolean,
+        z: ErwartungskontoZyklus?,
+        computeTs: Long,
+        prediction: PredictorResult,
+        restraint: PredictorResult?,
+        tailBase: TailLiability.Input,
+        tailAn: Boolean,
+        lowThreat: LowThreatGate.Verdict,
+        /** Gemessenes Tief (Sicherheitsgrund), Abwaertsrisiko oder Abwaertsriegel in diesem Zyklus. */
+        gemessenGesperrt: Boolean,
+        rSigned: Double?,
+        isfFallback: Double,
+    ): HclZyklus? {
+        if (calcTs <= 0L) return null
+        val konto = z?.state
+        fun ohne(grund: String) = HclZyklus(calcTs, merged, grund, konto?.phi0 ?: 0.0, 0.0, null)
+        if (!cfg.hclMealsEnabled) return ohne("SWITCH_OFF")
+        if (merged) return ohne("MERGED")
+        if (z == null || konto == null) return ohne("NO_ACCOUNT")
+        val kurve = ExpectationAccount.Curve.of(konto.curveValues) ?: return ohne("NO_CURVE")
+        if (z.eval.expired) return ohne("EXPIRED")
+        if (konto.earlyLowLocked) return ohne("LOW_LOCK")
+        if (lowThreat != LowThreatGate.Verdict.NONE) return ohne("LOW_THREAT")
+        if (gemessenGesperrt) return ohne("MEASURED_LOCK")
+        val skala = app.aaps.fuse.core.controller.EarlySupply.hclGuardScale(
+            konto.phi0, (computeTs - konto.authId) / 60_000.0, konto.disturbanceU, konto.disturbanceValid, kurve,
+        )
+        if (!(skala > 0.0)) return ohne("NOT_CONFIRMED")
+        val isf = konto.isfAtMarkerMgdlPerU.takeIf { it.isFinite() && it > 0.0 } ?: isfFallback
+        val fortsetzung = if (z.mahlzeitLaeuft) ekFortsetzung(rSigned, isf, cfg) else null
+        val alterAmAnkerMin = (prediction.predictionAnchorTs - konto.authId) / 60_000.0
+        fun mit(bahn: PredictorResult) = app.aaps.fuse.core.controller.EarlySupply.withExpectation(
+            bahn, alterAmAnkerMin, kurve, konto.horizonMin, skala, isf, fortsetzung,
+        )
+        val schwanzBasis = tailBase.copy(
+            lowerBgAtH = app.aaps.fuse.core.controller.EarlySupply.tailLowerWithExpectation(
+                tailBase.lowerBgAtH, prediction, alterAmAnkerMin, kurve, konto.horizonMin, skala, isf, fortsetzung,
+            ),
+        )
+        return HclZyklus(
+            calcTs, merged, null, konto.phi0, skala,
+            HclBahnen(mit(prediction), restraint?.let { mit(it) }, schwanzBasis, if (tailAn) TailLiability.evaluate(schwanzBasis) else null),
+        )
+    }
 
     /** Was der Druck bucht: "Mahlzeit" die Einstellungen, "Snack" mit dem Snack-Skalierer, "Nur Marker" Budget 0. */
     private fun ekFruehEinstellungen(
@@ -6937,6 +7106,9 @@ class FuseCycleRunner(
         ekVorschau: app.aaps.fuse.core.controller.DosingContext.Decision? = null,
         markerNoPrime: Boolean = false,
         markerSnack: Boolean = false,
+        /** HCL Stufe 2: s. [erwartungskontoZyklus]. */
+        markerHclCalcTs: Long = 0L,
+        markerHclMerged: Boolean = false,
     ): Outcome {
         // A1: derselbe zentrale Kontext auch im predictorfreien Pfad -
         // ein Zyklus, EINE Entscheidung, egal welcher Weg ihn traegt.
@@ -6977,6 +7149,9 @@ class FuseCycleRunner(
             technisch = listOf("NO_TRAJECTORY"),
             // K5: ohne Bahn kein Null-Tor - der gemessene Rohwert-Befund genuegt.
             gemessenesTief = step.safetyReasons.isNotEmpty(),
+            // HCL Stufe 2: auch ohne Bahn bucht ein Marker aus dem Bolusrechner sein HCL-Konto, nicht das gewohnte.
+            hclCalcTs = markerHclCalcTs,
+            hclMerged = markerHclMerged,
         )
         ekZyklusThisCycle = ekZyklus
         subStepCarryU = 0.0
@@ -7670,10 +7845,42 @@ class FuseCycleRunner(
     private var partialLastTs = 0L
     private var partialAktiv = false
 
+    /** HCL Stufe 2: die Rechnungen des Bolusrechners - der Runner liest nur das KH-Insulin der Marker-Rechnung. */
+    private val hclMahlzeiten by lazy { HclMahlzeiten(preferences) }
+
     /** Die gebuendelten Bloecke eines Zyklus (s. [Outcome.bloecke]). */
     data class Bloecke(
         val erwartungskonto: ErwartungskontoExport? = null,
         val slowChannel: SlowChannelExport? = null,
+        /** HCL Stufe 2: nur bei einem Marker aus dem Bolusrechner. */
+        val hcl: HclExport? = null,
+    )
+
+    /**
+     * HCL STUFE 2 (Toni 25.10.2026) fuer den Trail: ob und wie Guard und Schwanz die bestaetigte Mahlzeit aus dem
+     * Bolusrechner angerechnet haben - und welche Menge allein dadurch frei wurde ([onlyByCreditU], Codex).
+     */
+    data class HclExport(
+        /** Die Rechnung des Bolusrechners, zu der der Marker gehoert. */
+        val calcTs: Long,
+        /** Mit einem laufenden Marker zusammengefuehrt: keine Anrechnung, keine weiteren Portionen. */
+        val merged: Boolean,
+        /** Die Anrechnung gilt in diesem Zyklus. */
+        val applied: Boolean,
+        /** Warum nicht; `null` = sie gilt. */
+        val reason: String?,
+        /** Skalierer des Kontos: KH-Insulin im Verhaeltnis zum Kurvenende. */
+        val scale: Double,
+        /** Was Guard und Schwanz davon anrechnen (0..1). */
+        val guardScale: Double,
+        /** Sicherheitskante ueber beide Bahnen [mg/dl] - ohne und mit Mahlzeit. */
+        val minLowerWithoutMgdl: Double?,
+        val minLowerWithMgdl: Double?,
+        /** Spielraum des Schwanzes [U] - ohne und mit Mahlzeit; `null` = nicht gerechnet. */
+        val tailHeadroomWithoutU: Double?,
+        val tailHeadroomWithU: Double?,
+        /** Die Endmenge, die ohne Anrechnung nicht hinausgegangen waere [U]. */
+        val onlyByCreditU: Double,
     )
 
     /**
@@ -8052,6 +8259,11 @@ class FuseCycleRunner(
         val earlySupplySwitches: app.aaps.fuse.core.controller.EarlySupply.Switches = app.aaps.fuse.core.controller.EarlySupply.Switches.NONE,
         /** Toni 24.10.2026: der Skalierer bei "Snack" - s. [FuseDoubleKey.EarlySupplySnackScale]; geprueft in `forSnack`. */
         val earlySupplySnackScale: Double = FuseDoubleKey.EarlySupplySnackScale.defaultValue,
+        /**
+         * HCL STUFE 2 (Toni 25.10.2026): Guard und Schwanz rechnen die bestaetigte Mahlzeit eines Markers aus dem
+         * Bolusrechner an - s. [FuseBooleanKey.HclMealsEnabled]. Vorgabe aus: ohne HCL-Marker bitgleich.
+         */
+        val hclMealsEnabled: Boolean = false,
     ) {
         /** Schritt 2: die geltende Schwelle "Mahlzeit laeuft" - die eigene, sonst die Rampen-Unterkante. */
         val mahlzeitLaeuftAbR: Double get() = if (mealRunningMinR > 0.0) mealRunningMinR else riseRampLowR
@@ -8189,6 +8401,8 @@ class FuseCycleRunner(
             expectationReleaseThresholdU = preferences.get(FuseDoubleKey.ExpectationReleaseThresholdU),
             expectationHorizonMin = preferences.get(FuseIntKey.ExpectationHorizonMin),
             expectationCurveText = kurve,
+            // HCL Stufe 2: die Anrechnung braucht das Konto (Kurve, Beobachtung) - ohne Kurve gibt es sie nicht.
+            hclMealsEnabled = preferences.get(FuseBooleanKey.HclMealsEnabled),
         ).let { mitFrueherVersorgung(it) }
     }
 

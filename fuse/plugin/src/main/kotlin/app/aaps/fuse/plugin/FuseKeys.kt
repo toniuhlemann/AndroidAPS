@@ -775,6 +775,13 @@ enum class FuseLongKey(
      *  Snack-Skalierer ([FuseDoubleKey.EarlySupplySnackScale]). Lebt und stirbt mit [MealMarkerArmedTs] wie
      *  [MealMarkerNoPrime]; "Nur Marker" geht vor. */
     MealMarkerSnack("fuse_meal_marker_snack", 0, exportable = false),
+    /** EPISODENZUSTAND, kein Setting (HCL Stufe 2, Toni 25.10.2026): die Rechnung des Bolusrechners, zu der der Marker
+     *  gehoert ([FuseStringNonKey.HclMeals], Schluessel calcTs); 0 = kein Bolusrechner. Lebt und stirbt mit
+     *  [MealMarkerArmedTs] wie [MealMarkerNoPrime]. */
+    MealMarkerHclCalcTs("fuse_meal_marker_hcl_calc_ts", 0, exportable = false),
+    /** EPISODENZUSTAND, kein Setting (HCL Stufe 2): 1 = die Rechnung kam zu einem schon laufenden Marker und wurde mit
+     *  ihm zusammengefuehrt - keine weiteren Portionen, keine Anrechnung. Lebt und stirbt mit [MealMarkerArmedTs]. */
+    MealMarkerHclMerged("fuse_meal_marker_hcl_merged", 0, exportable = false),
 
     /**
      * ALTBESTAND, nur noch LESEND: `armedTs*10 + Stufe`.
@@ -1061,6 +1068,13 @@ enum class FuseBooleanKey(
 
     /** G4: weitere Portionen pruefen den Schwanz mit der angekuendigten Mahlzeit. Default AUS. */
     EarlySupplyTailWithExpectation("fuse_early_supply_tail_with_expectation", false, title = TextRef.AndroidRes(R.string.fuse_early_supply_g4_title), summary = TextRef.AndroidRes(R.string.fuse_early_supply_g4_summary)),
+
+    /**
+     * HCL STUFE 2 (Toni 25.10.2026), Default AUS: ein Bolus aus dem AAPS-Bolusrechner mit KH setzt einen Marker ohne
+     * eigenes Insulin, und Guard und Schwanz rechnen die bestaetigte Mahlzeit an. Aus: der Bolusrechner wird nur
+     * aufgezeichnet (Teil 1), die Dosierung ist bitgleich.
+     */
+    HclMealsEnabled("fuse_hcl_meals_enabled", false, title = TextRef.AndroidRes(R.string.fuse_hcl_meals_title), summary = TextRef.AndroidRes(R.string.fuse_hcl_meals_summary)),
 }
 
 /**

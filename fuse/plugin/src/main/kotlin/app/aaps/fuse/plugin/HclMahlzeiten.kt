@@ -14,8 +14,9 @@ import org.json.JSONObject
  * Hier wird jede Rechnung genau einmal festgehalten (Schluessel: der Zeitpunkt der Rechnung) und bleibt ueber einen
  * Neustart erhalten.
  *
- * Teil 1 DOSIERT NICHT: kein Zyklus liest diese Zahlen, sie gehen nur in den Trail fuer den Viewer. FUSE liest dafuer
- * auch keine KH-Tabelle (`NoCobDependencyTest`) - die Zahlen kommen fertig vom Bolusrechner.
+ * Teil 1 DOSIERT NICHT: die Zahlen gehen in den Trail fuer den Viewer. FUSE liest dafuer auch keine KH-Tabelle
+ * (`NoCobDependencyTest`) - die Zahlen kommen fertig vom Bolusrechner. Stufe 2 (Schalter, ab Werk aus) liest von einer
+ * Rechnung nur das KH-Insulin - fuer den Skalierer der Anrechnung bei Guard und Schwanz, nie als Menge.
  */
 internal class HclMahlzeiten(private val preferences: Preferences) {
 
@@ -36,6 +37,29 @@ internal class HclMahlzeiten(private val preferences: Preferences) {
         laden().filter { it.mealTs in (jetzt - fensterMs)..(jetzt + VORAUS_MS) }.sortedBy { it.calcTs }
     }
 
+    /** HCL Stufe 2: die Rechnung [calcTs] - fuer den Skalierer des Kontos am Marker. `null` = nicht (mehr) gespeichert. */
+    fun rechnung(calcTs: Long): FuseOverviewSource.WizardBolus? = synchronized(sperre) {
+        if (calcTs <= 0L) null else laden().firstOrNull { it.calcTs == calcTs }
+    }
+
+    /** HCL Stufe 2: was eine gemeldete Rechnung am Marker bewirkt (FusePlugin.hclMarkerUnterSperre, [uebernahme]). */
+    sealed interface Uebernahme {
+        /** Schalter aus oder kein abgegebener Bolus: nur aufgezeichnet. */
+        data object Keine : Uebernahme
+
+        /** Die Essenszeit liegt zu weit zurueck ([RUECKDATIERUNG_MS]): kein Marker. */
+        data object ZuAlt : Uebernahme
+
+        /** Der laufende Marker gehoert schon zu einer Rechnung: nur aufgezeichnet - weniger Anrechnung, nie mehr. */
+        data object SchonHcl : Uebernahme
+
+        /** Mit dem laufenden Marker zusammenfuehren: seine weiteren Portionen entfallen, keine Anrechnung. */
+        data object Zusammenfuehren : Uebernahme
+
+        /** Ein neuer Marker "Nur Marker" zu diesem Zeitpunkt, mit der Rechnung als Kennung. */
+        data class NeuerMarker(val ts: Long) : Uebernahme
+    }
+
     private fun laden(): List<FuseOverviewSource.WizardBolus> {
         val text = preferences.get(FuseStringNonKey.HclMeals)
         if (text.isBlank()) return emptyList()
@@ -53,6 +77,42 @@ internal class HclMahlzeiten(private val preferences: Preferences) {
 
         /** Eine Mahlzeit darf so weit in der Zukunft liegen (KH-Zeit mit Versatz) [ms]. */
         const val VORAUS_MS = 2 * 3600_000L
+
+        /** HCL Stufe 2: so weit darf der Marker auf den Essenszeitpunkt zurueckgelegt werden [ms]. */
+        const val RUECKDATIERUNG_MS = 30 * 60_000L
+
+        /**
+         * HCL Stufe 2: der Markerzeitpunkt einer Rechnung - der Essenszeitpunkt, damit die Kurve mit der Mahlzeit
+         * beginnt und nicht mit dem Ende der Abgabe. Liegt er in der Zukunft (KH-Zeit voraus), steht der Marker jetzt:
+         * die Mahlzeit zeigt sich dann spaeter als erwartet, und angerechnet wird nur, was sich zeigt (weniger, nie
+         * mehr). Liegt er mehr als [RUECKDATIERUNG_MS] zurueck, ist die Mahlzeit schon weit gelaufen - `null`, kein
+         * Marker: eine spaet beginnende Kurve rechnete Guard und Schwanz mehr kommende Mahlzeit an, als noch kommt.
+         */
+        fun markerZeit(mealTs: Long, jetzt: Long): Long? = when {
+            mealTs >= jetzt -> jetzt
+            jetzt - mealTs <= RUECKDATIERUNG_MS -> mealTs
+            else -> null
+        }
+
+        /**
+         * HCL Stufe 2: die Entscheidung fuer eine gemeldete Rechnung. Nur ein wirklich abgegebener Bolus zaehlt - ein
+         * abgebrochener mit seiner Teilmenge, einer ohne Abgabe gar nicht (kein Nachholauftrag, Codex). Laeuft zum
+         * Essenszeitpunkt oder jetzt ein Marker, gehoert die Rechnung zu ihm.
+         */
+        fun uebernahme(
+            schalterAn: Boolean,
+            deliveredU: Double,
+            mealTs: Long,
+            jetzt: Long,
+            markerAktiv: (Long) -> Boolean,
+            laufenderIstHcl: Boolean,
+        ): Uebernahme {
+            if (!schalterAn || !(deliveredU > 0.0)) return Uebernahme.Keine
+            val anker = markerZeit(mealTs, jetzt) ?: return Uebernahme.ZuAlt
+            if (markerAktiv(jetzt) || markerAktiv(anker))
+                return if (laufenderIstHcl) Uebernahme.SchonHcl else Uebernahme.Zusammenfuehren
+            return Uebernahme.NeuerMarker(anker)
+        }
 
         private const val MAX_ANZAHL = 20
 

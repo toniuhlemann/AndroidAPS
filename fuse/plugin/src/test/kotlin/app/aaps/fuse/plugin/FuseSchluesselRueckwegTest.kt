@@ -95,6 +95,9 @@ class FuseSchluesselRueckwegTest {
         // ekFruehEinstellungen) - "Mahlzeit" und "Nur Marker" rechnen mit jedem Wert wie vorher. Ein Snack bucht nie mehr
         // als eine Mahlzeit (EarlySupply.Settings.forSnack).
         FuseDoubleKey.EarlySupplySnackScale.key to 1.0,
+        // HCL Stufe 2 (Toni 25.10.2026): ab Werk AUS - aus setzt der Bolusrechner keinen Marker, und ohne HCL-Marker
+        // rechnet der Runner bitgleich wie vorher (keine Mahlzeitbahn fuer den Guard).
+        FuseBooleanKey.HclMealsEnabled.key to false,
     )
 
     /**
@@ -106,6 +109,9 @@ class FuseSchluesselRueckwegTest {
         FuseLongKey.MealMarkerSnack.key,
         // HCL Teil 1 (Toni 25.10.2026): die Rechnungen aus dem Bolusrechner der letzten 24 h - reine Anzeige.
         FuseStringNonKey.HclMeals.key,
+        // HCL Stufe 2: zu welcher Rechnung der Marker gehoert und ob sie zusammengefuehrt wurde - stirbt mit dem Marker.
+        FuseLongKey.MealMarkerHclCalcTs.key,
+        FuseLongKey.MealMarkerHclMerged.key,
     )
 
     @Test

@@ -70,6 +70,8 @@ private class FuseAnsicht(
     val markerAktiv: Boolean,
     /** Das Mahlzeitfenster des Kontos laeuft noch (nach den ersten 90 min startet ein Druck dann eine NEUE Mahlzeit). */
     val fensterLaeuft: Boolean,
+    /** HCL Stufe 2: den laufenden Marker hat der Bolusrechner gesetzt (nicht zusammengefuehrt). */
+    val ausBolusrechner: Boolean = false,
 )
 
 private suspend fun ansicht(plugin: FusePlugin, now: Long): FuseAnsicht {
@@ -91,7 +93,10 @@ private suspend fun ansicht(plugin: FusePlugin, now: Long): FuseAnsicht {
         plugin.lastOutcome, plugin.lastAPSResult, now, marker, ledger,
         settings = FuseSettingsReport.build(plugin.preferences),
     )
-    return FuseAnsicht(dashboard, details, plugin.mealMarkerActive(now), fensterEnde > now)
+    val aktiv = plugin.mealMarkerActive(now)
+    val ausBolusrechner = aktiv && plugin.preferences.get(FuseLongKey.MealMarkerHclCalcTs) > 0L &&
+        plugin.preferences.get(FuseLongKey.MealMarkerHclMerged) == 0L
+    return FuseAnsicht(dashboard, details, aktiv, fensterEnde > now, ausBolusrechner)
 }
 
 @Composable
@@ -144,6 +149,8 @@ private fun FuseScreen(plugin: FusePlugin, dateUtil: DateUtil, rxBus: RxBus, onS
                 // laufenden noch offen ist - der Knopf sagt das, statt wie ohne Mahlzeit auszusehen.
                 Text(
                     when {
+                        // HCL Stufe 2: die Mahlzeit laeuft ueber den Bolusrechner - ein Druck nimmt auch sie zurueck.
+                        s?.markerAktiv == true && s.ausBolusrechner -> "◉ MAHLZEIT AKTIV (BOLUSRECHNER)"
                         s?.markerAktiv == true -> "◉ MAHLZEIT AKTIV"
                         s?.fensterLaeuft == true -> stringResource(TextRef.AndroidRes(R.string.fuse_marker_new_meal))
                         else -> stringResource(TextRef.AndroidRes(R.string.fuse_marker_m))

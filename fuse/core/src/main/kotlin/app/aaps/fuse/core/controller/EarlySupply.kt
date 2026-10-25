@@ -71,6 +71,17 @@ object EarlySupply {
         }
 
         companion object {
+            /**
+             * HCL STUFE 2 (Toni 25.10.2026): das Konto einer Mahlzeit aus dem Bolusrechner - nur der Skalierer [scale]
+             * ([hclScale]), sonst nichts: kein Budget, keine Anfangsportion, keine weitere Portion, kein Nachschlag. Den
+             * Bolus hat Toni selbst gegeben; FUSE gibt auf die Erwartung hin nichts dazu und fuellt nie auf KH/IC auf.
+             * Ein ungueltiger Skalierer gilt als 0 (keine Anrechnung).
+             */
+            fun forHcl(scale: Double): Settings {
+                val s = if (scale.isFinite() && scale >= 0.0 && scale <= MAX_SCALE) scale else 0.0
+                return Settings(s, s, 0.0, 0.0, 0.0, 0.0, MAX_PERIOD_MIN, 0.0)
+            }
+
             fun of(
                 scaleStable: Double, scaleAfterLow: Double, budgetMaxU: Double, initialShare: Double,
                 maxPortionU: Double, maxPerPeriodU: Double, periodMin: Int, topUpShare: Double = 0.0,
@@ -211,6 +222,27 @@ object EarlySupply {
         if (erwartet <= EPS) return 0.0
         return min(1.0, max(0.0, scale) * min(1.0, max(0.0, observedU) / erwartet))
     }
+
+    /**
+     * HCL STUFE 2 (Toni 25.10.2026): der Skalierer einer Mahlzeit aus dem Bolusrechner - das KH-Insulin (KH / IC) im
+     * Verhaeltnis zum Endwert der Erwartungskurve, hoechstens [MAX_SCALE]. Die Kurve ist damit auf die Mahlzeit gestreckt
+     * und bis 120 min verteilt. Nicht berechenbar = 0 (keine Anrechnung).
+     */
+    fun hclScale(carbsInsulinU: Double, curve: ExpectationAccount.Curve): Double {
+        val ende = curve.endU
+        if (!carbsInsulinU.isFinite() || carbsInsulinU <= 0.0 || !(ende > EPS)) return 0.0
+        return min(MAX_SCALE, carbsInsulinU / ende)
+    }
+
+    /**
+     * HCL STUFE 2: WIE VIEL DER MAHLZEIT AUS DEM BOLUSRECHNER GUARD UND SCHWANZ ANRECHNEN. Dieselbe Regel wie
+     * [confirmedGuardScale] (vor [ADAPT_FROM_MIN] und ohne gueltige Beobachtung nichts, hoechstens die Kurve), der
+     * Skalierer aber hoechstens 1. So liegt die Anrechnung nie ueber dem, was die Beobachtung zeigt: mit einem
+     * Skalierer ueber 1 erlaubte [confirmedGuardScale] mehr, als beobachtet ist (bis zum Deckel 1).
+     */
+    fun hclGuardScale(
+        scale: Double, ageMin: Double, observedU: Double, observedValid: Boolean, curve: ExpectationAccount.Curve,
+    ): Double = confirmedGuardScale(min(1.0, scale), ageMin, observedU, observedValid, curve)
 
     /**
      * KANDIDAT W (Pruefstand): IN DER WENDEPHASE rechnen Guard und Schwanz dieselbe Mahlzeit an wie die Anforderung

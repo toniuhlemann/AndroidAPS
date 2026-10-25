@@ -2202,10 +2202,406 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         }
     }
 
+    // ---- HCL STUFE 2 (Toni 25.10.2026, Entwurf B): DER BOLUSRECHNER ---------------------------------------------
+    //
+    // Gegenproben zur Anrechnung einer Mahlzeit aus dem Bolusrechner bei Guard und Schwanz. Der Rig spielt nach, was
+    // FusePlugin.hclMarkerUnterSperre tut: ein Rechner-Bolus (NORMAL) zur Essenszeit, dazu ein Marker "Nur Marker" mit der
+    // Rechnung als Kennung. Alle Zahlen synthetisch.
+
+    private var hclCalcTs = 0L
+    private var hclZusammen = false
+    private var hclGespeichert = ""
+
+    /** Eine HCL-Mahlzeit, die die Kurve deutlich ueberragt: der Rechner-Bolus deckt sie nicht, der Zucker steigt. */
+    private val fHcl = Fuse20Folgen.Folge(
+        "HCL", 1_700_474_400_000L, -90, 240,
+        listOf(
+            -90 to 112.0, -10 to 115.0, 0 to 118.0, 15 to 126.0, 30 to 150.0, 45 to 190.0, 60 to 225.0, 90 to 240.0,
+            120 to 215.0, 180 to 160.0, 240 to 130.0,
+        ),
+        markerMin = 0,
+    )
+
+    /** Der Zucker faellt nach dem Bolus deutlich (die Mahlzeit kommt spaet) - das Tieftor muss die Null setzen koennen. */
+    private val fHclTief = Fuse20Folgen.Folge(
+        "HCLTIEF", 1_700_560_800_000L, -90, 240,
+        listOf(
+            -90 to 125.0, -10 to 125.0, 0 to 124.0, 15 to 108.0, 30 to 90.0, 40 to 82.0, 50 to 86.0, 70 to 120.0,
+            100 to 180.0, 150 to 195.0, 240 to 140.0,
+        ),
+        markerMin = 0,
+    )
+
+    /** Die Mahlzeit bleibt aus: der Zucker faellt, wie das Insulin es erwarten laesst - es zeigt sich keine Mahlzeit. */
+    private val fHclAus = Fuse20Folgen.Folge(
+        "HCLAUS", 1_700_647_200_000L, -90, 240,
+        listOf(-90 to 120.0, 0 to 120.0, 20 to 105.0, 40 to 88.0, 60 to 74.0, 80 to 68.0, 120 to 72.0, 240 to 100.0),
+        markerMin = 0,
+    )
+
+    private suspend fun hclKonfiguration(schalter: Boolean) {
+        konfiguration(kontoAn = true)
+        whenever(preferences.get(FuseBooleanKey.HclMealsEnabled)).thenReturn(schalter)
+        whenever(preferences.get(FuseLongKey.MealMarkerHclCalcTs)).thenAnswer { hclCalcTs }
+        whenever(preferences.get(FuseLongKey.MealMarkerHclMerged)).thenAnswer { if (hclZusammen) 1L else 0L }
+        whenever(preferences.get(FuseStringNonKey.HclMeals)).thenAnswer { hclGespeichert }
+    }
+
+    private fun hclRechnung(calcTs: Long, khInsulinU: Double, bolusU: Double) = app.aaps.core.interfaces.overview.FuseOverviewSource.WizardBolus(
+        calcTs = calcTs, mealTs = calcTs, carbsG = khInsulinU * 9.0, icGPerU = 9.0, isfMgdlPerU = 61.0,
+        carbsInsulinU = khInsulinU, glucoseInsulinU = null, trendInsulinU = null, cobInsulinU = null, iobU = 0.0,
+        superbolusU = null, directCorrectionU = 0.0, percentage = 70, calcTotalU = khInsulinU, requestedU = bolusU,
+        deliveredU = bolusU, success = true,
+    )
+
+    private fun normalBolus(ts: Long, u: Double) = BS(
+        id = ++bolusId, timestamp = ts, amount = u, type = BS.Type.NORMAL,
+        ids = IDs(pumpId = ts + 7, pumpType = PumpType.GENERIC_AAPS, pumpSerial = Fuse20Folgen.PUMPE_SERIAL),
+        iCfg = rigICfg(),
+    )
+
+    /**
+     * Ein HCL-Lauf: in Minute 0 der Rechner-Bolus [bolusU] und der Marker "Nur Marker" mit der Rechnung (KH-Insulin
+     * [khInsulinU]). [mitMarkerKennung] = false: derselbe Lauf mit einem gewoehnlichen "Nur Marker" (Gegenprobe).
+     */
+    private suspend fun hclLauf(
+        f: Fuse20Folgen.Folge,
+        dir: File,
+        bolusU: Double = HCL_BOLUS_U,
+        khInsulinU: Double = HCL_KH_INSULIN_U,
+        mitMarkerKennung: Boolean = true,
+        mitRechnung: Boolean = true,
+        vorZyklus: suspend (Int) -> Unit = {},
+        einstellen: suspend () -> Unit,
+    ): List<Zyklus> {
+        ohneVorschuss = true
+        try {
+            einstellen()
+            hclGespeichert = if (!mitRechnung) "" else
+                org.json.JSONArray(listOf(HclMahlzeiten.zuJson(hclRechnung(f.ts(0), khInsulinU, bolusU)))).toString()
+            return lauf(f, dir, vorZyklus = { m ->
+                if (m == 0) {
+                    if (mitMarkerKennung) hclCalcTs = f.ts(0)
+                    boliSetzen(boluses + normalBolus(f.ts(0), bolusU))
+                }
+                vorZyklus(m)
+            }).filter { it.o.abortReason == null }
+        } finally {
+            ohneVorschuss = false
+            hclCalcTs = 0L
+            hclZusammen = false
+            hclGespeichert = ""
+        }
+    }
+
+    /** Die Bremsbahn-pessimistische Freigabe-Mittelbahn ohne Mahlzeit - daraus rechnet der Regler den Bedarf. */
+    private fun Zyklus.releaseOhneMahlzeit(): Double? {
+        val h = FuseIntKey.ReleaseHorizonMin.defaultValue
+        val p = o.prediction?.points?.firstOrNull { it.offsetMin == h }?.meanBg ?: return null
+        val r = o.restraint?.points?.firstOrNull { it.offsetMin == h }?.meanBg
+        return if (r == null) p else minOf(p, r)
+    }
+
+    private fun hclTabelle(name: String, zyklen: List<Zyklus>) {
+        println("---- $name")
+        for (z in zyklen.filter { it.minute in -5..200 }) {
+            val h = z.o.hcl
+            println(
+                "${z.minute} bg=${z.o.bgMgdl?.let { "%.0f".format(it) }} block=${z.o.decision.block} tbr=${z.o.decision.tbr} " +
+                    "bind=${z.o.decision.bindingLimit} iob=${z.o.state?.capIobU?.let { "%.2f".format(it) }} " +
+                    "smb=${z.o.decision.smbU} geliefert=${z.geliefertU} req=${z.o.decision.insulinReqU?.let { "%.2f".format(it) }} " +
+                    "hcl=${h?.applied}/${h?.reason} gS=${h?.guardScale?.let { "%.2f".format(it) }} " +
+                    "unten=${h?.minLowerWithoutMgdl?.let { "%.0f".format(it) }}->${h?.minLowerWithMgdl?.let { "%.0f".format(it) }} " +
+                    "schwanz=${h?.tailHeadroomWithoutU?.let { "%.2f".format(it) }}->${h?.tailHeadroomWithU?.let { "%.2f".format(it) }} " +
+                    "nurAnrechnung=${h?.onlyByCreditU} low=${z.o.lowThreat?.verdict}",
+            )
+        }
+    }
+
+    /**
+     * Gegenprobe 1 - SCHALTER AUS: ein Marker aus dem Bolusrechner rechnet wie ein gewoehnlicher "Nur Marker" (dieselbe
+     * Entscheidung in JEDEM Zyklus), die Anrechnung steht nur als Grund im Trail, und der Politik-Hash ist der ohne Schalter.
+     */
+    @Test
+    fun `HCL Schalter aus - dieselbe Dosierung wie Nur Marker, keine Anrechnung, Hash unveraendert`(@TempDir dir: File) = runBlocking<Unit> {
+        val aus = hclLauf(fHcl, File(dir, "aus").also(File::mkdirs)) { hclKonfiguration(schalter = false) }
+        val nurMarker = hclLauf(fHcl, File(dir, "nurMarker").also(File::mkdirs), mitMarkerKennung = false) { hclKonfiguration(schalter = false) }
+        assertEquals(nurMarker.map { it.minute }, aus.map { it.minute })
+        for ((a, b) in aus.zip(nurMarker)) {
+            val k = "Minute ${a.minute}"
+            assertEquals(b.o.decision.smbU, a.o.decision.smbU, 0.0, k)
+            assertEquals(b.o.decision.block, a.o.decision.block, k)
+            assertEquals(b.o.decision.tbr, a.o.decision.tbr, k)
+            assertEquals(b.o.decision.insulinReqU, a.o.decision.insulinReqU, k)
+            assertEquals(b.o.tbr?.rateUPerH, a.o.tbr?.rateUPerH, k)
+            assertEquals(b.geliefertU, a.geliefertU, 0.0, k)
+            if (a.minute >= 0) assertEquals("SWITCH_OFF", a.o.hcl?.reason, k)
+            assertNull(b.o.hcl, k)
+            assertEquals(b.o.configGeneration, a.o.configGeneration, k)
+        }
+        assertTrue(nurMarker.sumOf { it.geliefertU } > 0.0) { "die Folge dosiert nicht - die Paarung vergleicht nichts" }
+        // Eingeschaltet ist es ein anderer Regler - anderer Hash.
+        val an = hclLauf(fHcl, File(dir, "an").also(File::mkdirs)) { hclKonfiguration(schalter = true) }
+        assertTrue(an.first().o.configGeneration != aus.first().o.configGeneration) { "der Schalter steht nicht im Hash" }
+    }
+
+    /**
+     * Gegenprobe 2 - KEIN REST, KEINE ANFANGSPORTION: das Konto des Bolusrechners hat kein Budget, keine Portion, keinen
+     * Schalter G1..G4; in keinem Zyklus fliesst ein Erwartungsanteil, und der Skalierer ist KH-Insulin durch Kurvenende.
+     */
+    @Test
+    fun `HCL kein automatischer Rest, keine Anfangsportion, kein Erwartungsanteil`(@TempDir dir: File) = runBlocking<Unit> {
+        val zyklen = hclLauf(fHcl, dir) { hclKonfiguration(schalter = true) }
+        hclTabelle("HCL", zyklen)
+        val konto = zyklen.mapNotNull { it.konto }.last()
+        assertEquals(0.0, konto.a0U, 0.0)
+        assertEquals(HCL_KH_INSULIN_U / 3.0, konto.phi0, 1e-9)
+        // Ohne Hauptschalter der fruehen Versorgung ist sie dem Konto zudem entzogen (withdrawn) - wie bei jedem Marker.
+        assertEquals(
+            EarlySupply.Pins(0.0, 0.0, 0.0, EarlySupply.MAX_PERIOD_MIN, EarlySupply.Switches.NONE),
+            konto.early?.copy(withdrawn = false),
+        )
+        assertEquals(0.0, zyklen.sumOf { it.dErw() }, 0.0)
+        assertTrue(zyklen.none { it.o.decision.grant != null }) { "eine Anhebung aus dem Konto" }
+        assertTrue(zyklen.all { (it.o.erwartungskonto?.zyklus?.eval?.restEffU ?: 0.0) == 0.0 })
+        // Das Konto bucht nur den gemessenen Anteil - nie mehr, als (BG - Ziel) / ISF - IOB hergibt.
+        for (z in zyklen) {
+            val e = z.o.erwartungskonto?.zyklus?.eval ?: continue
+            assertEquals(ExpectationAccount.measuredShareU(e), ExpectationAccount.deliverableU(e), 1e-9, "Minute ${z.minute}")
+        }
+    }
+
+    /**
+     * Gegenprobe 3 - KEINE ANRECHNUNG VOR +20 MIN, NIE UEBER DER BEOBACHTUNG: angerechnet wird hoechstens der Anteil der
+     * Kurve, den die beobachtete Stoerung bis jetzt belegt. Bleibt die Mahlzeit aus (der Zucker faellt mit dem Insulin),
+     * gibt die Anrechnung nichts frei.
+     */
+    @Test
+    fun `HCL keine Anrechnung vor 20 Minuten, nie ueber der Beobachtung, nichts ohne Mahlzeit`(@TempDir dir: File) = runBlocking<Unit> {
+        val zyklen = hclLauf(fHcl, File(dir, "hcl").also(File::mkdirs)) { hclKonfiguration(schalter = true) }
+        val frueh = zyklen.filter { it.minute in 0 until EarlySupply.ADAPT_FROM_MIN.toInt() }
+        assertTrue(frueh.isNotEmpty())
+        assertTrue(frueh.none { it.o.hcl?.applied == true }) { "Anrechnung vor +20 min" }
+        assertTrue(zyklen.any { it.o.hcl?.applied == true }) { "Vorbedingung: die Mahlzeit wird ueberhaupt angerechnet" }
+        val aus = hclLauf(fHclAus, File(dir, "aus").also(File::mkdirs)) { hclKonfiguration(schalter = true) }
+        hclTabelle("HCLAUS", aus)
+        for (z in zyklen + aus) {
+            val h = z.o.hcl?.takeIf { it.applied } ?: continue
+            val k = z.konto ?: throw AssertionError("Minute ${z.minute}: Anrechnung ohne Konto")
+            val alter = (z.o.computeTs - k.authId) / 60_000.0
+            val belegt = kotlin.math.max(0.0, k.disturbanceU) / ExpectationAccount.Curve.of(k.curveValues)!!.at(alter)
+            assertTrue(h.guardScale <= belegt + 1e-9) { "Minute ${z.minute}: Anrechnung ${h.guardScale} ueber der Beobachtung $belegt" }
+        }
+        assertEquals(0.0, aus.filter { it.minute >= 0 }.sumOf { it.geliefertU }, 0.0)
+        assertEquals(0.0, aus.sumOf { it.o.hcl?.onlyByCreditU ?: 0.0 }, 0.0)
+    }
+
+    /**
+     * Gegenprobe 4 - DER BEDARF BLEIBT: mit Anrechnung rechnet der Regler den Bedarf auf der Bahn OHNE Mahlzeit (kein
+     * zweites Einrechnen, kein zweiter IOB-Abzug), und die Kante mit Mahlzeit liegt nie unter der ohne.
+     */
+    @Test
+    fun `HCL die Anrechnung hebt nur Guard und Schwanz - der Bedarf bleibt`(@TempDir dir: File) = runBlocking<Unit> {
+        val zyklen = hclLauf(fHcl, dir) { hclKonfiguration(schalter = true) }
+        val angerechnet = zyklen.filter { it.o.hcl?.applied == true }
+        assertTrue(angerechnet.isNotEmpty())
+        for (z in angerechnet) {
+            val h = z.o.hcl!!
+            val k = "Minute ${z.minute}"
+            assertTrue(h.minLowerWithMgdl!! >= h.minLowerWithoutMgdl!! - 1e-9) { "$k: die Anrechnung senkt die Kante" }
+            // Zur einzigen Ausnahme beim Schwanz (unphysiologische Kante) s. `HCL der Schwanz rechnet dieselbe Mahlzeit an`.
+            val mit = h.tailHeadroomWithU
+            val ohne = h.tailHeadroomWithoutU
+            if (mit != null && ohne != null) assertTrue(mit >= ohne - 1e-9 || (ohne <= 0.0 && mit <= 0.0)) { "$k: Schwanz" }
+            assertTrue(h.guardScale > 0.0 && h.guardScale <= 1.0) { "$k: Anrechnung ${h.guardScale}" }
+            // Der Freigabepunkt des Bedarfs ist der der Bahn ohne Mahlzeit.
+            val r = z.releaseOhneMahlzeit()
+            if (z.o.decision.predAtReleaseMgdl != null && r != null) assertEquals(r, z.o.decision.predAtReleaseMgdl!!, 1e-9, k)
+        }
+    }
+
+    /**
+     * Gegenprobe 5 - DIE ANRECHNUNG GIBT FREI, WAS OHNE SIE GESPERRT WAERE - und der Trail weist genau diese Menge aus
+     * (Codex). Nie mehr als die Endmenge.
+     */
+    @Test
+    fun `HCL die Anrechnung hebt eine Sperre ohne Mahlzeit und weist die Menge aus`(@TempDir dir: File) = runBlocking<Unit> {
+        val zyklen = hclLauf(fHcl, dir) { hclKonfiguration(schalter = true) }
+        for (z in zyklen) {
+            val nur = z.o.hcl?.onlyByCreditU ?: 0.0
+            assertTrue(nur <= z.o.decision.smbU + 1e-9) { "Minute ${z.minute}: $nur ueber der Endmenge" }
+        }
+        val gehoben = zyklen.filter { z ->
+            val h = z.o.hcl ?: return@filter false
+            h.applied && z.geliefertU > 0.0 && (h.minLowerWithoutMgdl ?: 999.0) < FuseDoubleKey.GuardFloorMgdl.defaultValue
+        }
+        assertTrue(gehoben.isNotEmpty()) { "keine Abgabe, die ohne Anrechnung am Guard gescheitert waere" }
+        for (z in gehoben) assertEquals(z.geliefertU, z.o.hcl!!.onlyByCreditU, 1e-9, "Minute ${z.minute}")
+        assertTrue(zyklen.sumOf { it.o.hcl?.onlyByCreditU ?: 0.0 } > 0.0)
+    }
+
+    /**
+     * Gegenprobe 6 - LOW-BEFUND UND GEMESSENE SPERREN: dort keine Anrechnung, und die Null des Tieftors kommt wie ohne
+     * Schalter - bis zur ersten Anrechnung ist JEDE Entscheidung dieselbe wie mit Schalter aus.
+     */
+    @Test
+    fun `HCL Low-Befund - keine Anrechnung, die Null bleibt wie ohne Schalter`(@TempDir dir: File) = runBlocking<Unit> {
+        val an = hclLauf(fHclTief, File(dir, "an").also(File::mkdirs), bolusU = HCL_TIEF_BOLUS_U) { hclKonfiguration(schalter = true) }
+        val aus = hclLauf(fHclTief, File(dir, "aus").also(File::mkdirs), bolusU = HCL_TIEF_BOLUS_U) { hclKonfiguration(schalter = false) }
+        hclTabelle("HCLTIEF", an)
+        val low = an.filter { it.o.hcl?.reason == "LOW_THREAT" || it.o.hcl?.reason == "MEASURED_LOCK" || it.o.hcl?.reason == "LOW_LOCK" }
+        assertTrue(low.isNotEmpty()) { "Vorbedingung: ein Low-Befund nach dem Bolus" }
+        assertTrue(an.any { it.o.decision.tbr == app.aaps.fuse.core.controller.FuseController.TbrAction.ZERO_TEMP }) { "keine Null" }
+        val ersteAnrechnung = an.firstOrNull { it.o.hcl?.applied == true }?.minute ?: Int.MAX_VALUE
+        for ((a, b) in an.zip(aus).filter { it.first.minute < ersteAnrechnung }) {
+            val k = "Minute ${a.minute}"
+            assertEquals(b.o.decision.smbU, a.o.decision.smbU, 0.0, k)
+            assertEquals(b.o.decision.block, a.o.decision.block, k)
+            assertEquals(b.o.decision.tbr, a.o.decision.tbr, k)
+            assertEquals(b.o.tbr?.rateUPerH, a.o.tbr?.rateUPerH, k)
+        }
+        // In Zyklen mit Low-Befund wird nie angerechnet, auch nach der ersten Anrechnung nicht.
+        assertTrue(an.filter { it.o.lowThreat?.verdict != LowThreatGate.Verdict.NONE }.none { it.o.hcl?.applied == true })
+    }
+
+    /**
+     * Gegenprobe 7 - DIE GEMEINSAMEN GRENZEN BINDEN WEITER: mit Anrechnung bleibt jede Abgabe unter maxIOB, und die
+     * IOB-Grenze ist in angerechneten Zyklen die bindende - die Anrechnung hebt Guard und Schwanz, nie maxIOB oder iobTH.
+     */
+    @Test
+    fun `HCL maxIOB und iobTH binden auch mit Anrechnung`(@TempDir dir: File) = runBlocking<Unit> {
+        val zyklen = hclLauf(fHcl, dir) {
+            hclKonfiguration(schalter = true)
+            whenever(preferences.get(DoubleKey.ApsSmbMaxIob)).thenReturn(HCL_ENGES_MAX_IOB)
+            whenever(constraintsChecker.getMaxIOBAllowed()).thenAnswer { ConstraintObject(HCL_ENGES_MAX_IOB, aapsLogger) }
+        }
+        hclTabelle("HCL eng", zyklen)
+        val angerechnet = zyklen.filter { it.o.hcl?.applied == true }
+        assertTrue(angerechnet.isNotEmpty()) { "Vorbedingung: Anrechnung" }
+        val iobGrenze = angerechnet.filter { z ->
+            z.o.decision.block in setOf(
+                app.aaps.fuse.core.controller.FuseController.Block.MAX_IOB_REACHED,
+                app.aaps.fuse.core.controller.FuseController.Block.IOB_TH_REACHED,
+            ) || z.o.decision.bindingLimit.let { it.contains("maxIob") || it.contains("iobTh") }
+        }
+        assertTrue(iobGrenze.isNotEmpty()) { "Vorbedingung: die IOB-Grenze bindet bei Anrechnung" }
+        for (z in zyklen) {
+            val s = z.o.state ?: continue
+            assertTrue(z.geliefertU == 0.0 || s.capIobU + z.geliefertU <= s.maxIobU + 1e-9) {
+                "Minute ${z.minute}: IOB ${s.capIobU} + ${z.geliefertU} ueber maxIOB ${s.maxIobU}"
+            }
+        }
+    }
+
+    /**
+     * Gegenprobe 8 - DER SCHWANZ MIT DERSELBEN MAHLZEIT: mit Schwanz-Guard rechnet der Schwanz dieselbe bestaetigte
+     * Mahlzeit an wie der Guard - sein Spielraum steigt nur, und was nur dadurch frei wurde, steht im Trail.
+     */
+    @Test
+    fun `HCL der Schwanz rechnet dieselbe Mahlzeit an`(@TempDir dir: File) = runBlocking<Unit> {
+        val zyklen = hclLauf(fHcl, dir) {
+            hclKonfiguration(schalter = true)
+            whenever(preferences.get(FuseBooleanKey.TailGuardEnabled)).thenReturn(true)
+        }
+        hclTabelle("HCL Schwanz", zyklen)
+        val mitSchwanz = zyklen.filter { it.o.hcl?.applied == true && it.o.hcl?.tailHeadroomWithU != null }
+        assertTrue(mitSchwanz.isNotEmpty()) { "Vorbedingung: Anrechnung mit Schwanzbericht" }
+        for (z in mitSchwanz) {
+            val h = z.o.hcl!!
+            val ohne = h.tailHeadroomWithoutU!!
+            val mit = h.tailHeadroomWithU!!
+            // Die Anrechnung hebt die Kante nur. Einzige Ausnahme, und sie sperrt in beiden Faellen: unter 20 mg/dl setzt
+            // TailLiability das Budget auf 0 (unphysiologisch), knapp darueber ist es negativ - eine von unter 20 auf knapp
+            // unter den Schwanzboden gehobene Kante zeigt deshalb einen etwas kleineren, ebenfalls negativen Spielraum.
+            assertTrue(mit >= ohne - 1e-9 || (ohne <= 0.0 && mit <= 0.0)) { "Minute ${z.minute}: Schwanz $ohne -> $mit" }
+            assertTrue(h.onlyByCreditU <= z.geliefertU + 1e-9)
+        }
+        // Wo der Schwanz ohne Mahlzeit sperrt und mit ihr traegt, geht die Abgabe ganz auf die Anrechnung.
+        for (z in mitSchwanz.filter { it.o.hcl!!.tailHeadroomWithoutU!! <= 0.0 && it.geliefertU > 0.0 })
+            assertEquals(z.geliefertU, z.o.hcl!!.onlyByCreditU, 1e-9, "Minute ${z.minute}")
+        assertTrue(zyklen.sumOf { it.geliefertU } > 0.0) { "mit Schwanz-Guard fliesst nichts" }
+    }
+
+    /**
+     * Gegenprobe 9 - ZUSAMMENGEFUEHRT: kommt die Rechnung zu einem laufenden Marker "Mahlzeit", entfallen ab dann seine
+     * weiteren Portionen, und es gibt keine Anrechnung. Was schon gegeben ist, bleibt (es zaehlt als IOB).
+     */
+    @Test
+    fun `HCL zusammengefuehrt - keine weiteren Portionen, keine Anrechnung`(@TempDir dir: File) = runBlocking<Unit> {
+        val mergeMin = 10
+        nurErwartung = true
+        val zyklen = try {
+            markerAt = 0L
+            markerPress = 0L
+            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
+            whenever(preferences.get(FuseBooleanKey.HclMealsEnabled)).thenReturn(true)
+            whenever(preferences.get(FuseLongKey.MealMarkerHclCalcTs)).thenAnswer { hclCalcTs }
+            whenever(preferences.get(FuseLongKey.MealMarkerHclMerged)).thenAnswer { if (hclZusammen) 1L else 0L }
+            whenever(preferences.get(FuseStringNonKey.HclMeals)).thenAnswer { hclGespeichert }
+            hclGespeichert = org.json.JSONArray(listOf(HclMahlzeiten.zuJson(hclRechnung(fStabil.ts(mergeMin), 4.0, 2.0)))).toString()
+            lauf(fStabil, dir, vorZyklus = { m ->
+                if (m == mergeMin) {
+                    hclCalcTs = fStabil.ts(mergeMin)
+                    hclZusammen = true
+                    boliSetzen(boluses + normalBolus(fStabil.ts(mergeMin), 2.0))
+                }
+            }).filter { it.o.abortReason == null }
+        } finally {
+            nurErwartung = false
+            hclCalcTs = 0L
+            hclZusammen = false
+            hclGespeichert = ""
+        }
+        assertTrue(zyklen.filter { it.minute < mergeMin }.sumOf { it.dErw() } > 0.0) { "Vorbedingung: vorher flossen Portionen" }
+        val danach = zyklen.filter { it.minute >= mergeMin }
+        assertEquals(0.0, danach.sumOf { it.dErw() }, 0.0)
+        for (z in danach.filter { it.minute < 180 }) {
+            assertEquals("MERGED", z.o.hcl?.reason, "Minute ${z.minute}")
+            assertFalse(z.o.hcl!!.applied)
+            assertEquals(true, z.o.state?.markerHclMerged, "Minute ${z.minute}")
+        }
+        assertEquals(true, danach.mapNotNull { it.konto }.last().early?.withdrawn)
+    }
+
+    /** Gegenprobe 10 - NEUSTART: das HCL-Konto kommt unveraendert zurueck, die Anrechnung laeuft danach weiter. */
+    @Test
+    fun `HCL Neustart - Konto und Anrechnung kommen zurueck`(@TempDir dir: File) = runBlocking<Unit> {
+        val neustartMin = 40
+        var vorher: ExpectationAccount.State? = null
+        val zyklen = hclLauf(fHcl, dir, vorZyklus = { m ->
+            if (m == neustartMin) {
+                vorher = ledger.episodes.expectation
+                neustart(dir, fHcl, null)
+            }
+        }) { hclKonfiguration(schalter = true) }
+        val k = vorher ?: throw AssertionError("Vorbedingung: ein Konto vor dem Neustart")
+        val danach = zyklen.filter { it.minute >= neustartMin }
+        assertTrue(danach.isNotEmpty())
+        assertTrue(danach.none { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }) { "Neubuchung nach dem Neustart" }
+        assertEquals(k.phi0, danach.mapNotNull { it.konto }.first().phi0, 0.0)
+        assertTrue(danach.any { it.o.hcl?.applied == true }) { "nach dem Neustart keine Anrechnung mehr" }
+    }
+
+    /** Gegenprobe 11 - FEHLT DIE RECHNUNG (nicht mehr gespeichert), rechnet der Marker nichts an: weniger, nie mehr. */
+    @Test
+    fun `HCL ohne gespeicherte Rechnung keine Anrechnung`(@TempDir dir: File) = runBlocking<Unit> {
+        val zyklen = hclLauf(fHcl, dir, mitRechnung = false) { hclKonfiguration(schalter = true) }
+        assertEquals(0.0, zyklen.mapNotNull { it.konto }.last().phi0, 0.0)
+        assertTrue(zyklen.none { it.o.hcl?.applied == true })
+    }
+
     private companion object {
 
         /** Synthetisches maxIOB des Gestells. */
         const val MAX_IOB = 7.0
+
+        /** HCL-Proben: KH-Insulin der Rechnung [U] (Skalierer 1,5 bei Kurvenende 3 U) und der gegebene Bolus [U]. */
+        const val HCL_KH_INSULIN_U = 4.5
+        const val HCL_BOLUS_U = 3.0
+        /** Die Tief-Probe: ein Bolus, der die fruehe Lage deutlich ueberdeckt [U]. */
+        const val HCL_TIEF_BOLUS_U = 4.0
+        /** Ein enges maxIOB fuer die Grenz-Probe [U]. */
+        const val HCL_ENGES_MAX_IOB = 3.6
 
         /** Synthetische Rebound-Dauer der Probe [min]: das Tief reicht ueber das Ende der Sonderrechte. */
         const val REBOUND_FENSTER_MIN = 90

@@ -52,8 +52,8 @@ class FuseSettingsInfoZeilenTest {
         val infos = bereiche.values.flatMap { b -> b.items.filterIsInstance<PreferenceInfoDef>().map { it.text } }
         assertEquals(infos.size, infos.toSet().size, "eine Info-Zeile doppelt")
         // 24 = die Info-Zeilen des Forks, die bisher gesammelt auf der Seite "Hinweise" standen,
-        // + 1 "Langsamer Korrekturkanal" (Toni 20.10.2026)
-        assertEquals(25, infos.size, "Info-Zeilen verloren oder dazugekommen")
+        // + 1 "Langsamer Korrekturkanal" (Toni 20.10.2026) + 1 "Bolusrechner (HCL)" (Toni 25.10.2026)
+        assertEquals(26, infos.size, "Info-Zeilen verloren oder dazugekommen")
         for (b in bereiche.values) assertTrue(b.items.any { it is PreferenceKey }) { "Bereich ${b.key} zeigt keinen Wert" }
     }
 

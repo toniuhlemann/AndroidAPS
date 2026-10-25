@@ -877,6 +877,8 @@ class FusePlugin(
             preferences.put(FuseLongKey.MealMarkerNoPrime, 0L)
             preferences.put(FuseLongKey.MealMarkerExpectationOnly, 0L)
             preferences.put(FuseLongKey.MealMarkerSnack, 0L)
+            preferences.put(FuseLongKey.MealMarkerHclCalcTs, 0L)
+            preferences.put(FuseLongKey.MealMarkerHclMerged, 0L)
             // Der Altbestand-Stempel wird mitgeloescht: bliebe er stehen,
             // liesse der Lese-Ruecktausch unten einen zurueckgenommenen
             // Marker wieder auferstehen.
@@ -957,6 +959,9 @@ class FusePlugin(
         // Snack ist eine Form von "Mahlzeit": ohne sie gilt er nicht.
         val alsSnack = snack && nurErwartung && !ohneVorschuss
         preferences.put(FuseLongKey.MealMarkerSnack, if (alsSnack) 1L else 0L)
+        // HCL Stufe 2: ein neuer Marker gehoert zu keiner Rechnung - die Uebernahme des Bolusrechners setzt sie danach.
+        preferences.put(FuseLongKey.MealMarkerHclCalcTs, 0L)
+        preferences.put(FuseLongKey.MealMarkerHclMerged, 0L)
         // DER EINZIGE ORT, an dem ein Druck als BEOBACHTET gilt. Er steht
         // absichtlich hier und nicht beim Nachfuellen des Marker-Rings: der
         // liest den Trail und kennt Druecke von vor zwei Stunden.
@@ -1346,8 +1351,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
     private val hclMahlzeiten by lazy { HclMahlzeiten(preferences) }
 
     /**
-     * HCL Teil 1: der Bolusrechner meldet eine Rechnung mit KH und der abgegebenen Menge. FUSE haelt sie nur fest
-     * (Trail, Viewer) und dosiert nicht danach - eine Rechnung, die hier nicht ankommt, aendert also nichts.
+     * HCL Teil 1: der Bolusrechner meldet eine Rechnung mit KH und der abgegebenen Menge. FUSE haelt sie fest (Trail,
+     * Viewer). Mit Stufe 2 ([FuseBooleanKey.HclMealsEnabled], ab Werk aus) wird eine Rechnung mit abgegebenem Bolus
+     * ausserdem zur angekuendigten Mahlzeit ([hclMarkerUnterSperre]). Eine Rechnung, die hier nicht ankommt, aendert
+     * nichts - fehlende Information heisst weniger Insulin, nie mehr.
      */
     override fun fuseWizardBolus(bolus: FuseOverviewSource.WizardBolus) {
         if (!hclMahlzeiten.aufnehmen(bolus, dateUtil.now())) return
@@ -1357,6 +1364,70 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 "ic=${bolus.icGPerU} khInsulin=${bolus.carbsInsulinU} prozent=${bolus.percentage} " +
                 "gerechnet=${bolus.calcTotalU} gesendet=${bolus.requestedU} abgegeben=${bolus.deliveredU} ok=${bolus.success}",
         )
+        if (!preferences.get(FuseBooleanKey.HclMealsEnabled) || !(bolus.deliveredU > 0.0)) return
+        // Unter der Laufsperre wie jeder Markerdruck (KI-177) - der Bolus-Kern wartet nicht auf den laufenden Zyklus.
+        appScope.launch {
+            runCatching { laufSperre.withLock { hclMarkerUnterSperre(bolus, dateUtil.now()) } }
+                .onSuccess { if (it) rxBus.send(EventRefreshOverview("FUSE Bolusrechner", true)) }
+                .onFailure { aapsLogger.error(LTag.APS, "FUSE Bolusrechner-Mahlzeit nicht uebernommen: $it") }
+        }
+    }
+
+    /**
+     * HCL STUFE 2 (Toni 25.10.2026): eine Rechnung mit abgegebenem Bolus wird zur angekuendigten Mahlzeit - ein Marker
+     * "Nur Marker" (Konto ohne Budget, keine Kredit-Huelle) zum Essenszeitpunkt, mit der Rechnung als Kennung. FUSE gibt
+     * dazu nichts auf die Erwartung hin; der Runner rechnet die bestaetigte Mahlzeit nur bei Guard und Schwanz an.
+     *
+     * Laeuft schon ein Marker (zum Essenszeitpunkt oder jetzt), wird die Rechnung mit ihm ZUSAMMENGEFUEHRT (Codex:
+     * Rechner und Knopf bei derselben Mahlzeit): seine weiteren Portionen entfallen, die schon gegebenen zaehlen als IOB,
+     * und es gibt keine Anrechnung. Gehoert der laufende Marker schon zu einer Rechnung, bleibt er, wie er ist - eine
+     * zweite Rechnung in seinem Fenster wird nur aufgezeichnet (weniger Anrechnung, nie mehr).
+     *
+     * @return ob sich am Marker etwas geaendert hat.
+     */
+    private fun hclMarkerUnterSperre(b: FuseOverviewSource.WizardBolus, jetzt: Long): Boolean {
+        val laufend = mealMarkerArmedTs()
+        return when (
+            val e = HclMahlzeiten.uebernahme(
+                schalterAn = preferences.get(FuseBooleanKey.HclMealsEnabled),
+                deliveredU = b.deliveredU,
+                mealTs = b.mealTs,
+                jetzt = jetzt,
+                markerAktiv = ::mealMarkerActive,
+                laufenderIstHcl = preferences.get(FuseLongKey.MealMarkerHclCalcTs) > 0L,
+            )
+        ) {
+            HclMahlzeiten.Uebernahme.Keine -> false
+            HclMahlzeiten.Uebernahme.ZuAlt -> {
+                aapsLogger.info(LTag.APS, "FUSE Bolusrechner-Mahlzeit ohne Marker: rechnung=${b.calcTs} - Essenszeit zu weit zurueck")
+                false
+            }
+            HclMahlzeiten.Uebernahme.SchonHcl -> {
+                aapsLogger.info(
+                    LTag.APS,
+                    "FUSE Bolusrechner-Mahlzeit nur aufgezeichnet: rechnung=${b.calcTs} - Marker $laufend gehoert schon zu einer Rechnung",
+                )
+                false
+            }
+            HclMahlzeiten.Uebernahme.Zusammenfuehren -> {
+                preferences.put(FuseLongKey.MealMarkerHclCalcTs, b.calcTs)
+                preferences.put(FuseLongKey.MealMarkerHclMerged, 1L)
+                aapsLogger.info(LTag.APS, "FUSE Bolusrechner-Mahlzeit zusammengefuehrt: rechnung=${b.calcTs} marker=$laufend")
+                markerEreignis("HCL_MERGED", jetzt, HCL_QUELLE, laufend)
+                true
+            }
+            is HclMahlzeiten.Uebernahme.NeuerMarker -> {
+                if (!toggleMealMarkerUnterSperre(e.ts, ohneVorschuss = true, ereignisId = null, quelle = HCL_QUELLE)) {
+                    aapsLogger.warn(LTag.APS, "FUSE Bolusrechner-Mahlzeit: Marker nicht gesetzt, rechnung=${b.calcTs}")
+                    false
+                } else {
+                    preferences.put(FuseLongKey.MealMarkerHclCalcTs, b.calcTs)
+                    preferences.put(FuseLongKey.MealMarkerHclMerged, 0L)
+                    aapsLogger.info(LTag.APS, "FUSE Bolusrechner-Mahlzeit als Marker: rechnung=${b.calcTs} marker=${e.ts}")
+                    true
+                }
+            }
+        }
     }
 
     override suspend fun fuseMarkerRuecknahmeVormerken(now: Long, ereignisId: String?): Long? =
@@ -1446,6 +1517,9 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
 
     /** Der Zeitgeber laeuft knapp NACH der Faelligkeit - vorher waere die Vormerkung noch nicht faellig. */
     private val RUECKNAHME_NACHLAUF_MS = 200L
+
+    /** HCL Stufe 2: die Quelle eines Markers aus dem Bolusrechner - in Log und Trail ([FuseStateJson.MarkerEvent]). */
+    private val HCL_QUELLE = "Bolusrechner"
 
     override suspend fun invoke(initiator: String, tempBasalFallback: Boolean) {
         // v4: der Zyklus liest blockierend (s. FuseCycleRunner.lies) - also auf einem IO-Thread, nie auf dem Hauptthread.

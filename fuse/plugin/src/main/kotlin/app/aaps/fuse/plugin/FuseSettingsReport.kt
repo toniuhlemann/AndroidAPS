@@ -40,6 +40,8 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseBooleanKey.LivenessChannelEnabled.key,
     FuseBooleanKey.SignalRejoinEnabled.key,
     FuseIntKey.LivenessMealPowerMin.key,
+    // HCL Stufe 2 (Toni 25.10.2026): Bolusrechner-Mahlzeiten - im Bereich Mahlzeit.
+    FuseBooleanKey.HclMealsEnabled.key,
     // Die zentralen Profilwerte (CENTRAL-only, echte Defaults).
     FuseDoubleKey.CorrectionExposureLimitU.key,
     FuseDoubleKey.MealExposureLimitU.key,
@@ -183,6 +185,7 @@ object FuseSettingsReport {
                     ganz(FuseIntKey.LivenessMealPowerMin, "Mahlzeiten-Frist", "min"),
                     zahl(FuseDoubleKey.MealExposureLimitU, "MEAL Exposure-Limit", "U"),
                     zahl(FuseDoubleKey.MealDemandRatioCap, "MEAL Bedarfsanteil", ""),
+                    schalter(FuseBooleanKey.HclMealsEnabled, "Bolusrechner-Mahlzeiten (HCL)"),
                 ),
                 "Erwartungskonto" to listOf(
                     zahl(FuseDoubleKey.ExpectationCurveAt30U, "Kurve nach 30 min", "U"),

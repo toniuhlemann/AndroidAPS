@@ -210,6 +210,11 @@ object FuseController {
         /** Episoden-Wahl "Snack" (Toni 24.10.2026): wie "Mahlzeit", das Budget mit
          *  dem Snack-Skalierer. Reines Messfeld - der Regler liest es nicht. */
         val markerSnack: Boolean = false,
+        /** HCL Stufe 2 (Toni 25.10.2026): die Rechnung des Bolusrechners, zu der der Marker gehoert; 0 = keine.
+         *  Reines Messfeld - der Regler liest es nicht (die Anrechnung kommt als Bahn herein). */
+        val markerHclCalcTs: Long = 0L,
+        /** HCL Stufe 2: die Rechnung wurde mit dem laufenden Marker zusammengefuehrt. Reines Messfeld. */
+        val markerHclMerged: Boolean = false,
         /** Rebound-Bedingung lag an, wurde aber durch einen aktiven Marker
          *  entwaffnet (Gas-vor-Bremse NUR fuer erklaertes Wissen, 08.08.):
          *  das Fenster schuetzt vor dem Jagen UNANGEKUENDIGTER Hypo-
@@ -795,10 +800,15 @@ object FuseController {
         onsetCapU: Double? = null,
         /** S. [decideInner]. `null` = heutiger Bedarf, bitgleich. */
         expectationDemandU: Double? = null,
+        /** S. [decideInner]. `null` = der Guard prueft [prediction], bitgleich. */
+        guardPrediction: PredictorResult? = null,
+        /** S. [decideInner]. Gilt nur zusammen mit [guardPrediction]. */
+        guardRestraint: PredictorResult? = null,
     ): Decision {
         val d = decideInner(
             state, prediction, limits, tail, restraint,
             evidenceCreditActive, evidenceMayOverrideRebound, lowThreat, onsetCapU, expectationDemandU,
+            guardPrediction, guardRestraint,
         )
         val geschuetzt = lowThreat == LowThreatGate.Verdict.NONE
         return if (d.basalFloorProtected == geschuetzt) d else d.copy(basalFloorProtected = geschuetzt)
@@ -905,6 +915,19 @@ object FuseController {
          * berechenbar zaehlt als 0 (kein Kontobedarf), nie als Menge.
          */
         expectationDemandU: Double? = null,
+        /**
+         * HCL STUFE 2 (Toni 25.10.2026, Entwurf B): die SICHERHEITSBAHN mit der bestaetigten Mahlzeit aus dem
+         * Bolusrechner - NUR fuer den Guard. Der Bedarf bleibt auf [prediction] (kein zweites Einrechnen der Mahlzeit,
+         * kein zweiter IOB-Abzug: beides steht schon in der Mittelbahn). Den Schwanz MIT Mahlzeit reicht der Aufrufer
+         * als [tail] herein. `null` = der Guard prueft [prediction] wie bisher, bitgleich. Der Aufrufer gibt sie nur
+         * ohne Low-Befund - die Null-TBR des Low-Tors bleibt so unberuehrt.
+         */
+        guardPrediction: PredictorResult? = null,
+        /**
+         * Die Bremsbahn MIT bestaetigter Mahlzeit fuer den Guard; gilt nur zusammen mit [guardPrediction]. `null` bei
+         * vorhandener [restraint] = der Guard prueft die Bremsbahn ohne Mahlzeit (die strengere).
+         */
+        guardRestraint: PredictorResult? = null,
     ): Decision {
         // Der Kontext gehoert an JEDEN Rueckgabepfad, nicht nur an den
         // Erfolgsfall. Gerade beim Blockieren ist die Frage "war das die
@@ -952,21 +975,29 @@ object FuseController {
         //
         // Einseitig: die prior-freie Kante liegt nie UEBER der gehobenen, der
         // Guard kann dadurch nur haeufiger greifen, nie seltener.
-        val minLower = minSafetyLowerOf(prediction, restraint)
+        //
+        // HCL Stufe 2: mit [guardPrediction] prueft der Guard die Bahnen MIT der bestaetigten Mahlzeit; der Bedarf
+        // (releaseMean) bleibt auf der Mittelbahn ohne sie. Bei einem Low-Befund gilt die Mahlzeitbahn nicht - eine
+        // Mahlzeitannahme darf die Null des Low-Tors nie verdecken. Der Aufrufer gibt sie dann ohnehin nicht; der Kern
+        // haelt die Regel trotzdem selbst. Fehlt die Bremsbahn mit Mahlzeit, gilt die ohne - die strengere.
+        val mahlzeitBahn = guardPrediction?.takeIf { lowThreat == LowThreatGate.Verdict.NONE }
+        val schutzBahn = mahlzeitBahn ?: prediction
+        val schutzBremse = if (mahlzeitBahn != null) guardRestraint ?: restraint else restraint
+        val minLower = minSafetyLowerOf(schutzBahn, schutzBremse)
         val releaseMean = minOf(release.meanBg, restraintRelease?.meanBg ?: Double.MAX_VALUE)
         // S0: die beiden Ursachen GETRENNT. "Gebremst" war bisher ein Bit ueber
         // zwei verschiedene Wirkungen - die Bremse kann die Sicherheitsbahn
         // senken (und damit blockieren) ODER den Bedarf kuerzen. Wer eine
         // Zurueckhaltung nachvollziehen will, braucht die Unterscheidung.
-        val restraintGuard = restraint != null && minLower < prediction.minSafetyLowerBg
+        val restraintGuard = schutzBremse != null && minLower < schutzBahn.minSafetyLowerBg
         val restraintDemand = restraint != null && releaseMean < release.meanBg
 
         // S0 (I16): WIE TIEF und WIE BALD unter dem Boden. Ueber DIESELBEN
         // Bahnen wie der Guard - der Boden kommt aus den Limits, die Bahnen aus
         // dem Zyklus, und die Zahlen entscheiden nichts.
-        val floorDeficit = TrajectoryQuery.floorDeficitOf(limits.guardFloorMgdl, prediction, restraint)
-        val timeToFloor = TrajectoryQuery.timeToFloorOf(limits.guardFloorMgdl, prediction, restraint)
-        val timeToMinCombined = TrajectoryQuery.timeToMinSafetyLowerOf(prediction, restraint)
+        val floorDeficit = TrajectoryQuery.floorDeficitOf(limits.guardFloorMgdl, schutzBahn, schutzBremse)
+        val timeToFloor = TrajectoryQuery.timeToFloorOf(limits.guardFloorMgdl, schutzBahn, schutzBremse)
+        val timeToMinCombined = TrajectoryQuery.timeToMinSafetyLowerOf(schutzBahn, schutzBremse)
 
         // Alle Rueckgaben dieses Laufs teilen dieselbe S0-Telemetrie. Sie EINMAL
         // anzuhaengen ist nicht Bequemlichkeit: acht Rueckgabestellen, die je
@@ -976,7 +1007,7 @@ object FuseController {
         fun Decision.tele(caps: List<Cap> = emptyList()) = copy(
             restraintBoundGuard = restraintGuard,
             restraintBoundDemand = restraintDemand,
-            minLowerMainMgdl = prediction.minSafetyLowerBg,
+            minLowerMainMgdl = schutzBahn.minSafetyLowerBg,
             floorDeficitMgdl = floorDeficit,
             timeToFloorMin = timeToFloor,
             timeToMinCombinedMin = timeToMinCombined,

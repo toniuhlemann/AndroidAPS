@@ -116,6 +116,12 @@ object FuseSettings {
                     "Danach gilt der Korrekturweg.",
             ),
             FuseIntKey.LivenessMealPowerMin, FuseDoubleKey.MealExposureLimitU, FuseDoubleKey.MealDemandRatioCap,
+            info(
+                "Bolusrechner (HCL)",
+                "Ein Bolus aus dem AAPS-Bolusrechner mit KH: FUSE kennt dann die Mahlzeit, gibt aber nichts dazu, " +
+                    "solange der Zucker es nicht zeigt.",
+            ),
+            FuseBooleanKey.HclMealsEnabled,
         ),
         section(
             "fuse_expectation", R.string.fuse_section_expectation,
