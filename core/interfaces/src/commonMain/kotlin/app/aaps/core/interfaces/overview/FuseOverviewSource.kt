@@ -235,4 +235,42 @@ interface FuseOverviewSource {
 
     /** Die vorgemerkte Ruecknahme aufheben. @return ob eine aufgehoben wurde. */
     suspend fun fuseMarkerRuecknahmeRueckgaengig(now: Long): Boolean = false
+
+    /**
+     * HCL, part 1 (Toni 25.10.2026): a bolus from the AAPS bolus calculator with carbs, reported ONCE by the shared
+     * bolus core after the pump answered, with what was really delivered. FUSE only records it for the trail and the
+     * viewer; it does not dose from it. Default: ignored.
+     */
+    fun fuseWizardBolus(bolus: WizardBolus) {}
+
+    /** One bolus calculation with carbs and what the pump delivered for it. */
+    data class WizardBolus(
+        /** Time of the calculation [ms] - one per calculation, the key. */
+        val calcTs: Long,
+        /** Planned meal time [ms]: the carbs time of the calculation, with its offset. */
+        val mealTs: Long,
+        val carbsG: Double,
+        val icGPerU: Double,
+        val isfMgdlPerU: Double,
+        /** Carbs / IC before the percentage [U]. */
+        val carbsInsulinU: Double,
+        /** The other parts of the calculation [U]; `null` = not used in this calculation. */
+        val glucoseInsulinU: Double?,
+        val trendInsulinU: Double?,
+        val cobInsulinU: Double?,
+        /** Bolus and basal IOB the calculator took off [U, positive]; `null` = not used. */
+        val iobU: Double?,
+        val superbolusU: Double?,
+        /** Direct correction typed in by the user [U]. */
+        val directCorrectionU: Double,
+        /** Percentage applied to the suggestion parts (BG, trend, carbs, COB). */
+        val percentage: Int,
+        /** The calculated total [U], after percentage and IOB. */
+        val calcTotalU: Double,
+        /** What was sent to the pump [U], after the constraints. */
+        val requestedU: Double,
+        /** What the pump reports as delivered [U]; 0 when it failed. */
+        val deliveredU: Double,
+        val success: Boolean,
+    )
 }

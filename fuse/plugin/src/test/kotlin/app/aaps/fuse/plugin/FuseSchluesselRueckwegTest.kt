@@ -104,6 +104,8 @@ class FuseSchluesselRueckwegTest {
     private val neuZustand: Set<String> = setOf(
         // Toni 24.10.2026: die Wahl "Snack" am Marker - sie stirbt mit dem Marker wie "Mahlzeit" und "Nur Marker".
         FuseLongKey.MealMarkerSnack.key,
+        // HCL Teil 1 (Toni 25.10.2026): die Rechnungen aus dem Bolusrechner der letzten 24 h - reine Anzeige.
+        FuseStringNonKey.HclMeals.key,
     )
 
     @Test

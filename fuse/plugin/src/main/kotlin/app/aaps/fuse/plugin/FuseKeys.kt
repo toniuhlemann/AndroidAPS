@@ -7,6 +7,7 @@ import app.aaps.core.keys.interfaces.DoublePreferenceKey
 import app.aaps.core.keys.interfaces.IntPreferenceKey
 import app.aaps.core.keys.interfaces.LongNonPreferenceKey
 import app.aaps.core.keys.interfaces.NonPreferenceKey
+import app.aaps.core.keys.interfaces.StringNonPreferenceKey
 import app.aaps.core.keys.interfaces.StringPreferenceKey
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.fuse.core.controller.SlowCorrectionChannel
@@ -1157,16 +1158,30 @@ enum class FuseRetiredKey(
 }
 
 /**
+ * Text-ZUSTAND ausserhalb des Einstellungsdialogs - keine Einstellung, nie exportiert: ein Settings-Import darf keinen
+ * alten Zustand wiederbeleben.
+ */
+enum class FuseStringNonKey(
+    override val key: String,
+    override val defaultValue: String,
+    override val exportable: Boolean = true,
+) : StringNonPreferenceKey {
+
+    /** HCL Teil 1 (Toni 25.10.2026): die Rechnungen aus dem Bolusrechner der letzten 24 h als JSON ([HclMahlzeiten]). */
+    HclMeals("fuse_hcl_meals", "", exportable = false),
+}
+
+/**
  * Alle FUSE-Schluesselklassen, die das Plugin beim Start registriert (`ownPreferences`) - EINE Liste fuer Plugin
  * und Waechter: was hier fehlt, nimmt keine Sicherung mit.
  */
 internal val fuseSchluesselKlassen: List<Class<out NonPreferenceKey>> = listOf(
     FuseDoubleKey::class.java, FuseIntKey::class.java, FuseBooleanKey::class.java, FuseLongKey::class.java,
-    FuseStringKey::class.java, FuseRetiredKey::class.java,
+    FuseStringKey::class.java, FuseRetiredKey::class.java, FuseStringNonKey::class.java,
 )
 
 /** v4: die Registrierung (`ownPreferences`) nimmt die Schluessel selbst, nicht ihre Klassen - dieselbe Menge. */
 internal val fuseSchluessel: List<NonPreferenceKey> =
     FuseDoubleKey.entries + FuseIntKey.entries + FuseBooleanKey.entries + FuseLongKey.entries +
-        FuseStringKey.entries + FuseRetiredKey.entries
+        FuseStringKey.entries + FuseRetiredKey.entries + FuseStringNonKey.entries
 

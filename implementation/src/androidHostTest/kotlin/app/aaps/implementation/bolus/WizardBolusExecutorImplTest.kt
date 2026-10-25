@@ -17,6 +17,7 @@ import app.aaps.core.data.ui.ConfirmationRole
 import app.aaps.core.data.ue.Action
 import app.aaps.core.data.ue.Sources
 import app.aaps.core.data.ue.ValueWithUnit
+import app.aaps.core.interfaces.aps.APS
 import app.aaps.core.interfaces.aps.AutosensDataStore
 import app.aaps.core.interfaces.aps.Loop
 import app.aaps.core.interfaces.automation.Automation
@@ -29,6 +30,7 @@ import app.aaps.core.interfaces.notifications.AlarmSound
 import app.aaps.core.interfaces.notifications.NotificationAction
 import app.aaps.core.interfaces.notifications.NotificationId
 import app.aaps.core.interfaces.notifications.NotificationLevel
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.profile.EffectiveProfile
 import app.aaps.core.interfaces.profile.ProfileStore
 import app.aaps.core.interfaces.pump.BolusProgressData
@@ -223,6 +225,73 @@ class WizardBolusExecutorImplTest : TestBaseWithProfile() {
         // Eat reminder fires on delivery success
         verify(automation).scheduleAutomationEventEatReminder()
         assertThat(errored).isFalse()
+    }
+
+    // ---- Fork (FUSE, HCL part 1): the bolus core reports a calculation with carbs to FUSE ----
+
+    private fun wizardBcr() = BCR(
+        timestamp = 1_000L, targetBGLow = 100.0, targetBGHigh = 100.0, isf = 90.0, ic = 10.0,
+        bolusIOB = 0.5, wasBolusIOBUsed = true, basalIOB = 0.2, wasBasalIOBUsed = false,
+        glucoseValue = 120.0, wasGlucoseUsed = false, glucoseDifference = 20.0, glucoseInsulin = 0.2,
+        glucoseTrend = 0.0, wasTrendUsed = false, trendInsulin = 0.0, cob = 0.0, wasCOBUsed = false, cobInsulin = 0.0,
+        carbs = 30.0, wereCarbsUsed = true, carbsInsulin = 3.0, otherCorrection = 0.0, wasSuperbolusUsed = false,
+        superbolusInsulin = 0.0, wasTempTargetUsed = false, totalInsulin = 1.75, percentageCorrection = 75,
+        profileName = "Test", note = ""
+    )
+
+    /**
+     * Once, after the pump answered, with what the pump really gave - here a bolus the user stopped. The calculator
+     * values travel apart from the delivered amount, and an unused part of the calculation is not reported.
+     */
+    @Test
+    fun deliverWizardBolus_withCarbs_reportsCalculationAndDeliveredAmountToFuse() = runTest {
+        whenever(runningModeGuard.rejectionMessage(any())).thenReturn(null)
+        whenever(commandQueue.bolus(anyOrNull())).thenReturn(pumpEnactResultProvider().success(false).bolusDelivered(1.2))
+        whenever(bolusProgressData.isStopPressed).thenReturn(true)
+        val fuse = mock<APS>(extraInterfaces = arrayOf(FuseOverviewSource::class))
+        whenever(activePlugin.activeAPS).thenReturn(fuse)
+        val bcr = wizardBcr()
+
+        create().deliverWizardBolus(
+            insulin = 1.75, carbs = 30, carbTimeMinutes = 15, mgdlGlucose = 120.0, bolusCalculatorResult = bcr,
+            notes = null, source = Sources.WizardDialog, onError = { }
+        )
+
+        val captor = argumentCaptor<FuseOverviewSource.WizardBolus>()
+        verify(fuse as FuseOverviewSource).fuseWizardBolus(captor.capture())
+        val r = captor.firstValue
+        assertThat(r.calcTs).isEqualTo(1_000L)
+        assertThat(r.carbsG).isEqualTo(30.0)
+        assertThat(r.icGPerU).isEqualTo(10.0)
+        assertThat(r.carbsInsulinU).isEqualTo(3.0)
+        assertThat(r.percentage).isEqualTo(75)
+        assertThat(r.calcTotalU).isEqualTo(1.75)
+        assertThat(r.requestedU).isEqualTo(1.75)
+        assertThat(r.deliveredU).isEqualTo(1.2)
+        assertThat(r.success).isFalse()
+        // Only the bolus IOB was used; BG and trend were not.
+        assertThat(r.iobU).isEqualTo(0.5)
+        assertThat(r.glucoseInsulinU).isNull()
+        assertThat(r.trendInsulinU).isNull()
+        // The meal time is the carbs time with its offset, not the bolus time.
+        val dbiCaptor = argumentCaptor<DetailedBolusInfo>()
+        verify(commandQueue).bolus(dbiCaptor.capture())
+        assertThat(r.mealTs).isEqualTo(dbiCaptor.firstValue.carbsTimestamp)
+    }
+
+    @Test
+    fun deliverWizardBolus_withoutCarbs_reportsNothingToFuse() = runTest {
+        whenever(runningModeGuard.rejectionMessage(any())).thenReturn(null)
+        whenever(commandQueue.bolus(anyOrNull())).thenReturn(pumpEnactResultProvider().success(true).bolusDelivered(1.0))
+        val fuse = mock<APS>(extraInterfaces = arrayOf(FuseOverviewSource::class))
+        whenever(activePlugin.activeAPS).thenReturn(fuse)
+
+        create().deliverWizardBolus(
+            insulin = 1.0, carbs = 0, carbTimeMinutes = 0, mgdlGlucose = null, bolusCalculatorResult = wizardBcr(),
+            notes = null, source = Sources.WizardDialog, onError = { }
+        )
+
+        verify(fuse as FuseOverviewSource, never()).fuseWizardBolus(any())
     }
 
     // ---- confirm(): the consume-once delivery the remote-bolus commit (and local QuickWizard) relies on ----

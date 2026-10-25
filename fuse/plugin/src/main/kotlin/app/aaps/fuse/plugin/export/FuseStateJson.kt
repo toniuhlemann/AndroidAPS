@@ -1,8 +1,10 @@
 package app.aaps.fuse.plugin.export
 
 import app.aaps.core.interfaces.aps.RT
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.fuse.core.util.Sha
 import app.aaps.fuse.plugin.FuseCycleRunner
+import app.aaps.fuse.plugin.HclMahlzeiten
 import app.aaps.fuse.core.controller.TurnResponseShadow
 import app.aaps.fuse.plugin.ledger.EpisodeBudgets
 import org.json.JSONArray
@@ -588,6 +590,8 @@ object FuseStateJson {
         expectation: Expectation? = null,
         /** Das letzte Bedienereignis am Marker, s. [MarkerEvent]. */
         markerEvent: MarkerEvent? = null,
+        /** HCL Teil 1 (Toni 25.10.2026): die juengsten Rechnungen aus dem Bolusrechner - reine Anzeige. */
+        hclMeals: List<FuseOverviewSource.WizardBolus> = emptyList(),
         nowNs: () -> Long,
     ): JSONObject {
         val gaps = JSONArray()
@@ -1365,6 +1369,10 @@ object FuseStateJson {
                     .put("dueTs", e.dueTs ?: JSONObject.NULL)
             )
         }
+        // HCL Teil 1 (Toni 25.10.2026): die Rechnungen aus dem Bolusrechner, solange ihre Mahlzeit laeuft - Rechnerwerte
+        // und tatsaechlich abgegebene Menge getrennt. Nur wenn es welche gibt: sonst bleibt der Datensatz bitgleich. Der
+        // Viewer fasst sie ueber `calcTs` zusammen. Kein Zyklus liest sie.
+        if (hclMeals.isNotEmpty()) o.put("hclMeals", JSONArray(hclMeals.map { HclMahlzeiten.zuJson(it) }))
 
         if (publicationGate == null) gap("publicationGate", "NOT_REPORTED")
         else o.put(

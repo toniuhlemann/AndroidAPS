@@ -2,6 +2,7 @@ package app.aaps.plugins.aps.openAPSAutoISF
 
 import app.aaps.core.data.iob.CobInfo
 import app.aaps.core.data.model.BS
+import app.aaps.core.data.model.CA
 import app.aaps.core.data.model.RM
 import app.aaps.core.interfaces.aps.AutoIsfOverrideState
 import app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider
@@ -120,6 +121,35 @@ class IobActionCoreExporterTest : TestBaseWithProfile() {
         assertThat(core["aps"]!!.jsonObject.keys).doesNotContain("bg")
         // No running temp basal: no rate and no duration.
         assertThat(core["aps"]!!.jsonObject.keys).containsNoneOf("rate", "duration")
+    }
+
+    /** Fork (FUSE HCL, Toni 25.10.2026): the carb entries for the viewer - valid ones only, with their duration. */
+    @Test fun theCoreFileCarriesTheCarbEntries() = runTest {
+        prepareLiveState()
+        whenever(persistenceLayer.getCarbsFromTimeNotExpanded(any(), any())).thenReturn(
+            listOf(
+                CA(timestamp = now - 600_000L, amount = 45.0, duration = 0L),
+                CA(timestamp = now - 300_000L, amount = 15.0, duration = 3_600_000L),
+                CA(timestamp = now - 200_000L, amount = 20.0, duration = 0L, isValid = false)
+            )
+        )
+
+        sut.snapshot()
+
+        val carbs = written()["carbsHistory"] as JsonArray
+        assertThat(carbs).hasSize(2)
+        assertThat(carbs[0].jsonObject["grams"]!!.jsonPrimitive.double).isEqualTo(45.0)
+        assertThat(carbs[1].jsonObject["durationMin"]!!.jsonPrimitive.content).isEqualTo("60")
+    }
+
+    /** A failed carb read leaves the key out - the viewer must never read "no carbs" from a failure. */
+    @Test fun aFailedCarbReadIsAMissingKey() = runTest {
+        prepareLiveState()
+        whenever(persistenceLayer.getCarbsFromTimeNotExpanded(any(), any())).thenThrow(IllegalStateException("db"))
+
+        sut.snapshot()
+
+        assertThat(written().keys).doesNotContain("carbsHistory")
     }
 
     @Test fun withoutAProfileNothingIsWritten() = runTest {

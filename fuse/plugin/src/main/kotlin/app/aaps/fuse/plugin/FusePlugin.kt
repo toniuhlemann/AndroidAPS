@@ -1342,6 +1342,23 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         return mahlzeit to angebot(einstellung.forSnack(preferences.get(FuseDoubleKey.EarlySupplySnackScale)))
     }
 
+    /** HCL Teil 1 (Toni 25.10.2026): die Rechnungen aus dem Bolusrechner, s. [HclMahlzeiten]. */
+    private val hclMahlzeiten by lazy { HclMahlzeiten(preferences) }
+
+    /**
+     * HCL Teil 1: der Bolusrechner meldet eine Rechnung mit KH und der abgegebenen Menge. FUSE haelt sie nur fest
+     * (Trail, Viewer) und dosiert nicht danach - eine Rechnung, die hier nicht ankommt, aendert also nichts.
+     */
+    override fun fuseWizardBolus(bolus: FuseOverviewSource.WizardBolus) {
+        if (!hclMahlzeiten.aufnehmen(bolus, dateUtil.now())) return
+        aapsLogger.info(
+            LTag.APS,
+            "FUSE Bolusrechner-Mahlzeit: rechnung=${bolus.calcTs} mahlzeit=${bolus.mealTs} kh=${bolus.carbsG} " +
+                "ic=${bolus.icGPerU} khInsulin=${bolus.carbsInsulinU} prozent=${bolus.percentage} " +
+                "gerechnet=${bolus.calcTotalU} gesendet=${bolus.requestedU} abgegeben=${bolus.deliveredU} ok=${bolus.success}",
+        )
+    }
+
     override suspend fun fuseMarkerRuecknahmeVormerken(now: Long, ereignisId: String?): Long? =
         markerRuecknahmeVormerken(now, ereignisId, MarkerRuecknahme.Quelle.UEBERSICHT)
 
@@ -2177,6 +2194,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 )
             }.getOrNull(),
             markerEvent = letztesMarkerEreignis,
+            // HCL Teil 1: die juengsten Bolusrechner-Mahlzeiten - reine Anzeige, kein Zyklus liest sie.
+            hclMeals = runCatching { hclMahlzeiten.juengste(o.computeTs) }.getOrDefault(emptyList()),
             )
             // Die Android-Aufloesung des Verzeichnisses passiert AUSSCHLIESSLICH
             // hier — der Schreiber selbst kennt kein Environment und bleibt

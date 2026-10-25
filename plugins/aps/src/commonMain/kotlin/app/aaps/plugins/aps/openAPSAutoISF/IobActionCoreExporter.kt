@@ -72,6 +72,14 @@ class IobActionCoreExporter(
                 persistenceLayer.getBolusesFromTimeToTime(now - SMB_WINDOW_MS, now, true)
                     .filter { it.isValid && it.type == BS.Type.SMB && it.amount > 0.0 }
             }
+            // Fork (FUSE HCL, Toni 25.10.2026): the carb entries from 24 h back (a carbs time with an offset can also lie
+            // ahead). FUSE itself never reads carbs; the viewer needs them to mark a meal from the bolus calculator and
+            // to flag other carbs inside a meal, for example glucose after a low. 24 h and not 6 h like the SMBs: there
+            // are few entries, and a meal card built later must still see the carbs of its whole meal.
+            val carbs = runCatchingNotCancel {
+                persistenceLayer.getCarbsFromTimeNotExpanded(now - CARBS_WINDOW_MS, true)
+                    .filter { it.isValid && it.amount != 0.0 }
+            }
             val snap = effectiveAutoIsfSettings.snapshot()
 
             val json = buildJsonObject {
@@ -152,6 +160,18 @@ class IobActionCoreExporter(
                         list.forEach { b -> add(buildJsonObject { putOpt("ts", b.timestamp); putOpt("units", b.amount) }) }
                     })
                 }
+                // Same rule as the SMBs: a failed read leaves the key out, an empty list means "no carbs".
+                carbs?.let { list ->
+                    put("carbsHistory", buildJsonArray {
+                        list.forEach { c ->
+                            add(buildJsonObject {
+                                putOpt("ts", c.timestamp)
+                                putOpt("grams", c.amount)
+                                putOpt("durationMin", c.duration / 60_000L)
+                            })
+                        }
+                    })
+                }
             }
             sink.writeCore(json)
         } catch (e: CancellationException) {
@@ -174,5 +194,6 @@ class IobActionCoreExporter(
     private companion object {
 
         const val SMB_WINDOW_MS = 6 * 3600_000L
+        const val CARBS_WINDOW_MS = 24 * 3600_000L
     }
 }

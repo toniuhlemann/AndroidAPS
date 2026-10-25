@@ -32,6 +32,7 @@ import app.aaps.core.interfaces.logging.UserEntryLogger
 import app.aaps.core.interfaces.notifications.AlarmSound
 import app.aaps.core.interfaces.notifications.NotificationId
 import app.aaps.core.interfaces.notifications.NotificationManager
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.profile.Profile
 import app.aaps.core.interfaces.profile.ProfileFunction
@@ -39,6 +40,7 @@ import app.aaps.core.interfaces.profile.ProfileRepository
 import app.aaps.core.interfaces.profile.ProfileUtil
 import app.aaps.core.interfaces.pump.BolusProgressData
 import app.aaps.core.interfaces.pump.DetailedBolusInfo
+import app.aaps.core.interfaces.pump.PumpEnactResult
 import app.aaps.core.interfaces.pump.PumpSync
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.resources.TextResolver
@@ -1417,6 +1419,7 @@ class WizardBolusExecutorImpl(
         uel.log(action = action, source = source, note = note, listValues = uelValues)
         appScope.launch {
             val result = commandQueue.bolus(detailedBolusInfo)
+            reportWizardBolusToFuse(detailedBolusInfo, bolusCalculatorResult, result)
             if (!result.success && !bolusProgressData.isStopPressed) {
                 // Async delivery failure: the entry dialog is long gone, so surface it here — the single, reliable
                 // master-side message for EVERY bolus path, regardless of which UI started it. SMB stays silent
@@ -1440,6 +1443,45 @@ class WizardBolusExecutorImpl(
                 onSuccess()
         }
         bolusCalculatorResult?.let { persistenceLayer.insertOrUpdateBolusCalculatorResult(it) }
+    }
+
+    /**
+     * Fork (FUSE, HCL part 1, Toni 25.10.2026): tell FUSE once about a bolus calculation with carbs, after the pump
+     * answered, with the amount the pump really delivered. AAPS stores no link between a calculation and its bolus,
+     * and the calculation is saved even when the pump fails, so only this place knows both. Only a calculation with
+     * carbs and a normal bolus, never the record-only path. FUSE only records it; a failure here must never disturb
+     * the bolus path.
+     */
+    private fun reportWizardBolusToFuse(detailedBolusInfo: DetailedBolusInfo, bcr: BCR?, result: PumpEnactResult) {
+        if (bcr == null || detailedBolusInfo.carbs <= 0.0 || detailedBolusInfo.bolusType != BS.Type.NORMAL) return
+        val fuse = activePlugin.activeAPS as? FuseOverviewSource ?: return
+        val iobUsed = bcr.wasBolusIOBUsed || bcr.wasBasalIOBUsed
+        try {
+            fuse.fuseWizardBolus(
+                FuseOverviewSource.WizardBolus(
+                    calcTs = bcr.timestamp,
+                    mealTs = detailedBolusInfo.carbsTimestamp ?: detailedBolusInfo.timestamp,
+                    carbsG = detailedBolusInfo.carbs,
+                    icGPerU = bcr.ic,
+                    isfMgdlPerU = bcr.isf,
+                    carbsInsulinU = bcr.carbsInsulin,
+                    glucoseInsulinU = bcr.glucoseInsulin.takeIf { bcr.wasGlucoseUsed },
+                    trendInsulinU = bcr.trendInsulin.takeIf { bcr.wasTrendUsed },
+                    cobInsulinU = bcr.cobInsulin.takeIf { bcr.wasCOBUsed },
+                    iobU = ((if (bcr.wasBolusIOBUsed) bcr.bolusIOB else 0.0) + (if (bcr.wasBasalIOBUsed) bcr.basalIOB else 0.0))
+                        .takeIf { iobUsed },
+                    superbolusU = bcr.superbolusInsulin.takeIf { bcr.wasSuperbolusUsed },
+                    directCorrectionU = bcr.otherCorrection,
+                    percentage = bcr.percentageCorrection,
+                    calcTotalU = bcr.totalInsulin,
+                    requestedU = detailedBolusInfo.insulin,
+                    deliveredU = result.bolusDelivered,
+                    success = result.success,
+                )
+            )
+        } catch (e: Exception) {
+            aapsLogger.error(LTag.UI, "FUSE wizard bolus report failed", e)
+        }
     }
 
     override suspend fun deliverFillBolus(amount: Double, notes: String?, source: Sources, onError: (WizardBolusExecutor.Failure) -> Unit, onSuccess: () -> Unit) {
