@@ -150,7 +150,8 @@ object SlowCorrectionChannel {
     /**
      * Was von Zyklus zu Zyklus mitgefuehrt wird. Bewusst NICHT persistiert: nach einem Neustart beginnt die
      * Einstiegszeit neu, und eine noch laufende Kanal-TBR beendet der Normalpfad als fremde positive TBR - beides
-     * in die sichere Richtung.
+     * in die sichere Richtung. AUSNAHME [fallStopped] (Toni 26.10.2026): sein Verlust waere die unsichere Richtung - der
+     * Aufrufer haelt ihn restartfest (im Plugin: Ledger-Episoden) und gibt ihn mit [lastTs] nach einem Neustart zurueck.
      */
     data class Memory(
         /** Seit wann liegt q1 ununterbrochen ueber der Schwelle; 0 = nicht. */

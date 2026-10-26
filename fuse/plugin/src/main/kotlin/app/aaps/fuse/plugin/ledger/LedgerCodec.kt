@@ -626,6 +626,9 @@ object LedgerCodec {
         // und der Bewaffnungs-Streak sind bewusst prozesslokal - ein
         // Neustart bewaffnet neu, oeffnet aber nie eine laufende Sperre.
         .put("livenessReArmUntilTs", e.livenessReArmUntilTs)
+        // Toni 26.10.2026: der restartfeste Fall-Stopp des langsamen Kanals - additiv ohne Schemasprung, eine Altdatei
+        // ohne Feld heisst "kein Stopp" wie bisher nach jedem Neustart.
+        .put("slowChannelFallStoppedTs", e.slowChannelFallStoppedTs)
         .put("forecastShadowEpochTs", e.forecastShadowEpochTs)
         .put("forecastShadowLastState", e.forecastShadowLastState)
         .put("theilSenWindowLastMin", e.theilSenWindowLastMin)
@@ -1143,6 +1146,11 @@ object LedgerCodec {
             val sperre = o.getLong("livenessReArmUntilTs")
             require(sperre >= 0L) { "livenessReArmUntilTs out of range: $sperre" }
             e.livenessReArmUntilTs = sperre
+        }
+        if (o.has("slowChannelFallStoppedTs")) {
+            val fallStopp = o.getLong("slowChannelFallStoppedTs")
+            require(fallStopp >= 0L) { "slowChannelFallStoppedTs out of range: $fallStopp" }
+            e.slowChannelFallStoppedTs = fallStopp
         }
         if (o.has("forecastShadowEpochTs")) {
             val epoche = o.getLong("forecastShadowEpochTs")

@@ -5493,9 +5493,17 @@ class FuseCycleRunner(
                 runningRateUPerH = slowLauf?.rateUPerH,
                 runningRemainingMin = slowLauf?.let { currentTbr?.remainingMin },
             ),
-            memory = slowMemory,
+            memory = slowMemory.let { m ->
+                // Toni 26.10.: nach einem Neustart steht der Fall-Stopp nur noch im Ledger - zurueckholen, sonst stiege
+                // der Kanal im Fall unter der gewoehnlichen Einstiegsregel wieder ein. Die Einstiegszeit beginnt wie
+                // bisher neu (sichere Richtung); eine Luecke seit dem gespeicherten Zyklus beendet den Stopp im Schritt.
+                if (m.lastTs == 0L && episodes.slowChannelFallStoppedTs > 0L)
+                    m.copy(fallStopped = true, lastTs = episodes.slowChannelFallStoppedTs)
+                else m
+            },
         )
         slowMemory = slowSchritt.memory
+        episodes.slowChannelFallStoppedTs = if (slowMemory.fallStopped) slowMemory.lastTs else 0L
         slowLedger = SlowCorrectionChannel.book(
             ledger = slowLedger,
             nowTs = computeTs,

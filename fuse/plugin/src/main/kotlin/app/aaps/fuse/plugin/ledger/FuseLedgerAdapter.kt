@@ -478,6 +478,14 @@ class EpisodeBudgets {
      */
     var livenessReArmUntilTs: Long = 0L
 
+    /**
+     * Toni 26.10.2026: RESTARTFESTER Fall-Stopp des langsamen Korrekturkanals - der Zeitpunkt [ms] des letzten Zyklus,
+     * in dem "nach einem Fall gestoppt" galt; 0 = nicht. Ohne ihn stiege der Kanal nach einem Neustart mitten im Fall
+     * unter der gewoehnlichen Einstiegsregel wieder ein statt erst, wenn der Zucker nicht mehr faellt. Eine Zyklusluecke
+     * beendet ihn wie im Speicher (SlowCorrectionChannel.GAP_RESET_MIN).
+     */
+    var slowChannelFallStoppedTs: Long = 0L
+
     /** Sammel-Epoche der Prognose-Shadows: gesetzt bei jedem Umschalten des
      *  Master-Schalters, damit Auswertungen keine Messluecke ueberbruecken.
      *  [forecastShadowLastState] traegt den zuletzt gesehenen Schalterstand

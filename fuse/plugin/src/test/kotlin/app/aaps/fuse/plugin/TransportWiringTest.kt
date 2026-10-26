@@ -8100,6 +8100,56 @@ class TransportWiringTest : TestBaseWithProfile() {
     }
 
     /**
+     * Toni 26.10.2026: DER FALL-STOPP DES KANALS UEBERLEBT DEN NEUSTART. Nach einem Stopp wegen Falls steigt der Kanal in
+     * derselben Hochphase erst wieder ein, wenn der Zucker nicht mehr faellt. Stand das nur im Speicher, stieg er nach
+     * einem Neustart mitten im langsamen Fall unter der gewoehnlichen Einstiegsregel sofort wieder ein (Geraetebefund
+     * nach einem Flash). Gegenprobe: ohne den gespeicherten Stopp steigt er in derselben Lage ein.
+     */
+    @Test
+    fun `langsamer Kanal - der Fall-Stopp ueberlebt den Neustart`(@TempDir dir: File) = runBlocking<Unit> {
+        flach = 230.0
+        steigungProMin = 0.0
+        // Der Normalpfad gibt hier nie einen SMB - so ist der Kanal allein messbar.
+        maxSmbU = 0.0
+        langsamerKanal(an = true, einstieg = 0)
+        clock = start
+        rigTbr = null
+        transportReset()
+        val adapter = FuseLedgerAdapter().also { it.loadOnce(dir.also(File::mkdirs), "test-epoch", start) }
+        neuerRunner(adapter)
+        val anfang = (0 until 10).map { zyklusMitPumpe() }
+        assertTrue(anfang.any { it.first.slowChannel?.reason == "START" }) { "Probe zeigt nichts: kein Einstieg\n${kanalBericht(anfang)}" }
+
+        // Erst steil fallend (Stopp), dann nur noch leicht - zwischen der Stopp- und der Wiedereinstiegsgrenze.
+        val jetztMin = ((clock - start) / 60_000L).toInt()
+        knickAbMin = jetztMin
+        steigungNachKnick = -2.0
+        knick2AbMin = jetztMin + 8
+        steigungNachKnick2 = -0.25
+        val fall = (0 until 25).map { zyklusMitPumpe() }
+        val bericht = kanalBericht(fall)
+        assertTrue(fall.any { it.first.slowChannel?.reason == "STOP_FALLING" }) { "Probe zeigt nichts: kein Fall-Stopp\n$bericht" }
+        val wartet = fall.last().first.slowChannel!!
+        assertEquals("WAIT_ENTRY", wartet.reason) { bericht }
+        assertEquals("nach Fall", wartet.detail) { bericht }
+        assertTrue(adapter.persistVerified(dir)) { "der Zustand muss versiegelt werden" }
+        assertTrue(nachNeustart(dir).slowChannelFallStoppedTs > 0L) { "der Fall-Stopp steht nicht in der Datei" }
+
+        // Neustart in derselben Lage: der Kanal bleibt draussen.
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock) })
+        val nach = (0 until 5).map { zyklusMitPumpe() }
+        val nachBericht = kanalBericht(nach)
+        assertTrue(nach.none { it.first.slowChannel?.reason == "START" }) { "nach dem Neustart wieder eingestiegen\n$nachBericht" }
+        assertTrue(nach.none { (_, k) -> k != null && k.rateUPerH > 0.0 }) { "nach dem Neustart gesetzt\n$nachBericht" }
+        assertEquals("nach Fall", nach.last().first.slowChannel!!.detail) { nachBericht }
+
+        // Gegenprobe: derselbe Neustart ohne den gespeicherten Stopp steigt ein.
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(dir, "test-epoch", clock); it.episodes.slowChannelFallStoppedTs = 0L })
+        val ohne = (0 until 5).map { zyklusMitPumpe() }
+        assertTrue(ohne.any { it.first.slowChannel?.reason == "START" }) { "Gegenprobe zeigt nichts\n${kanalBericht(ohne)}" }
+    }
+
+    /**
      * DAS EINE SCHLIESST DAS ANDERE NICHT AUS (Toni): die positive TBR laeuft wie das Profilbasal nebenher und darf
      * die Versorgung ueber den schnellen Kanal weder bremsen noch verzoegern - beide bedienen einen gemeinsamen
      * Restbedarf. Derselbe dosierende Verlauf mit und ohne Kanal:
