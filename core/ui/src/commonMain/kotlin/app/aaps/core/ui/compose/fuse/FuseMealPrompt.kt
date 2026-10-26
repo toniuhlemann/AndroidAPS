@@ -25,7 +25,8 @@ import app.aaps.core.ui.compose.stringResource
  *
  * With an expectation account: "Mahlzeit", "Snack" (Toni 24.10.2026: the same account with the smaller snack scale)
  * or "Nur Marker - 0 U", one below the other, each with the amount that goes out at once at most. Without an account
- * only "Nur Marker - 0 U". A measured low, manual insulin of the last hour and an evidence window that runs out are
+ * only "Nur Marker - 0 U". The text says in one sentence that "Nur Marker" gives nothing at the press and FUSE only
+ * reacts when glucose rises. A measured low, manual insulin of the last hour and an evidence window that runs out are
  * named in the text. A choice acts exactly once (double tap protection, as in the fork). Whether to ask at all is
  * decided by FUSE ([FuseOverviewSource.fuseMarkerPrompt]), not here.
  */
@@ -47,6 +48,7 @@ fun FuseMealPromptDialog(
             else stringResource(CoreUiStrings.fuse_meal_confirm_no_account)
         )
         snackMaxU?.let { append(" ").append(stringResource(CoreUiStrings.fuse_meal_confirm_snack_text, it)) }
+        append("\n\n").append(stringResource(CoreUiStrings.fuse_meal_confirm_no_prime_text))
         if (facts.measuredLow) append("\n\n").append(stringResource(CoreUiStrings.fuse_meal_confirm_low))
         facts.foreignBolusU?.takeIf { it > 0.0 }?.let { append("\n\n").append(stringResource(CoreUiStrings.fuse_meal_confirm_foreign, it)) }
         facts.episodeRestMin?.let { append("\n\n").append(stringResource(CoreUiStrings.fuse_meal_confirm_episode, it)) }

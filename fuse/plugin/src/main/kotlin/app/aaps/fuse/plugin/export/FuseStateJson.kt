@@ -2085,6 +2085,11 @@ object FuseStateJson {
         .put("rearmUpUkf", fin(p.rearmUpUkf))
         .put("livenessBgMinDayMgdl", fin(p.livenessBgMinDayMgdl))
         .put("livenessBgMinNightMgdl", fin(p.livenessBgMinNightMgdl))
+        // Toni 26.10.: die Kanalschwelle fuer "Nur Marker" nur, wenn gesetzt - sonst bleibt der Block bitgleich.
+        .apply {
+            if (p.livenessBgMinMarkerOnlyMgdl != app.aaps.fuse.plugin.FuseDoubleKey.LivenessBgMinMarkerOnlyMgdl.defaultValue)
+                put("livenessBgMinMarkerOnlyMgdl", fin(p.livenessBgMinMarkerOnlyMgdl))
+        }
         // E-034: nur bei eingeschaltetem Konto - konfiguriert wie eingestellt,
         // dazu, ob die Erwartung damit gilt.
         .apply {
@@ -2307,6 +2312,12 @@ object FuseStateJson {
         // HCL Stufe 2 (Toni 25.10.2026): die Anrechnung der Bolusrechner-Mahlzeiten nur, wenn sie gilt (Konto UND
         // Schalter) - sonst bleibt jeder bisherige Hash bitgleich.
         val hclTeile = if (p.expectationAccountEnabled && p.hclMealsEnabled) listOf("hclMeals:on") else emptyList()
+        // Toni 26.10.2026: die Kanalschwelle fuer "Nur Marker" nur, wenn gesetzt - ohne sie bleibt jeder bisherige
+        // Hash bitgleich (0 = Tag/Nacht wie bisher).
+        val nurMarkerTeile = listOfNotNull(
+            p.livenessBgMinMarkerOnlyMgdl.takeIf { it != app.aaps.fuse.plugin.FuseDoubleKey.LivenessBgMinMarkerOnlyMgdl.defaultValue }
+                ?.let { "livenessMarkerOnly:" + Sha.lossless(it) },
+        )
         // v38-ABSCHLUSS (A5-Neutralitaet, Toni 29.08.): die Hash-Eingaenge
         // sind CENTRAL-only die vier Profilwerte (+ die MEAL-Schwelle als
         // eigener Zustand). Der Konstanten-Marker "legacyProfileCaps:
@@ -2419,7 +2430,7 @@ object FuseStateJson {
                 true,
                 p.absorptionCreditWindowMin,
                 p.markerBoostMaxMin,
-            ).map { it.toString() } + modusTeile + kontoTeile + fruehTeile + slowTeile(p) + hclTeile
+            ).map { it.toString() } + modusTeile + kontoTeile + fruehTeile + slowTeile(p) + hclTeile + nurMarkerTeile
         return Sha.of(parts.joinToString("|"))
     }
 

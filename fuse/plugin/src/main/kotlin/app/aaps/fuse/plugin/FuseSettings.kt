@@ -190,9 +190,11 @@ object FuseSettings {
                 "Liveness-Kanal",
                 "Mengenbegrenzter Zusatzkanal bei anhaltend steigendem Zucker ueber der " +
                     "Druck-Schwelle, wenn Guard oder Schwanz den Normalpfad deckeln. " +
-                    "Unabhaengig von Marker und Mahlzeitenfenster.",
+                    "Im Fenster von Mahlzeit, Snack und Bolusrechner aus (dort dosiert das Konto); " +
+                    "bei \"Nur Marker\" an, mit den Mahlzeit-Deckeln.",
             ),
             FuseBooleanKey.LivenessChannelEnabled, FuseDoubleKey.LivenessBgMinDayMgdl, FuseDoubleKey.LivenessBgMinNightMgdl,
+            FuseDoubleKey.LivenessBgMinMarkerOnlyMgdl,
             FuseIntKey.LivenessReArmMin,
             info(
                 "Langsamer Korrekturkanal",

@@ -672,11 +672,91 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             val konto = zyklen.mapNotNull { it.o.erwartungskonto?.zyklus?.state }.first()
             assertEquals(0.0, konto.a0U, 0.0)
             assertTrue(zyklen.all { (it.o.erwartungskonto?.buchung?.split?.dErwU ?: 0.0) == 0.0 })
-            // Die Ersetzung gilt trotzdem.
-            assertTrue(zyklen.any { it.o.erwartungskonto!!.gilt && it.o.livenessDenial == "EXPECTATION_ACCOUNT" })
+            // Das Konto gilt trotzdem (Fensterregeln); der Kanal bleibt an (Toni 26.10., eigener Test unten).
+            assertTrue(zyklen.any { it.o.erwartungskonto!!.gilt })
         } finally {
             ohneVorschuss = false
         }
+    }
+
+    /**
+     * TONI 26.10.: "Nur Marker" laesst den Liveness-Kanal an - das Konto ohne Budget dosiert selbst nichts, und ohne
+     * Kanal reagierte FUSE im Fenster nur ueber den Normalweg. Er laeuft mit den Deckeln des Mahlzeitkontexts.
+     * Gegenproben: bei "Mahlzeit" und beim Marker des Bolusrechners ist er im Fenster aus wie bisher.
+     */
+    @Test
+    fun `Nur Marker laesst den Kanal an - Mahlzeit und Bolusrechner nicht`(@TempDir dir: File) = runBlocking<Unit> {
+        fun imFenster(z: List<Zyklus>) = z.filter { it.o.erwartungskonto?.gilt == true }
+        ohneVorschuss = true
+        val nurMarker = try {
+            konfiguration(kontoAn = true)
+            imFenster(lauf(fStabil, File(dir, "nurMarker")).filter { it.o.abortReason == null })
+        } finally {
+            ohneVorschuss = false
+        }
+        assertTrue(nurMarker.isNotEmpty()) { "Probe zeigt nichts: kein Kontofenster" }
+        assertTrue(nurMarker.none { it.o.livenessDenial == "EXPECTATION_ACCOUNT" }) { "Nur Marker: Kanal im Fenster aus" }
+        // Mit den Deckeln des Mahlzeitkontexts (EXCLUDED = harter Riegel, dann gibt es keine Deckel).
+        val bewertet = nurMarker.filter { it.o.livenessProfile != null }
+        assertTrue(bewertet.any { it.o.livenessProfile == "MEAL" }) { "Probe zeigt nichts: der Kanal lief im Fenster nie" }
+        assertTrue(bewertet.none { it.o.livenessProfile == "CORRECTION" }) { "Korrekturdeckel im Fenster" }
+        // Der Kanal hat geliefert - und das Konto ohne Budget bucht das nie als Erwartungsanteil.
+        assertTrue(nurMarker.any { it.o.livenessLiftU > 0.0 && it.geliefertU > 0.0 }) { "Probe zeigt nichts: der Kanal gab nie etwas" }
+        for (z in nurMarker) {
+            val split = z.o.erwartungskonto?.buchung?.split ?: continue
+            assertEquals(0.0, split.dErwU, 0.0, "Minute ${z.minute}: Erwartungsanteil gebucht")
+            assertEquals(0.0, split.violationU, 0.0, "Minute ${z.minute}: Verstoss gebucht")
+        }
+
+        val mahlzeit = imFenster(fruehLauf(fStabil, File(dir, "mahlzeit")) {
+            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
+        })
+        assertTrue(mahlzeit.isNotEmpty()) { "Probe zeigt nichts: kein Fenster der Mahlzeit" }
+        assertTrue(mahlzeit.all { it.o.livenessDenial == "EXPECTATION_ACCOUNT" }) { "Mahlzeit: Kanal im Fenster an" }
+
+        val hcl = imFenster(hclLauf(fHcl, File(dir, "hcl")) { hclKonfiguration(schalter = true) })
+        assertTrue(hcl.isNotEmpty()) { "Probe zeigt nichts: kein Fenster des Bolusrechners" }
+        assertTrue(hcl.all { it.o.livenessDenial == "EXPECTATION_ACCOUNT" }) { "Bolusrechner: Kanal im Fenster an" }
+    }
+
+    /**
+     * TONI 26.10.: die eigene Kanalschwelle fuer "Nur Marker". 0 (Vorgabe) = Tag/Nacht; gesetzt gilt sie im Fenster von
+     * "Nur Marker", ein Wert unter 100 zaehlt wie 100. Nach dem Fenster gilt wieder Tag/Nacht.
+     */
+    @Test
+    fun `die Schwelle Nur Marker gilt nur im Fenster von Nur Marker, 0 heisst Tag und Nacht`(@TempDir dir: File) = runBlocking<Unit> {
+        suspend fun nurMarkerLauf(name: String, schwelle: Double): List<Zyklus> {
+            ohneVorschuss = true
+            try {
+                konfiguration(kontoAn = true)
+                whenever(preferences.get(FuseDoubleKey.LivenessBgMinMarkerOnlyMgdl)).thenReturn(schwelle)
+                return lauf(fStabil, File(dir, name)).filter { it.o.abortReason == null }
+            } finally {
+                ohneVorschuss = false
+            }
+        }
+        fun imFenster(z: List<Zyklus>) = z.filter { it.o.erwartungskonto?.gilt == true && it.o.livenessBgMinSource != null }
+
+        val abWerk = imFenster(nurMarkerLauf("abWerk", 0.0))
+        assertTrue(abWerk.isNotEmpty()) { "Probe zeigt nichts: keine Schwelle im Fenster" }
+        assertTrue(abWerk.all { it.o.livenessBgMinSource == "DAY" || it.o.livenessBgMinSource == "NIGHT" }) {
+            "ab Werk: ${abWerk.map { it.o.livenessBgMinSource }.toSet()}"
+        }
+
+        val gesetzt = nurMarkerLauf("gesetzt", 120.0)
+        val fenster = imFenster(gesetzt)
+        assertTrue(fenster.isNotEmpty())
+        for (z in fenster) {
+            assertEquals("MARKER_ONLY", z.o.livenessBgMinSource, "Minute ${z.minute}")
+            assertEquals(120.0, z.o.livenessBgMinEffectiveMgdl!!, 0.0, "Minute ${z.minute}")
+        }
+        val danach = gesetzt.filter { it.minute > 0 && it.o.erwartungskonto?.gilt != true && it.o.livenessBgMinSource != null }
+        assertTrue(danach.isNotEmpty()) { "Probe zeigt nichts: kein Zyklus nach dem Fenster" }
+        assertTrue(danach.none { it.o.livenessBgMinSource == "MARKER_ONLY" }) { "nach dem Fenster noch die Nur-Marker-Schwelle" }
+
+        val tief = imFenster(nurMarkerLauf("tief", 80.0))
+        assertTrue(tief.isNotEmpty())
+        assertTrue(tief.all { it.o.livenessBgMinEffectiveMgdl == 100.0 }) { "unter 100: ${tief.map { it.o.livenessBgMinEffectiveMgdl }.toSet()}" }
     }
 
     @Test
@@ -2354,8 +2434,14 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
      */
     @Test
     fun `HCL Schalter aus - dieselbe Dosierung wie Nur Marker, keine Anrechnung, Hash unveraendert`(@TempDir dir: File) = runBlocking<Unit> {
-        val aus = hclLauf(fHcl, File(dir, "aus").also(File::mkdirs)) { hclKonfiguration(schalter = false) }
-        val nurMarker = hclLauf(fHcl, File(dir, "nurMarker").also(File::mkdirs), mitMarkerKennung = false) { hclKonfiguration(schalter = false) }
+        // Toni 26.10.: bei "Nur Marker" bleibt der Liveness-Kanal an, beim Marker des Bolusrechners nicht (dort ist das
+        // Insulin schon gegeben). Verglichen wird deshalb ohne Kanal - die Gleichheit betrifft die Anrechnung.
+        suspend fun ohneKanal(schalter: Boolean = false) {
+            hclKonfiguration(schalter = schalter)
+            whenever(preferences.get(FuseBooleanKey.LivenessChannelEnabled)).thenReturn(false)
+        }
+        val aus = hclLauf(fHcl, File(dir, "aus").also(File::mkdirs)) { ohneKanal() }
+        val nurMarker = hclLauf(fHcl, File(dir, "nurMarker").also(File::mkdirs), mitMarkerKennung = false) { ohneKanal() }
         assertEquals(nurMarker.map { it.minute }, aus.map { it.minute })
         for ((a, b) in aus.zip(nurMarker)) {
             val k = "Minute ${a.minute}"
@@ -2371,7 +2457,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         }
         assertTrue(nurMarker.sumOf { it.geliefertU } > 0.0) { "die Folge dosiert nicht - die Paarung vergleicht nichts" }
         // Eingeschaltet ist es ein anderer Regler - anderer Hash.
-        val an = hclLauf(fHcl, File(dir, "an").also(File::mkdirs)) { hclKonfiguration(schalter = true) }
+        val an = hclLauf(fHcl, File(dir, "an").also(File::mkdirs)) { ohneKanal(schalter = true) }
         assertTrue(an.first().o.configGeneration != aus.first().o.configGeneration) { "der Schalter steht nicht im Hash" }
     }
 

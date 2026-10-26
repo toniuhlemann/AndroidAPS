@@ -98,6 +98,9 @@ class FuseSchluesselRueckwegTest {
         // HCL Stufe 2 (Toni 25.10.2026): ab Werk AUS - aus setzt der Bolusrechner keinen Marker, und ohne HCL-Marker
         // rechnet der Runner bitgleich wie vorher (keine Mahlzeitbahn fuer den Guard).
         FuseBooleanKey.HclMealsEnabled.key to false,
+        // Toni 26.10.2026: 0 = im Fenster von "Nur Marker" gilt die Tag- bzw. Nachtschwelle des Kanals. (Dass der Kanal
+        // bei "Nur Marker" an bleibt, ist eine Regel der Wahl am Knopf und haengt nicht an diesem Schluessel.)
+        FuseDoubleKey.LivenessBgMinMarkerOnlyMgdl.key to 0.0,
     )
 
     /**

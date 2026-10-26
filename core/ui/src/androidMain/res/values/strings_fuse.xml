@@ -14,6 +14,7 @@
     <string name="fuse_meal_confirm_snack" comment="%1$.2f=hoechstens sofort abgehende Menge in Einheiten. Example: Snack · 1,50 U">Snack · %1$.2f U</string>
     <string name="fuse_meal_confirm_expectation_only_text" comment="%1$.2f=Obergrenze des Mahlzeit-Budgets in Einheiten">Am Knopf steht, wie viel höchstens sofort abgeht (bei stabilem Zucker). Der Rest bis zum Budget kommt, wenn sich die Mahlzeit zeigt. Budget Mahlzeit: bis %1$.2f U.</string>
     <string name="fuse_meal_confirm_snack_text" comment="%1$.2f=Obergrenze des Snack-Budgets in Einheiten">Budget Snack: bis %1$.2f U.</string>
+    <string name="fuse_meal_confirm_no_prime_text">Nur Marker: kein Insulin beim Druck – FUSE reagiert erst, wenn der Zucker steigt.</string>
     <string name="fuse_meal_confirm_no_account">Das Erwartungskonto ist gerade nicht verfügbar (keine gültige Kurve, kein Profil oder Insulinmodell). Möglich ist nur „Nur Marker · 0 U“.</string>
     <string name="fuse_meal_confirm_low">Zucker ist TIEF.</string>
     <string name="fuse_meal_confirm_foreign" comment="%1$.2f=manueller Bolus der letzten Stunde in Einheiten">Achtung: %1$.2f U manueller Bolus in der letzten Stunde. Das Konto rechnet ihn als vorhandenes Insulin an, das Budget bleibt — beides zusammen wirkt.</string>

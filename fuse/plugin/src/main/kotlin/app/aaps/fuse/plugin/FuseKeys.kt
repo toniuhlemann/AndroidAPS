@@ -316,6 +316,14 @@ enum class FuseDoubleKey(
      */
     LivenessBgMinNightMgdl("fuse_liveness_bg_min_night_mgdl", 160.0, 100.0, 250.0, title = TextRef.AndroidRes(R.string.fuse_liveness_bg_min_night_title), summary = TextRef.AndroidRes(R.string.fuse_liveness_bg_min_night_summary), unitType = UnitType.MGDL),
 
+    /**
+     * Toni 26.10.: BG-Schwelle der Druckbedingung im Fenster von "Nur Marker" [mg/dl]. Dort bleibt der Kanal an, denn
+     * das Konto ohne Budget dosiert selbst nichts. 0 (Standard) = die Tag- bzw. Nachtschwelle; ein Wert unter 100
+     * zaehlt wie 100 (dieselbe Untergrenze wie Tag und Nacht). Ein NEUER Schluessel - der alte MEAL-Schluessel aus 1.x
+     * bleibt stillgelegt, damit ein dort noch gespeicherter Wert nicht ungefragt wieder wirkt.
+     */
+    LivenessBgMinMarkerOnlyMgdl("fuse_liveness_bg_min_marker_only_mgdl", 0.0, 0.0, 250.0, title = TextRef.AndroidRes(R.string.fuse_liveness_bg_min_marker_only_title), summary = TextRef.AndroidRes(R.string.fuse_liveness_bg_min_marker_only_summary), unitType = UnitType.MGDL),
+
     /** Totband der NACHT [mg/dl ueber Ziel]: darunter kein SMB im Nachtfenster.
      *  0 = aus. Ein erklaerter Marker hebt es auf (Toni 09.08.). */
     NightDeadbandMgdl("fuse_night_deadband_mgdl", 45.0, 0.0, 100.0, title = TextRef.AndroidRes(R.string.fuse_night_deadband_title), summary = TextRef.AndroidRes(R.string.fuse_night_deadband_summary), unitType = UnitType.MGDL),

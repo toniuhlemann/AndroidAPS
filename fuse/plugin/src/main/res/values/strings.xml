@@ -113,6 +113,8 @@
     <string name="fuse_corr_demand_ratio_summary">Deckel der Bedarfs-Ratio im CORRECTION-Profil. Nie groesser als der MEAL-Wert.</string>
     <string name="fuse_liveness_bg_min_title">Druck-Schwelle Tag [mg/dl]</string>
     <string name="fuse_liveness_bg_min_summary">BG-Schwelle der Druckbedingung am Tag: bewaffnet wird nur oberhalb. Vorgabe 140 (nachts gilt die eigene Nacht-Schwelle, Vorgabe 160); die Therapieentscheidung faellt erst mit der Aktivierung. Eine Aenderung waehrend eines aktiven Laufs beendet ihn, und die Bestaetigungszyklen beginnen unter der neuen Schwelle neu.</string>
+    <string name="fuse_liveness_bg_min_marker_only_title">Druck-Schwelle Nur Marker [mg/dl]</string>
+    <string name="fuse_liveness_bg_min_marker_only_summary">Schwelle des Kanals im Fenster von \"Nur Marker\" (Marker ohne Insulin am Druck). Dort bleibt der Kanal an und reagiert mit den Mahlzeit-Deckeln, sobald der Zucker steigt. 0 (Vorgabe) = die Tag- bzw. Nachtschwelle; ein Wert unter 100 zaehlt wie 100. Bei Mahlzeit, Snack und Bolusrechner ist der Kanal im Markerfenster aus. Eine Aenderung waehrend eines aktiven Laufs beendet ihn.</string>
     <string name="fuse_liveness_bg_min_night_title">Druck-Schwelle Nacht [mg/dl]</string>
     <string name="fuse_liveness_bg_min_night_summary">Eigene, meist konservativere Schwelle im Nachtfenster (dasselbe Fenster wie das Nacht-Totband, aber unabhaengig von dessen Schalter). Solange sie NIE gesetzt wurde, folgt sie der Tagesschwelle - ein Update aendert nichts still. Tag/Nacht-Wechsel beendet keinen Lauf per CONFIG_CHANGED; faellt der BG beim Wechsel unter die neue Schwelle, endet ein Lauf als Druckverlust ohne Sperre.</string>
     <string name="fuse_liveness_rearm_title">Re-Arm-Sperre [min]</string>

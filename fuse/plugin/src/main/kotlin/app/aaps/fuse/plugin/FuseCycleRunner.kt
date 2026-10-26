@@ -493,6 +493,7 @@ class FuseCycleRunner(
             require(it.livenessReArmMin in FuseIntKey.LivenessReArmMin.min..FuseIntKey.LivenessReArmMin.max) { "livenessReArmMin=${it.livenessReArmMin}" }
             require(it.livenessBgMinDayMgdl.isFinite() && it.livenessBgMinDayMgdl in FuseDoubleKey.LivenessBgMinDayMgdl.min..FuseDoubleKey.LivenessBgMinDayMgdl.max) { "livenessBgMinDayMgdl=${it.livenessBgMinDayMgdl}" }
             require(it.livenessBgMinNightMgdl.isFinite() && it.livenessBgMinNightMgdl in FuseDoubleKey.LivenessBgMinNightMgdl.min..FuseDoubleKey.LivenessBgMinNightMgdl.max) { "livenessBgMinNightMgdl=${it.livenessBgMinNightMgdl}" }
+            require(it.livenessBgMinMarkerOnlyMgdl.isFinite() && it.livenessBgMinMarkerOnlyMgdl in FuseDoubleKey.LivenessBgMinMarkerOnlyMgdl.min..FuseDoubleKey.LivenessBgMinMarkerOnlyMgdl.max) { "livenessBgMinMarkerOnlyMgdl=${it.livenessBgMinMarkerOnlyMgdl}" }
         }
 
         /** Raster des selbst gebauten IOB-Arrays. 5 min wie in AAPS — feiner
@@ -4443,11 +4444,16 @@ class FuseCycleRunner(
         // State-Konstruktion bestimmt (Kontextgrenze in der Grant-Bildung,
         // Kontext-Ratio-Cap in der Kappenliste des Reglers) - s. oben.
         val livenessNormalSmbU = nachAufschub.smbU
+        // TONI 26.10.: "Nur Marker" laesst den Kanal an - ein Konto ohne Budget dosiert selbst nichts, und ohne Kanal
+        // reagierte FUSE in diesem Fenster nur ueber den Normalweg (Guard ohne Mahlzeit) und den langsamen Kanal. Er
+        // laeuft mit den Deckeln des Mahlzeitkontexts wie in 1.x. Ein Marker des Bolusrechners bleibt aus (dort ist
+        // das Insulin schon gegeben), ebenso jedes Konto mit Budget (Mahlzeit, Snack).
+        val kanalNurMarker = ekZyklus != null && markerNoPrime && markerHclCalcTs == 0L && ekZyklus.state.a0U <= 1e-9
         val decisionVorEndpruefung: FuseController.Decision = run {
             // E-034: im Mahlzeitkontext des Kontos ist der Kanal aus - Lauf und
             // Streak enden, bestehende Sperren bleiben. Im Korrekturkontext
-            // (nach dem Fenster) laeuft er wie bisher.
-            if (ekZyklus != null) {
+            // (nach dem Fenster) laeuft er wie bisher. Ausnahme "Nur Marker" (s. oben).
+            if (ekZyklus != null && !kanalNurMarker) {
                 if (livenessActive) livenessExit = "EXPECTATION_ACCOUNT"
                 livenessActive = false
                 livenessStreak = 0
@@ -4508,7 +4514,8 @@ class FuseCycleRunner(
             val cfgJetzt = cfg.livenessBgMinDayMgdl.toString() + "|" +
                 cfg.livenessBgMinNightMgdl + "|" +
                 cfgRatioCorr + "|" + cfgIobCorr + "|" +
-                cfg.livenessReArmMin
+                cfg.livenessReArmMin + "|" +
+                cfg.livenessBgMinMarkerOnlyMgdl
             // ERST gemerkt, ANGEWENDET erst nach den harten Riegeln (Audit
             // 22.08.): faellt die Aenderung mit einem gemessenen Riegel
             // zusammen, gewinnt der Riegel-Exit MIT Sperre - der sperrfreie
@@ -4523,12 +4530,19 @@ class FuseCycleRunner(
                 MidnightUtils.secondsFromMidnight(signal.sourceTs), cfg.nightStartMin, cfg.nightEndMin,
             )
             val tagNachtMin = if (nachtFenster) cfg.livenessBgMinNightMgdl else cfg.livenessBgMinDayMgdl
-            // Konsolidierung 2.0: die MEAL-Druckschwelle (M1) ist entfallen - es gilt Tag/Nacht.
+            // Konsolidierung 2.0: die MEAL-Druckschwelle (M1) ist entfallen - es gilt Tag/Nacht. TONI 26.10.: im
+            // Fenster von "Nur Marker" die eigene Schwelle, wenn gesetzt (0 = Tag/Nacht, unter 100 zaehlt wie 100).
             // Gemessene Riegel (Tief, Fallen, Rebound, Descent) stehen
             // unveraendert VOR der Druckpruefung.
-            val bgMinWirksam = tagNachtMin
+            val nurMarkerMin = cfg.livenessBgMinMarkerOnlyMgdl.takeIf { kanalNurMarker && it > 0.0 }
+                ?.let { kotlin.math.max(FuseDoubleKey.LivenessBgMinDayMgdl.min, it) }
+            val bgMinWirksam = nurMarkerMin ?: tagNachtMin
             livenessBgMinEffective = bgMinWirksam
-            livenessBgMinSource = if (nachtFenster) "NIGHT" else "DAY"
+            livenessBgMinSource = when {
+                nurMarkerMin != null -> "MARKER_ONLY"
+                nachtFenster -> "NIGHT"
+                else -> "DAY"
+            }
             // ---- SCHATTEN-BEDARF VOR DEN TOREN (Toni 14.09., dosierneutral) --
             // DIESELBEN reinen Funktionen wie die Kandidatenrechnung unten, mit
             // denselben Zyklus-Eingaben - nur ohne Tore, ohne Zustand, ohne
@@ -5737,10 +5751,15 @@ class FuseCycleRunner(
             ekBuchen(
                 z, episodes, actuatedU,
                 gemessenKappeU = if (fruehGilt) fruehGemessenFreiU else Double.POSITIVE_INFINITY,
-                // A (Toni): die Menge des Normalbedarfs im Kontofenster verbraucht kein Budget.
-                normalU = if (decisionVorEndpruefung.normalDemandInAccountWindow &&
-                    exposureRequestedSourceWert in EK_NORMALWEG
-                ) actuatedU else 0.0,
+                // A (Toni): die Menge des Normalbedarfs im Kontofenster verbraucht kein Budget. Toni 26.10.: ebenso die
+                // Menge des Kanals bei "Nur Marker" - das Konto ohne Budget hat sie nicht finanziert, sie ist kein
+                // Erwartungsanteil (sonst stuende sie als Verstoss gegen das Budget 0 im Buch).
+                normalU = when {
+                    kanalNurMarker && exposureRequestedSourceWert == app.aaps.fuse.core.controller.ExposureGate.FinalSource.LIVENESS ->
+                        actuatedU
+                    decisionVorEndpruefung.normalDemandInAccountWindow && exposureRequestedSourceWert in EK_NORMALWEG -> actuatedU
+                    else -> 0.0
+                },
             )
         }
         val smbVerdict = app.aaps.fuse.core.controller.SmbStatus.of(
@@ -6461,7 +6480,7 @@ class FuseCycleRunner(
         if (konto == null || konto.authId != dosingCtx.authorizationId) {
             // KONSOLIDIERUNG: jeder Druck bucht ein v2-Konto. "Nur Erwartung" bucht das Gesamtbudget nach Kurve;
             // "Nur Marker" (Toni: fuer Snacks oder unsichere Mahlzeiten) bucht Budget 0 - dann fliesst nur der
-            // gemessene Anteil. Konsolidierung 2.0: das Konto v1 ist entfallen - ist die fruehe Versorgung aus oder
+            // gemessene Anteil, und der Liveness-Kanal bleibt an (Toni 26.10.). Konsolidierung 2.0: das Konto v1 ist entfallen - ist die fruehe Versorgung aus oder
             // ungueltig eingestellt, bucht der Druck ein v2-Konto mit Budget 0 und neutralen Pins (keine Portion,
             // kein Schalter); bei ungueltigen Kontoparametern ein Konto ohne Erwartung. Weniger Insulin, nie mehr.
             val params = cfg.expectationParams
@@ -8231,6 +8250,8 @@ class FuseCycleRunner(
         val livenessBgMinDayMgdl: Double,
         val livenessBgMinNightMgdl: Double,
         val livenessReArmMin: Int,
+        /** Toni 26.10.: Druckschwelle des Kanals im Fenster von "Nur Marker" [mg/dl]; 0 = Tag/Nacht. */
+        val livenessBgMinMarkerOnlyMgdl: Double = FuseDoubleKey.LivenessBgMinMarkerOnlyMgdl.defaultValue,
         /** Die Null sofort verlassen, sobald ihr Schutzgrund weg ist. */
         val endZeroWhenReasonGone: Boolean,
         // ---- ERWARTUNGSKONTO (Testkandidat E-034), Default AUS -------------
@@ -8374,6 +8395,7 @@ class FuseCycleRunner(
         // beendet; ein bewusst gesetzter Wert bleibt unangetastet.
         livenessBgMinNightMgdl = preferences.get(FuseDoubleKey.LivenessBgMinNightMgdl),
         livenessReArmMin = preferences.get(FuseIntKey.LivenessReArmMin),
+        livenessBgMinMarkerOnlyMgdl = preferences.get(FuseDoubleKey.LivenessBgMinMarkerOnlyMgdl),
         endZeroWhenReasonGone = preferences.get(FuseBooleanKey.TbrEndZeroWhenReasonGone),
     ).let { mitErwartungskonto(it) }.let { pruefarm?.anwenden(it) ?: it }.also { validate(it) }
 

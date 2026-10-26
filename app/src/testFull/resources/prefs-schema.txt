@@ -277,6 +277,7 @@ fuse_ledger_reparatur|FuseIntentKey|false
 fuse_ledger_sperre|FuseIntentKey|false
 fuse_ledger_wiederherstellung|FuseIntentKey|false
 fuse_liability_horizon_min|FuseIntKey|true
+fuse_liveness_bg_min_marker_only_mgdl|FuseDoubleKey|true
 fuse_liveness_bg_min_meal_mgdl|FuseRetiredKey|true
 fuse_liveness_bg_min_mgdl|FuseDoubleKey|true
 fuse_liveness_bg_min_night_mgdl|FuseDoubleKey|true

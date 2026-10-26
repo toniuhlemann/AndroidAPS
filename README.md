@@ -98,7 +98,11 @@ with stable glucose):
   is set up.
 - **"Snack"** — the same account, but the budget uses the smaller *snack scale* (setting *Skalierer bei Snack*, factory
   1.0). A snack never books more than a meal.
-- **"Nur Marker · 0 U"** (*marker only*) — declares the meal with a budget of zero. Useful for uncertain meals.
+- **"Nur Marker · 0 U"** (*marker only*) — declares the meal with a budget of zero: nothing goes out at the press.
+  Useful for uncertain, slow or fat-rich meals. In this window the liveness channel stays on (with the meal limits),
+  so FUSE reacts when glucose rises; its own threshold is the setting *Druck-Schwelle Nur Marker* (0 = day/night
+  threshold). With "Mahlzeit", "Snack" and a bolus-wizard meal the channel stays off in the window, because the
+  account doses there.
 
 **What a press changes.** For the meal authorization (default **120 minutes**) each cycle runs in the **MEAL** dosing
 profile with a larger exposure limit, and the rebound window after a low no longer blocks meal dosing. Afterwards FUSE
@@ -341,7 +345,9 @@ prüft jede mit der angekündigten Mahlzeit. Ein gemessenes Tief, das gemessene 
 größer als die Kurve, darf das Konto den Überschuss zusätzlich geben, höchstens den eingestellten **Nachschlag** (Anteil
 des Budgets, ab Werk 0 = aus). Am Knopf wählt man „Mahlzeit“, „Snack“ (dasselbe Konto mit dem kleineren
 Snack-Skalierer, ab Werk 1,0 — nie mehr als eine Mahlzeit) oder „Nur Marker · 0 U“; jeder Knopf zeigt, wie viel
-höchstens sofort abgeht. Ohne Kurve dosiert FUSE wie ohne Marker.
+höchstens sofort abgeht. Bei „Nur Marker“ geht beim Druck nichts ab, und der Liveness-Kanal bleibt im Fenster an (mit
+den Mahlzeit-Grenzen und eigener Schwelle „Druck-Schwelle Nur Marker“, 0 = Tag/Nacht) — gedacht für langsame oder
+fettreiche Mahlzeiten. Ohne Kurve dosiert FUSE wie ohne Marker.
 
 **Sicherheit.** Alle Prüfungen lesen die pessimistische Bahn. Grenzen unter anderem: Guard-Boden 70 mg/dl,
 Expositionsgrenze je Profil (Korrektur 3,0 U, Mahlzeit 7,0 U), capIOB = max(Netto-IOB, Bolus-IOB), maxIOB, Nacht- und

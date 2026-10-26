@@ -196,7 +196,8 @@ interface FuseOverviewSource {
     /**
      * @param ohneVorschuss true = "Nur Marker - 0 U": die Mahlzeit ist angekuendigt (Fensterregeln, Rampen und
      * Totband-Oeffnung wie immer), aber ohne Erwartungsinsulin - das Konto laeuft ohne Budget, nur der gemessene
-     * Anteil. Die Wahl faellt im Dialog des Knopfdrucks, nicht in den Einstellungen.
+     * Anteil, und der Liveness-Kanal bleibt an (Toni 26.10.2026). Die Wahl faellt im Dialog des Knopfdrucks, nicht
+     * in den Einstellungen.
      */
     suspend fun fuseMarkerToggle(
         now: Long,
