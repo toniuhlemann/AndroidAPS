@@ -4679,7 +4679,10 @@ class FuseCycleRunner(
             // der Torausdruck ist wieder `reboundRaw && !override`; im Rueckfall
             // ohne Konto sperrt das Rebound-Fenster nicht (Toni: es blockiert
             // die Mahlzeit nicht, solange die Vollmacht laeuft).
-            val reboundSperrt = reboundRaw && !reboundOverrideErlaubt && !kontoRueckfall
+            // TONI 26.10.: "Mahlzeitenanstieg hat immer Vorrang" - auch im Fenster von "Nur Marker" nicht, dort ist der
+            // Kanal der Weg der Mahlzeit (Budget 0). Die eigenen Riegel unten (gemessenes Tief, Abwaertsrisiko, Riegel,
+            // Fallen), die Mahlzeit-Deckel und die Schwelle "Nur Marker" bleiben.
+            val reboundSperrt = reboundRaw && !reboundOverrideErlaubt && !kontoRueckfall && !kanalNurMarker
             val hartNachRebound = when {
                 measuredLow -> "MEASURED_LOW"
                 descentRisk.active -> "DESCENT_RISK"

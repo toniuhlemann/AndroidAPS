@@ -101,8 +101,9 @@ with stable glucose):
 - **"Nur Marker · 0 U"** (*marker only*) — declares the meal with a budget of zero: nothing goes out at the press.
   Useful for uncertain, slow or fat-rich meals. In this window the liveness channel stays on (with the meal limits),
   so FUSE reacts when glucose rises; its own threshold is the setting *Druck-Schwelle Nur Marker* (0 = day/night
-  threshold). With "Mahlzeit", "Snack" and a bolus-wizard meal the channel stays off in the window, because the
-  account doses there.
+  threshold). A low earlier in the window does not hold the channel back afterwards (the rebound window does not
+  block a meal); a measured low, a predicted low and falling glucose still stop it. With "Mahlzeit", "Snack" and a
+  bolus-wizard meal the channel stays off in the window, because the account doses there.
 
 **What a press changes.** For the meal authorization (default **120 minutes**) each cycle runs in the **MEAL** dosing
 profile with a larger exposure limit, and the rebound window after a low no longer blocks meal dosing. Afterwards FUSE
@@ -347,7 +348,9 @@ des Budgets, ab Werk 0 = aus). Am Knopf wählt man „Mahlzeit“, „Snack“ (
 Snack-Skalierer, ab Werk 1,0 — nie mehr als eine Mahlzeit) oder „Nur Marker · 0 U“; jeder Knopf zeigt, wie viel
 höchstens sofort abgeht. Bei „Nur Marker“ geht beim Druck nichts ab, und der Liveness-Kanal bleibt im Fenster an (mit
 den Mahlzeit-Grenzen und eigener Schwelle „Druck-Schwelle Nur Marker“, 0 = Tag/Nacht) — gedacht für langsame oder
-fettreiche Mahlzeiten. Ohne Kurve dosiert FUSE wie ohne Marker.
+fettreiche Mahlzeiten. Ein Tief im Fenster hält den Kanal danach nicht zurück (das Rebound-Fenster sperrt keine
+Mahlzeit); gemessenes Tief, erwartetes Tief und fallender Zucker stoppen ihn weiter. Ohne Kurve dosiert FUSE wie ohne
+Marker.
 
 **Sicherheit.** Alle Prüfungen lesen die pessimistische Bahn. Grenzen unter anderem: Guard-Boden 70 mg/dl,
 Expositionsgrenze je Profil (Korrektur 3,0 U, Mahlzeit 7,0 U), capIOB = max(Netto-IOB, Bolus-IOB), maxIOB, Nacht- und

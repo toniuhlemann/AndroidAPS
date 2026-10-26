@@ -759,6 +759,45 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(tief.all { it.o.livenessBgMinEffectiveMgdl == 100.0 }) { "unter 100: ${tief.map { it.o.livenessBgMinEffectiveMgdl }.toSet()}" }
     }
 
+    /**
+     * TONI 26.10.: "Mahlzeitenanstieg hat immer Vorrang" - im Fenster von "Nur Marker" ist der Kanal der Weg der
+     * Mahlzeit, das Rebound-Fenster sperrt ihn dort nicht. Tief kurz nach dem Druck, danach langer Anstieg: ueber der
+     * Schwelle darf der Kanal geben, obwohl das Tief noch im Rebound-Fenster liegt - auch ohne Evidenz-Sonderrecht.
+     * Waehrend des gemessenen Tiefs bleibt er gesperrt (eigener Riegel).
+     */
+    @Test
+    fun `Nur Marker - das Rebound-Fenster sperrt den Kanal nach einem Tief nicht`(@TempDir dir: File) = runBlocking<Unit> {
+        ohneVorschuss = true
+        val zyklen = try {
+            konfiguration(kontoAn = true)
+            whenever(preferences.get(FuseIntKey.ReboundWindowMin)).thenReturn(REBOUND_FENSTER_MIN)
+            whenever(preferences.get(FuseDoubleKey.LivenessBgMinMarkerOnlyMgdl)).thenReturn(120.0)
+            lauf(fReboundNachDruck, dir).filter { it.o.abortReason == null && it.o.state != null && it.o.signal != null }
+        } finally {
+            ohneVorschuss = false
+        }
+        val imFenster = zyklen.filter { it.o.erwartungskonto?.gilt == true }
+        assertTrue(imFenster.none { it.o.livenessDenial == "REBOUND_ACTIVE" }) {
+            "Rebound sperrt den Kanal in Minute ${imFenster.filter { it.o.livenessDenial == "REBOUND_ACTIVE" }.map { it.minute }}"
+        }
+        // Die Lage, um die es geht: Rebound-Bedingung an, kein Evidenz-Sonderrecht, Zucker ueber der Schwelle.
+        val lage = imFenster.filter {
+            it.o.state!!.reboundSuppressedByMarker && !it.o.evidenceMayOverrideRebound && it.o.signal!!.q1 > 120.0
+        }
+        assertTrue(lage.isNotEmpty()) { "Probe zeigt nichts: keine Minute im Rebound-Fenster ohne Sonderrecht ueber der Schwelle" }
+        // Dort ist der Kanal frei und rechnet mit den Mahlzeit-Deckeln (ohne den Fix: EXCLUDED/REBOUND_ACTIVE). Ob er
+        // etwas gibt, entscheiden seine gewohnten Bedingungen - hier ist der Normalweg offen und liefert selbst.
+        assertTrue(lage.all { it.o.livenessProfile == "MEAL" }) {
+            "Kanal im Rebound-Fenster nicht frei: " + lage.joinToString { z ->
+                "${z.minute}/${z.o.signal!!.q1.toInt()}/${z.o.livenessDenial}/${z.o.livenessProfile}"
+            }
+        }
+        // Das gemessene Tief sperrt weiter.
+        val tief = imFenster.filter { it.o.signal!!.q1 < 70.0 }
+        assertTrue(tief.isNotEmpty()) { "Probe zeigt nichts: kein Tief im Fenster" }
+        assertTrue(tief.all { it.o.livenessLiftU == 0.0 }) { "Kanal gab im Tief" }
+    }
+
     @Test
     fun `Arm REF ist der Kandidat mit Schalter aus`(@TempDir dir: File) = runBlocking<Unit> {
         konfiguration(kontoAn = true)
