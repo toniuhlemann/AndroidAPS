@@ -2125,7 +2125,15 @@ object FuseStateJson {
                     .put("factor", fin(p.slowChannel.factor))
                     .put("thresholdMgdl", fin(p.slowChannel.thresholdMgdl))
                     .put("entryMin", p.slowChannel.entryMin)
-                    .put("settingsValid", p.slowChannel.violation() == null),
+                    .put("settingsValid", p.slowChannel.violation() == null)
+                    // Toni 27.10.2026: der Nachtfaktor nur, wenn gesetzt - ohne ihn bleibt der Block bitgleich.
+                    .apply {
+                        if (p.slowChannel.nightFactor > 0.0) {
+                            put("nightFactor", fin(p.slowChannel.nightFactor))
+                            put("nightStartMin", p.slowChannel.nightStartMin)
+                            put("nightEndMin", p.slowChannel.nightEndMin)
+                        }
+                    },
             )
         }
 
@@ -2446,6 +2454,13 @@ object FuseStateJson {
             Sha.lossless(p.slowChannel.factor),
             Sha.lossless(p.slowChannel.thresholdMgdl),
             p.slowChannel.entryMin.toString(),
+        ) + (
+            // Toni 27.10.2026: der Nachtfaktor nur, wenn gesetzt - ohne ihn bleibt jeder bisherige Hash bitgleich.
+            if (p.slowChannel.nightFactor > 0.0) listOf(
+                "slowNight:" + Sha.lossless(p.slowChannel.nightFactor),
+                p.slowChannel.nightStartMin.toString(),
+                p.slowChannel.nightEndMin.toString(),
+            ) else emptyList()
         )
 
     /** Der Trail-Block des langsamen Korrekturkanals. */
@@ -2470,6 +2485,7 @@ object FuseStateJson {
         .put("deliveredU", fin(x.deliveredU))
         .put("cancelledU", fin(x.cancelledU))
         .put("factor", fin(x.factor))
+        .put("factorSource", x.factorSource)
         .put("thresholdMgdl", fin(x.thresholdMgdl))
         .put("entryMin", x.entryMin)
 

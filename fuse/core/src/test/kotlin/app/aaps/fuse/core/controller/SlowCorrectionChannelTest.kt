@@ -86,6 +86,38 @@ class SlowCorrectionChannelTest {
         assertEquals(Reason.NO_DEMAND, SlowCorrectionChannel.step(sofort, input(0, bedarf = 0.0), Memory()).reason)
     }
 
+    /**
+     * Toni 27.10.2026: der Nachtfaktor - eine eigene Obergrenze im eigenen Nachtfenster (ab Werk 22-6 Uhr, ueber
+     * Mitternacht), nur wenn einer gesetzt ist. Unter 1,2 zaehlt wie 1,2; Beginn = Ende schaltet ihn aus.
+     */
+    @Test fun `Nachtfaktor gilt nur im eigenen Nachtfenster und nur wenn gesetzt`() {
+        fun sek(h: Int, m: Int = 0) = (h * 60 + m) * 60
+        val s = Settings(enabled = true, factor = 4.0, entryMin = 0, nightFactor = 2.0)
+        assertEquals(2.0, s.atTime(sek(22)).factor, 0.0)
+        assertEquals(2.0, s.atTime(sek(3)).factor, 0.0)
+        assertEquals(2.0, s.atTime(sek(5, 59)).factor, 0.0)
+        assertEquals(4.0, s.atTime(sek(6)).factor, 0.0)
+        assertEquals(4.0, s.atTime(sek(21, 59)).factor, 0.0)
+        assertTrue(s.nightAt(sek(23)))
+        assertFalse(s.nightAt(sek(12)))
+        // 0 (ab Werk) = nachts wie tagsueber.
+        val ohne = Settings(enabled = true, factor = 4.0, entryMin = 0)
+        assertEquals(4.0, ohne.atTime(sek(23)).factor, 0.0)
+        assertFalse(ohne.nightAt(sek(23)))
+        assertEquals(SlowCorrectionChannel.FACTOR_MIN, s.copy(nightFactor = 0.5).atTime(sek(23)).factor, 0.0)
+        assertEquals(4.0, s.copy(nightStartMin = 0, nightEndMin = 0).atTime(sek(23)).factor, 0.0)
+        // Gueltig: Nachtfaktor 0..5, Zeiten 0..1439 - auch die nachts geltende Kopie.
+        assertNull(s.violation())
+        assertNull(s.atTime(sek(23)).violation())
+        assertNotNull(s.copy(nightFactor = 5.1).violation())
+        assertNotNull(s.copy(nightFactor = -0.1).violation())
+        assertNotNull(s.copy(nightStartMin = 1440).violation())
+        // Im Schritt wirkt nachts die kleinere Obergrenze: 2 x 0,8 statt 4 x 0,8.
+        fun um(stunde: Int) = SlowCorrectionChannel.step(s.atTime(sek(stunde)), input(0, basal = 0.8), Memory())
+        assertEquals(1.6, um(23).rateUPerH, 1e-9)
+        assertEquals(3.2, um(12).rateUPerH, 1e-9)
+    }
+
     @Test fun `Schwelle ab 100 und Einstiegszeit ab 0 sind gueltig, darunter nicht`() {
         assertNull(Settings(enabled = true, thresholdMgdl = 100.0).violation())
         assertNotNull(Settings(enabled = true, thresholdMgdl = 99.0).violation())

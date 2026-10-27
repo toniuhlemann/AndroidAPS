@@ -245,6 +245,8 @@ enum class FuseDoubleKey(
     SlowChannelFactor("fuse_slow_channel_factor", SlowCorrectionChannel.FACTOR_DEFAULT, SlowCorrectionChannel.FACTOR_MIN, SlowCorrectionChannel.FACTOR_MAX, title = TextRef.AndroidRes(R.string.fuse_slow_channel_factor_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_factor_summary), unitType = UnitType.DOUBLE),
     /** Langsamer Korrekturkanal: ab diesem Zucker zaehlt die Einstiegszeit; gestoppt wird 20 mg/dl darunter. */
     SlowChannelThresholdMgdl("fuse_slow_channel_threshold_mgdl", SlowCorrectionChannel.THRESHOLD_DEFAULT_MGDL, SlowCorrectionChannel.THRESHOLD_MIN_MGDL, SlowCorrectionChannel.THRESHOLD_MAX_MGDL, title = TextRef.AndroidRes(R.string.fuse_slow_channel_threshold_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_threshold_summary), unitType = UnitType.MGDL),
+    /** Langsamer Korrekturkanal (Toni 27.10.2026): Obergrenze nachts statt des Faktors; 0 = wie tagsueber. */
+    SlowChannelNightFactor("fuse_slow_channel_night_factor", SlowCorrectionChannel.NIGHT_FACTOR_OFF, SlowCorrectionChannel.NIGHT_FACTOR_OFF, SlowCorrectionChannel.FACTOR_MAX, title = TextRef.AndroidRes(R.string.fuse_slow_channel_night_factor_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_night_factor_summary), unitType = UnitType.DOUBLE),
 
     /**
      * Nahhorizont des harten Endriegels fuer NEUES positives Insulin [min].
@@ -530,6 +532,9 @@ enum class FuseIntKey(
     ZeroLatchCalmExitMin("fuse_zero_latch_calm_exit_min", 20, 5, 120, title = TextRef.AndroidRes(R.string.fuse_zero_latch_calm_min_title), summary = TextRef.AndroidRes(R.string.fuse_zero_latch_calm_min_summary), unitType = UnitType.MIN),
     /** Langsamer Korrekturkanal: so lange ueber der Schwelle, ohne zu fallen, bevor er startet. */
     SlowChannelEntryMin("fuse_slow_channel_entry_min", SlowCorrectionChannel.ENTRY_DEFAULT_MIN, SlowCorrectionChannel.ENTRY_MIN_MIN, SlowCorrectionChannel.ENTRY_MAX_MIN, title = TextRef.AndroidRes(R.string.fuse_slow_channel_entry_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_entry_summary), unitType = UnitType.MIN),
+    /** Langsamer Korrekturkanal (Toni 27.10.2026): eigenes Nachtfenster des Nachtfaktors, Minuten ab Mitternacht. */
+    SlowChannelNightStartMin("fuse_slow_channel_night_start_min", SlowCorrectionChannel.NIGHT_START_DEFAULT_MIN, 0, 1439, title = TextRef.AndroidRes(R.string.fuse_slow_channel_night_start_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_night_start_summary), unitType = UnitType.MIN),
+    SlowChannelNightEndMin("fuse_slow_channel_night_end_min", SlowCorrectionChannel.NIGHT_END_DEFAULT_MIN, 0, 1439, title = TextRef.AndroidRes(R.string.fuse_slow_channel_night_end_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_night_end_summary), unitType = UnitType.MIN),
 
     /**
      * VARIANTE 1 des Nullphasen-Vergleichs: der GRUND-WEG-AUSGANG.

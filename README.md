@@ -81,7 +81,7 @@ statement (the meal button) or demand that is already proven — and they are st
 | **SMB** (fast) | Small boluses, at most one per minute, sized to the remaining need. The main way FUSE corrects. | on (follows the AAPS SMB switch) |
 | **Profile basal** | Always runs, unless FUSE has a protective reason to stop it. | on |
 | **Protective zero** | A zero temp basal — only when glucose is measured low, or falling while more bolus insulin is on board than the distance to the safety floor needs. When the reason is gone, FUSE returns to profile basal. | on |
-| **Slow correction channel** | A **positive** temp basal, like the high temp in autoISF: basal + 2 × remaining need, in 30-minute blocks, in steps of 0.25 × profile basal, up to *factor × profile basal* (factor 1.2–5). It runs next to SMBs and may continue when the guard or other model limits block SMBs — so a real need is not left without insulin. maxIOB limits SMB and temp basal together. It stops on a clear fall, below *threshold − 20 mg/dl*, on a protective zero and inside the night or rebound deadband. | off (switch) |
+| **Slow correction channel** | A **positive** temp basal, like the high temp in autoISF: basal + 2 × remaining need, in 30-minute blocks, in steps of 0.25 × profile basal, up to *factor × profile basal* (factor 1.2–5; optional own, smaller factor at night with its own hours, factory 22:00–06:00). It runs next to SMBs and may continue when the guard or other model limits block SMBs — so a real need is not left without insulin. maxIOB limits SMB and temp basal together. It stops on a clear fall, below *threshold − 20 mg/dl*, on a protective zero and inside the night or rebound deadband. | off (switch) |
 | **Liveness channel** | Makes demand that the main path already sees deliverable in small steps when the pessimistic checks starve it. Merged as `max(normal, liveness)`, never added. | off (switch) |
 | **Onset channel** | An early, limited response at the start of a rise that nobody announced (envelope 1.5 U). Off while a meal account runs. | on |
 | **Zero latch / partial basal** | Hold a protective zero through a fall, then return to profile basal in partial steps. | off (switches) |
@@ -333,8 +333,9 @@ Grenzen und führt Buch über jede Einheit, bis AAPS sie als IOB zeigt. Es brauc
 
 **Abgabewege.** SMB (schnell), Profilbasal und Schutz-Null (nur bei gemessenem Tief oder bei Fall mit zu viel Bolus an
 Bord). Dazu abschaltbar: der **langsame Korrekturkanal** — eine positive TBR wie die High-Temp bei autoISF, in Stufen
-von 0,25 × Profilbasal bis Faktor × Profilbasal, gemeinsam mit dem SMB unter maxIOB, mit Stopp bei Fall, Schutz-Null,
-Nacht- und Rebound-Totband —, der Liveness-Kanal und die stufenweise Rückkehr aus der Null.
+von 0,25 × Profilbasal bis Faktor × Profilbasal (nachts auf Wunsch ein eigener, kleinerer Faktor mit eigenen Zeiten,
+ab Werk 22–6 Uhr), gemeinsam mit dem SMB unter maxIOB, mit Stopp bei Fall, Schutz-Null, Nacht- und Rebound-Totband —,
+der Liveness-Kanal und die stufenweise Rückkehr aus der Null.
 
 **Mahlzeiten.** Ein Knopf erklärt „jetzt kommt eine Mahlzeit“ — ohne Kohlenhydrate. Für die Mahlzeit-Frist (Vorgabe
 120 min) gelten die größeren MEAL-Grenzen. Mit einer **Erwartungskurve** (Wirkung nach 30/60/90/120 min) öffnet der

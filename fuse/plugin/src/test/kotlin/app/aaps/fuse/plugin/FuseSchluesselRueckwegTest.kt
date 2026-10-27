@@ -134,6 +134,10 @@ class FuseSchluesselRueckwegTest {
         FuseDoubleKey.SlowChannelFactor.key to FuseBooleanKey.SlowChannelEnabled.key,
         FuseDoubleKey.SlowChannelThresholdMgdl.key to FuseBooleanKey.SlowChannelEnabled.key,
         FuseIntKey.SlowChannelEntryMin.key to FuseBooleanKey.SlowChannelEnabled.key,
+        // Toni 27.10.2026: der Nachtfaktor des Kanals und sein Fenster - ab Werk 0 = nachts wie tagsueber.
+        FuseDoubleKey.SlowChannelNightFactor.key to FuseBooleanKey.SlowChannelEnabled.key,
+        FuseIntKey.SlowChannelNightStartMin.key to FuseBooleanKey.SlowChannelEnabled.key,
+        FuseIntKey.SlowChannelNightEndMin.key to FuseBooleanKey.SlowChannelEnabled.key,
     )
 
     /**

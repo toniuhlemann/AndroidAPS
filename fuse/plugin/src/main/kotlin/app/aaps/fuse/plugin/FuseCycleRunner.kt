@@ -5472,8 +5472,12 @@ class FuseCycleRunner(
                 FuseController.accountDemandU(ekBedarfU),
             )
         }
+        // TONI 27.10.2026: nachts (eigene Zeiten, ab Werk 22-6 Uhr) rechnet der Kanal mit dem Nachtfaktor als
+        // Obergrenze, wenn einer gesetzt ist.
+        val slowSekunden = MidnightUtils.secondsFromMidnight(signal.sourceTs)
+        val slowEinstellung = cfg.slowChannel.atTime(slowSekunden)
         val slowSchritt = SlowCorrectionChannel.step(
-            settings = cfg.slowChannel,
+            settings = slowEinstellung,
             input = SlowCorrectionChannel.Input(
                 nowTs = computeTs,
                 q1Mgdl = signal.q1,
@@ -5591,9 +5595,10 @@ class FuseCycleRunner(
                 reservedU = slowLedger.reservedU,
                 deliveredU = slowLedger.deliveredU,
                 cancelledU = slowLedger.cancelledU,
-                factor = cfg.slowChannel.factor,
+                factor = slowEinstellung.factor,
                 thresholdMgdl = cfg.slowChannel.thresholdMgdl,
                 entryMin = cfg.slowChannel.entryMin,
+                factorSource = if (cfg.slowChannel.nightAt(slowSekunden)) "NIGHT" else "DAY",
             )
         }
 
@@ -7946,9 +7951,12 @@ class FuseCycleRunner(
         val reservedU: Double,
         val deliveredU: Double,
         val cancelledU: Double,
+        /** Die Obergrenze, mit der dieser Zyklus rechnete - nachts der Nachtfaktor ([factorSource] NIGHT). */
         val factor: Double,
         val thresholdMgdl: Double,
         val entryMin: Int,
+        /** DAY = Faktor, NIGHT = Nachtfaktor im eigenen Nachtfenster (Toni 27.10.2026). */
+        val factorSource: String = "DAY",
     )
 
     // ---- LANGSAMER KORREKTURKANAL (Toni 20.10.2026) ----------------------
@@ -8349,6 +8357,9 @@ class FuseCycleRunner(
             factor = preferences.get(FuseDoubleKey.SlowChannelFactor),
             thresholdMgdl = preferences.get(FuseDoubleKey.SlowChannelThresholdMgdl),
             entryMin = preferences.get(FuseIntKey.SlowChannelEntryMin),
+            nightFactor = preferences.get(FuseDoubleKey.SlowChannelNightFactor),
+            nightStartMin = preferences.get(FuseIntKey.SlowChannelNightStartMin),
+            nightEndMin = preferences.get(FuseIntKey.SlowChannelNightEndMin),
         ),
         reversalGuardEnabled = preferences.get(FuseBooleanKey.CorrectionReversalGuardEnabled),
         reversalFallUkf = preferences.get(FuseDoubleKey.ReversalFallUkf),

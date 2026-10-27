@@ -7,6 +7,7 @@ import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.core.data.model.BS
 import app.aaps.core.data.model.GV
 import app.aaps.core.data.model.TB
+import app.aaps.core.utils.MidnightUtils
 import app.aaps.core.data.model.SourceSensor
 import app.aaps.core.data.model.TrendArrow
 import app.aaps.core.data.pump.defs.PumpType
@@ -8028,6 +8029,44 @@ class TransportWiringTest : TestBaseWithProfile() {
             "kanal=${o.slowChannel?.let { "${it.reason} want=${it.want} phase=${it.phase} hoch=${it.highForMin} " +
                 "abg=${"%.3f".format(it.deliveredU)} res=${"%.3f".format(it.reservedU)} verf=${"%.3f".format(it.cancelledU)}" }} " +
             "grund=${o.reason}"
+    }
+
+    /**
+     * Toni 27.10.2026: DER NACHTFAKTOR IM ZYKLUS. Liegt die Rig-Uhr im eigenen Nachtfenster des Kanals, rechnet er mit
+     * dem Nachtfaktor als Obergrenze und meldet NIGHT; liegt sie ausserhalb, mit dem Faktor und DAY. Das Fenster wird um
+     * die Rig-Uhr gelegt, damit die Probe nicht von der Zeitzone der Maschine abhaengt.
+     */
+    @Test
+    fun `langsamer Kanal - nachts gilt der Nachtfaktor als Obergrenze`(@TempDir dir: File) = runBlocking<Unit> {
+        suspend fun ersterBlock(name: String, nachts: Boolean): Pair<FuseCycleRunner.Outcome, TbrKommando> {
+            flach = 220.0
+            steigungProMin = 0.0
+            maxSmbU = 0.0
+            langsamerKanal(an = true, faktor = 4.0, einstieg = 0)
+            val minute = MidnightUtils.secondsFromMidnight(start) / 60
+            val beginn = if (nachts) (minute + 1440 - 60) % 1440 else (minute + 180) % 1440
+            whenever(preferences.get(FuseDoubleKey.SlowChannelNightFactor)).thenReturn(2.0)
+            whenever(preferences.get(FuseIntKey.SlowChannelNightStartMin)).thenReturn(beginn)
+            whenever(preferences.get(FuseIntKey.SlowChannelNightEndMin)).thenReturn((beginn + 240) % 1440)
+            clock = start
+            rigTbr = null
+            transportReset()
+            neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, name).also(File::mkdirs), "test-epoch", start) })
+            val lauf = (0 until 10).map { zyklusMitPumpe() }
+            val (o, kmd) = lauf.firstOrNull { (_, k) -> k?.let { it.rateUPerH > 0.0 && it.durationMin > 0 } == true }
+                ?: throw AssertionError("kein Setzkommando\n${kanalBericht(lauf)}")
+            return o to kmd!!
+        }
+
+        val (nacht, nachtKmd) = ersterBlock("nacht", nachts = true)
+        assertEquals("NIGHT", nacht.slowChannel!!.factorSource)
+        assertEquals(2.0, nacht.slowChannel!!.factor, 0.0)
+        assertEquals(2.0, nachtKmd.rateUPerH, 1e-9) { "Obergrenze nachts 2 x Profilbasal 1,0" }
+
+        val (tag, tagKmd) = ersterBlock("tag", nachts = false)
+        assertEquals("DAY", tag.slowChannel!!.factorSource)
+        assertEquals(4.0, tag.slowChannel!!.factor, 0.0)
+        assertTrue(tagKmd.rateUPerH > 2.0) { "tagsueber gilt der Faktor 4: ${tagKmd.rateUPerH}" }
     }
 
     /**

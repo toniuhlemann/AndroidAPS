@@ -204,7 +204,8 @@ object FuseSettings {
                     "Laeuft wie das Profilbasal nebenher - SMB bleiben unberuehrt.",
             ),
             FuseBooleanKey.SlowChannelEnabled, FuseDoubleKey.SlowChannelFactor, FuseDoubleKey.SlowChannelThresholdMgdl,
-            FuseIntKey.SlowChannelEntryMin,
+            FuseIntKey.SlowChannelEntryMin, FuseDoubleKey.SlowChannelNightFactor, FuseIntKey.SlowChannelNightStartMin,
+            FuseIntKey.SlowChannelNightEndMin,
             info("Onset", "Fruehe Reaktion auf einen kinematisch erkannten Mahlzeitbeginn ohne Marker."),
             FuseBooleanKey.OnsetChannelEnabled, FuseDoubleKey.OnsetEnvelopeU,
             info(

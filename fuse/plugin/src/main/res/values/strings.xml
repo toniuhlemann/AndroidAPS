@@ -158,6 +158,12 @@
     <string name="fuse_slow_channel_threshold_summary">Ab diesem Zucker darf der Kanal starten (100 bis 300 mg/dl). Gestoppt wird 20 mg/dl darunter.</string>
     <string name="fuse_slow_channel_entry_title">Kanal: Einstiegszeit</string>
     <string name="fuse_slow_channel_entry_summary">So lange muss der Zucker ueber der Schwelle liegen, ohne zu fallen, bevor der Kanal startet. 0 = sofort, sobald er ueber der Schwelle liegt, nicht faellt und Bedarf da ist.</string>
+    <string name="fuse_slow_channel_night_factor_title">Kanal: Multiplikator nachts</string>
+    <string name="fuse_slow_channel_night_factor_summary">Eigene Obergrenze fuer die Nacht (Zeiten in den zwei Einstellungen darunter), statt des Multiplikators oben. 0 (Vorgabe) = nachts wie tagsueber; ein Wert unter 1,2 zaehlt wie 1,2. Gedacht kleiner als tagsueber: nachts folgten auf Kanalphasen mit hohem Multiplikator oefter Tiefs. Beginnt die Nacht mitten in einem Block, senkt der Kanal die Rate wie bei jeder Absenkung.</string>
+    <string name="fuse_slow_channel_night_start_title">Kanal: Nacht Beginn [min ab Mitternacht]</string>
+    <string name="fuse_slow_channel_night_start_summary">1320 = 22:00. Eigene Zeiten nur fuer den Multiplikator nachts - unabhaengig vom Nachtfenster von FUSE. Das Fenster darf Mitternacht ueberschreiten; Beginn = Ende schaltet den Multiplikator nachts aus.</string>
+    <string name="fuse_slow_channel_night_end_title">Kanal: Nacht Ende [min ab Mitternacht]</string>
+    <string name="fuse_slow_channel_night_end_summary">360 = 06:00.</string>
     <string name="fuse_zero_latch_calm_min_summary">Zweiter Freigabepfad gegen die Zero-Falle: so viele Zyklen stabil nicht fallend, ausreichend Abstand zum Boden und ohne Bolus-Ueberdeckung loesen die verriegelte Null auch ohne Anstieg.</string>
     <string name="fuse_zero_latch_calm_dist_title">Zero-Latch Ruhe-Abstand [mg/dl]</string>
     <string name="fuse_zero_latch_calm_dist_summary">Mindestabstand des q1 ueber dem Guard-Boden, damit ein Ruhe-Zyklus fuer den zweiten Freigabepfad zaehlt.</string>

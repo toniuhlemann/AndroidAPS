@@ -59,6 +59,17 @@ object SlowCorrectionChannel {
     const val ENTRY_MAX_MIN = 90
     const val ENTRY_DEFAULT_MIN = 0
 
+    /**
+     * DER NACHTFAKTOR (Toni 27.10.2026): nachts gilt auf Wunsch eine eigene, kleinere Obergrenze. Nachts folgten auf
+     * Kanalphasen mit hohem Faktor oefter Tiefs als mit kleinem. Eigene Zeiten statt des FUSE-Nachtfensters, weil die
+     * Phasen davor schon am spaeten Abend begannen. 0 = nachts wie tagsueber.
+     */
+    const val NIGHT_FACTOR_OFF = 0.0
+
+    /** Nachtfenster des Nachtfaktors in Minuten ab Mitternacht; es darf Mitternacht ueberschreiten. */
+    const val NIGHT_START_DEFAULT_MIN = 22 * 60
+    const val NIGHT_END_DEFAULT_MIN = 6 * 60
+
     /** "Nicht gefallen" ueber die Einstiegszeit: hoechstens so viel unter dem Wert von damals [mg/dl]. */
     const val NOT_FALLING_TOLERANCE_MGDL = 5.0
 
@@ -134,15 +145,33 @@ object SlowCorrectionChannel {
         val factor: Double = FACTOR_DEFAULT,
         val thresholdMgdl: Double = THRESHOLD_DEFAULT_MGDL,
         val entryMin: Int = ENTRY_DEFAULT_MIN,
+        /** Obergrenze in der Nacht statt [factor]; [NIGHT_FACTOR_OFF] = wie tagsueber, unter [FACTOR_MIN] zaehlt wie [FACTOR_MIN]. */
+        val nightFactor: Double = NIGHT_FACTOR_OFF,
+        /** Beginn = Ende: kein Nachtfenster, der Nachtfaktor wirkt nie. */
+        val nightStartMin: Int = NIGHT_START_DEFAULT_MIN,
+        val nightEndMin: Int = NIGHT_END_DEFAULT_MIN,
     ) {
 
         val stopBelowMgdl: Double get() = thresholdMgdl - STOP_BELOW_THRESHOLD_MGDL
+
+        /** Gilt zu dieser Uhrzeit der Nachtfaktor? Nur, wenn einer gesetzt ist. */
+        fun nightAt(secondsFromMidnight: Int): Boolean =
+            nightFactor > NIGHT_FACTOR_OFF && NightWindow.isNight(secondsFromMidnight, nightStartMin, nightEndMin)
+
+        /**
+         * Die Einstellungen, mit denen der Kanal zu dieser Uhrzeit rechnet: nachts mit dem Nachtfaktor als Obergrenze.
+         * Wechselt die Uhrzeit mitten in einem Block, sinkt die Rate wie bei jeder anderen Absenkung.
+         */
+        fun atTime(secondsFromMidnight: Int): Settings =
+            if (nightAt(secondsFromMidnight)) copy(factor = max(FACTOR_MIN, nightFactor)) else this
 
         fun violation(): String? = when {
             !factor.isFinite() || factor < FACTOR_MIN || factor > FACTOR_MAX -> "factor=$factor"
             !thresholdMgdl.isFinite() || thresholdMgdl < THRESHOLD_MIN_MGDL || thresholdMgdl > THRESHOLD_MAX_MGDL ->
                 "threshold=$thresholdMgdl"
             entryMin < ENTRY_MIN_MIN || entryMin > ENTRY_MAX_MIN -> "entryMin=$entryMin"
+            !nightFactor.isFinite() || nightFactor < NIGHT_FACTOR_OFF || nightFactor > FACTOR_MAX -> "nightFactor=$nightFactor"
+            nightStartMin !in 0..1439 || nightEndMin !in 0..1439 -> "night=$nightStartMin..$nightEndMin"
             else -> null
         }
     }

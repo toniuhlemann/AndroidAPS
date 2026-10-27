@@ -343,6 +343,9 @@ fuse_signal_rejoin_enabled|FuseBooleanKey|true
 fuse_slow_channel_enabled|FuseBooleanKey|true
 fuse_slow_channel_entry_min|FuseIntKey|true
 fuse_slow_channel_factor|FuseDoubleKey|true
+fuse_slow_channel_night_end_min|FuseIntKey|true
+fuse_slow_channel_night_factor|FuseDoubleKey|true
+fuse_slow_channel_night_start_min|FuseIntKey|true
 fuse_slow_channel_threshold_mgdl|FuseDoubleKey|true
 fuse_smb_ratio_rise|FuseDoubleKey|true
 fuse_smb_ratio|FuseDoubleKey|true

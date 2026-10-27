@@ -37,6 +37,9 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.SlowChannelFactor.key,
     FuseDoubleKey.SlowChannelThresholdMgdl.key,
     FuseIntKey.SlowChannelEntryMin.key,
+    FuseDoubleKey.SlowChannelNightFactor.key,
+    FuseIntKey.SlowChannelNightStartMin.key,
+    FuseIntKey.SlowChannelNightEndMin.key,
     FuseBooleanKey.LivenessChannelEnabled.key,
     FuseBooleanKey.SignalRejoinEnabled.key,
     FuseIntKey.LivenessMealPowerMin.key,
@@ -291,6 +294,9 @@ object FuseSettingsReport {
                     zahl(FuseDoubleKey.SlowChannelFactor, "Kanal-Max-Multiplikator", "x Basal"),
                     zahl(FuseDoubleKey.SlowChannelThresholdMgdl, "Kanal-Schwelle", "mg/dl"),
                     ganz(FuseIntKey.SlowChannelEntryMin, "Kanal-Einstieg", "min"),
+                    zahl(FuseDoubleKey.SlowChannelNightFactor, "Kanal-Multiplikator nachts (0 = wie tags)", "x Basal"),
+                    ganz(FuseIntKey.SlowChannelNightStartMin, "Kanal-Nacht Beginn", "min"),
+                    ganz(FuseIntKey.SlowChannelNightEndMin, "Kanal-Nacht Ende", "min"),
                 ),
                 // Eigene Gruppe: der Beobachter dosiert nichts - wer die Einstellungen liest, soll auf einen Blick
                 // sehen, dass hier nur gemessen wird.
