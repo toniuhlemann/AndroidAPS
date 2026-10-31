@@ -1,5 +1,6 @@
 package app.aaps.plugins.aps.openAPSAutoISF
 
+import app.aaps.core.data.configuration.Constants
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.AutosensResult
 import app.aaps.core.interfaces.aps.CurrentTemp
@@ -111,7 +112,7 @@ class DetermineBasalAutoISFTest : TestBaseWithProfile() {
         profile_percentage = 100
     )
 
-    private fun run(mealData: MealData, currentTemp: CurrentTemp = CurrentTemp(0, 0.0, null)): RT =
+    private fun run(mealData: MealData, currentTemp: CurrentTemp = CurrentTemp(0, 0.0, null), flatBGsDetected: Boolean = false): RT =
         sut.determine_basal(
             glucose_status = glucoseStatus(),
             currenttemp = currentTemp,
@@ -121,7 +122,7 @@ class DetermineBasalAutoISFTest : TestBaseWithProfile() {
             meal_data = mealData,
             microBolusAllowed = false,
             currentTime = currentTime,
-            flatBGsDetected = false,
+            flatBGsDetected = flatBGsDetected,
             autoIsfMode = false,
             loop_wanted_smb = "AAPS",
             profile_percentage = 100,
@@ -134,6 +135,27 @@ class DetermineBasalAutoISFTest : TestBaseWithProfile() {
         )
 
     private fun RT.console(): String = (consoleLog.orEmpty() + consoleError.orEmpty()).joinToString(" ")
+
+    /**
+     * `DetermineBasalResult.stoppedEarly` takes a result without eventual BG for the return of the CGM data
+     * checks, and such a result is not stored (#5413). That return has none, a full run has one.
+     */
+    @Test
+    fun `only the return of the CGM data checks has no eventual BG`() {
+        val noMeal = MealData(
+            carbs = 0.0,
+            mealCOB = 0.0,
+            slopeFromMaxDeviation = 0.0,
+            slopeFromMinDeviation = 0.0,
+            lastBolusTime = currentTime - 3600000L,
+            lastCarbTime = currentTime - 4 * 3600000L
+        )
+
+        val flat = run(noMeal, flatBGsDetected = true)
+        assertThat(flat.reason.toString()).contains("CGM data is unchanged")
+        assertThat(flat.eventualBG).isNull()
+        assertThat(run(noMeal).eventualBG).isNotNull()
+    }
 
     @Test
     fun `COB left after carbs aged out does not poison the prediction blend`() {
@@ -240,14 +262,7 @@ class DetermineBasalAutoISFTest : TestBaseWithProfile() {
             iob_data_array = iobs,
             profile = profile().copy(enableSMB_always = true),
             autosens_data = AutosensResult(ratio = 1.0),
-            meal_data = MealData(
-                carbs = 0.0,
-                mealCOB = 0.0,
-                slopeFromMaxDeviation = 0.0,
-                slopeFromMinDeviation = 0.0,
-                lastBolusTime = currentTime - 3600000L,
-                lastCarbTime = currentTime - 4 * 3600000L
-            ),
+            meal_data = noMeal(),
             microBolusAllowed = true,
             currentTime = currentTime,
             flatBGsDetected = false,
@@ -261,5 +276,37 @@ class DetermineBasalAutoISFTest : TestBaseWithProfile() {
             auto_isf_consoleError = mutableListOf(),
             auto_isf_consoleLog = mutableListOf()
         )
+    }
+
+    private fun noMeal() = MealData(
+        carbs = 0.0,
+        mealCOB = 0.0,
+        slopeFromMaxDeviation = 0.0,
+        slopeFromMinDeviation = 0.0,
+        lastBolusTime = currentTime - 3600000L,
+        lastCarbTime = currentTime - 4 * 3600000L
+    )
+
+    /** "Always enable SMB" on, "with high temp targets" off: only a high temp target turns SMB off here. */
+    private fun enableSmbAlwaysWithTempTarget(targetMgdl: Double): Boolean =
+        sut.enable_smb(
+            profile = profile().copy(temptargetSet = true, enableSMB_always = true, allowSMB_with_high_temptarget = false),
+            microBolusAllowed = true,
+            meal_data = noMeal(),
+            target_bg = targetMgdl
+        )
+
+    /**
+     * The same line as in `DetermineBasalSMBTest`: 99 mg/dL and 5.5 mmol/L are normal, 100 mg/dL and 5.6 mmol/L
+     * are high. AutoISF used 100 here before, so a 100 mg/dL temp target kept SMB while it already counted as
+     * high for the sensitivity.
+     */
+    @Test
+    fun `a high temp target disables SMB at the same line as in SMB`() {
+        assertThat(enableSmbAlwaysWithTempTarget(99.0)).isTrue()
+        assertThat(enableSmbAlwaysWithTempTarget(5.5 * Constants.MMOLL_TO_MGDL)).isTrue()
+        assertThat(enableSmbAlwaysWithTempTarget(5.5 * 18.0)).isTrue()
+        assertThat(enableSmbAlwaysWithTempTarget(100.0)).isFalse()
+        assertThat(enableSmbAlwaysWithTempTarget(5.6 * Constants.MMOLL_TO_MGDL)).isFalse()
     }
 }

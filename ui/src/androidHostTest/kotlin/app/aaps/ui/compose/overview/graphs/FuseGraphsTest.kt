@@ -45,7 +45,7 @@ internal class FuseGraphsTest {
         assertThat(fuse.lines.count { it.style == FuseLineStyle.EXPECTED_DRIVE }).isEqualTo(1)
         assertThat(fuse.markerXs).containsExactly(4.0)
         // symmetric around 0 and at least 1.25 times the upper ramp edge (fork)
-        val scale = fuse.scale(fuse.windowedY(null, null))
+        val scale = fuse.axis()
         assertThat(scale.max).isAtLeast(2.5)
         assertThat(scale.min).isEqualTo(-scale.max)
         assertThat(fuse.strip).isEmpty()
@@ -69,7 +69,7 @@ internal class FuseGraphsTest {
         assertThat(fuse.lines.map { it.style })
             .containsExactly(FuseLineStyle.GUARD, FuseLineStyle.TAIL, FuseLineStyle.GUARD_WITH_MEAL, FuseLineStyle.GUARD_WITH_MEAL).inOrder()
         assertThat(fuse.strip.map { it.status }).containsExactly(AccountStatus.AKTIV)
-        val scale = fuse.scale(fuse.windowedY(null, null))
+        val scale = fuse.axis()
         assertThat(scale.max).isAtLeast(10.0)
         assertThat(scale.min).isEqualTo(-scale.max)
     }
@@ -80,11 +80,14 @@ internal class FuseGraphsTest {
         val data = FuseGraphData(available = true, rampLow = 1.25, rampHigh = 2.5, drive = listOf(DeviationDataPoint(at(5), 1.0, DeviationType.POSITIVE)))
         val fuse = processFuse(data, SeriesType.FUSE_DRIVE, start, 0.0, maxX)!!
 
-        val scale = fuse.scale(fuse.windowedY(null, null))
+        val scale = fuse.axis()
         assertThat(scale.max).isEqualTo(5.0)
-        assertThat(scale.step).isEqualTo(2.5)
         assertThat(scale.min).isEqualTo(-5.0)
     }
+
+    /** The axis the graph gets for these bars and lines. */
+    private fun ProcessedFuse.axis(): AxisRange =
+        axisRange(axisRule, bars?.series?.values?.flatten().orEmpty() + lines.flatMap { line -> line.points.map { it.second } })!!
 
     @Test
     fun `other graphs have no FUSE part`() {

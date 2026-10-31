@@ -20,7 +20,6 @@ import com.patrykandpatrick.vico.compose.cartesian.CartesianDrawingContext
 import com.patrykandpatrick.vico.compose.cartesian.decoration.Decoration
 import com.patrykandpatrick.vico.compose.cartesian.layer.LineCartesianLayer
 import com.patrykandpatrick.vico.compose.common.Fill
-import kotlin.math.abs
 
 /*
  * Fork (FUSE): the two FUSE graphs below BG, F.DRV and F.GRD, and the meal markers - as the fork drew them
@@ -75,24 +74,11 @@ internal class ProcessedFuse(
     val minHalfRange: Double
 ) {
 
-    /** The y values of bars and lines inside the visible window; all of them when the window holds none. */
-    fun windowedY(visibleMinX: Double?, visibleMaxX: Double?): List<Double> {
-        fun inWindow(x: Double) = visibleMinX == null || visibleMaxX == null || x in visibleMinX..visibleMaxX
-        val all = buildList {
-            bars?.let { b -> b.series.values.forEach { ys -> addAll(b.allX.zip(ys)) } }
-            lines.forEach { addAll(it.points) }
-        }
-        return all.filter { inWindow(it.first) }.map { it.second }.ifEmpty { all.map { it.second } }
-    }
-
     /**
      * The symmetric axis around 0: at least [minHalfRange], else the largest value either way - rounded up to a
      * round number, so the labels read 5 / 2.5 / 0 and not 3.12 (the minimum 1.25 x ramp edge is rarely round).
      */
-    fun scale(values: List<Double>): NiceScale {
-        val half = niceUp(maxOf(minHalfRange, values.maxOfOrNull { abs(it) } ?: 0.0))
-        return NiceScale(-half, half, half / 2)
-    }
+    val axisRule: AxisRule get() = AxisRule.Pivot(0.0, niceUp(minHalfRange))
 }
 
 /** Builds the FUSE part of a graph of [type]; `null` for a graph that is neither F.DRV nor F.GRD. */

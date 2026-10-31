@@ -1,7 +1,6 @@
 package app.aaps.plugins.aps.openAPSAutoISF
 
 import app.aaps.core.data.aps.SMBDefaults
-import app.aaps.core.data.configuration.Constants
 import app.aaps.core.interfaces.aps.GlucoseStatusAutoIsf
 import app.aaps.core.interfaces.aps.OapsProfileAutoIsf
 import app.aaps.core.interfaces.aps.AutoIsfOverrideState
@@ -11,7 +10,6 @@ import app.aaps.core.interfaces.bgQualityCheck.BgQualityCheck
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.iob.GlucoseStatusProvider
-import app.aaps.core.interfaces.profiling.Profiler
 import app.aaps.core.keys.BooleanKey
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.IntKey
@@ -37,7 +35,6 @@ class OpenAPSAutoISFPluginTest : TestBaseWithProfile() {
     @Mock lateinit var glucoseStatusProvider: GlucoseStatusProvider
     @Mock lateinit var determineBasalSMB: DetermineBasalAutoISF
     @Mock lateinit var bgQualityCheck: BgQualityCheck
-    @Mock lateinit var profiler: Profiler
     @Mock lateinit var automationStateService: AutomationStateInterface
     @Mock lateinit var effectiveAutoIsfSettings: EffectiveAutoIsfSettingsProvider
     @Mock lateinit var localCommandChannelSettings: LocalCommandChannelSettings
@@ -48,7 +45,7 @@ class OpenAPSAutoISFPluginTest : TestBaseWithProfile() {
         openAPSAutoISFPlugin = OpenAPSAutoISFPlugin(
             aapsLogger, rxBus, constraintChecker, rh, profileFunction, profileUtil, config, activePlugin,
             iobCobCalculator, hardLimits, preferences, dateUtil, processedTbrEbData, persistenceLayer, glucoseStatusProvider,
-            bgQualityCheck, notificationManager, determineBasalSMB, profiler,
+            bgQualityCheck, notificationManager, determineBasalSMB,
             GlucoseStatusCalculatorAutoIsf(aapsLogger, iobCobCalculator, dateUtil, deltaCalculator, preferences), { apsResultProvider() }, ch, automationStateService,
             effectiveAutoIsfSettings, iobActionExport, localCommandChannelSettings
         )

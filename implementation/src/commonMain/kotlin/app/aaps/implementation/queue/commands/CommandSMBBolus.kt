@@ -3,6 +3,7 @@ package app.aaps.implementation.queue.commands
 import app.aaps.core.data.configuration.Constants
 import app.aaps.core.data.time.T
 import app.aaps.core.interfaces.InterfacesStrings
+import app.aaps.core.interfaces.aps.SmbIntervalGate
 import app.aaps.core.interfaces.db.PersistenceLayer
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
@@ -47,8 +48,7 @@ class CommandSMBBolus(
         val r: PumpEnactResult
         val lastBolusTime = persistenceLayer.getNewestBolus()?.timestamp ?: 0L
         aapsLogger.debug(LTag.PUMPQUEUE, "Last bolus: $lastBolusTime ${dateUtil.dateAndTimeAndSecondsString(lastBolusTime)}")
-        // Fork: shared tolerance, see Constants.SMB_INTERVAL_TOLERANCE_SECONDS
-        if (lastBolusTime != 0L && lastBolusTime + T.mins(preferences.get(IntKey.ApsMaxSmbFrequency).toLong()).msecs() - T.secs(Constants.SMB_INTERVAL_TOLERANCE_SECONDS).msecs() > dateUtil.now()) {
+        if (SmbIntervalGate.tooSoon(lastBolusTime, preferences.get(IntKey.ApsMaxSmbFrequency), dateUtil.now())) {
             aapsLogger.debug(LTag.APS, "SMB requested but still in ${preferences.get(IntKey.ApsMaxSmbFrequency)} min interval")
             // Fork (FUSE KI-171): this branch and the "too old" one return before deliverTreatment, so the pump
             // was provably never called. The pump branch is never marked, whatever its result.

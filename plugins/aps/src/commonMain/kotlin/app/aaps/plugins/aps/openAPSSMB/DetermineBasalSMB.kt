@@ -12,6 +12,7 @@ import app.aaps.core.interfaces.aps.MealData
 import app.aaps.core.interfaces.aps.OapsProfile
 import app.aaps.core.interfaces.aps.Predictions
 import app.aaps.core.interfaces.aps.RT
+import app.aaps.core.interfaces.aps.SmbIntervalGate
 import app.aaps.core.interfaces.profile.ProfileUtil
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.utils.fabric.FabricPrivacy
@@ -91,7 +92,7 @@ class DetermineBasalSMB(
         if (!microBolusAllowed) {
             consoleError.add("SMB disabled (!microBolusAllowed)")
             return false
-        } else if (!profile.allowSMB_with_high_temptarget && profile.temptargetSet && target_bg > Constants.NORMAL_TARGET_MGDL) {
+        } else if (!profile.allowSMB_with_high_temptarget && profile.temptargetSet && Constants.isAboveNormalTarget(target_bg)) {
             consoleError.add("SMB disabled due to high temptarget of $target_bg")
             return false
         }
@@ -353,8 +354,8 @@ class DetermineBasalSMB(
             consoleError.add("---------------------------------------------------------")
         }
 
-        if (high_temptarget_raises_sensitivity && profile.temptargetSet && target_bg > normalTarget
-            || profile.low_temptarget_lowers_sensitivity && profile.temptargetSet && target_bg < normalTarget
+        if (high_temptarget_raises_sensitivity && profile.temptargetSet && Constants.isAboveNormalTarget(target_bg)
+            || profile.low_temptarget_lowers_sensitivity && profile.temptargetSet && Constants.isBelowNormalTarget(target_bg)
         ) {
             // w/ target 100, temp target 110 = .89, 120 = 0.8, 140 = 0.67, 160 = .57, and 200 = .44
             // e.g.: Sensitivity ratio set to 0.8 based on temp target of 120; Adjusting basal from 1.65 to 1.35; ISF from 58.9 to 73.6
@@ -508,7 +509,9 @@ class DetermineBasalSMB(
             sensitivityRatio = sensitivityRatio, // autosens ratio (fraction of normal basal)
             consoleLog = consoleLog,
             consoleError = consoleError,
-            variable_sens = profile.variable_sens
+            // Null, not 0.0, when this run used no variable sensitivity, so the stored result says that
+            // plainly. The ISF for carbs falls back to the profile ISF on it (IsfForCarbs).
+            variable_sens = if (dynIsfMode) profile.variable_sens else null
         )
 
         // generate predicted future BGs based on IOB, COB, and current absorption rate
@@ -1276,11 +1279,11 @@ class DetermineBasalSMB(
                 val lastBolusAge = (systemTime - iob_data.lastBolusTime) / 1000.0
                 //console.error(lastBolusAge);
                 // allow SMBIntervals between 1 and 10 minutes
-                val SMBInterval = min(10, max(1, profile.SMBInterval)) * 60.0   // in seconds
+                val smbIntervalMinutes = min(10, max(1, profile.SMBInterval))
+                val SMBInterval = smbIntervalMinutes * 60.0   // in seconds
                 //console.error(naive_eventualBG, insulinReq, worstCaseInsulinReq, durationReq);
                 consoleError.add("naive_eventualBG $naive_eventualBG,${durationReq}m ${smbLowTempReq}U/h temp needed; last bolus ${round(lastBolusAge / 60.0, 1)}m ago; maxBolus: $maxBolus")
-                // Fork: shared tolerance, see Constants.SMB_INTERVAL_TOLERANCE_SECONDS (was 6 s here and 0 s in the enact gates)
-                if (lastBolusAge > SMBInterval - Constants.SMB_INTERVAL_TOLERANCE_SECONDS) {
+                if (!SmbIntervalGate.tooSoon(iob_data.lastBolusTime, smbIntervalMinutes, systemTime)) {
                     if (microBolus > 0) {
                         rT.units = microBolus
                         rT.reason.append("Microbolusing ${microBolus}U. ")

@@ -360,6 +360,9 @@ class AppRepository internal constructor(
     suspend fun findBgReadingByNSId(nsId: String): GlucoseValue? =
         database.glucoseValueDao.findByNSId(nsId)
 
+    suspend fun findBgReadingById(id: Long): GlucoseValue? =
+        database.glucoseValueDao.findById(id)
+
     suspend fun getLastGlucoseValueId(): Long? =
         database.glucoseValueDao.getLastId()
 
@@ -397,6 +400,9 @@ class AppRepository internal constructor(
     suspend fun findCalibrationEntryByNSId(nsId: String): CalibrationEntry? =
         database.calibrationEntryDao.findByNSId(nsId)
 
+    suspend fun findCalibrationEntryById(id: Long): CalibrationEntry? =
+        database.calibrationEntryDao.findById(id)
+
     suspend fun getNextSyncElementCalibrationEntry(id: Long): Pair<CalibrationEntry, CalibrationEntry>? {
         val nextIdElement = database.calibrationEntryDao.getNextModifiedOrNewAfter(id) ?: return null
         val nextIdElemReferenceId = nextIdElement.referenceId
@@ -411,6 +417,9 @@ class AppRepository internal constructor(
     // TEMP TARGETS
     suspend fun findTemporaryTargetByNSId(nsId: String): TemporaryTarget? =
         database.temporaryTargetDao.findByNSId(nsId)
+
+    suspend fun findTemporaryTargetById(id: Long): TemporaryTarget? =
+        database.temporaryTargetDao.findById(id)
 
     /*
        * returns a Pair of the next entity to sync and the ID of the "update".
@@ -461,6 +470,9 @@ class AppRepository internal constructor(
     suspend fun findProfileSwitchByNSId(nsId: String): ProfileSwitch? =
         database.profileSwitchDao.findByNSId(nsId)
 
+    suspend fun findProfileSwitchById(id: Long): ProfileSwitch? =
+        database.profileSwitchDao.findById(id)
+
     suspend fun getNextSyncElementProfileSwitch(id: Long): Pair<ProfileSwitch, ProfileSwitch>? {
         val nextIdElement = database.profileSwitchDao.getNextModifiedOrNewAfter(id) ?: return null
         val nextIdElemReferenceId = nextIdElement.referenceId
@@ -503,6 +515,9 @@ class AppRepository internal constructor(
 
     suspend fun findRunningModeByNSId(nsId: String): RunningMode? =
         database.runningModeDao.findByNSId(nsId)
+
+    suspend fun findRunningModeById(id: Long): RunningMode? =
+        database.runningModeDao.findById(id)
 
     suspend fun getNextSyncElementRunningMode(id: Long): Pair<RunningMode, RunningMode>? {
         val nextIdElement = database.runningModeDao.getNextModifiedOrNewAfter(id) ?: return null
@@ -599,6 +614,9 @@ class AppRepository internal constructor(
     suspend fun findTherapyEventByNSId(nsId: String): TherapyEvent? =
         database.therapyEventDao.findByNSId(nsId)
 
+    suspend fun findTherapyEventById(id: Long): TherapyEvent? =
+        database.therapyEventDao.findById(id)
+
     suspend fun getNextSyncElementTherapyEvent(id: Long): Pair<TherapyEvent, TherapyEvent>? {
         val nextIdElement = database.therapyEventDao.getNextModifiedOrNewAfter(id) ?: return null
         val nextIdElemReferenceId = nextIdElement.referenceId
@@ -658,6 +676,9 @@ class AppRepository internal constructor(
     suspend fun getBolusByNSId(nsId: String): Bolus? =
         database.bolusDao.getByNSId(nsId)
 
+    suspend fun findBolusById(id: Long): Bolus? =
+        database.bolusDao.findById(id)
+
     /*
       * returns a Pair of the next entity to sync and the ID of the "update".
       * The update id might either be the entry id itself if it is a new entry - or the id
@@ -706,6 +727,9 @@ class AppRepository internal constructor(
 
     suspend fun getCarbsByNSId(nsId: String): Carbs? =
         database.carbsDao.getByNSId(nsId)
+
+    suspend fun findCarbsById(id: Long): Carbs? =
+        database.carbsDao.findById(id)
 
     private fun expandCarbs(carbs: Carbs): List<Carbs> =
         if (carbs.duration == 0L) {
@@ -776,6 +800,9 @@ class AppRepository internal constructor(
     suspend fun findBolusCalculatorResultByNSId(nsId: String): BolusCalculatorResult? =
         database.bolusCalculatorResultDao.findByNSId(nsId)
 
+    suspend fun findBolusCalculatorResultById(id: Long): BolusCalculatorResult? =
+        database.bolusCalculatorResultDao.findById(id)
+
     /*
       * returns a Pair of the next entity to sync and the ID of the "update".
       * The update id might either be the entry id itself if it is a new entry - or the id
@@ -828,6 +855,9 @@ class AppRepository internal constructor(
     suspend fun findTemporaryBasalByNSId(nsId: String): TemporaryBasal? =
         database.temporaryBasalDao.findByNSId(nsId)
 
+    suspend fun findTemporaryBasalById(id: Long): TemporaryBasal? =
+        database.temporaryBasalDao.findById(id)
+
     /*
         * returns a Pair of the next entity to sync and the ID of the "update".
         * The update id might either be the entry id itself if it is a new entry - or the id
@@ -871,6 +901,9 @@ class AppRepository internal constructor(
     // EXTENDED BOLUS
     suspend fun findExtendedBolusByNSId(nsId: String): ExtendedBolus? =
         database.extendedBolusDao.findByNSId(nsId)
+
+    suspend fun findExtendedBolusById(id: Long): ExtendedBolus? =
+        database.extendedBolusDao.findById(id)
 
     /*
        * returns a Pair of the next entity to sync and the ID of the "update".

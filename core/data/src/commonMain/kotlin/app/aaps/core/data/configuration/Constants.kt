@@ -1,5 +1,7 @@
 package app.aaps.core.data.configuration
 
+import kotlin.math.round
+
 /**
  * Created by mike on 07.06.2016.
  */
@@ -14,6 +16,18 @@ object Constants {
     const val NORMAL_TARGET_MGDL = 99 // 5.5 mmol/l = 99.1 mg/dL; use 99 to ensure consistent behavior across mg/dL and mmol/l units
 
     /**
+     * True when [targetMgdl] is a high target: above 5.5 mmol/L or 99 mg/dL.
+     *
+     * The target is rounded to whole mg/dL first. A 5.5 mmol/L target is stored as 99.09 mg/dL
+     * with the current unit factor, and it must stay a normal target, as it was when the factor
+     * was 18.0 and the same target was stored as 99.0. Rows stored by either factor land on 99.
+     */
+    fun isAboveNormalTarget(targetMgdl: Double): Boolean = round(targetMgdl) > NORMAL_TARGET_MGDL
+
+    /** True when [targetMgdl] is a low target: below 5.5 mmol/L or 99 mg/dL. See [isAboveNormalTarget]. */
+    fun isBelowNormalTarget(targetMgdl: Double): Boolean = round(targetMgdl) < NORMAL_TARGET_MGDL
+
+    /**
      * A BG older than this is not actual: the overview strikes it through and the loop does not use it.
      * An open loop suggestion older than this is refused too - it was calculated from such a BG.
      */
@@ -23,9 +37,8 @@ object Constants {
      * Fork (IOB-Action patches 0034/0038/0039): how much earlier than the SMB interval the next SMB
      * may go. The bolus RECORD lands some seconds after the decision (queue, enact start), so with a
      * BG every minute and an interval of one minute the next cycle always saw the last bolus as a
-     * little too young and waited: the setting delivered every OTHER minute. One value for all five
-     * gates (determine basal SMB and autoISF, the loop constraint gate, applySMBRequest and
-     * CommandSMBBolus), so they can never disagree. Amounts stay capped by the SMB ratio and iobTH.
+     * little too young and waited: the setting delivered every OTHER minute. All gates read it through
+     * SmbIntervalGate, so they can never disagree. Amounts stay capped by the SMB ratio and iobTH.
      */
     const val SMB_INTERVAL_TOLERANCE_SECONDS = 15L
 

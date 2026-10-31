@@ -66,7 +66,7 @@ class FakeOverviewDataCache : OverviewDataCache {
     override val fuseGraphFlow = MutableStateFlow(FuseGraphData())
     override val autoIsfGraphFlow = MutableStateFlow(AutoIsfGraphData())
 
-    override val treatmentGraphFlow = MutableStateFlow(TreatmentGraphData(emptyList(), emptyList(), emptyList(), emptyList()))
+    override val treatmentGraphFlow = MutableStateFlow(TreatmentGraphData(emptyList(), emptyList(), emptyList(), emptyList(), emptyList()))
     override val epsGraphFlow = MutableStateFlow<List<EpsGraphPoint>>(emptyList())
     override val basalGraphFlow = MutableStateFlow(BasalGraphData(emptyList(), emptyList(), 0.0))
     override val targetLineFlow = MutableStateFlow(TargetLineData(emptyList()))

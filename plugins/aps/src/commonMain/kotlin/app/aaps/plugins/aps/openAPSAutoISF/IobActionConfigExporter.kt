@@ -54,6 +54,7 @@ class IobActionConfigExporter(
                         is Int     -> put(k, JsonPrimitive(value))
                         is Long    -> put(k, JsonPrimitive(value))
                         is Float   -> if (value.isFinite()) put(k, JsonPrimitive(value.toDouble()))
+                        is Double  -> if (value.isFinite()) put(k, JsonPrimitive(value))
                         else       -> put(k, JsonPrimitive(value.toString().take(500)))
                     }
                 }

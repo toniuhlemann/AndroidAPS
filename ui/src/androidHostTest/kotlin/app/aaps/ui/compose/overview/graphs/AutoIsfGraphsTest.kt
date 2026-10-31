@@ -35,18 +35,17 @@ internal class AutoIsfGraphsTest {
 
     @Test
     fun `the factors are drawn around 1 and iobTH from 0`() {
-        for (factor in AutoIsfGraphData.FACTOR_SERIES) assertThat(seriesPivot(factor)).isEqualTo(AUTO_ISF_FACTOR_PIVOT)
-        assertThat(seriesPivot(SeriesType.IOB_TH)).isNull()
-        assertThat(SeriesType.IOB_TH in ZERO_FLOOR_SERIES_TYPES).isTrue()
-        // unchanged for the upstream pivot series
-        assertThat(seriesPivot(SeriesType.SENSITIVITY)).isEqualTo(100.0)
-        assertThat(seriesPivot(SeriesType.DEV_SLOPE)).isEqualTo(0.0)
-        assertThat(seriesPivot(SeriesType.COB)).isNull()
+        for (factor in AutoIsfGraphData.FACTOR_SERIES) assertThat(axisRuleOf(factor)).isEqualTo(AxisRule.Pivot(AUTO_ISF_FACTOR_PIVOT, AUTO_ISF_FACTOR_MIN_DEVIATION))
+        assertThat(axisRuleOf(SeriesType.IOB_TH)).isEqualTo(AxisRule.ZeroFloor)
+        // unchanged for the upstream series
+        assertThat(axisRuleOf(SeriesType.SENSITIVITY)).isEqualTo(AxisRule.Pivot(100.0, SENS_MIN_DEVIATION))
+        assertThat(axisRuleOf(SeriesType.DEV_SLOPE)).isEqualTo(AxisRule.Pivot(0.0))
+        assertThat(axisRuleOf(SeriesType.COB)).isEqualTo(AxisRule.ZeroFloor)
     }
 
     @Test
     fun `a flat factor gets a calm axis around 1`() {
-        val scale = niceScaleAroundPivot(1.0, 1.0, AUTO_ISF_FACTOR_PIVOT, SENS_PIVOT_TICK_COUNT, AUTO_ISF_FACTOR_MIN_DEVIATION)
+        val scale = niceScaleAroundPivot(1.0, 1.0, AUTO_ISF_FACTOR_PIVOT, AUTO_ISF_FACTOR_MIN_DEVIATION)
         assertThat(scale.min).isWithin(1e-9).of(1.0 - AUTO_ISF_FACTOR_MIN_DEVIATION)
         assertThat(scale.max).isWithin(1e-9).of(1.0 + AUTO_ISF_FACTOR_MIN_DEVIATION)
     }

@@ -1,7 +1,5 @@
 package app.aaps.plugins.aps.openAPSAutoISF
 
-import androidx.collection.LongSparseArray
-import androidx.collection.forEach
 import app.aaps.core.data.aps.SMBDefaults
 import app.aaps.core.data.configuration.Constants
 import app.aaps.core.data.model.AIV
@@ -24,8 +22,6 @@ import app.aaps.core.interfaces.aps.OapsProfileAutoIsf
 import app.aaps.core.interfaces.aps.EffectiveAutoIsfSettingsProvider
 import app.aaps.core.interfaces.automation.AutomationStateInterface
 import app.aaps.core.interfaces.bgQualityCheck.BgQualityCheck
-import app.aaps.core.interfaces.concurrent.AapsLock
-import app.aaps.core.interfaces.concurrent.withLock
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.constraints.Constraint
 import app.aaps.core.interfaces.constraints.ConstraintsChecker
@@ -37,8 +33,6 @@ import app.aaps.core.interfaces.iob.GlucoseStatusProvider
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
-import app.aaps.core.interfaces.notifications.NotificationId
-import app.aaps.core.interfaces.notifications.NotificationLevel
 import app.aaps.core.interfaces.notifications.NotificationManager
 import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.plugin.PluginBaseWithPreferences
@@ -48,7 +42,6 @@ import app.aaps.core.interfaces.profile.EffectiveProfile
 import app.aaps.core.interfaces.profile.Profile
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.profile.ProfileUtil
-import app.aaps.core.interfaces.profiling.Profiler
 import app.aaps.core.interfaces.resources.TextResolver
 import app.aaps.core.interfaces.rx.bus.RxBus
 import app.aaps.core.interfaces.rx.events.EventAPSCalculationFinished
@@ -88,7 +81,6 @@ import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
@@ -123,7 +115,6 @@ open class OpenAPSAutoISFPlugin(
     private val bgQualityCheck: BgQualityCheck,
     notificationManager: NotificationManager,
     private val determineBasalAutoISF: DetermineBasalAutoISF,
-    private val profiler: Profiler,
     private val glucoseStatusCalculatorAutoIsf: GlucoseStatusCalculatorAutoIsf,
     private val apsResultProvider: () -> APSResult,
     private val ch: ConcentrationHelper,
@@ -204,7 +195,6 @@ open class OpenAPSAutoISFPlugin(
     val mgdlHalfBasalExerciseTarget; get() = profileUtil.convertToMgdlDetect(preferences.get(UnitDoubleKey.ApsAutoIsfHalfBasalExerciseTarget))
     val normalTarget = Constants.NORMAL_TARGET_MGDL
     val calibrationDuration = preferences.get(IntNonKey.FslCalibrationDuration)
-    private val minutesClass; get() = if (preferences.get(IntKey.ApsMaxSmbFrequency) == 1) 6L else 30L  // ga-zelle: later get correct 1 min CGM flag from glucoseStatus ? ... or from apsResults?
     // create array for key AutoISF results with defaults
     var autoIsfValues = AIV(
         timestamp = 0L,
@@ -224,56 +214,14 @@ open class OpenAPSAutoISFPlugin(
     private val recentSteps60Minutes; get() = StepService.getRecentStepCount60Min()
     private val phone_moved; get() = PhoneMovementDetector.phoneMoved()
 
-    override suspend fun onStart() {
-        super.onStart()
-        var count = 0
-        val apsResults = persistenceLayer.getApsResults(dateUtil.now() - T.days(1).msecs(), dateUtil.now())
-        apsResults.forEach {
-            val glucose = it.glucoseStatus?.glucose ?: return@forEach
-            val variableSens = it.variableSens ?: return@forEach
-            val timestamp = it.date
-            val key = timestamp - timestamp % T.mins(minutesClass).msecs() + glucose.toLong()
-            if (variableSens > 0) isfCacheLock.withLock { autoIsfCache.put(key, variableSens) }
-            count++
-        }
-        aapsLogger.debug(LTag.APS, "Loaded $count variable sensitivity values from database")
-    }
-
     override fun usingDynamicIsf() = true //: Boolean = preferences.get(BooleanKey.ApsUseAutoIsf)
 
-    override fun getIsfMgdl(profile: Profile, caller: String): Double? {
-        val start = dateUtil.now()
-        val multiplier = (profile as ProfileSealed.EPS).value.originalPercentage / 100.0
-        val sensitivity = runBlocking { calculateVariableIsf(start) }
-        if (sensitivity.second == null && caller == "OpenAPSSMBPlugin")
-            notificationManager.post(
-                NotificationId.DYN_ISF_FALLBACK,
-                ApsStrings.fallback_to_isf_no_tdd.withArgs(sensitivity.first),
-                level = NotificationLevel.INFO,
-                date = start,
-                validTo = dateUtil.now() + T.mins(1).msecs())
-        else
-            notificationManager.dismiss(NotificationId.DYN_ISF_FALLBACK)
-        profiler.log(LTag.APS, "getIsfMgdl() ${sensitivity.first} ${sensitivity.second} ${dateUtil.dateAndTimeAndSecondsString(start)} $caller", start)
-        return sensitivity.second?.let { it * multiplier }
-    }
-
-    override fun getAverageIsfMgdl(timestamp: Long, caller: String): Double? {
-        var count = 0
-        var sum = 0.0
-        val start = timestamp - T.hours(24).msecs()
-        isfCacheLock.withLock {
-            autoIsfCache.forEach { key, value ->
-                if (key in start..timestamp) {
-                    count++
-                    sum += value
-                }
-            }
-        }
-        val sensitivity = if (count == 0) null else sum / count
-        aapsLogger.debug(LTag.APS, "getAverageIsfMgdl() $sensitivity from $count values ${dateUtil.dateAndTimeAndSecondsString(timestamp)} $caller")
-        return sensitivity
-    }
+    /**
+     * AutoISF works out its ISF inside its own run, as variable_sens. Every other caller gets the profile ISF,
+     * so this must answer null. It used to run autoISF() here as well, only to fill a cache for the old
+     * average ISF for carbs. That average is now worked out from the stored results, see `IsfForCarbs`.
+     */
+    override fun getIsfMgdl(profile: Profile, caller: String): Double? = null
 
     override fun getSensitivityOverviewString(): String? = null // placeholder for Auto ISF Detailed information for overview
 
@@ -283,32 +231,6 @@ open class OpenAPSAutoISFPlugin(
         if (preferences.get(BooleanKey.ActivityMonitorDetection))
             listOf(PermissionGroup(listOf("android.permission.ACTIVITY_RECOGNITION"), ApsStrings.activity_monitor_settings_title, ApsStrings.need_step_count_permission))
         else emptyList()
-
-    private val autoIsfCache = LongSparseArray<Double>()
-
-    /** Guards [autoIsfCache]. Was `synchronized(autoIsfCache)`, which is JVM only. */
-    private val isfCacheLock = AapsLock()
-
-    private suspend fun calculateVariableIsf(timestamp: Long): Pair<String, Double?> {
-        val profile = profileFunction.getProfile(timestamp) ?: return Pair("OFF", null)
-        val glucose = glucoseStatusProvider.glucoseStatusData?.glucose ?: return Pair("GLUC", null)
-        // Round down to minutesClass min and use it as a key for caching
-        // Add BG to key as it affects calculation
-        val key = timestamp - timestamp % T.mins(minutesClass).msecs() + glucose.toLong()
-        // Fork 0044: this path serves getIsfMgdl() for ANY caller (overview, NS upload, widgets,
-        // automations). Its console lines must not land in the live AUTO-ISF console of the loop run.
-        val sensitivity = autoISF(profile, mutableListOf())
-        if (sensitivity > 0) {
-            // can default to 0, e.g. for the first 2-3 loops in a virgin setup
-            aapsLogger.debug("calculateVariableIsf CALC ${dateUtil.dateAndTimeAndSecondsString(timestamp)} $sensitivity")
-            isfCacheLock.withLock {
-                autoIsfCache.put(key, sensitivity)
-                if (autoIsfCache.size() > 1000) autoIsfCache.clear()
-            }
-        }
-        // this return is mandatory, otherwise it messed up the AutoISF algo.
-        return Pair("OFF", null)
-    }
 
     override suspend fun invoke(initiator: String, tempBasalFallback: Boolean) = withContext(Dispatchers.Default) {
         aapsLogger.debug(LTag.APS, "invoke from $initiator tempBasalFallback: $tempBasalFallback")
@@ -513,8 +435,8 @@ open class OpenAPSAutoISFPlugin(
         var sensitivityRatio = 1.0
         // TODO eliminate
         val target_bg = (minBg + maxBg) / 2
-        val exerciseModeActive = highTemptargetRaisesSensitivity && isTempTarget && target_bg > normalTarget
-        val resistanceModeActive = oapsProfile.low_temptarget_lowers_sensitivity && isTempTarget && target_bg < normalTarget
+        val exerciseModeActive = highTemptargetRaisesSensitivity && isTempTarget && Constants.isAboveNormalTarget(target_bg)
+        val resistanceModeActive = oapsProfile.low_temptarget_lowers_sensitivity && isTempTarget && Constants.isBelowNormalTarget(target_bg)
         if ( exerciseModeActive || resistanceModeActive || stepActivityDetected || stepInactivityDetected ) {
             if (exerciseModeActive || resistanceModeActive) {
                 // w/ target 100, temp target 110 = .89, 120 = 0.8, 140 = 0.67, 160 = .57, and 200 = .44
@@ -1046,8 +968,8 @@ open class OpenAPSAutoISFPlugin(
         val stepActivityDetected = preferences.get(BooleanNonKey.ActivityMonitorStepsActive)
         val stepInactivityDetected = preferences.get(BooleanNonKey.ActivityMonitorStepsInactive)
         var sensitivityRatio = 1.0
-        val exerciseModeActive = high_temptarget_raises_sensitivity && isTempTarget && target_bg > normalTarget
-        val resistanceModeActive = preferences.get(BooleanKey.ApsAutoIsfLowTtLowersSens)  && isTempTarget && target_bg < normalTarget
+        val exerciseModeActive = high_temptarget_raises_sensitivity && isTempTarget && Constants.isAboveNormalTarget(target_bg)
+        val resistanceModeActive = preferences.get(BooleanKey.ApsAutoIsfLowTtLowersSens)  && isTempTarget && Constants.isBelowNormalTarget(target_bg)
         if ( exerciseModeActive || resistanceModeActive || stepActivityDetected || stepInactivityDetected ) {
             if ( exerciseModeActive || resistanceModeActive ) {
                 // w/ target 100, temp target 110 = .89, 120 = 0.8, 140 = 0.67, 160 = .57, and 200 = .44

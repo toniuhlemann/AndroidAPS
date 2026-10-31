@@ -11,6 +11,7 @@ import app.aaps.core.interfaces.aps.MealData
 import app.aaps.core.interfaces.aps.OapsProfileAutoIsf
 import app.aaps.core.interfaces.aps.Predictions
 import app.aaps.core.interfaces.aps.RT
+import app.aaps.core.interfaces.aps.SmbIntervalGate
 import app.aaps.core.interfaces.profile.ProfileUtil
 import app.aaps.core.keys.BooleanNonKey
 import app.aaps.core.keys.DoubleNonKey
@@ -108,7 +109,7 @@ class DetermineBasalAutoISF(
         if (!microBolusAllowed) {
             consoleError.add("SMB disabled (!microBolusAllowed)")
             return false
-        } else if (!profile.allowSMB_with_high_temptarget && profile.temptargetSet && target_bg > 100) {
+        } else if (!profile.allowSMB_with_high_temptarget && profile.temptargetSet && Constants.isAboveNormalTarget(target_bg)) {
             consoleError.add("SMB disabled due to high temptarget of $target_bg")
             return false
         }
@@ -307,8 +308,8 @@ class DetermineBasalAutoISF(
         val stepInactivityDetected = preferences.get(BooleanNonKey.ActivityMonitorStepsInactive)
         var sensitivityRatio = 1.0
         val normalTarget = Constants.NORMAL_TARGET_MGDL // evaluate high/low temptarget against normal target, not scheduled target (which might change)
-        val exerciseModeActive = (profile.exercise_mode || profile.high_temptarget_raises_sensitivity) && profile.temptargetSet && target_bg > normalTarget
-        val resistanceModeActive = profile.low_temptarget_lowers_sensitivity && profile.temptargetSet && target_bg < normalTarget
+        val exerciseModeActive = (profile.exercise_mode || profile.high_temptarget_raises_sensitivity) && profile.temptargetSet && Constants.isAboveNormalTarget(target_bg)
+        val resistanceModeActive = profile.low_temptarget_lowers_sensitivity && profile.temptargetSet && Constants.isBelowNormalTarget(target_bg)
         // when temptarget is 160 mg/dL, run 50% basal (120 = 75%; 140 = 60%),  80 mg/dL with low_temptarget_lowers_sensitivity would give 1.5x basal, but is limited to autosens_max (1.2x by default)
         val mgdlHalfBasalTarget = profile.half_basal_exercise_target * if (profile.out_units == "mmol/L") Constants.MMOLL_TO_MGDL else 1.0
         if ( exerciseModeActive || resistanceModeActive || stepActivityDetected || stepInactivityDetected ) {
@@ -1235,11 +1236,11 @@ class DetermineBasalAutoISF(
                 val lastBolusAge = (systemTime - iob_data.lastBolusTime) / 1000.0
                 //console.error(lastBolusAge);
                 // allow SMBIntervals between 1 and 10 minutes
-                val SMBInterval = min(10, max(1, profile.SMBInterval)) * 60.0   // in seconds
+                val smbIntervalMinutes = min(10, max(1, profile.SMBInterval))
+                val SMBInterval = smbIntervalMinutes * 60.0   // in seconds
                 //console.error(naive_eventualBG, insulinReq, worstCaseInsulinReq, durationReq);
                 consoleError.add("naive_eventualBG $naive_eventualBG,${durationReq}m ${smbLowTempReq}U/h temp needed; last bolus ${round(lastBolusAge / 60.0, 1)}m ago; maxBolus: $maxBolus")
-                // Fork: shared tolerance, see Constants.SMB_INTERVAL_TOLERANCE_SECONDS (was 6 s here and 0 s in the enact gates)
-                if (lastBolusAge > SMBInterval - Constants.SMB_INTERVAL_TOLERANCE_SECONDS) {
+                if (!SmbIntervalGate.tooSoon(iob_data.lastBolusTime, smbIntervalMinutes, systemTime)) {
                     if (microBolus > 0) {
                         rT.units = microBolus
                         rT.reason.append("Microbolusing ${microBolus}U. ")
