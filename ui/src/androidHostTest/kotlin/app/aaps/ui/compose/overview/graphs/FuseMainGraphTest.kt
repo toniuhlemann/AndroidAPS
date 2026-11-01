@@ -157,12 +157,15 @@ internal class FuseMainGraphTest {
         val data = inspectDataAt(
             timestamp = at(10),
             bgReadings = emptyList(),
+            predictions = emptyList(),
             iob = emptyList(),
             cob = emptyList(),
             actualBasal = emptyList(),
             profileBasal = emptyList(),
             boluses = listOf(smb(10, 20, 0.3)),
             carbs = emptyList(),
+            calibrations = emptyList(),
+            therapyEvents = emptyList(),
             fuseCycles = listOf(FuseCycleInfo(at(9), CycleState.GUARD, "guardFloor=70.0", 0.4)),
             fuseSends = listOf(FuseSmbSend(at(10), 0.3, SmbSource.EXPECTATION))
         )
@@ -170,7 +173,10 @@ internal class FuseMainGraphTest {
         assertThat(data.fuse?.state).isEqualTo(CycleState.GUARD)
         assertThat(data.smbSources[at(10, 20)]).isEqualTo(SmbSource.EXPECTATION)
         // Without FUSE nothing changes
-        val plain = inspectDataAt(at(10), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), listOf(smb(10, 20, 0.3)), emptyList())
+        val plain = inspectDataAt(
+            at(10), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), listOf(smb(10, 20, 0.3)), emptyList(),
+            emptyList(), emptyList()
+        )
         assertThat(plain.fuse).isNull()
         assertThat(plain.smbSources).isEmpty()
     }

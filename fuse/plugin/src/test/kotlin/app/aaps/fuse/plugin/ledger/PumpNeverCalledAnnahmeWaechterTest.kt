@@ -152,7 +152,7 @@ class PumpNeverCalledAnnahmeWaechterTest {
         assertTrue(einreihen >= 0) { "Einreihen in bolus() nicht gefunden" }
         assertTrue(bolus.indexOf("CommandSMBBolus(") in 0 until einreihen) { "der SMB-Befehl entsteht nicht vor dem Einreihen" }
         val marken = MARKE.findAll(bolus).map { it.range.first }.toList()
-        assertEquals(4, marken.size) { "Erwartet vier markierte Ablehnungen in bolus(), gefunden ${marken.size}" }
+        assertEquals(5, marken.size) { "Erwartet fuenf markierte Ablehnungen in bolus(), gefunden ${marken.size}" }
         assertTrue(marken.all { it < einreihen }) { "eine Marke steht nach dem Einreihen" }
         // Tor und "executing right now" gelten fuer jeden Bolus - markiert wird dort nur die SMB.
         assertEquals(2, NUR_SMB.findAll(bolus).count()) { "Tor oder executingNowError markieren nicht mehr nur die SMB" }
@@ -162,13 +162,13 @@ class PumpNeverCalledAnnahmeWaechterTest {
 
     @Test
     fun `der Loop markiert nur seine Tore und legt nur belegte Nichtsendungen ab`() {
-        val apply = funktion(loop, "private suspend fun applySMBRequest(")
+        val apply = funktion(loop, "internal suspend fun applySMBRequest(")
         val bolus = BOLUS.find(apply)?.range?.first ?: -1
         assertTrue(bolus >= 0) { "commandQueue.bolus in applySMBRequest nicht gefunden" }
         val marken = MARKE.findAll(apply).map { it.range.first }.toList()
-        assertEquals(3, marken.size) { "Erwartet drei markierte Tore in applySMBRequest" }
+        assertEquals(4, marken.size) { "Erwartet vier markierte Tore in applySMBRequest" }
         assertTrue(marken.all { it < bolus }) { "eine Marke steht nach commandQueue.bolus" }
-        assertEquals(3, MARKE.findAll(loop).count()) { "eine Marke im Loop ausserhalb von applySMBRequest" }
+        assertEquals(4, MARKE.findAll(loop).count()) { "eine Marke im Loop ausserhalb von applySMBRequest" }
 
         val ablagen = ABLAGE.findAll(loop).map { it.range.first }.toList()
         assertEquals(2, ablagen.size) { "genau zwei Ablagestellen erwartet (SMB-Fehlschlag, TBR-Fehlschlag)" }

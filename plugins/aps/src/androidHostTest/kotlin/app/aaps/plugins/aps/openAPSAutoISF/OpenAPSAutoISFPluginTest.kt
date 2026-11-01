@@ -133,7 +133,6 @@ class OpenAPSAutoISFPluginTest : TestBaseWithProfile() {
         var exerciseModeActive = false
         var resistanceModeActive = false
         val targetBg = 120.0
-        val normalTarget = Constants.NORMAL_TARGET_MGDL
         var stepActivityDetected = false
         val stepInactivityDetected = false
         whenever(preferences.get(BooleanKey.ActivityMonitorDetection)).thenReturn(false)

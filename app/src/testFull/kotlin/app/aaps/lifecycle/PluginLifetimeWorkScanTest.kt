@@ -82,6 +82,13 @@ class PluginLifetimeWorkScanTest {
                 "queue hold covers the restart window, and both are MEANT to outlive the screen - owning them would cancel a " +
                 "pump command when the user navigates away. Left as is. What is untidy rather than unsafe: they call refresh() " +
                 "on an overview state that stop() may already have torn down.",
+        // Fork (FUSE)
+        "FusePlugin#starteGraphWarmstart" to
+            "one-shot read of the trail file on its own thread, to fill the FUSE graph after a start. It only reads, doses " +
+                "nothing and reschedules nothing, so a restart window costs at most a graph that fills again",
+        "FusePlugin#fuseWizardBolus" to
+            "one-shot under the run lock, after the pump gave a bolus from the wizard. It must finish even if the plugin " +
+                "stops: the insulin is already in, and without it the meal would not be booked",
     )
 
     private data class Hit(val key: String, val matched: String, val where: String)

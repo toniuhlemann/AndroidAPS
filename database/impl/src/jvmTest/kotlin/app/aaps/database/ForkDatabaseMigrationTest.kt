@@ -113,17 +113,20 @@ class ForkDatabaseMigrationTest {
         }
     }
 
-    /** An upstream database keeps the upstream behaviour: every row gets the placeholder, MainApp stamps it. */
+    /** An upstream database follows the upstream migration: a row keeps a whole curve, the others get the placeholder. */
     @Test
-    fun `upstream 31 keeps the upstream placeholder`() = runTest {
+    fun `upstream 31 follows the upstream migration`() = runTest {
         createFrom(upstreamSchema(31), version = 31)
-        withRaw { c -> c.execSQL(bolusWithCurve(id = 1, label = "Lyumjev", end = END, peak = PEAK)) }
+        withRaw { c ->
+            c.execSQL(bolusWithCurve(id = 1, label = "Lyumjev", end = END, peak = PEAK))
+            c.execSQL(bolusWithCurve(id = 2, label = "", end = 0, peak = 0))
+        }
 
         openWithRoom()
 
         withRaw { c ->
-            assertThat(longs(c, "SELECT insulinEndTime FROM boluses")).containsExactly(-1L)
-            assertThat(longs(c, "SELECT insulinPeakTime FROM boluses")).containsExactly(-1L)
+            assertThat(longs(c, "SELECT insulinEndTime FROM boluses ORDER BY id")).containsExactly(END, -1L).inOrder()
+            assertThat(longs(c, "SELECT insulinPeakTime FROM boluses ORDER BY id")).containsExactly(PEAK, -1L).inOrder()
         }
     }
 

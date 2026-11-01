@@ -356,7 +356,8 @@ internal class NSDeviceStatusHandlerTest {
         openaps = NSDeviceStatus.OpenAps(suggested = buildJsonObject {
             put("timestamp", time)
             deliverAt?.let { put("deliverAt", it) }
-            if (readable) put("runningDynamicIsf", false)
+            // Fork: the field is optional in RT (FUSE does not send it), so only a wrong type makes the result unreadable.
+            if (readable) put("runningDynamicIsf", false) else put("runningDynamicIsf", "not a boolean")
         })
     )
 

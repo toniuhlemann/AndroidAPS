@@ -74,9 +74,9 @@ class CommandSMBBolusTest : TestBaseWithProfile() {
     }
 
     @Test
-    fun `execute rejects when the last bolus is 7 s short of the interval`() = runTest {
+    fun `execute rejects when the last bolus is 16 s short of the interval`() = runTest {
         whenever(preferences.get(IntKey.ApsMaxSmbFrequency)).thenReturn(3)
-        val lastBolus = BS(timestamp = dateUtil.now() - T.mins(3).msecs() + T.secs(7).msecs(), type = BS.Type.SMB, amount = 0.3, iCfg = someICfg)
+        val lastBolus = BS(timestamp = dateUtil.now() - T.mins(3).msecs() + T.secs(16).msecs(), type = BS.Type.SMB, amount = 0.3, iCfg = someICfg)
         whenever(persistenceLayer.getNewestBolus()).thenReturn(lastBolus)
 
         val result = newCommand(smbInfo()).execute()

@@ -81,8 +81,8 @@ internal class FuseGraphsTest {
         val fuse = processFuse(data, SeriesType.FUSE_DRIVE, start, 0.0, maxX)!!
 
         val scale = fuse.axis()
-        assertThat(scale.max).isEqualTo(5.0)
-        assertThat(scale.min).isEqualTo(-5.0)
+        assertThat(scale.max).isEqualTo(3.5)
+        assertThat(scale.min).isEqualTo(-3.5)
     }
 
     /** The axis the graph gets for these bars and lines. */

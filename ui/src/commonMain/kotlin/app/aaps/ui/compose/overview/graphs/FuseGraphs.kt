@@ -76,7 +76,7 @@ internal class ProcessedFuse(
 
     /**
      * The symmetric axis around 0: at least [minHalfRange], else the largest value either way - rounded up to a
-     * round number, so the labels read 5 / 2.5 / 0 and not 3.12 (the minimum 1.25 x ramp edge is rarely round).
+     * round number, so the labels do not read 3.12 (the minimum 1.25 x ramp edge is rarely round).
      */
     val axisRule: AxisRule get() = AxisRule.Pivot(0.0, niceUp(minHalfRange))
 }
