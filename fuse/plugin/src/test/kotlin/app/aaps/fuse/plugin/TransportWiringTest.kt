@@ -226,6 +226,8 @@ class TransportWiringTest : TestBaseWithProfile() {
     private var zeroLatchRuheAbstand = 30.0
     /** Variante 1 des Nullphasen-Vergleichs; 0 = AUS = Produktionsstand. */
     private var zeroLatchGrundWegZyklen = 0
+    /** Zero-Latch nur unter diesem BG (Toni 03.11.2026); 0 = keine Grenze = Stand davor. */
+    private var zeroLatchMaxBg = 0.0
     /** Variante 2; 0 = AUS = Produktionsstand. */
     private var livenessBgMin = 160.0
 
@@ -849,6 +851,7 @@ class TransportWiringTest : TestBaseWithProfile() {
         // weist ein 0-Fenster zu Recht ab.
         whenever(preferences.get(FuseDoubleKey.ZeroLatchCalmDistanceMgdl)).thenAnswer { zeroLatchRuheAbstand }
         whenever(preferences.get(FuseIntKey.ZeroLatchReasonGoneExitCycles)).thenAnswer { zeroLatchGrundWegZyklen }
+        whenever(preferences.get(FuseDoubleKey.ZeroLatchMaxBgMgdl)).thenAnswer { zeroLatchMaxBg }
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinDayMgdl)).thenAnswer { livenessBgMin }
         whenever(preferences.get(FuseDoubleKey.LivenessBgMinNightMgdl)).thenAnswer { livenessBgMinNacht ?: livenessBgMin }
         whenever(preferences.getIfExists(FuseDoubleKey.LivenessBgMinNightMgdl)).thenAnswer { livenessBgMinNacht }
@@ -5955,6 +5958,7 @@ class TransportWiringTest : TestBaseWithProfile() {
     private fun latchLage(dir: File, an: Boolean, knick2: Double? = null, knick2Ab: Int? = null): FuseLedgerAdapter {
         zeroLatchAn = an
         zeroLatchGrundWegZyklen = 0
+        zeroLatchMaxBg = 0.0
         zeroLatchRuheZyklen = 60
         zeroLatchRuheAbstand = 40.0
         livenessAn = false
@@ -6264,6 +6268,116 @@ class TransportWiringTest : TestBaseWithProfile() {
         // Null und Abbruch; dieser Test friert das fuer die Variante ein.
         val raten = kand.mapNotNull { it.tbr?.rateUPerH }.filter { it > 0.0 }
         assertTrue(raten.isEmpty()) { "keine positive TBR erlaubt, gemessen: $raten" }
+    }
+
+    // ==== TONI 03.11.2026: DIE VERRIEGELUNG IM HOCH UND DER TOLERANTE GRUND-WEG-AUSGANG ====
+    //
+    // Der Anlass war eine Null bei hohem BG: das Low-Tor zuendete berechtigt (Fall mit Bolus-Ueberdeckung), sah danach
+    // keinen Grund mehr, und die Verriegelung hielt die Null trotzdem lange. Der Grund-weg-Ausgang riss an der
+    // Zykluspause beim Bolus und an Wacklern von unter 1 mg/dl ab. Auch hier gilt: der Zucker ist ein fester Verlauf,
+    // verglichen werden nur die Entscheidungen.
+
+    /** Fall aus dem Hoch mit viel Bolus-IOB, ab Minute 25 flach weit ueber dem Boden. Die Ueberdeckung bleibt - der
+     *  Ruhe-Ausgang greift nie, der Grund-weg-Ausgang ist aus. */
+    private fun hochLage(dir: File, grenze: Double) {
+        latchLage(dir, an = true)
+        zeroLatchMaxBg = grenze
+        flach = 300.0
+        steigungProMin = -2.5
+        bolusIobU = 6.0
+    }
+
+    @Test
+    fun `Latch nur unter BG - im Hoch endet die Null mit dem Grund des Tors, darunter haelt sie wie bisher`(@TempDir dir: File) {
+        val flachAb = 30
+        // BASISLINIE ohne Grenze: die Verriegelung haelt die Null auch flach im Hoch.
+        hochLage(File(dir, "basis"), grenze = 0.0)
+        val basis = (0 until 45).map { cycle() }
+        assertTrue(basis.take(flachAb).any { it.zeroLatchActive }) {
+            "die Lage muss im Fall verriegeln: " + basis.take(flachAb).map { it.lowThreat?.verdict }.distinct()
+        }
+        val basisFlach = basis.drop(flachAb)
+        assertTrue(basisFlach.all { it.signal!!.q1 > 200.0 }) { "die flache Strecke muss im Hoch liegen" }
+        assertTrue(basisFlach.all { it.lowThreat?.verdict?.name == "NONE" }) {
+            "flach sieht das Tor keinen Grund mehr: " + basisFlach.map { it.lowThreat?.verdict }.distinct()
+        }
+        assertTrue(basisFlach.all { it.zeroLatchActive && it.decision.tbr == FuseController.TbrAction.ZERO_TEMP }) {
+            "ohne Grenze haelt die Verriegelung die Null: " +
+                basisFlach.map { "${it.zeroLatchReason}/${it.decision.tbr}" }.distinct()
+        }
+
+        // DIE REFERENZ: dieselbe Lage ohne Verriegelung - dort entscheidet allein das Tor.
+        transportReset()
+        hochLage(File(dir, "ohneLatch"), grenze = 0.0)
+        zeroLatchAn = false
+        val ohne = (0 until 45).map { cycle() }
+
+        // GRENZE 200: ueber ihr verriegelt nichts, die Null steht nur, solange das Tor sie verlangt.
+        transportReset()
+        hochLage(File(dir, "grenze200"), grenze = 200.0)
+        val kand = (0 until 45).map { cycle() }
+        assertTrue(kand.none { it.zeroLatchActive }) { "ueber der Grenze darf kein Riegel stehen bleiben" }
+        val nullKand = kand.indices.filter { kand[it].decision.tbr == FuseController.TbrAction.ZERO_TEMP }
+        val nullOhne = ohne.indices.filter { ohne[it].decision.tbr == FuseController.TbrAction.ZERO_TEMP }
+        assertTrue(nullOhne.containsAll(nullKand)) {
+            "ueber der Grenze nie mehr Null als ohne Verriegelung: mit Grenze $nullKand, ohne Latch $nullOhne"
+        }
+        assertTrue(kand.any { it.zeroLatchReason == "HIGH_BG_RELEASED" }) {
+            "der Hoch-Ausgang muss im Trail stehen: " + kand.map { it.zeroLatchReason }.distinct()
+        }
+        assertTrue(kand.drop(flachAb).none { it.decision.tbr == FuseController.TbrAction.ZERO_TEMP }) {
+            "ohne Grund des Tors keine Null: " + kand.drop(flachAb).map { it.decision.tbr }.distinct()
+        }
+        assertEquals(
+            basis.sumOf { it.decision.smbU }, kand.sumOf { it.decision.smbU }, 1e-9,
+            "die Grenze fasst nur die Basalachse an",
+        )
+
+        // GRENZE UEBER DER FLACHEN STRECKE: darunter verriegelt sie wie ohne Grenze.
+        transportReset()
+        hochLage(File(dir, "grenze280"), grenze = 280.0)
+        val unter = (0 until 45).map { cycle() }
+        assertTrue(unter.drop(flachAb).all { it.zeroLatchActive && it.decision.tbr == FuseController.TbrAction.ZERO_TEMP }) {
+            "unter der Grenze haelt die Verriegelung wie bisher: " +
+                unter.drop(flachAb).map { "${it.zeroLatchReason}/${it.decision.tbr}" }.distinct()
+        }
+    }
+
+    @Test
+    fun `Grund-weg-Ausgang - eine Zykluspause bis 5 min unterbricht die Zaehlung nicht, eine laengere schon`(@TempDir dir: File) {
+        // Jeder zweite Zyklus kommt nach einer Pause - wie beim Bolus. Mit dem alten 90-s-Anschluss zaehlte der Streak
+        // dann nie ueber 2.
+        fun lauf(name: String, pauseMs: Long): List<FuseCycleRunner.Outcome> {
+            transportReset()
+            grundWegLage(File(dir, name), variante = 3)
+            return (0 until 50).map { i ->
+                if (i > 26 && i % 2 == 0) clock += pauseMs
+                cycle()
+            }
+        }
+        val kurz = lauf("pause150", pauseMs = 150_000L)
+        assertTrue(kurz.any { it.zeroLatchActive }, "die Lage muss zuenden")
+        assertTrue(kurz.any { it.zeroLatchReason == "REASON_GONE_RECOVERED" }) {
+            "mit kurzen Pausen muss der Grund-weg-Ausgang loesen: " + kurz.drop(25).map { it.zeroLatchReasonGoneStreak }
+        }
+
+        // Nach so einer Pause gilt im Gestell auch das Signal im ersten Zyklus nicht als gesund - die Zaehlung reisst
+        // also in jedem Fall.
+        val lang = lauf("pause330", pauseMs = 330_000L)
+        assertTrue(lang.any { it.zeroLatchActive }, "die Lage muss zuenden")
+        assertTrue(lang.none { it.zeroLatchReason == "REASON_GONE_RECOVERED" }) {
+            "eine Pause ueber 5 min darf keine Zaehlung tragen: " + lang.drop(25).map { it.zeroLatchReasonGoneStreak }
+        }
+    }
+
+    @Test
+    fun `Grund-weg-Ausgang - ein Wackler bis 1 mg dl zaehlt nicht als Fallen`() {
+        // Direkt an der Pruefung, die der Runner fuer den Grund-weg-Ausgang benutzt: das geglaettete q1 des Gestells
+        // zeigt keinen Knick, solange die UKF-Rate nicht faellt - ein Lauf durch das Gestell wuerde die Grenze nicht
+        // beruehren.
+        assertTrue(FuseCycleRunner.grundWegQ1NichtFallend(q1 = 199.0, vorQ1 = 200.0), "genau 1 mg/dl ist ein Wackler")
+        assertFalse(FuseCycleRunner.grundWegQ1NichtFallend(q1 = 198.9, vorQ1 = 200.0), "mehr als 1 mg/dl ist Fallen")
+        assertTrue(FuseCycleRunner.grundWegQ1NichtFallend(q1 = 150.0, vorQ1 = Double.NaN), "ohne Vorzyklus zaehlt er")
     }
 
     // ==== VARIANTE 2: DIE SERIENBUCHUNG ======================================

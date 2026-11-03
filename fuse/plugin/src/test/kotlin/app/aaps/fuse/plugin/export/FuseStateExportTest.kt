@@ -614,6 +614,24 @@ class FuseStateExportTest {
         assertEquals(55, FuseStateJson.RULE_SET_VERSION)
     }
 
+    /** Toni 03.11.2026: die BG-Grenze der Verriegelung steht nur in Hash und Export, wenn sie wirkt - ab Werk 0 bleibt
+     *  beides bitgleich. */
+    @Test
+    fun `Latch nur unter BG bewegt Hash und Export nur bei gesetzter Grenze und Latch an`() {
+        val an = cfg.copy(zeroLatchEnabled = true)
+        val h = FuseStateJson.hashOf(an)!!
+        assertEquals(h, FuseStateJson.hashOf(an.copy(zeroLatchMaxBgMgdl = 0.0)), "0 ist die Vorgabe")
+        assertTrue(FuseStateJson.hashOf(an.copy(zeroLatchMaxBgMgdl = 200.0)) != h, "eine gesetzte Grenze bewegt den Hash")
+        assertTrue(
+            FuseStateJson.hashOf(an.copy(zeroLatchMaxBgMgdl = 200.0)) != FuseStateJson.hashOf(an.copy(zeroLatchMaxBgMgdl = 180.0)),
+            "verschiedene Grenzen sind verschiedene Politiken",
+        )
+        val aus = cfg.copy(zeroLatchEnabled = false)
+        assertEquals(FuseStateJson.hashOf(aus), FuseStateJson.hashOf(aus.copy(zeroLatchMaxBgMgdl = 200.0)), "ohne Latch wirkt die Grenze nicht")
+        assertTrue(FuseStateJson.policyValues(an).isNull("zeroLatchMaxBgMgdl"))
+        assertEquals(200.0, FuseStateJson.policyValues(an.copy(zeroLatchMaxBgMgdl = 200.0)).getDouble("zeroLatchMaxBgMgdl"), 1e-9)
+    }
+
     /** KI-171: der Trail zeigt, was ein Zyklus von den AAPS-Ablagen sah - und
      *  ohne Messung steht ein ausdrueckliches null, keine leere Behauptung. */
     @Test

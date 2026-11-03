@@ -241,6 +241,14 @@ enum class FuseDoubleKey(
      * stellt.
      */
     ZeroLatchCalmDistanceMgdl("fuse_zero_latch_calm_distance_mgdl", 30.0, 10.0, 60.0, title = TextRef.AndroidRes(R.string.fuse_zero_latch_calm_dist_title), summary = TextRef.AndroidRes(R.string.fuse_zero_latch_calm_dist_summary), unitType = UnitType.MGDL),
+
+    /**
+     * ZERO-LATCH NUR UNTER DIESEM BG [mg/dl] (Toni 03.11.2026): liegt q1 auf oder ueber dem Wert, haelt die
+     * Verriegelung die Null nicht - dort entscheidet allein das Low-Tor, und die Null endet, sobald es keinen
+     * Grund mehr sieht. Anlass: die Verriegelung hielt eine Null bei hohem BG lange, nachdem das Tor schon
+     * keinen Grund mehr sah. 0 = keine Grenze, wie vorher.
+     */
+    ZeroLatchMaxBgMgdl("fuse_zero_latch_max_bg_mgdl", 0.0, 0.0, 400.0, title = TextRef.AndroidRes(R.string.fuse_zero_latch_max_bg_title), summary = TextRef.AndroidRes(R.string.fuse_zero_latch_max_bg_summary), unitType = UnitType.MGDL),
     /** Langsamer Korrekturkanal (Toni 20.10.2026): OBERGRENZE der Gesamtrate als Vielfaches des Profilbasals, bis 10 (Toni 03.11.2026) - die Rate selbst folgt dem Bedarf. */
     SlowChannelFactor("fuse_slow_channel_factor", SlowCorrectionChannel.FACTOR_DEFAULT, SlowCorrectionChannel.FACTOR_MIN, SlowCorrectionChannel.FACTOR_MAX, title = TextRef.AndroidRes(R.string.fuse_slow_channel_factor_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_factor_summary), unitType = UnitType.DOUBLE),
     /** Langsamer Korrekturkanal: ab diesem Zucker zaehlt die Einstiegszeit; gestoppt wird 20 mg/dl darunter. */

@@ -240,6 +240,7 @@ object FuseSettings {
             info("Basal", "Null-Basal bei Abwaertslage: wann sie endet, ob sie verriegelt und wie sie zurueckkehrt."),
             FuseBooleanKey.TbrEndZeroWhenReasonGone, FuseBooleanKey.ZeroLatchEnabled, FuseIntKey.ZeroLatchCalmExitMin,
             FuseIntKey.ZeroLatchReasonGoneExitCycles, FuseBooleanKey.PartialRecoveryEnabled, FuseDoubleKey.ZeroLatchCalmDistanceMgdl,
+            FuseDoubleKey.ZeroLatchMaxBgMgdl,
         ),
         section(
             "fuse_system", R.string.fuse_section_system,

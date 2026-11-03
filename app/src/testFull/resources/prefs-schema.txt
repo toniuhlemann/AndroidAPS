@@ -358,6 +358,7 @@ fuse_theil_sen_window_min|FuseIntKey|true
 fuse_zero_latch_calm_distance_mgdl|FuseDoubleKey|true
 fuse_zero_latch_calm_exit_min|FuseIntKey|true
 fuse_zero_latch_enabled|FuseBooleanKey|true
+fuse_zero_latch_max_bg_mgdl|FuseDoubleKey|true
 fuse_zero_latch_reason_gone_exit_cycles|FuseIntKey|true
 g8_bolusspeed|DiaconnIntKey|true
 garmin_aaps_key|GarminStringKey|true

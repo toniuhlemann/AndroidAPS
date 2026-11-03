@@ -332,6 +332,25 @@ class FuseCycleRunner(
         /** Der Wert "vor der Einstiegszeit" darf so weit vom Sollzeitpunkt abweichen [min]; sonst kein Einstieg. */
         const val SLOW_EINSTIEG_TOLERANZ_MIN = 5
 
+        /**
+         * Grund-weg-Ausgang des Zero-Latch (Toni 03.11.2026): so weit [ms] duerfen zwei Zyklen auseinander liegen, ohne
+         * dass die Zaehlung neu beginnt. Waehrend eines Bolus fallen Zyklen aus; mit den 90 s der anderen Zaehler riss
+         * die Zaehlung genau dort ab. Eine laengere Pause zaehlt weiter nicht als Anschluss.
+         */
+        const val GRUND_WEG_ANSCHLUSS_MS = 300_000L
+
+        /**
+         * Grund-weg-Ausgang des Zero-Latch (Toni 03.11.2026): so weit [mg/dl] darf q1 gegen den Vorzyklus sinken und
+         * trotzdem als "nicht fallend" zaehlen. Ein echtes Fallen zeigt die UKF-Rate, die weiter mindestens -0,03
+         * verlangt ist.
+         */
+        const val GRUND_WEG_Q1_WACKLER_MGDL = 1.0
+
+        /** Grund-weg-Ausgang: q1 zaehlt als nicht fallend, wenn es hoechstens [GRUND_WEG_Q1_WACKLER_MGDL] unter dem
+         *  Vorzyklus liegt; ohne Vorzyklus immer. */
+        fun grundWegQ1NichtFallend(q1: Double, vorQ1: Double): Boolean =
+            vorQ1.isNaN() || q1 >= vorQ1 - GRUND_WEG_Q1_WACKLER_MGDL
+
 
         /**
          * Wie lange die Serienliste des Korrekturpfads Eintraege haelt
@@ -467,6 +486,7 @@ class FuseCycleRunner(
             require(it.zeroLatchCalmExitMin in FuseIntKey.ZeroLatchCalmExitMin.min..FuseIntKey.ZeroLatchCalmExitMin.max) { "zeroLatchCalmExitMin=${it.zeroLatchCalmExitMin}" }
             require(it.zeroLatchReasonGoneExitCycles in FuseIntKey.ZeroLatchReasonGoneExitCycles.min..FuseIntKey.ZeroLatchReasonGoneExitCycles.max) { "zeroLatchReasonGoneExitCycles=${it.zeroLatchReasonGoneExitCycles}" }
             require(it.zeroLatchCalmDistanceMgdl.isFinite() && it.zeroLatchCalmDistanceMgdl in FuseDoubleKey.ZeroLatchCalmDistanceMgdl.min..FuseDoubleKey.ZeroLatchCalmDistanceMgdl.max) { "zeroLatchCalmDistanceMgdl=${it.zeroLatchCalmDistanceMgdl}" }
+            require(it.zeroLatchMaxBgMgdl.isFinite() && it.zeroLatchMaxBgMgdl in FuseDoubleKey.ZeroLatchMaxBgMgdl.min..FuseDoubleKey.ZeroLatchMaxBgMgdl.max) { "zeroLatchMaxBgMgdl=${it.zeroLatchMaxBgMgdl}" }
             require(it.tailFloorMgdl.isFinite() && it.tailFloorMgdl in FuseDoubleKey.TailFloorMgdl.min..FuseDoubleKey.TailFloorMgdl.max) { "tailFloorMgdl=${it.tailFloorMgdl}" }
             require(it.tailRecoveryU.isFinite() && it.tailRecoveryU in FuseDoubleKey.TailRecoveryU.min..FuseDoubleKey.TailRecoveryU.max) { "tailRecoveryU=${it.tailRecoveryU}" }
             require(it.bolusShareLambda.isFinite() && it.bolusShareLambda in FuseDoubleKey.BolusShareLambda.min..FuseDoubleKey.BolusShareLambda.max) { "bolusShareLambda=${it.bolusShareLambda}" }
@@ -5123,6 +5143,8 @@ class FuseCycleRunner(
                 return@run decisionVorZeroLatch
             }
             val q1NichtFallend = zeroLatchLastQ1.isNaN() || signal.q1 >= zeroLatchLastQ1 - 0.01
+            // Nur fuer den Grund-weg-Ausgang: ein kleiner Wackler zaehlt nicht als Fallen (Toni 03.11.2026).
+            val q1KaumFallend = grundWegQ1NichtFallend(signal.q1, zeroLatchLastQ1)
             zeroLatchLastQ1 = signal.q1
             // Der AUSLOESE-Zaehler (v29) laeuft VOR decide - hier gilt nur
             // noch sein Ergebnis: das Risiko steht, wenn das Verdikt
@@ -5155,6 +5177,7 @@ class FuseCycleRunner(
                 zeroCalmStreak = 0
                 zeroReasonGoneStreak = 0
             }
+            val latchWarAktiv = episodes.zeroLatch.active
             episodes.zeroLatch = latch.state
             zeroLatchRuntime = latch.runtime
             zeroLatchGrund = latch.reason.name
@@ -5177,6 +5200,10 @@ class FuseCycleRunner(
                 val anschluss = zeroCalmLastTs > 0L &&
                     signal.sourceTs > zeroCalmLastTs &&
                     signal.sourceTs - zeroCalmLastTs <= 90_000L
+                // Der Grund-weg-Zaehler uebersteht eine kurze Zykluspause, etwa beim Bolus (Toni 03.11.2026).
+                val anschlussGrundWeg = zeroCalmLastTs > 0L &&
+                    signal.sourceTs > zeroCalmLastTs &&
+                    signal.sourceTs - zeroCalmLastTs <= GRUND_WEG_ANSCHLUSS_MS
                 zeroCalmStreak = if (ruhig) (if (anschluss) zeroCalmStreak + 1 else 1) else 0
                 zeroCalmLastTs = signal.sourceTs
                 // VARIANTE 1 - DER GRUND-WEG-AUSGANG (Default AUS).
@@ -5193,16 +5220,24 @@ class FuseCycleRunner(
                 val grundWeg = lowThreatResult.verdict == LowThreatGate.Verdict.NONE
                 val erholungBestaetigt = step.health == Health.READY && !measuredLow &&
                     !descentRisk.active && signal.ukfRatePerMin.isFinite() &&
-                    signal.ukfRatePerMin >= -0.03 && q1NichtFallend
+                    signal.ukfRatePerMin >= -0.03 && q1KaumFallend
                 zeroReasonGoneStreak = if (grundWeg && erholungBestaetigt) {
-                    if (anschluss) zeroReasonGoneStreak + 1 else 1
+                    if (anschlussGrundWeg) zeroReasonGoneStreak + 1 else 1
                 } else 0
                 val grundWegAusgang = cfg.zeroLatchReasonGoneExitCycles > 0 &&
                     zeroReasonGoneStreak >= cfg.zeroLatchReasonGoneExitCycles
                 val ruheAusgang = zeroCalmStreak >= cfg.zeroLatchCalmExitMin
-                if (ruheAusgang || grundWegAusgang) {
-                    // Auch der Ruhe-Ausgang ist eine Freigabe-Kante.
-                    episodes.correctionRearm = PositiveCorrectionRearm.anker(
+                // DER HOCH-AUSGANG (Toni 03.11.2026): auf oder ueber der BG-Grenze haelt die Verriegelung nicht. Die
+                // Null steht dort nur, solange das Low-Tor selbst sie verlangt (Fall-Verdikt mit seiner
+                // Zwei-Zyklen-Zuendung); faellt sein Grund weg, endet sie ueber "Null sofort beenden". Unter der
+                // Grenze rastet der Riegel beim naechsten Verdikt wieder ein.
+                val hochAusgang = cfg.zeroLatchMaxBgMgdl > 0.0 && signal.q1.isFinite() &&
+                    signal.q1 >= cfg.zeroLatchMaxBgMgdl
+                if (ruheAusgang || grundWegAusgang || hochAusgang) {
+                    // Auch der Ruhe-Ausgang ist eine Freigabe-Kante. Der Hoch-Ausgang nur, wenn vorher wirklich
+                    // verriegelt war: ueber der Grenze kann der Riegel im selben Zyklus einrasten und gleich wieder
+                    // fallen - das ist keine Freigabe.
+                    if (ruheAusgang || grundWegAusgang || latchWarAktiv) episodes.correctionRearm = PositiveCorrectionRearm.anker(
                         episodes.correctionRearm, signal.sourceTs,
                         PositiveCorrectionRearm.Source.ZERO_LATCH_RELEASED,
                     )
@@ -5217,7 +5252,11 @@ class FuseCycleRunner(
                     // ohnehin getragen haette - sonst waere im Trail nicht
                     // zu sehen, ob die Variante ueberhaupt etwas geaendert
                     // hat.
-                    zeroLatchGrund = if (ruheAusgang) "CALM_RECOVERED" else "REASON_GONE_RECOVERED"
+                    zeroLatchGrund = when {
+                        ruheAusgang -> "CALM_RECOVERED"
+                        grundWegAusgang -> "REASON_GONE_RECOVERED"
+                        else -> "HIGH_BG_RELEASED"
+                    }
                 }
             } else {
                 // BEIDE Zaehler, nicht nur der Ruhe-Zaehler (Review-Befund).
@@ -8297,6 +8336,8 @@ class FuseCycleRunner(
         val mealRunningMinR: Double = FuseDoubleKey.MealRunningMinR.defaultValue,
         /** Toni 23.10.: "die Mahlzeit steigt" erst ueber diesem Zucker [mg/dl]; 0 = die Stabilitaetsgrenze. */
         val mealRisingMinBgMgdl: Double = FuseDoubleKey.MealRisingMinBgMgdl.defaultValue,
+        /** Toni 03.11.2026: Zero-Latch nur unter diesem q1 [mg/dl], 0 = keine Grenze - s. [FuseDoubleKey.ZeroLatchMaxBgMgdl]. */
+        val zeroLatchMaxBgMgdl: Double = FuseDoubleKey.ZeroLatchMaxBgMgdl.defaultValue,
         val expectationReleaseThresholdU: Double = FuseDoubleKey.ExpectationReleaseThresholdU.defaultValue,
         val expectationHorizonMin: Int = FuseIntKey.ExpectationHorizonMin.defaultValue,
         /** Die Kurve als Einstellungstext, unveraendert (Export: konfiguriert). */
@@ -8355,6 +8396,7 @@ class FuseCycleRunner(
         riseRampHighR = preferences.get(FuseDoubleKey.RiseRampHighR),
         mealRunningMinR = preferences.get(FuseDoubleKey.MealRunningMinR),
         mealRisingMinBgMgdl = preferences.get(FuseDoubleKey.MealRisingMinBgMgdl),
+        zeroLatchMaxBgMgdl = preferences.get(FuseDoubleKey.ZeroLatchMaxBgMgdl),
         maxSmbU = preferences.get(FuseDoubleKey.MaxSmbU),
         guardFloorMgdl = preferences.get(FuseDoubleKey.GuardFloorMgdl),
         lowGateMinBenefitMgdl = preferences.get(FuseDoubleKey.LowGateMinBenefitMgdl),

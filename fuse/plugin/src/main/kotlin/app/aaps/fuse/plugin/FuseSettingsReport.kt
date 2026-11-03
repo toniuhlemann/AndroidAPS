@@ -55,6 +55,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseIntKey.ZeroLatchReasonGoneExitCycles.key,
     // 2.0 (Stufe 1, K2): der Serien-Deckel ist entfernt (Variante 2).
     FuseDoubleKey.ZeroLatchCalmDistanceMgdl.key,
+    FuseDoubleKey.ZeroLatchMaxBgMgdl.key,
     FuseBooleanKey.CorrectionReversalGuardEnabled.key,
     FuseDoubleKey.ReversalFallUkf.key,
     FuseIntKey.ReversalLookbackMin.key,
@@ -290,6 +291,7 @@ object FuseSettingsReport {
                     ganz(FuseIntKey.ZeroLatchReasonGoneExitCycles, "Latch-Grund-weg", "Zyk"),
                     schalter(FuseBooleanKey.PartialRecoveryEnabled, "Teilbasal-Rueckkehr"),
                     zahl(FuseDoubleKey.ZeroLatchCalmDistanceMgdl, "Latch-Abstand", "mg/dl"),
+                    zahl(FuseDoubleKey.ZeroLatchMaxBgMgdl, "Latch nur unter BG (0 = immer)", "mg/dl"),
                     schalter(FuseBooleanKey.SlowChannelEnabled, "Langsamer Korrekturkanal"),
                     zahl(FuseDoubleKey.SlowChannelFactor, "Kanal-Max-Multiplikator", "x Basal"),
                     zahl(FuseDoubleKey.SlowChannelThresholdMgdl, "Kanal-Schwelle", "mg/dl"),

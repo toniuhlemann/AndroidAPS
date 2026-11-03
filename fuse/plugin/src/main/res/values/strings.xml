@@ -145,7 +145,7 @@
     <string name="fuse_zero_latch_enabled_summary">Eine vom Low-Tor berechtigt eroeffnete Zero-TBR bleibt fuer die Dauer der Fall-Episode verriegelt - ein punktuell zu kleiner Nutzenwert wirft sie nicht mehr weg. Geloest erst nach belegter Erholung (UKF mind. +0,20 und q1 nicht weiter fallend, 3 lueckenlose Zyklen; nach bestaetigtem Tief genuegt einer) oder ueber den Ruhe-Ausgang. Wirkt NUR auf die Basalachse; SMBs bleiben unberuehrt.</string>
     <string name="fuse_zero_latch_calm_min_title">Zero-Latch Ruhe-Zyklen</string>
     <string name="fuse_zero_latch_reason_gone_title">Zero-Latch Grund-weg-Zyklen</string>
-    <string name="fuse_zero_latch_reason_gone_summary">Variante 1: Zusammenhaengende Zyklen ohne anliegenden Schutzgrund und mit bestaetigter Erholung, nach denen die verriegelte Null endet. 0 = aus. Beendet nur die Verriegelung - danach gilt wieder das Profilbasal, es wird nichts nachgeholt.</string>
+    <string name="fuse_zero_latch_reason_gone_summary">Variante 1: Zusammenhaengende Zyklen ohne anliegenden Schutzgrund und mit bestaetigter Erholung, nach denen die verriegelte Null endet. Eine Zykluspause bis 5 min (etwa beim Bolus) und ein Wackler des Zuckers bis 1 mg/dl unterbrechen die Zaehlung nicht. 0 = aus. Beendet nur die Verriegelung - danach gilt wieder das Profilbasal, es wird nichts nachgeholt.</string>
     <string name="fuse_partial_recovery_title">Stufenweise Basalrueckkehr</string>
     <string name="fuse_partial_recovery_summary">Statt binaer zwischen voller Null und vollem Profilbasal zu springen, laeuft nach fuenf ruhigen Zyklen so viel Basal weiter, wie die Sicherheitsbahn traegt (hoechstens das Profil) - die Schutz-Null bleibt dabei verriegelt. Kehrt ein Schutzgrund zurueck, gilt sofort wieder die volle Null. Kein Nachholen ausgelassener Menge, waehrend der Teilstufe kein SMB. AUS = bisheriges Verhalten.</string>
     <string name="fuse_slow_channel_title">Langsamer Korrekturkanal</string>
@@ -167,6 +167,8 @@
     <string name="fuse_zero_latch_calm_min_summary">Zweiter Freigabepfad gegen die Zero-Falle: so viele Zyklen stabil nicht fallend, ausreichend Abstand zum Boden und ohne Bolus-Ueberdeckung loesen die verriegelte Null auch ohne Anstieg.</string>
     <string name="fuse_zero_latch_calm_dist_title">Zero-Latch Ruhe-Abstand [mg/dl]</string>
     <string name="fuse_zero_latch_calm_dist_summary">Mindestabstand des q1 ueber dem Guard-Boden, damit ein Ruhe-Zyklus fuer den zweiten Freigabepfad zaehlt.</string>
+    <string name="fuse_zero_latch_max_bg_title">Zero-Latch nur unter BG [mg/dl]</string>
+    <string name="fuse_zero_latch_max_bg_summary">Auf oder ueber diesem Zucker haelt die Verriegelung keine Null: dort entscheidet allein das Low-Tor, und die Null endet, sobald es keinen Grund mehr sieht. Darunter verriegelt sie wie bisher. 0 = keine Grenze.</string>
     <string name="fuse_rebound_window_title">Rebound-Dauer [min]</string>
     <string name="fuse_rebound_window_summary">Wie lange das Rebound-Fenster nach dem letzten q1 unter 75 laeuft. War bis 26.08. fest auf 45. Verlaengert nicht nur das Totband, sondern auch den Ratio-Deckel und die Liveness-Sperre. Am 26.08. sprang die Ratio bei Fensterende sofort von 0,15 auf 0,33 und der SMB von 0,10 auf 0,50 U; bis zum naechsten Tief flossen 3,45 U.</string>
     <string name="fuse_rebound_deadband_title">Rebound-Totband [mg/dl ueber Ziel]</string>

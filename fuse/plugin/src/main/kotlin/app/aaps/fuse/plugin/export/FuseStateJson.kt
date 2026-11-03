@@ -2066,6 +2066,8 @@ object FuseStateJson {
         // Zyklen mit weggefallenem Schutzgrund, Variante 2 deckelt die
         // markerlose Korrekturserie im rollierenden Fenster.
         .put("zeroLatchReasonGoneExitCycles", p.zeroLatchReasonGoneExitCycles)
+        // Toni 03.11.2026: die BG-Grenze der Verriegelung nur, wenn gesetzt - sonst bleibt der Block bitgleich.
+        .apply { if (p.zeroLatchMaxBgMgdl > 0.0) put("zeroLatchMaxBgMgdl", fin(p.zeroLatchMaxBgMgdl)) }
         // 2.0 (Stufe 1, K2): der Serien-Deckel ist entfernt. Wirksam ist
         // "kein Deckel" (0 wie bisher fuer AUS) und damit auch kein Fenster
         // (null). Die Felder bleiben, damit Leser des Trails sie finden.
@@ -2338,6 +2340,11 @@ object FuseStateJson {
             Sha.lossless(p.correctionDemandRatioCap),
             Sha.lossless(p.mealDemandRatioCap),
         )
+        // Toni 03.11.2026: die BG-Grenze der Verriegelung nur, wenn sie wirkt (Latch an UND Grenze gesetzt) - sonst
+        // bleibt jeder bisherige Hash bitgleich.
+        val latchGrenzeTeile =
+            if (p.zeroLatchEnabled && p.zeroLatchMaxBgMgdl > 0.0) listOf("zeroLatchMaxBg:" + Sha.lossless(p.zeroLatchMaxBgMgdl))
+            else emptyList()
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
             doubles.map { Sha.lossless(it) } +
             listOf(
@@ -2438,7 +2445,8 @@ object FuseStateJson {
                 true,
                 p.absorptionCreditWindowMin,
                 p.markerBoostMaxMin,
-            ).map { it.toString() } + modusTeile + kontoTeile + fruehTeile + slowTeile(p) + hclTeile + nurMarkerTeile
+            ).map { it.toString() } + modusTeile + kontoTeile + fruehTeile + slowTeile(p) + hclTeile + nurMarkerTeile +
+            latchGrenzeTeile
         return Sha.of(parts.joinToString("|"))
     }
 
