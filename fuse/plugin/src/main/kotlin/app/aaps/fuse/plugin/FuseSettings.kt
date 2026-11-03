@@ -234,7 +234,7 @@ object FuseSettings {
                     "erklaerter Mahlzeitenmarker kann die Markerregeln oeffnen.",
             ),
             FuseDoubleKey.NightDeadbandMgdl,
-            info("Nachtfenster", "Beginn und Ende stehen in Minuten ab Mitternacht (1380 = 23:00). Beginn gleich Ende schaltet es aus."),
+            info("Nachtfenster", "Beginn und Ende als Uhrzeit. Das Fenster darf Mitternacht ueberschreiten; Beginn gleich Ende schaltet es aus."),
             FuseIntKey.NightStartMin, FuseIntKey.NightEndMin,
             FuseDoubleKey.ReboundDeadbandMgdl, FuseIntKey.ReboundWindowMin, FuseIntKey.EvidenceReboundOverrideMaxMin,
             info("Basal", "Null-Basal bei Abwaertslage: wann sie endet, ob sie verriegelt und wie sie zurueckkehrt."),

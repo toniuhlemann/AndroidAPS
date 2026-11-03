@@ -11,6 +11,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import app.aaps.core.data.format.NumberFormat
+import app.aaps.core.keys.UnitType
 import app.aaps.core.keys.interfaces.IntPreferenceKey
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.keys.interfaces.VisibilityContext
@@ -48,6 +49,12 @@ fun AdaptiveIntPreferenceItem(
     )
 
     if (!visibility.visible) return
+
+    // Fork (FUSE): a time of day is set with the time picker, not with a slider of minutes
+    if (intKey.unitType == UnitType.TIME_OF_DAY) {
+        TimeOfDayPreferenceItem(intKey = intKey, title = effectiveTitle, enabled = visibility.enabled, rowSummary = rowSummary)
+        return
+    }
 
     val state = rememberPreferenceIntState(intKey)
     val value = state.value

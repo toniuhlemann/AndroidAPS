@@ -241,7 +241,7 @@ enum class FuseDoubleKey(
      * stellt.
      */
     ZeroLatchCalmDistanceMgdl("fuse_zero_latch_calm_distance_mgdl", 30.0, 10.0, 60.0, title = TextRef.AndroidRes(R.string.fuse_zero_latch_calm_dist_title), summary = TextRef.AndroidRes(R.string.fuse_zero_latch_calm_dist_summary), unitType = UnitType.MGDL),
-    /** Langsamer Korrekturkanal (Toni 20.10.2026): OBERGRENZE der Gesamtrate als Vielfaches des Profilbasals, bis 5 - die Rate selbst folgt dem Bedarf. */
+    /** Langsamer Korrekturkanal (Toni 20.10.2026): OBERGRENZE der Gesamtrate als Vielfaches des Profilbasals, bis 10 (Toni 03.11.2026) - die Rate selbst folgt dem Bedarf. */
     SlowChannelFactor("fuse_slow_channel_factor", SlowCorrectionChannel.FACTOR_DEFAULT, SlowCorrectionChannel.FACTOR_MIN, SlowCorrectionChannel.FACTOR_MAX, title = TextRef.AndroidRes(R.string.fuse_slow_channel_factor_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_factor_summary), unitType = UnitType.DOUBLE),
     /** Langsamer Korrekturkanal: ab diesem Zucker zaehlt die Einstiegszeit; gestoppt wird 20 mg/dl darunter. */
     SlowChannelThresholdMgdl("fuse_slow_channel_threshold_mgdl", SlowCorrectionChannel.THRESHOLD_DEFAULT_MGDL, SlowCorrectionChannel.THRESHOLD_MIN_MGDL, SlowCorrectionChannel.THRESHOLD_MAX_MGDL, title = TextRef.AndroidRes(R.string.fuse_slow_channel_threshold_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_threshold_summary), unitType = UnitType.MGDL),
@@ -533,8 +533,8 @@ enum class FuseIntKey(
     /** Langsamer Korrekturkanal: so lange ueber der Schwelle, ohne zu fallen, bevor er startet. */
     SlowChannelEntryMin("fuse_slow_channel_entry_min", SlowCorrectionChannel.ENTRY_DEFAULT_MIN, SlowCorrectionChannel.ENTRY_MIN_MIN, SlowCorrectionChannel.ENTRY_MAX_MIN, title = TextRef.AndroidRes(R.string.fuse_slow_channel_entry_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_entry_summary), unitType = UnitType.MIN),
     /** Langsamer Korrekturkanal (Toni 27.10.2026): eigenes Nachtfenster des Nachtfaktors, Minuten ab Mitternacht. */
-    SlowChannelNightStartMin("fuse_slow_channel_night_start_min", SlowCorrectionChannel.NIGHT_START_DEFAULT_MIN, 0, 1439, title = TextRef.AndroidRes(R.string.fuse_slow_channel_night_start_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_night_start_summary), unitType = UnitType.MIN),
-    SlowChannelNightEndMin("fuse_slow_channel_night_end_min", SlowCorrectionChannel.NIGHT_END_DEFAULT_MIN, 0, 1439, title = TextRef.AndroidRes(R.string.fuse_slow_channel_night_end_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_night_end_summary), unitType = UnitType.MIN),
+    SlowChannelNightStartMin("fuse_slow_channel_night_start_min", SlowCorrectionChannel.NIGHT_START_DEFAULT_MIN, 0, 1439, title = TextRef.AndroidRes(R.string.fuse_slow_channel_night_start_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_night_start_summary), unitType = UnitType.TIME_OF_DAY),
+    SlowChannelNightEndMin("fuse_slow_channel_night_end_min", SlowCorrectionChannel.NIGHT_END_DEFAULT_MIN, 0, 1439, title = TextRef.AndroidRes(R.string.fuse_slow_channel_night_end_title), summary = TextRef.AndroidRes(R.string.fuse_slow_channel_night_end_summary), unitType = UnitType.TIME_OF_DAY),
 
     /**
      * VARIANTE 1 des Nullphasen-Vergleichs: der GRUND-WEG-AUSGANG.
@@ -643,11 +643,11 @@ enum class FuseIntKey(
     EvidenceReboundOverrideMaxMin("fuse_evidence_rebound_override_max_min", 120, 0, 180, title = TextRef.AndroidRes(R.string.fuse_evidence_rebound_override_title), summary = TextRef.AndroidRes(R.string.fuse_evidence_rebound_override_summary), unitType = UnitType.MIN),
 
     /** Beginn des Nachtfensters [min ab Mitternacht]. 23:00 = 1380. */
-    NightStartMin("fuse_night_start_min", 1380, 0, 1439, title = TextRef.AndroidRes(R.string.fuse_night_start_title), summary = TextRef.AndroidRes(R.string.fuse_night_start_summary), unitType = UnitType.MIN),
+    NightStartMin("fuse_night_start_min", 1380, 0, 1439, title = TextRef.AndroidRes(R.string.fuse_night_start_title), summary = TextRef.AndroidRes(R.string.fuse_night_start_summary), unitType = UnitType.TIME_OF_DAY),
 
     /** Ende des Nachtfensters [min ab Mitternacht]. 07:00 = 420. Gleich dem
      *  Start heisst: Nachtfenster AUS. */
-    NightEndMin("fuse_night_end_min", 420, 0, 1439, title = TextRef.AndroidRes(R.string.fuse_night_end_title), summary = TextRef.AndroidRes(R.string.fuse_night_end_summary), unitType = UnitType.MIN),
+    NightEndMin("fuse_night_end_min", 420, 0, 1439, title = TextRef.AndroidRes(R.string.fuse_night_end_title), summary = TextRef.AndroidRes(R.string.fuse_night_end_summary), unitType = UnitType.TIME_OF_DAY),
 
     /**
      * Rangstelle in der Verteilung der paarweisen Steigungen, aus der die

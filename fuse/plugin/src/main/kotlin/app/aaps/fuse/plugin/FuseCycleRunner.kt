@@ -5465,13 +5465,18 @@ class FuseCycleRunner(
         else null
         // DER GEMEINSAME BEDARF VOR DEN SPERREN: dieselbe Formel wie im Regler, aus derselben Mittelbahn am
         // Freigabehorizont - IOB, Transport und der geplante Kanal-Rest stehen darin zeitabhaengig. null, wenn der
-        // Zyklus vor der Bahn endete.
+        // Zyklus vor der Bahn endete. TONI 03.11.2026: das Konto zaehlt hier nur, solange die Mahlzeit steigt
+        // (FuseController.slowChannelDemandU) - sonst ging es in gesperrten Zyklen am Guard vorbei.
+        val slowMahlzeitSteigt = ekZyklus?.mahlzeitSteigt == true
         val slowBedarfU = baseDecision.predAtReleaseMgdl?.let {
-            FuseController.jointDemandU(
+            FuseController.slowChannelDemandU(
                 FuseController.normalDemandU(it, state.targetMgdl, state.isfMgdlPerU),
                 FuseController.accountDemandU(ekBedarfU),
+                mealRising = slowMahlzeitSteigt,
             )
         }
+        // Fuer den Trail: der Kontobedarf, den der Kanal in diesem Zyklus nicht las, weil die Mahlzeit nicht steigt.
+        val slowKontoGehaltenU = ekBedarfU?.takeIf { !slowMahlzeitSteigt && it.isFinite() && it > 0.0 }
         // TONI 27.10.2026: nachts (eigene Zeiten, ab Werk 22-6 Uhr) rechnet der Kanal mit dem Nachtfaktor als
         // Obergrenze, wenn einer gesetzt ist.
         val slowSekunden = MidnightUtils.secondsFromMidnight(signal.sourceTs)
@@ -5585,6 +5590,7 @@ class FuseCycleRunner(
                 highForMin = slowSchritt.highForMin,
                 stage = slowSchritt.stage,
                 demandU = slowBedarfU,
+                accountHeldU = slowKontoGehaltenU,
                 plannedRemainderU = slowGeplantU,
                 smbThisCycleU = combinedNormal.decision.smbU,
                 phase = PartialTbrOwnership.anzeige(slowOwnStep.copy(state = slowOwnTbr)).name,
@@ -7937,6 +7943,11 @@ class FuseCycleRunner(
         val stage: Int,
         /** Der gemeinsame Bedarf vor den Sperren [U]; null = nicht berechenbar. */
         val demandU: Double?,
+        /**
+         * Der Kontobedarf, den der Kanal in diesem Zyklus nicht gelesen hat, weil die Mahlzeit nicht steigt [U]
+         * (Toni 03.11.2026); null = kein Konto, kein Bedarf darin oder die Mahlzeit steigt.
+         */
+        val accountHeldU: Double? = null,
         /** Der geplante, noch nicht abgegebene Zusatz der Kanal-TBR in der Prognose [U]. */
         val plannedRemainderU: Double,
         /** Der SMB dieses Zyklus, den der Kanal vom Bedarf abgezogen hat [U] - fruehere stehen schon im Bedarf. */

@@ -295,8 +295,8 @@ object FuseSettingsReport {
                     zahl(FuseDoubleKey.SlowChannelThresholdMgdl, "Kanal-Schwelle", "mg/dl"),
                     ganz(FuseIntKey.SlowChannelEntryMin, "Kanal-Einstieg", "min"),
                     zahl(FuseDoubleKey.SlowChannelNightFactor, "Kanal-Multiplikator nachts (0 = wie tags)", "x Basal"),
-                    ganz(FuseIntKey.SlowChannelNightStartMin, "Kanal-Nacht Beginn", "min"),
-                    ganz(FuseIntKey.SlowChannelNightEndMin, "Kanal-Nacht Ende", "min"),
+                    zeit(FuseIntKey.SlowChannelNightStartMin, "Kanal-Nacht Beginn"),
+                    zeit(FuseIntKey.SlowChannelNightEndMin, "Kanal-Nacht Ende"),
                 ),
                 // Eigene Gruppe: der Beobachter dosiert nichts - wer die Einstellungen liest, soll auf einen Blick
                 // sehen, dass hier nur gemessen wird.

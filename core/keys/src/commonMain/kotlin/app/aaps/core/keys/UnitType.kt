@@ -23,7 +23,13 @@ enum class UnitType {
     DOUBLE,
     DOUBLE_2,
     DOUBLE_3,
-    MGDL
+    MGDL,
+
+    /**
+     * Fork (FUSE): a time of day, stored as minutes after midnight (0 - 1439). The settings screen
+     * shows it as "22:00" and edits it with the time picker instead of a slider.
+     */
+    TIME_OF_DAY
 }
 
 /**

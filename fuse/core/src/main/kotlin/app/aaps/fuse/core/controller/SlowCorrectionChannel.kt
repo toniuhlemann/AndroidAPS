@@ -48,7 +48,9 @@ import kotlin.math.min
 object SlowCorrectionChannel {
 
     const val FACTOR_MIN = 1.2
-    const val FACTOR_MAX = 5.0
+
+    /** Toni 03.11.2026: bis 10 statt 5 - jede Einstellung darueber ist eine bewusste Aenderung (Infekt, Resistenz). */
+    const val FACTOR_MAX = 10.0
     const val FACTOR_DEFAULT = 2.0
     const val THRESHOLD_MIN_MGDL = 100.0
     const val THRESHOLD_MAX_MGDL = 300.0

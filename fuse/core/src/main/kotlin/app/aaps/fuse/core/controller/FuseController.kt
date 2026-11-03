@@ -774,6 +774,15 @@ object FuseController {
         if (accountReqU == null) normalReqU else max(accountReqU, normalReqU)
 
     /**
+     * DER BEDARF DES LANGSAMEN KORREKTURKANALS [U] (Toni 03.11.2026): der gemeinsame Bedarf, aber das Konto zaehlt nur,
+     * solange die Mahlzeit steigt - dieselbe Regel wie fuer die weiteren Portionen ("Mahlzeit steigt"). Sonst liest der
+     * Kanal nur den Bedarf der Bahn. Ohne diese Regel ging das Konto in gesperrten Zyklen am Guard vorbei, auch bei
+     * flachem Zucker und einer Bahn unter dem Ziel - der Kanal lief dann an seiner Grenze in ein Tief.
+     */
+    fun slowChannelDemandU(normalReqU: Double, accountReqU: Double?, mealRising: Boolean): Double =
+        jointDemandU(normalReqU, accountReqU.takeIf { mealRising })
+
+    /**
      * DER STEMPEL, DEN KEIN RUECKGABEPFAD VERGESSEN KANN (Toni 17.08.).
      *
      * [Decision.basalFloorProtected] muss an JEDEM Ausgang stimmen - der

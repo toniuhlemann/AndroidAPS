@@ -634,4 +634,18 @@ class FuseControllerTest {
         assertEquals(ohne.smbU, mit.smbU, 1e-12)
         assertEquals(FuseController.Block.NONE, mit.block)
     }
+
+    @Test
+    fun `der langsame Kanal liest das Konto nur, solange die Mahlzeit steigt`() {
+        // Bahn knapp unter dem Ziel, das Konto will noch eine Portion.
+        val bahn = FuseController.normalDemandU(releaseMeanMgdl = 100.0, targetMgdl = 105.0, isfMgdlPerU = 50.0)
+        assertEquals(-0.1, bahn, 1e-12)
+        assertEquals(bahn, FuseController.slowChannelDemandU(bahn, accountReqU = 1.2, mealRising = false), 1e-12)
+        assertEquals(1.2, FuseController.slowChannelDemandU(bahn, accountReqU = 1.2, mealRising = true), 1e-12)
+        // Ohne Konto zaehlt die Bahn, ob die Mahlzeit steigt oder nicht.
+        assertEquals(bahn, FuseController.slowChannelDemandU(bahn, accountReqU = null, mealRising = true), 1e-12)
+        // Steigt die Mahlzeit, gilt der groessere Bedarf - wie beim gemeinsamen Bedarf.
+        assertEquals(0.8, FuseController.slowChannelDemandU(0.8, accountReqU = 0.3, mealRising = true), 1e-12)
+        assertEquals(FuseController.jointDemandU(0.8, 0.3), FuseController.slowChannelDemandU(0.8, 0.3, mealRising = true), 1e-12)
+    }
 }

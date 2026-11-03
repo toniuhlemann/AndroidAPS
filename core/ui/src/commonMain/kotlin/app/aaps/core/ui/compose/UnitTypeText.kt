@@ -29,6 +29,7 @@ fun UnitType.unitLabel(): TextRef? = when (this) {
     UnitType.INSULIN_RATE                                 -> CoreUiStrings.units_insulin_rate
     UnitType.DOUBLE, UnitType.DOUBLE_2, UnitType.DOUBLE_3 -> null // generic doubles carry no unit
     UnitType.MGDL                                         -> CoreUiStrings.units_mgdl
+    UnitType.TIME_OF_DAY                                  -> null // fork (FUSE): shown as a clock time
 }
 
 /**
@@ -62,6 +63,7 @@ fun UnitType.valueFormat(): TextRef? = when (this) {
     UnitType.DOUBLE_2     -> CoreUiStrings.units_format_double_2
     UnitType.DOUBLE_3     -> CoreUiStrings.units_format_double_3
     UnitType.MGDL         -> CoreUiStrings.units_format_mgdl
+    UnitType.TIME_OF_DAY  -> null // fork (FUSE): formatted by timeOfDayText
 }
 
 private fun UnitType.rangeFormat(): TextRef? = when (this) {
@@ -80,6 +82,7 @@ private fun UnitType.rangeFormat(): TextRef? = when (this) {
     UnitType.DOUBLE_2     -> CoreUiStrings.units_format_double_2_range
     UnitType.DOUBLE_3     -> CoreUiStrings.units_format_double_3_range
     UnitType.MGDL         -> CoreUiStrings.units_format_mgdl_range
+    UnitType.TIME_OF_DAY  -> null // fork (FUSE): edited with the time picker, no range text
 }
 
 /** True when this unit should be rendered as a duration ("1 h 30 min") rather than a plain number. */

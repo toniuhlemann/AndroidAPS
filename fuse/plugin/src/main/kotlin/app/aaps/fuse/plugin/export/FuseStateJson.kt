@@ -2474,6 +2474,7 @@ object FuseStateJson {
         .put("highForMin", fin(x.highForMin))
         .put("stage", x.stage)
         .put("demandU", x.demandU?.let { fin(it) } ?: JSONObject.NULL)
+        .put("accountHeldU", x.accountHeldU?.let { fin(it) } ?: JSONObject.NULL)
         .put("plannedRemainderU", fin(x.plannedRemainderU))
         .put("smbThisCycleU", fin(x.smbThisCycleU))
         .put("phase", x.phase)

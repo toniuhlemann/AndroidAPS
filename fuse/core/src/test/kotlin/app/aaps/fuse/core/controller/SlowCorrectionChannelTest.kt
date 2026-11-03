@@ -106,10 +106,10 @@ class SlowCorrectionChannelTest {
         assertFalse(ohne.nightAt(sek(23)))
         assertEquals(SlowCorrectionChannel.FACTOR_MIN, s.copy(nightFactor = 0.5).atTime(sek(23)).factor, 0.0)
         assertEquals(4.0, s.copy(nightStartMin = 0, nightEndMin = 0).atTime(sek(23)).factor, 0.0)
-        // Gueltig: Nachtfaktor 0..5, Zeiten 0..1439 - auch die nachts geltende Kopie.
+        // Gueltig: Nachtfaktor 0..10 (Toni 03.11.2026, vorher 0..5), Zeiten 0..1439 - auch die nachts geltende Kopie.
         assertNull(s.violation())
         assertNull(s.atTime(sek(23)).violation())
-        assertNotNull(s.copy(nightFactor = 5.1).violation())
+        assertNotNull(s.copy(nightFactor = 10.1).violation())
         assertNotNull(s.copy(nightFactor = -0.1).violation())
         assertNotNull(s.copy(nightStartMin = 1440).violation())
         // Im Schritt wirkt nachts die kleinere Obergrenze: 2 x 0,8 statt 4 x 0,8.
@@ -419,14 +419,20 @@ class SlowCorrectionChannelTest {
         assertEquals(Reason.MAX_IOB, voll.reason)
     }
 
-    @Test fun `Faktor 5 ist erlaubt, darueber ist die Einstellung ungueltig`() {
+    @Test fun `Faktor 10 ist erlaubt, darueber ist die Einstellung ungueltig`() {
         val fuenf = lauf(30, Settings(enabled = true, factor = 5.0))
         assertEquals(2.5, fuenf.rateUPerH, 1e-9)
-        val zuviel = lauf(30, Settings(enabled = true, factor = 5.5))
+        // Toni 03.11.2026: der Bereich reicht bis 10 - bei grossem Bedarf setzt die Stufe allein die Obergrenze.
+        val zehn = lauf(30, Settings(enabled = true, factor = 10.0))
+        assertEquals(5.0, zehn.rateUPerH, 1e-9)
+        assertEquals(SlowCorrectionChannel.stagesFor(10.0), zehn.stage)
+        val zuviel = lauf(30, Settings(enabled = true, factor = 10.5))
         assertFalse(zuviel.want)
         assertEquals(Reason.INVALID_SETTINGS, zuviel.reason)
         assertNotNull(Settings(enabled = true, factor = 1.0).violation())
-        assertNull(Settings(enabled = true, factor = 5.0).violation())
+        assertNull(Settings(enabled = true, factor = 10.0).violation())
+        assertNull(Settings(enabled = true, factor = 5.0, nightFactor = 10.0).violation())
+        assertNotNull(Settings(enabled = true, factor = 5.0, nightFactor = 10.5).violation())
     }
 
     @Test fun `die Rate liegt auf dem Basalraster der Pumpe`() {
