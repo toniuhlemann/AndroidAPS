@@ -22,6 +22,7 @@ import app.aaps.core.interfaces.insulin.ConcentrationHelper
 import app.aaps.core.interfaces.iob.IobCobCalculator
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
+import app.aaps.core.interfaces.notifications.AlarmSound
 import app.aaps.core.interfaces.notifications.NotificationId
 import app.aaps.core.interfaces.notifications.NotificationManager
 import app.aaps.core.interfaces.overview.FuseOverviewSource
@@ -2170,6 +2171,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // sein. Davor gemeldet, waere die Meldung eine Generation zu spaet.
         meldeLedgerHold(aktivePumpe)
         meldePumpenRiegel(aktivePumpe)
+        meldeWirkung(outcome)
 
         exportState(
             exportOutcome, publishRt, cycleId,
@@ -2366,6 +2368,40 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
      * unterscheiden.
      */
     private val gateAlarm = FuseHoldAlarm.Zustand()
+
+    /** Der Wirkungs-Alarm (Toni 04.11.2026) - eigener Kanal, eigener Zustand, derselbe Automat. */
+    private val wirkungAlarm = FuseHoldAlarm.Zustand()
+
+    /**
+     * INSULIN WIRKT NICHT - MOEGLICHER PATCH-AUSFALL (Toni 04.11.2026).
+     *
+     * Die Regel steht in [app.aaps.fuse.core.controller.InsulinEffectWatch]; hier wird nur gemeldet. Die Kennung ist
+     * die des laufenden Alarmtons: eine neue Kennung (Episodenbeginn, Erinnerung nach einer Stunde) meldet erneut,
+     * das Ende der Episode nimmt die Meldung zurueck. Ein Zyklus ohne Regellauf (Abbruch) laesst alles, wie es ist.
+     * Die Meldung dosiert nichts - FUSE regelt unveraendert weiter.
+     */
+    private fun meldeWirkung(outcome: FuseCycleRunner.Outcome?) {
+        val w = outcome?.insulinEffect ?: return
+        wirkungAlarm.verarbeite(
+            hold = w.state.episodeOpen,
+            kennung = FuseHoldAlarm.Kennung(w.state.alarmKeyTs ?: 0L, "INSULIN_NO_EFFECT"),
+            ursachen = emptyMap(),
+            textBauer = { _, _ ->
+                "Insulin wirkt nicht: der Zucker steigt seit ueber einer Stunde, obwohl laut Modell deutlich Insulin " +
+                    "wirken muesste. Patch und Einstichstelle pruefen. FUSE dosiert unveraendert weiter; die Meldung " +
+                    "verschwindet, sobald der Zucker wieder faellt."
+            },
+            melden = { text ->
+                runCatching {
+                    notificationManager.post(NotificationId.FUSE_INSULIN_NO_EFFECT, text, sound = AlarmSound.ALARM)
+                }.onFailure { aapsLogger.error(LTag.APS, "FUSE Wirkungs-Meldung fehlgeschlagen", it) }.isSuccess
+            },
+            zuruecknehmen = {
+                runCatching { notificationManager.dismiss(NotificationId.FUSE_INSULIN_NO_EFFECT) }
+                aapsLogger.info(LTag.APS, "FUSE Wirkungs-Waechter: Zucker faellt wieder - Meldung zurueckgenommen")
+            },
+        ).also { if (it is FuseHoldAlarm.Aktion.Melden) aapsLogger.warn(LTag.APS, "FUSE INSULIN WIRKT NICHT ${it.kennung}") }
+    }
 
     /**
      * DER GESCHLOSSENE RIEGEL MUSS SICH MELDEN.

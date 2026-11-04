@@ -5,6 +5,7 @@ import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.fuse.core.util.Sha
 import app.aaps.fuse.plugin.FuseCycleRunner
 import app.aaps.fuse.plugin.HclMahlzeiten
+import app.aaps.fuse.core.controller.InsulinEffectWatch
 import app.aaps.fuse.core.controller.TurnResponseShadow
 import app.aaps.fuse.plugin.ledger.EpisodeBudgets
 import org.json.JSONArray
@@ -643,6 +644,8 @@ object FuseStateJson {
             .apply { outcome.slowChannel?.let { put("slowChannel", slowChannelJson(it)) } }
             // HCL Stufe 2 (Toni 25.10.2026): nur bei einem Marker aus dem Bolusrechner - sonst bleibt der Datensatz bitgleich.
             .apply { outcome.hcl?.let { put("hcl", hclJson(it)) } }
+            // Wirkungs-Waechter (Toni 04.11.2026): jeder Zyklus mit Regellauf, damit jede Meldung nachpruefbar ist.
+            .apply { outcome.insulinEffect?.let { put("insulinEffectWatch", insulinEffectJson(it)) } }
             .put("mealFoundation", JSONObject()
                 .put("armed", false)
                 .put("armedTs", 0L)
@@ -2499,6 +2502,18 @@ object FuseStateJson {
         .put("entryMin", x.entryMin)
 
     /** HCL Stufe 2: der Trail-Block der Anrechnung einer Mahlzeit aus dem Bolusrechner (s. [FuseCycleRunner.HclExport]). */
+    /** Der Wirkungs-Waechter eines Zyklus: Teilbedingungen, Zaehler und die Kennung der laufenden Meldung. */
+    private fun insulinEffectJson(r: InsulinEffectWatch.Result): JSONObject = JSONObject()
+        .put("risingDespiteInsulin", r.risingDespiteInsulin)
+        .put("ruleHolds", r.ruleHolds)
+        .put("alarm", r.alarm)
+        .put("episodeOpen", r.state.episodeOpen)
+        .put("riseSinceTs", r.state.riseSinceTs ?: JSONObject.NULL)
+        .put("ruleSinceTs", r.state.ruleSinceTs ?: JSONObject.NULL)
+        .put("fallSinceTs", r.state.fallSinceTs ?: JSONObject.NULL)
+        .put("lastMarkerTs", r.state.lastMarkerTs ?: JSONObject.NULL)
+        .put("alarmKeyTs", r.state.alarmKeyTs ?: JSONObject.NULL)
+
     private fun hclJson(x: FuseCycleRunner.HclExport): JSONObject = JSONObject()
         .put("calcTs", x.calcTs)
         .put("merged", x.merged)

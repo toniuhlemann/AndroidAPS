@@ -73,6 +73,7 @@ import app.aaps.fuse.core.controller.MeasuredDescentGate
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.fuse.core.controller.ExpectationAccount
+import app.aaps.fuse.core.controller.InsulinEffectWatch
 import app.aaps.fuse.core.insulin.KernelOutcome
 import app.aaps.fuse.core.insulin.UnitInsulinKernel
 import app.aaps.fuse.core.insulin.UnitInsulinKernelBuilder
@@ -1489,6 +1490,9 @@ class FuseCycleRunner(
         /** HCL Stufe 2: die Anrechnung der Mahlzeit aus dem Bolusrechner - `null` ohne Marker aus dem Bolusrechner. */
         val hcl: HclExport? get() = bloecke.hcl
 
+        /** Der Wirkungs-Waechter (Toni 04.11.2026) - `null` auf Abbruchpfaden. */
+        val insulinEffect: InsulinEffectWatch.Result? get() = bloecke.wirkung
+
         /** Verlustursache der entfallenen Rebound-Evidenz-Ausnahme - Konsolidierung 2.0: neutral (null). */
         val livenessEvidenceLossCause: String? get() = livenessBookingDiagnosis.lossCause
 
@@ -2641,6 +2645,21 @@ class FuseCycleRunner(
         if (!iobTotal.valid) return abort("iob unknown (no profile)", signal, cfg, step, predictionOrNull, restraint)
         val isf = profile.getIsfMgdlTimeFromMidnight(MidnightUtils.secondsFromMidnight(signal.sourceTs))
 
+        // DER WIRKUNGS-WAECHTER (Toni 04.11.2026): steigt der Zucker lange, obwohl laut Modell deutlich Insulin
+        // wirken muesste, meldet das Plugin einen moeglichen Patch-Ausfall. Er liest nur und dosiert nichts; hier,
+        // weil ab hier beide Pfade (Bahn und praediktorfreier Markerpfad) dasselbe Ergebnis mitnehmen.
+        val wirkung = InsulinEffectWatch.step(
+            wirkungZustand,
+            InsulinEffectWatch.Sample(
+                ts = signal.sourceTs,
+                observedRateMgdlPerMin = signal.ukfRatePerMin,
+                expectedFallMgdlPerMin = signal.activityAtAnchor * signal.isfAtAnchor,
+                bolusIobU = iobTotal.iob - iobTotal.basaliob,
+                markerTs = markerTs,
+            ),
+        )
+        wirkungZustand = wirkung.state
+
         // FRUEH GERECHNET, WEIL BEIDE PFADE ES BRAUCHEN: der Fallback wird
         // weiter unten aufgerufen und muss denselben Riegel kennen.
         // DAS GEMESSENE ABWAERTSRISIKO - getrennt vom Basalnutzen
@@ -2979,7 +2998,7 @@ class FuseCycleRunner(
                 built.discount, built.input.trajectory.model, sensorEpoch, calibrationEpoch, gate,
                 ekGilt = ekGilt, ekVorschau = ekVorschau, markerNoPrime = markerNoPrime, markerSnack = markerSnack,
                 markerHclCalcTs = markerHclCalcTs, markerHclMerged = markerHclMerged,
-            )
+            ).let { it.copy(bloecke = it.bloecke.copy(wirkung = wirkung)) }
         }
         // AB HIER ist die Bahn vorhanden. Einmal ausgepackt statt an dreissig
         // Stellen `!!` - der Zweig oben endet in einem return, aber das traegt
@@ -5842,6 +5861,7 @@ class FuseCycleRunner(
         return Outcome(
             configGeneration = app.aaps.fuse.plugin.export.FuseStateJson.hashOf(cfg).orEmpty(),
             bloecke = Bloecke(
+                wirkung = wirkung,
                 slowChannel = slowExportThisCycle,
                 hcl = hcl?.let { h ->
                     HclExport(
@@ -7936,6 +7956,8 @@ class FuseCycleRunner(
         val slowChannel: SlowChannelExport? = null,
         /** HCL Stufe 2: nur bei einem Marker aus dem Bolusrechner. */
         val hcl: HclExport? = null,
+        /** Der Wirkungs-Waechter dieses Zyklus (Toni 04.11.2026) - `null` auf Abbruchpfaden, dann bleibt die Meldung wie sie ist. */
+        val wirkung: InsulinEffectWatch.Result? = null,
     )
 
     /**
@@ -8047,6 +8069,10 @@ class FuseCycleRunner(
      *  Neustart beginnt bei 0, also in der konservativen Richtung
      *  (die Null haelt laenger, nicht kuerzer). */
     private var zeroReasonGoneStreak = 0
+
+    /** Der Wirkungs-Waechter (Toni 04.11.2026). Prozesslokal: ein Neustart zaehlt von vorn - die Meldung kommt dann
+     *  spaeter, nie frueher. */
+    private var wirkungZustand = InsulinEffectWatch.State()
 
 
     /** AUSLOESE-Zaehler des Fall-Verdikts (v29): zwei aufeinanderfolgende

@@ -273,7 +273,12 @@ enum class NotificationId(
     // A real pump is selected, but AAPS has no Bluetooth (Nearby devices) permission, so no command can reach the
     // pump and the queue fails them (#5440). It removes itself once the permission is back. IMPORTANT, not URGENT:
     // a bolus that fails because of it raises its own alarm. Appended at the END for the same reason as above.
-    BLUETOOTH_PERMISSION_MISSING(IMPORTANT, PUMP);
+    BLUETOOTH_PERMISSION_MISSING(IMPORTANT, PUMP),
+
+    // Fork (FUSE): the glucose keeps rising although the model expects a clear fall from the insulin on board -
+    // possibly a dead site or patch (InsulinEffectWatch). URGENT: it is an insulin-delivery failure, and the pump
+    // itself may report it hours later. It only warns; FUSE doses on as before. Appended at the END (ordinals).
+    FUSE_INSULIN_NO_EFFECT(URGENT, PUMP);
 
     companion object {
 
