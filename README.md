@@ -81,10 +81,11 @@ statement (the meal button) or demand that is already proven — and they are st
 | **SMB** (fast) | Small boluses, at most one per minute, sized to the remaining need. The main way FUSE corrects. | on (follows the AAPS SMB switch) |
 | **Profile basal** | Always runs, unless FUSE has a protective reason to stop it. | on |
 | **Protective zero** | A zero temp basal — only when glucose is measured low, or falling while more bolus insulin is on board than the distance to the safety floor needs. When the reason is gone, FUSE returns to profile basal. | on |
-| **Slow correction channel** | A **positive** temp basal, like the high temp in autoISF: basal + 2 × remaining need, in 30-minute blocks, in steps of 0.25 × profile basal, up to *factor × profile basal* (factor 1.2–5; optional own, smaller factor at night with its own hours, factory 22:00–06:00). It runs next to SMBs and may continue when the guard or other model limits block SMBs — so a real need is not left without insulin. maxIOB limits SMB and temp basal together. It stops on a clear fall, below *threshold − 20 mg/dl*, on a protective zero and inside the night or rebound deadband. | off (switch) |
+| **Slow correction channel** | A **positive** temp basal, like the high temp in autoISF: basal + 2 × remaining need, in 30-minute blocks, in steps of 0.25 × profile basal, up to *factor × profile basal* (factor 1.2–10; optional own, smaller factor at night with its own hours, factory 22:00–06:00). It runs next to SMBs and may continue when the guard or other model limits block SMBs — so a real need is not left without insulin. maxIOB limits SMB and temp basal together. It stops on a clear fall, below *threshold − 20 mg/dl*, on a protective zero and inside the night or rebound deadband. | off (switch) |
 | **Liveness channel** | Makes demand that the main path already sees deliverable in small steps when the pessimistic checks starve it. Merged as `max(normal, liveness)`, never added. | off (switch) |
 | **Onset channel** | An early, limited response at the start of a rise that nobody announced (envelope 1.5 U). Off while a meal account runs. | on |
 | **Zero latch / partial basal** | Hold a protective zero through a fall, then return to profile basal in partial steps. | off (switches) |
+| **Basal withdrawal** (meal balance) | After a bolus-calculator meal: a **lower** temp basal for 30 minutes when the meal balance shows more insulin than the meal still needs and the rise is over. Each command takes at most this excess and never goes below one pump step — a real zero stays the protective zero. See *Bolus-calculator meals* below. | on (part of the meal balance) |
 
 ## Meals: one button
 
@@ -143,8 +144,33 @@ You describe your typical meal once, as an **expectation curve**: how much insul
 Without a valid curve (the factory state) the button still declares the meal, but FUSE doses as without a marker
 ("fallback"). The button and the FUSE tab show this.
 
+### Bolus-calculator meals: the joint meal balance (new in November 2026)
+
+With the switch *Bolusrechner-Mahlzeiten anrechnen (HCL)* (factory off), a bolus from the AAPS bolus calculator with
+carbs is an announced meal. Such a meal now also gets a **joint balance G**, with or without eCarbs. The balance has no
+switch of its own; without a calculator meal FUSE computes as before.
+
+- **G = (BG − target + max(announced rest × ISF, r × τ)) / ISF − (IOB + transport).** The announced rest is the rest
+  of the calculator carbs along the expectation curve plus the rest of the eCarbs. The measured continuation r × τ keeps
+  G open when a meal is bigger than announced, so the reported meal size is never a fixed upper limit.
+- **eCarbs.** The *cake* and *pizza* buttons of the calculator enter part of the carbs as eCarbs without insulin. FUSE
+  reads only these entries (carb entries with a duration, near the calculator meal) and counts each part like COB from
+  its own time on. A part that is not absorbed in time stops counting, and when the eCarbs do not show, their weight
+  falls with the observation.
+- **SMB and slow channel together.** The SMB gets at most G minus the planned channel rest; the channel gets G as its
+  gap. Both may still run next to each other.
+- **Basal withdrawal** when G is below zero and the rise is over (see the table above). G stays active after the
+  account window as long as insulin of the meal still acts.
+- **Overlapping meals.** A new calculator meal takes over the running eCarbs of the earlier one, with their origin and
+  the absorption already booked, so their rest is neither lost nor counted twice.
+- **Restart safe.** The balance lives in the ledger. The ledger keeps its schema version; the new fields are additive.
+
+Known limits: on very fast absorption the insulin can still come before a later meal part, so a low later is possible;
+G costs some time above range; the withdrawal acts only after the rise.
+
 **Manual boluses and typed carbs.** A manual bolus counts in IOB and therefore in every limit, but it does not open a
-meal. Typed carbs create no FUSE state. The meal dialog warns about a manual bolus in the last 60 minutes.
+meal. Typed carbs create no FUSE state, except the eCarbs of a bolus-calculator meal (above). The meal dialog warns
+about a manual bolus in the last 60 minutes.
 
 ## Safety: the rules that always apply
 
@@ -261,6 +287,8 @@ FUSE 2 is a **consolidation**: fewer mechanisms, each easier to explain.
 - **Base:** AndroidAPS 4.0, on the author's pump since 18.10.2026.
 - **New in October 2026:** the AAPS SMB switch applies to FUSE, and the slow correction channel (positive temp basal,
   switch, off by default), with the same night and rebound deadbands as SMB.
+- **New in November 2026:** the joint meal balance for bolus-calculator meals, with eCarbs and basal withdrawal (see
+  *Bolus-calculator meals*).
 
 ## Status
 
@@ -275,11 +303,12 @@ FUSE 2 is a **consolidation**: fewer mechanisms, each easier to explain.
 | AndroidAPS 4.0 base | ported | daily use since 18.10.2026 |
 | Slow correction channel (positive temp basal) | implemented, tested, off by default | first live use on 21.10.2026 |
 | Liveness channel, zero latch, partial basal | implemented, tested, off by default | switched on by the operator at times |
+| Meal balance for bolus-calculator meals, eCarbs, basal withdrawal | implemented, tested (JVM, closed-loop simulation) | none yet |
 | Real pump | Medtrum Nano only | one user |
 | General pump support | not available | — |
 | Clinical efficacy or safety claim | **none** | — |
 
-About 2,470 automated tests cover `fuse/**` (about 1,280 in `fuse/core` and 1,190 in `fuse/plugin`). That number is not
+About 2,590 automated tests cover `fuse/**` (about 1,340 in `fuse/core` and 1,250 in `fuse/plugin`). That number is not
 a quality claim. The user interface counts as checked only after someone has looked at the device.
 
 ### What FUSE deliberately does not do
@@ -335,7 +364,8 @@ Grenzen und führt Buch über jede Einheit, bis AAPS sie als IOB zeigt. Es brauc
 Bord). Dazu abschaltbar: der **langsame Korrekturkanal** — eine positive TBR wie die High-Temp bei autoISF, in Stufen
 von 0,25 × Profilbasal bis Faktor × Profilbasal (nachts auf Wunsch ein eigener, kleinerer Faktor mit eigenen Zeiten,
 ab Werk 22–6 Uhr), gemeinsam mit dem SMB unter maxIOB, mit Stopp bei Fall, Schutz-Null, Nacht- und Rebound-Totband —,
-der Liveness-Kanal und die stufenweise Rückkehr aus der Null.
+der Liveness-Kanal und die stufenweise Rückkehr aus der Null. Nach einer Mahlzeit aus dem Bolusrechner kommt die
+**Basal-Rücknahme** der gemeinsamen Bilanz hinzu (unten): eine niedrigere TBR, nie bis auf die echte Null.
 
 **Mahlzeiten.** Ein Knopf erklärt „jetzt kommt eine Mahlzeit“ — ohne Kohlenhydrate. Für die Mahlzeit-Frist (Vorgabe
 120 min) gelten die größeren MEAL-Grenzen. Mit einer **Erwartungskurve** (Wirkung nach 30/60/90/120 min) öffnet der
@@ -353,6 +383,20 @@ fettreiche Mahlzeiten. Ein Tief im Fenster hält den Kanal danach nicht zurück 
 Mahlzeit); gemessenes Tief, erwartetes Tief und fallender Zucker stoppen ihn weiter. Ohne Kurve dosiert FUSE wie ohne
 Marker.
 
+**Mahlzeiten aus dem Bolusrechner (neu im November 2026).** Mit dem Schalter „Bolusrechner-Mahlzeiten anrechnen (HCL)“
+(ab Werk aus) ist ein Rechner-Bolus mit KH eine angekündigte Mahlzeit. Sie bekommt jetzt zusätzlich eine **gemeinsame
+Bilanz G** = (BG − Ziel + max(angekündigter Rest × ISF, r × τ)) / ISF − (IOB + Transport), ohne eigenen Schalter.
+- Angekündigt sind der Rest der Rechner-KH nach der Erwartungskurve und der Rest der eCarbs. FUSE liest dafür nur die
+  eCarbs des Rechners (Knöpfe Kuchen und Pizza) und zählt jeden Teil wie COB ab seinem Zeitpunkt.
+- Die gemessene Fortsetzung hält G bei größeren Mahlzeiten offen; die gemeldete Menge ist keine feste Obergrenze.
+- SMB und langsamer Kanal bekommen zusammen höchstens G.
+- Ist G negativ und der Anstieg vorbei, nimmt FUSE Basal zurück, je Befehl höchstens die Überdeckung.
+- Eine neue Rechner-Mahlzeit übernimmt laufende eCarbs der vorigen mit Herkunft und verbuchter Aufnahme.
+- Ohne Rechner-Mahlzeit rechnet FUSE wie bisher.
+
+Grenzen: Bei sehr schneller Aufnahme kann ein späteres Tief bleiben; G kostet etwas Zeit über dem Bereich; die
+Rücknahme wirkt erst nach dem Anstieg.
+
 **Sicherheit.** Alle Prüfungen lesen die pessimistische Bahn. Grenzen unter anderem: Guard-Boden 70 mg/dl,
 Expositionsgrenze je Profil (Korrektur 3,0 U, Mahlzeit 7,0 U), capIOB = max(Netto-IOB, Bolus-IOB), maxIOB, Nacht- und
 Rebound-Totband, AAPS-SMB-Schalter, Pumpen-Freigabeliste und ein Ledger mit Veröffentlichungstor.
@@ -366,7 +410,7 @@ Legende erklärt die Farben. Reine Anzeige, abschaltbar.
 Zyklus, Übersetzung in SMB und TBR, Ledger, Trail und Oberfläche. AAPS bleibt Herr über die Pumpe. Jeder Zyklus steht
 als JSON-Zeile in `Documents/aapsLogs/fuse_state_history.jsonl`; FUSE enthält keinen Netzwerkcode.
 
-**Ehrlicher Stand.** Rund 2.450 automatische Tests auf der JVM — kein klinischer Nachweis. Der langsame Korrekturkanal
+**Ehrlicher Stand.** Rund 2.590 automatische Tests auf der JVM — kein klinischer Nachweis. Der langsame Korrekturkanal
 war am 21.10.2026 zum ersten Mal im Einsatz.
 
 ---
