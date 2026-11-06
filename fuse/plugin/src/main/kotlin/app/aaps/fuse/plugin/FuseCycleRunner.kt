@@ -73,6 +73,9 @@ import app.aaps.fuse.core.controller.MeasuredDescentGate
 import app.aaps.fuse.core.controller.OnsetChannel
 import app.aaps.fuse.core.controller.PrimeRelease
 import app.aaps.fuse.core.controller.ExpectationAccount
+import app.aaps.fuse.core.controller.ECarbs
+import app.aaps.fuse.core.controller.MealBalance
+import app.aaps.fuse.plugin.ledger.EpisodeBudgets
 import app.aaps.fuse.core.controller.InsulinEffectWatch
 import app.aaps.fuse.core.insulin.KernelOutcome
 import app.aaps.fuse.core.insulin.UnitInsulinKernel
@@ -92,6 +95,7 @@ import app.aaps.fuse.core.predictor.minSafetyHorizonLowerOf
 import app.aaps.fuse.core.predictor.minSafetyLowerOf
 import kotlinx.coroutines.runBlocking
 import kotlin.math.abs
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -326,6 +330,12 @@ class FuseCycleRunner(
     companion object {
         /** Quelle der Insulindefinition in v4 (Fork: das aktive Insulin-Plugin). */
         const val INSULIN_SOURCE = "profile.iCfg"
+
+        /** Die bindende Grenze, wenn die gemeinsame Bilanz der Rechner-Mahlzeit die Endmenge gesenkt hat. */
+        const val MEAL_BALANCE_BINDING = "mealBalance"
+
+        /** Die Basal-Ruecknahme der Bilanz sieht eine TBR, die nicht ihre ist: sie bleibt unberuehrt. */
+        const val RUECK_FREMD = "FOREIGN_TBR"
 
         /** So weit haelt der langsame Kanal den q1-Verlauf [min] - mehr als die laengste Einstiegszeit. */
         const val SLOW_VERLAUF_MAX_MIN = 120
@@ -1490,6 +1500,9 @@ class FuseCycleRunner(
         /** HCL Stufe 2: die Anrechnung der Mahlzeit aus dem Bolusrechner - `null` ohne Marker aus dem Bolusrechner. */
         val hcl: HclExport? get() = bloecke.hcl
 
+        /** Die gemeinsame Bilanz der Rechner-Mahlzeit und ihre Basal-Ruecknahme - `null` ohne Episode und ohne Absenkung. */
+        val mealBalance: MealBalanceExport? get() = bloecke.mealBalance
+
         /** Der Wirkungs-Waechter (Toni 04.11.2026) - `null` auf Abbruchpfaden. */
         val insulinEffect: InsulinEffectWatch.Result? get() = bloecke.wirkung
 
@@ -1631,6 +1644,7 @@ class FuseCycleRunner(
         upfrontChainThisCycle = null
         // Der langsame Kanal laeuft nur im Hauptpfad - Abbruch- und Rueckfallpfade exportieren keinen alten Stand.
         slowExportThisCycle = null
+        mealBalanceExportThisCycle = null
         transportSichtThisCycle = null
         ekBuchungThisCycle = null
         ekZyklusThisCycle = null
@@ -3338,6 +3352,16 @@ class FuseCycleRunner(
             hclMerged = markerHclMerged,
         )
         ekZyklusThisCycle = ekZyklus
+        // ---- DIE GEMEINSAME BILANZ DER RECHNER-MAHLZEIT (Entwurf B, Toni 05.11.2026: Grundfunktion) ----------------
+        // G = (BG - Ziel + max(angekuendigter Rest x ISF, r x tau)) / ISF - (IOB + Transport): der SMB-Weg bekommt hoechstens
+        // G minus den geplanten Kanal-Rest - in decide, im Teilschritt und auf die Endmenge -, der Kanal G als Luecke, und
+        // bei G < 0 nach dem Anstieg nimmt FUSE Basal zurueck (unten nach dem Kanal). Ohne Rechner-Mahlzeit `null`: dann
+        // rechnet der Zyklus bitgleich wie bisher.
+        val bilanz = mahlzeitBilanz(
+            cfg = cfg, episodes = episodes, markerTs = markerTs, hclCalcTs = markerHclCalcTs, hclMerged = markerHclMerged,
+            z = ekZyklus, computeTs = computeTs, signal = signal, activityUPerMin = iobTotal.activity, state = state,
+            transportU = transportModelledU, kanalPlanU = slowGeplantU, boli = { treatmentView()?.boluses },
+        )
         // ---- DAS NACHT-SONDERRECHT DER EVIDENZ (Toni) ----------------------
         //
         // NUR IM MAHLZEITFENSTER. Danach ist ein Anstieg nachts wieder
@@ -3398,6 +3422,8 @@ class FuseCycleRunner(
             // HCL Stufe 2: nur der Guard sieht die Mahlzeit, der Bedarf nicht.
             guardPrediction = hclBahnen?.prediction,
             guardRestraint = hclBahnen?.restraint,
+            // Die gemeinsame Bilanz der Rechner-Mahlzeit: kein Weg verlangt mehr als G minus Kanal-Rest.
+            balanceCapU = bilanz?.smbGrenzeU,
         )
 
         // KANDIDATENPRUEFUNG (Audit: schon eine kleine SMB senkt die Bahn
@@ -3840,6 +3866,8 @@ class FuseCycleRunner(
             // HCL Stufe 2: der Spielraum des Schwanzes MIT der bestaetigten Mahlzeit, wenn sie angerechnet wird.
             (if (hclBahnen != null) hclBahnen.tail else tail)?.takeIf { it.usable }?.headroomU ?: Double.MAX_VALUE,
             if (onset.active) onset.remainingU else Double.MAX_VALUE,
+            // Die gemeinsame Bilanz der Rechner-Mahlzeit traegt auch die Endsumme mit dem Teilschritt.
+            bilanz?.smbGrenzeU ?: Double.MAX_VALUE,
         )
         // SUB-01 (P0, Codex Fix-Pass-5-Closure): die Kappen muessen die
         // ENDSUMME tragen, nicht den Zusatzschritt allein. Vorher galt
@@ -5077,7 +5105,7 @@ class FuseCycleRunner(
             state = episodes.ownPartialTbr,
         )
         var exposureGateResult: app.aaps.fuse.core.controller.ExposureGate.Result? = null
-        val decisionVorZeroLatch =
+        val decisionVorBilanz =
             run {
                 val g = app.aaps.fuse.core.controller.ExposureGate.pruefe(
                     requestedU = decisionVorEndpruefung.smbU,
@@ -5114,6 +5142,17 @@ class FuseCycleRunner(
                     )
                 }
             }
+        // DIE GEMEINSAME BILANZ AUF DIE ENDMENGE (Entwurf B, Toni 05.11.2026): nach der Expositionspruefung kann nichts mehr
+        // eine Menge anheben - hier traegt G minus Kanal-Rest die Endmenge, auf den Pumpenschritt abgerundet. Senkt nur.
+        val decisionVorZeroLatch = bilanz?.smbGrenzeU?.let { grenze ->
+            val erlaubtU = when {
+                grenze <= 0.0 -> 0.0
+                bolusStep > 0.0 -> floor(grenze / bolusStep + 1e-9) * bolusStep
+                else -> grenze
+            }
+            if (decisionVorBilanz.smbU <= erlaubtU + 1e-12) null
+            else decisionVorBilanz.copy(smbU = erlaubtU, bindingLimit = MEAL_BALANCE_BINDING)
+        } ?: decisionVorBilanz
         // ---- ZERO-TBR-LATCH (Bauauftrag Toni 24.08. abends) ---------------
         // Befund: das Low-Tor eroeffnete binnen gut einer Stunde MEHRFACH
         // berechtigte Zero-TBRs, und der punktuelle Nutzenwert (benefit < 5)
@@ -5559,9 +5598,15 @@ class FuseCycleRunner(
                 demandU = slowBedarfU,
                 plannedRemainderU = slowGeplantU,
                 active = !slowOwnTbr.leer || slowOwnTbr.ending != null,
-                otherOwnBasalActive = partialAktiv || !episodes.ownPartialTbr.leer || episodes.ownPartialTbr.ending != null,
+                // Auch eine laufende Basal-Ruecknahme der Bilanz ist ein eigener Basalvorgang: erst wenn sie beendet ist,
+                // stellt der Kanal (beide zugleich gibt es nicht - die Ruecknahme braucht G < 0, der Kanal eine offene Luecke).
+                otherOwnBasalActive = partialAktiv || !episodes.ownPartialTbr.leer || episodes.ownPartialTbr.ending != null ||
+                    !episodes.mealWithdrawalTbr.leer || episodes.mealWithdrawalTbr.ending != null,
                 runningRateUPerH = slowLauf?.rateUPerH,
                 runningRemainingMin = slowLauf?.let { currentTbr?.remainingMin },
+                // Die gemeinsame Bilanz der Rechner-Mahlzeit als Luecke: der Zusatz eines Blocks ist hoechstens G minus
+                // den SMB dieses Zyklus. `null` ohne Rechner-Mahlzeit - dann wie bisher.
+                coverageGapU = bilanz?.ergebnis?.balanceU,
             ),
             memory = slowMemory.let { m ->
                 // Toni 26.10.: nach einem Neustart steht der Fall-Stopp nur noch im Ledger - zurueckholen, sonst stiege
@@ -5616,7 +5661,87 @@ class FuseCycleRunner(
             smbRaumU = slowSmbRaumU,
             bolusStepU = pumpe.bolusStepU,
         )
-        val combined = slowUeberlagert.result
+        // ---- DIE BASAL-RUECKNAHME DER RECHNER-MAHLZEIT (Entwurf B, Toni 05.11.2026: Grundfunktion) ------------------
+        // Ist G < 0 und r unter der Rampen-Unterkante, nimmt FUSE Basal zurueck - ein KANDIDAT fuer "Anstieg vorbei", kein
+        // belegtes Mahlzeitende: ein 30-min-Befehl, der hoechstens die Ueberdeckung nimmt und nie unter einen Pumpenschritt
+        // geht ([MealBalance.withdrawal]). Die echte Null bleibt der Schutz-Null. Vorrang haben Schutz-Null, Null-Riegel
+        // und Teilstufe, dann der langsame Kanal; eine fremde TBR bleibt unberuehrt. Ueber denselben Teil-TBR-Lebenszyklus
+        // wie Teilstufe und Kanal, mit eigenem, restartfestem Nachweis.
+        val rueckLauf = if (tbrSicht is PartialTbrOwnership.View.Authoritative)
+            listOfNotNull(episodes.mealWithdrawalTbr.pendingRequest, episodes.mealWithdrawalTbr.confirmedRunning)
+                .firstOrNull { PartialTbrOwnership.matches(it, currentTbr, computeTs, pumpe.basalStepUPerH) }
+        else null
+        val rueckSperre = when {
+            tempBasalFallback -> "TEMP_BASAL_FALLBACK"
+            step.health != Health.READY -> "SIGNAL_NOT_READY"
+            ledgerView.hold -> "LEDGER_HOLD"
+            !gate.allowed -> "PUMP_GATE_CLOSED"
+            currentTbr != null && rueckLauf == null -> RUECK_FREMD
+            else -> null
+        }
+        // Ist die Lage unklar (Sicht, Signal, Ledger, Pumpentor), wird gehalten statt beendet: eine laufende eigene
+        // Absenkung laeuft bis zu ihrem Ende weiter - weniger Insulin, nie mehr -, neu gestellt wird nichts.
+        val rueckHalten = rueckSperre != null && rueckSperre != RUECK_FREMD
+        // ZWEI ZAHLEN, ZWEI FRAGEN - wie bei der Teilstufe: wie viel WIRKLICH wegfaellt, rechnet gegen die AAPS-Aktionsbasis
+        // (`pump.baseBasalRate`, das gaebe die Pumpe ohne TBR ab); gestellt wird nur eine Rate, die mindestens einen
+        // Pumpenschritt unter ihr UND unter dem Profilbasal liegt. Gegen das Profil allein gerechnet konnte eine
+        // "Absenkung" bei niedrigerer Pumpenbasis ueber ihr liegen (mehr Insulin) und bei hoeherer mehr wegnehmen als die
+        // Ueberdeckung.
+        val rueckDecke = minOf(aapsBasis, slowBasal) - pumpe.basalStepUPerH + 1e-9
+        val rueckWunsch = MealBalance.withdrawal(
+            MealBalance.WithdrawalInput(
+                balanceU = bilanz?.ergebnis?.balanceU,
+                driveMgdlPerMin = signal.rSigned ?: Double.NaN,
+                rampLowMgdlPerMin = cfg.riseRampLowR,
+                channelActive = slowWill || slowUeberlagert.acted || !slowOwnStep.state.leer || slowOwnStep.state.ending != null,
+                protectiveZeroActive = decision.tbr == FuseController.TbrAction.ZERO_TEMP || episodes.zeroLatch.active ||
+                    partialAktiv || !ownStep.state.leer || ownStep.state.ending != null,
+                scheduledBasalUPerH = aapsBasis,
+                basalStepUPerH = pumpe.basalStepUPerH,
+            ),
+        )
+        // Gestellt wird nur ohne Sperre und nur eine Rate, die AAPS auch als Absenkung ausfuehrt (unter seiner Basis) und
+        // die auch unter dem Profilbasal liegt.
+        val rueckGewollt = rueckWunsch.rateUPerH?.takeIf { rate ->
+            rueckSperre == null && rate <= rueckDecke && PartialTbrOwnership.klassifiziere(
+                rateUPerH = rate,
+                durationMin = MealBalance.COMMAND_MIN,
+                scheduledBasalUPerH = aapsBasis,
+                basalStepUPerH = pumpe.basalStepUPerH,
+                ausgegeben = true,
+            ) == PartialTbrOwnership.Wirkung.SET_PARTIAL
+        }
+        // DER TAKT ([MealBalance.COMMAND_STEP_MIN]): laeuft schon eine eigene Absenkung, aendert sie ihre Rate erst im
+        // geprueften Takt - sofort nur, wenn ihr restlicher Entzug ueber der Grenze laege oder sie keine Absenkung mehr ist
+        // (die Basis hat sich geaendert). Das Ende geht immer sofort.
+        val rueckRate = rueckGewollt?.let { wunsch ->
+            val lauf = rueckLauf ?: return@let wunsch
+            val seitBefehlMin = (computeTs - lauf.setAtTs) / 60_000.0
+            val haeltGrenze = lauf.rateUPerH <= rueckDecke && MealBalance.holdsLimit(
+                lauf.rateUPerH, (currentTbr?.remainingMin ?: 0).toDouble(), aapsBasis, rueckWunsch.limitU,
+            )
+            if (haeltGrenze && seitBefehlMin < MealBalance.COMMAND_STEP_MIN) lauf.rateUPerH else wunsch
+        }
+        val rueckOwnStep = PartialTbrOwnership.advance(
+            state = episodes.mealWithdrawalTbr,
+            view = tbrSicht,
+            nowTs = computeTs,
+            basalStepUPerH = pumpe.basalStepUPerH,
+            wunschRate = rueckRate,
+            wantEnd = rueckRate == null && !rueckHalten,
+        )
+        // Ein Kommando je Zyklus: hat der Kanal die Ausgabe bestimmt, bleibt die Ruecknahme in diesem Zyklus still.
+        val rueckUeberlagert = if (slowUeberlagert.acted) FuseTbrTranslator.SlowOverlay(slowUeberlagert.result, acted = false)
+        else FuseTbrTranslator.ueberlagereRuecknahme(
+            normal = slowUeberlagert.result,
+            want = rueckRate != null,
+            rateUPerH = rueckRate ?: 0.0,
+            own = rueckOwnStep,
+            current = currentTbr,
+            pumpBusy = pumpBusy(),
+            basalStepUPerH = pumpe.basalStepUPerH,
+        )
+        val combined = rueckUeberlagert.result
         // Gebucht wird in BEIDEN Lebenszyklen nur, was wirklich hinausging: ein vom Kanal ersetztes oder
         // unterdruecktes Normalkommando darf die Teilbasal-Kennung nicht bewegen, und ein Normalkommando ist nie
         // eine Kanal-Kennung - ausser der durchgelassenen Null, die die Kanal-TBR beendet.
@@ -5665,6 +5790,51 @@ class FuseCycleRunner(
                 factorSource = if (cfg.slowChannel.nightAt(slowSekunden)) "NIGHT" else "DAY",
             )
         }
+        // Der Nachweis der Ruecknahme bucht wie die anderen nur, was sie selbst hinausgab - oder die durchgelassene Null,
+        // die ihre Absenkung beendet.
+        episodes.mealWithdrawalTbr = run {
+            val req = combined.request
+            val wirkung = PartialTbrOwnership.klassifiziere(
+                rateUPerH = req?.rateUPerH,
+                durationMin = req?.durationMin,
+                scheduledBasalUPerH = aapsBasis,
+                basalStepUPerH = pumpe.basalStepUPerH,
+                ausgegeben = gate.allowed && req != null && rueckUeberlagert.acted,
+            )
+            PartialTbrOwnership.buche(
+                rueckOwnStep.state, wirkung, req?.rateUPerH ?: 0.0, req?.durationMin ?: 0, computeTs, pumpe.basalStepUPerH,
+            )
+        }
+        mealBalanceExportThisCycle = if (bilanz == null && rueckOwnStep.state.leer && rueckOwnStep.state.ending == null &&
+            !rueckUeberlagert.acted
+        ) null else MealBalanceExport(
+            markerTs = episodes.mealBalance?.authId ?: 0L,
+            minutesSinceMarker = bilanz?.minutenSeitMarker,
+            balanceU = bilanz?.ergebnis?.balanceU,
+            smbCapU = bilanz?.smbGrenzeU,
+            smbBeforeCapU = decisionVorBilanz.smbU.takeIf { decisionVorZeroLatch.bindingLimit == MEAL_BALANCE_BINDING },
+            announcedActive = bilanz?.ergebnis?.announcedActive == true,
+            immediateRestU = bilanz?.ergebnis?.immediateRestU,
+            eCarbsG = bilanz?.eCarbsG,
+            eCarbsRestU = bilanz?.ergebnis?.eCarbsRestU,
+            confirmation = bilanz?.ergebnis?.confirmation,
+            weight = bilanz?.ergebnis?.weight,
+            inheritedFrom = bilanz?.ergebnis?.earlier?.map { it.originAuthId }.orEmpty(),
+            inheritedECarbsG = bilanz?.ergebnis?.earlier?.takeIf { it.isNotEmpty() }?.sumOf { it.eCarbsG },
+            inheritedRestU = bilanz?.ergebnis?.earlier?.takeIf { it.isNotEmpty() }?.sumOf { it.restU },
+            inheritedCountedU = bilanz?.ergebnis?.earlier?.takeIf { it.isNotEmpty() }?.sumOf { it.weight * it.restU },
+            episodeIobU = bilanz?.episodeIobU,
+            observedU = bilanz?.beobachtetU,
+            withdrawalWantedUPerH = rueckWunsch.rateUPerH,
+            withdrawalRateUPerH = rueckRate,
+            withdrawalLimitU = rueckWunsch.limitU,
+            overcoverageU = rueckWunsch.overcoverageU,
+            withdrawalReason = rueckWunsch.reason?.name,
+            withdrawalBlock = rueckSperre,
+            phase = PartialTbrOwnership.anzeige(rueckOwnStep.copy(state = episodes.mealWithdrawalTbr)).name,
+            acted = rueckUeberlagert.acted,
+            command = if (rueckUeberlagert.acted) combined.reason.substringBefore('|') else null,
+        )
 
         // BACKOFF FORTSCHREIBEN (Medtrum-Auflage). Der Erfolg eines Abbruchs
         // ist erst im NAECHSTEN Zyklus sichtbar - er steht in `current`, also
@@ -5863,6 +6033,7 @@ class FuseCycleRunner(
             bloecke = Bloecke(
                 wirkung = wirkung,
                 slowChannel = slowExportThisCycle,
+                mealBalance = mealBalanceExportThisCycle,
                 hcl = hcl?.let { h ->
                     HclExport(
                         calcTs = h.calcTs,
@@ -6788,6 +6959,134 @@ class FuseCycleRunner(
         /** `null` = Schwanz-Guard aus. */
         val tail: TailLiability.Report?,
     )
+
+    /** Die gemeinsame Bilanz der Rechner-Mahlzeit in diesem Zyklus ([mahlzeitBilanz]). */
+    private class BilanzZyklus(
+        val ergebnis: MealBalance.Result,
+        /** Die Grenze des SMB-Wegs: G minus der geplante Kanal-Rest [U] ([MealBalance.smbCapU]); `null` = keine. */
+        val smbGrenzeU: Double?,
+        val minutenSeitMarker: Double,
+        /** Das noch wirkende Insulin der Mahlzeit (Boli und SMB seit der Rechnung) [U]. */
+        val episodeIobU: Double,
+        /** Die angekuendigten eCarbs dieser Mahlzeit [g]. */
+        val eCarbsG: Double,
+        /** Die beobachtete Mahlzeitwirkung seit dem Marker [U]; `null` = nicht gueltig. */
+        val beobachtetU: Double?,
+    )
+
+    /**
+     * DIE GEMEINSAME BILANZ DER RECHNER-MAHLZEIT (Entwurf B, Toni 05.11.2026: Grundfunktion ohne Schalter) - ein Zyklus
+     * [MealBalance.cycle] fuer den laufenden Marker aus dem Bolusrechner, mit oder ohne eCarbs. Die Episode lebt laenger
+     * als das Kontofenster - solange eCarbs angekuendigt laufen oder Insulin der Mahlzeit wirkt - und steht deshalb
+     * restartfest im Ledger ([EpisodeBudgets.mealBalance]): die beobachtete Mahlzeitwirkung (im Kontofenster die des
+     * Kontos, danach mit derselben Rechnung fortgeschrieben, [ExpectationAccount.observe]) und die Aufnahmezuordnung der
+     * eCarbs. Ein neuer Rechner-Marker uebernimmt die eCarbs der laufenden Episode mit Herkunft und verbuchter Aufnahme
+     * ([MealBalance.inherit]); jede Mahlzeit behaelt ihre eigene Bestaetigung und Ruecknahme.
+     *
+     * `null` = keine Episode, sie ist vorbei, oder in diesem Zyklus fehlt ein Eingang (eCarbs oder Boli nicht lesbar) -
+     * dann rechnet der Zyklus wie ohne Bilanz.
+     */
+    @Suppress("LongParameterList")
+    private fun mahlzeitBilanz(
+        cfg: Config,
+        episodes: EpisodeBudgets,
+        markerTs: Long,
+        hclCalcTs: Long,
+        hclMerged: Boolean,
+        z: ErwartungskontoZyklus?,
+        computeTs: Long,
+        signal: FuseSignalSource.Signal,
+        activityUPerMin: Double,
+        state: FuseController.State,
+        transportU: Double,
+        kanalPlanU: Double,
+        boli: () -> List<BS>?,
+    ): BilanzZyklus? {
+        val konto = episodes.expectation?.takeIf { markerTs > 0L && it.authId == markerTs }
+        val rechnung = if (cfg.hclMealsEnabled && hclCalcTs > 0L && !hclMerged) hclMahlzeiten.rechnung(hclCalcTs) else null
+        val kurve = konto?.let { ExpectationAccount.Curve.of(it.curveValues) }
+        if (konto == null || rechnung == null || kurve == null) {
+            // Ein Marker ohne Rechnung beendet die Bilanz. Fehlt einer Rechner-Mahlzeit nur Konto oder Kurve, bleibt die
+            // Episode stehen: ein eben gesetzter Marker uebernimmt ihre eCarbs dann im naechsten Zyklus.
+            if (rechnung == null) episodes.mealBalance = null
+            return null
+        }
+        val gespeichert = episodes.mealBalance
+        val vorher = gespeichert?.takeIf { it.authId == konto.authId }
+        if (vorher?.done == true) return null
+        // Die beobachtete Mahlzeitwirkung: solange das Konto rechnet, seine (eine Quelle); danach selbst fortgeschrieben.
+        val kontoJetzt = z?.state?.takeIf { it.authId == konto.authId }
+        val beobachtung = when {
+            kontoJetzt != null -> ExpectationAccount.Observation(
+                kontoJetzt.disturbanceU, kontoJetzt.disturbanceValid, kontoJetzt.lastObsTs, kontoJetzt.lastBgMgdl,
+            )
+            vorher != null -> ExpectationAccount.observe(
+                vorher.observation, computeTs, signal.q1, activityUPerMin, state.isfMgdlPerU, konto.isfAtMarkerMgdlPerU,
+            )
+            else -> ExpectationAccount.Observation(konto.disturbanceU, konto.disturbanceValid, konto.lastObsTs, konto.lastBgMgdl)
+        }
+        // UEBERLAPPENDE RECHNER-MAHLZEITEN (Codex 05.11.2026): der neue Marker uebernimmt die eCarbs der laufenden Episode
+        // mit Herkunft und verbuchter Aufnahme - ihr Rest geht weder verloren, noch beginnt er neu.
+        val basis = vorher ?: gespeichert?.takeIf { MealBalance.inherits(it, konto.authId, computeTs) }
+            ?.let { MealBalance.inherit(it, konto.authId, beobachtung) }
+        val zuordnung = basis?.attribution ?: ECarbs.CobAttribution()
+        val uebernommen = basis?.eCarbs.orEmpty().filter { it.originAuthId != konto.authId }
+        // Ohne lesbare eCarbs oder Boli rechnet die Bilanz in diesem Zyklus nicht - die Beobachtung laeuft weiter.
+        fun ohneRechnung(): BilanzZyklus? {
+            episodes.mealBalance = MealBalance.Episode(konto.authId, beobachtung, zuordnung, eCarbs = basis?.eCarbs.orEmpty())
+            return null
+        }
+        val eintraege = eCarbsQuelle.eintraege(konto.authId, uebernommen) ?: return ohneRechnung()
+        val teile = eintraege.filter { it.ref.originAuthId == konto.authId }.flatMap { it.teile }.sortedBy { it.ts }
+        val frueher = eintraege.filter { it.ref.originAuthId != konto.authId }.groupBy { it.ref.originAuthId }
+            .map { (herkunft, e) -> MealBalance.EarlierECarbs(herkunft, e.flatMap { it.teile }.sortedBy { it.ts }) }
+        // Das Insulin der Mahlzeit: der Rechner-Bolus und alles danach. Ab der Rechnung, nicht erst ab dem Marker - steht
+        // die Mahlzeit in der Zukunft, setzt FUSE den Marker erst bei der Meldung, nach dem Bolus.
+        val ab = min(konto.authId, rechnung.calcTs)
+        val episodeIobU = boli()
+            ?.filter { it.isValid && it.type != BS.Type.PRIMING && it.timestamp >= ab }
+            ?.sumOf { it.iobCalc(computeTs).iobContrib }
+            ?: return ohneRechnung()
+        val minuten = (computeTs - konto.authId) / 60_000.0
+        val ergebnis = MealBalance.cycle(
+            MealBalance.Input(
+                nowTs = computeTs,
+                minutesSinceMarker = minuten,
+                windowMin = (konto.windowEndTs - konto.authId) / 60_000.0,
+                immediateCarbsU = rechnung.carbsInsulinU,
+                phi0 = konto.phi0,
+                curve = kurve,
+                observedU = beobachtung.disturbanceU.takeIf { beobachtung.valid },
+                eCarbs = teile,
+                icGPerU = rechnung.icGPerU,
+                bgMgdl = signal.q1,
+                targetMgdl = state.targetMgdl,
+                isfMgdlPerU = state.isfMgdlPerU,
+                driveMgdlPerMin = signal.rSigned ?: Double.NaN,
+                driveTauMin = cfg.driveTauMin.toDouble(),
+                iobU = state.netIobU,
+                transportU = transportU,
+                episodeIobU = episodeIobU,
+                earlierECarbs = frueher,
+            ),
+            zuordnung,
+        )
+        // Vorbei: nichts mehr angekuendigt und kein Insulin der Mahlzeit mehr - fuer diesen Marker kommt sie nicht zurueck.
+        val vorbei = !ergebnis.announcedActive && episodeIobU <= MealBalance.EPISODE_IOB_MIN_U
+        episodes.mealBalance = MealBalance.Episode(
+            konto.authId, beobachtung, ergebnis.attribution, done = vorbei,
+            eCarbs = eintraege.map { it.ref }.filter { it.entryId > 0L },
+        )
+        if (vorbei) return null
+        return BilanzZyklus(
+            ergebnis = ergebnis,
+            smbGrenzeU = MealBalance.smbCapU(ergebnis.balanceU, kanalPlanU),
+            minutenSeitMarker = minuten,
+            episodeIobU = episodeIobU,
+            eCarbsG = teile.sumOf { it.grams },
+            beobachtetU = beobachtung.disturbanceU.takeIf { beobachtung.valid },
+        )
+    }
 
     /** HCL Stufe 2: die Anrechnung dieses Zyklus fuer einen Marker aus dem Bolusrechner. */
     private class HclZyklus(
@@ -7950,6 +8249,12 @@ class FuseCycleRunner(
     /** HCL Stufe 2: die Rechnungen des Bolusrechners - der Runner liest nur das KH-Insulin der Marker-Rechnung. */
     private val hclMahlzeiten by lazy { HclMahlzeiten(preferences) }
 
+    /** Die angekuendigten eCarbs der Rechner-Mahlzeit - die einzige Stelle, die dafuer die KH-Tabelle liest. */
+    private val eCarbsQuelle by lazy { ECarbsQuelle(persistenceLayer) }
+
+    /** Die gemeinsame Bilanz dieses Zyklus fuer den Trail; `null` ohne Episode. */
+    private var mealBalanceExportThisCycle: MealBalanceExport? = null
+
     /** Die gebuendelten Bloecke eines Zyklus (s. [Outcome.bloecke]). */
     data class Bloecke(
         val erwartungskonto: ErwartungskontoExport? = null,
@@ -7958,6 +8263,62 @@ class FuseCycleRunner(
         val hcl: HclExport? = null,
         /** Der Wirkungs-Waechter dieses Zyklus (Toni 04.11.2026) - `null` auf Abbruchpfaden, dann bleibt die Meldung wie sie ist. */
         val wirkung: InsulinEffectWatch.Result? = null,
+        /** Die gemeinsame Bilanz der Rechner-Mahlzeit (Entwurf B) - nur im Hauptpfad, mit Episode oder eigener Absenkung. */
+        val mealBalance: MealBalanceExport? = null,
+    )
+
+    /**
+     * DIE GEMEINSAME BILANZ DER RECHNER-MAHLZEIT fuer den Trail (Entwurf B, Toni 05.11.2026): G, die Grenze des
+     * SMB-Wegs, der angekuendigte Rest - und die Basal-Ruecknahme: was sie wollte, warum nicht, was sie tat. Die Werte
+     * der Bilanz sind `null`, wenn sie in diesem Zyklus nicht rechnete und nur noch eine eigene Absenkung endet.
+     */
+    data class MealBalanceExport(
+        /** Der Marker der Episode; 0 = keine Episode mehr (nur noch eine eigene Absenkung). */
+        val markerTs: Long,
+        val minutesSinceMarker: Double?,
+        /** G [U]; `null` = nicht aktiv oder nicht berechenbar. */
+        val balanceU: Double?,
+        /** Die Grenze des SMB-Wegs: G minus der geplante Kanal-Rest [U]. */
+        val smbCapU: Double?,
+        /** Die Endmenge vor der Grenze [U] - nur, wenn die Grenze sie gesenkt hat. */
+        val smbBeforeCapU: Double?,
+        /** Der angekuendigte Rest zaehlt (Kontofenster offen oder eCarbs laufen). */
+        val announcedActive: Boolean,
+        /** Der Sofort-KH-Rest nach der Kurve [U]. */
+        val immediateRestU: Double?,
+        /** Die angekuendigten eCarbs [g] und ihr Rest wie COB mit Verfall [U], vor der Ruecknahme w. */
+        val eCarbsG: Double?,
+        val eCarbsRestU: Double?,
+        /** Bestaetigung c_e und Ruecknahme w der eCarbs (0..1). */
+        val confirmation: Double?,
+        val weight: Double?,
+        /**
+         * Die vom Marker uebernommenen eCarbs frueherer Rechner-Mahlzeiten: ihre Herkunft (Marker, die aelteste zuerst), ihre
+         * Menge [g], ihr Rest wie COB mit Verfall [U] vor w und was davon in G zaehlt (Rest mal ihrem w) [U]. Leer und
+         * `null` = keine.
+         */
+        val inheritedFrom: List<Long>,
+        val inheritedECarbsG: Double?,
+        val inheritedRestU: Double?,
+        val inheritedCountedU: Double?,
+        /** Das noch wirkende Insulin der Mahlzeit [U]. */
+        val episodeIobU: Double?,
+        /** Die beobachtete Mahlzeitwirkung seit dem Marker [U]; `null` = nicht gueltig. */
+        val observedU: Double?,
+        /** Die Ruecknahme: gewuenschte Rate aus der Bilanz [U/h] - vor den Sperren -, `null` = kein Wunsch. */
+        val withdrawalWantedUPerH: Double?,
+        /** Die gestellte Rate [U/h] oder `null`, die Grenze des Befehls [U], die Ueberdeckung -G [U]. */
+        val withdrawalRateUPerH: Double?,
+        val withdrawalLimitU: Double,
+        val overcoverageU: Double,
+        /** Warum keine Ruecknahme ([MealBalance.NoWithdrawal]); `null` = gewollt. */
+        val withdrawalReason: String?,
+        /** Was sie in diesem Zyklus nicht durfte (Sicht, Signal, Ledger, Pumpentor, fremde TBR); `null` = nichts. */
+        val withdrawalBlock: String?,
+        /** Der Teil-TBR-Lebenszyklus der Ruecknahme ([PartialTbrOwnership.anzeige]). */
+        val phase: String,
+        val acted: Boolean,
+        val command: String?,
     )
 
     /**

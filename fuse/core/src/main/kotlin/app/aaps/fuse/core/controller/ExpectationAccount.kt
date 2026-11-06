@@ -499,6 +499,37 @@ object ExpectationAccount {
         val early: EarlyEvaluation? = null,
     )
 
+    /** Die beobachtete Stoerung seit dem Marker [U] mit ihrem letzten Messpunkt ([observe]). */
+    data class Observation(val disturbanceU: Double, val valid: Boolean, val lastObsTs: Long, val lastBgMgdl: Double)
+
+    /**
+     * DIE BEOBACHTETE STOERUNG EINEN SCHRITT WEITER - Schritt 1 von [step], dieselbe Rechnung wie die Analyse:
+     *
+     *     D += (dBG + Aktivitaet x ISF x dt) / ISF_Marker
+     *
+     * Eine Luecke ueber [MAX_OBSERVATION_GAP_MIN] oder ein ungueltiger Wert macht sie ungueltig, und so bleibt sie. Kein
+     * Zeitfortschritt: unveraendert. Auch die gemeinsame Bilanz der Rechner-Mahlzeit ([MealBalance]) schreibt sie damit
+     * fort - sie lebt laenger als das Kontofenster.
+     */
+    fun observe(
+        o: Observation,
+        nowTs: Long,
+        bgMgdl: Double,
+        activityUPerMin: Double,
+        isfMgdlPerU: Double,
+        isfAtMarkerMgdlPerU: Double,
+    ): Observation {
+        val dtMin = (nowTs - o.lastObsTs) / 60_000.0
+        if (dtMin <= 0.0) return o
+        val gueltig = o.valid && dtMin <= MAX_OBSERVATION_GAP_MIN &&
+            bgMgdl.isFinite() && o.lastBgMgdl.isFinite() &&
+            activityUPerMin.isFinite() && isfMgdlPerU.isFinite() && isfMgdlPerU > 0.0
+        return if (gueltig) {
+            val dMgdl = (bgMgdl - o.lastBgMgdl) + activityUPerMin * isfMgdlPerU * dtMin
+            Observation(o.disturbanceU + dMgdl / isfAtMarkerMgdlPerU, true, nowTs, bgMgdl)
+        } else Observation(o.disturbanceU, false, nowTs, bgMgdl)
+    }
+
     /**
      * Ein Zyklus: Stoerung fortschreiben, Stabilitaet, Ruecknahme und Ende
      * pruefen, R_mess / R_roh rechnen. Liefert den neuen Zustand und die
@@ -507,20 +538,13 @@ object ExpectationAccount {
     fun step(state: State, inputs: Inputs): Pair<State, Evaluation> {
         var s = state
 
-        // 1 Beobachtete Stoerung fortschreiben (gleiche Rechnung wie die Analyse:
-        //   D += (dBG + Aktivitaet * ISF * dt) / ISF_Marker).
-        val dtMin = (inputs.nowTs - s.lastObsTs) / 60_000.0
-        if (dtMin > 0.0) {
-            val gueltig = s.disturbanceValid && dtMin <= MAX_OBSERVATION_GAP_MIN &&
-                inputs.bgMgdl.isFinite() && s.lastBgMgdl.isFinite() &&
-                inputs.activityUPerMin.isFinite() && inputs.isfMgdlPerU.isFinite() && inputs.isfMgdlPerU > 0.0
-            s = if (gueltig) {
-                val dMgdl = (inputs.bgMgdl - s.lastBgMgdl) + inputs.activityUPerMin * inputs.isfMgdlPerU * dtMin
-                s.copy(
-                    disturbanceU = s.disturbanceU + dMgdl / s.isfAtMarkerMgdlPerU,
-                    lastObsTs = inputs.nowTs, lastBgMgdl = inputs.bgMgdl,
-                )
-            } else s.copy(disturbanceValid = false, lastObsTs = inputs.nowTs, lastBgMgdl = inputs.bgMgdl)
+        // 1 Beobachtete Stoerung fortschreiben ([observe]).
+        if (inputs.nowTs > s.lastObsTs) {
+            val o = observe(
+                Observation(s.disturbanceU, s.disturbanceValid, s.lastObsTs, s.lastBgMgdl),
+                inputs.nowTs, inputs.bgMgdl, inputs.activityUPerMin, inputs.isfMgdlPerU, s.isfAtMarkerMgdlPerU,
+            )
+            s = s.copy(disturbanceU = o.disturbanceU, disturbanceValid = o.valid, lastObsTs = o.lastObsTs, lastBgMgdl = o.lastBgMgdl)
         }
 
         val expired = inputs.nowTs >= s.windowEndTs

@@ -1,7 +1,10 @@
 package app.aaps.fuse.plugin.ledger
 
+import app.aaps.fuse.core.controller.ECarbs
 import app.aaps.fuse.core.controller.ExpectationAccount
 import app.aaps.fuse.core.controller.InterventionStamp
+import app.aaps.fuse.core.controller.MealBalance
+import app.aaps.fuse.core.controller.PartialTbrOwnership
 import app.aaps.fuse.core.ledger.AccountingState
 import app.aaps.fuse.core.ledger.AmountAxis
 import app.aaps.fuse.core.ledger.DeliveryState
@@ -503,31 +506,11 @@ object LedgerCodec {
         // DER NACHWEIS DER EIGENEN TEIL-TBR - restartfest, s.
         // PartialTbrOwnership. Altdatei ohne Feld heisst "kein Nachweis",
         // und das ist die Richtung, die nichts Fremdes anfasst.
-        .put(
-            "ownPartialTbr",
-            e.ownPartialTbr.takeIf { !it.leer || it.ending != null }?.let { s ->
-                fun id(i: app.aaps.fuse.core.controller.PartialTbrOwnership.Identity?) =
-                    i?.let {
-                        JSONObject()
-                            .put("rateUPerH", it.rateUPerH)
-                            .put("setAtTs", it.setAtTs)
-                            .put("durationMin", it.durationMin)
-                    } ?: JSONObject.NULL
-                JSONObject()
-                    .put("confirmedRunning", id(s.confirmedRunning))
-                    .put("pendingRequest", id(s.pendingRequest))
-                    .put("pendingAttempts", s.pendingAttempts)
-                    .put(
-                        "ending",
-                        s.ending?.let {
-                            JSONObject()
-                                .put("sinceTs", it.sinceTs)
-                                .put("attempts", it.attempts)
-                                .put("lastRequestTs", it.lastRequestTs)
-                        } ?: JSONObject.NULL,
-                    )
-            } ?: JSONObject.NULL,
-        )
+        .put("ownPartialTbr", ownershipJson(e.ownPartialTbr))
+        // DIE GEMEINSAME BILANZ DER RECHNER-MAHLZEIT (Entwurf B, Toni 05.11.2026) und der Nachweis ihrer Basal-Ruecknahme -
+        // additiv ohne Schemasprung: eine Altdatei ohne Feld heisst "keine Episode" und "kein Nachweis".
+        .put("mealBalance", e.mealBalance?.let { mealBalanceJson(it) } ?: JSONObject.NULL)
+        .put("mealWithdrawalTbr", ownershipJson(e.mealWithdrawalTbr))
         .put(
             "zeroLatch",
             JSONObject()
@@ -1027,31 +1010,16 @@ object LedgerCodec {
                 ) ?: error("invalid descent recovery latch")
         }
         if (o.has("ownPartialTbr") && !o.isNull("ownPartialTbr")) {
-            val own = o.getJSONObject("ownPartialTbr")
-            fun id(k: String): app.aaps.fuse.core.controller.PartialTbrOwnership.Identity? {
-                if (!own.has(k) || own.isNull(k)) return null
-                val j = own.getJSONObject(k)
-                // Ein unbrauchbarer Nachweis wird VERWORFEN, nicht
-                // repariert: dann gilt die laufende Absenkung als fremd,
-                // und das ist die Richtung, die nichts Fremdes anfasst.
-                return app.aaps.fuse.core.controller.PartialTbrOwnership.Identity(
-                    rateUPerH = j.getDouble("rateUPerH"),
-                    setAtTs = requireTs("ownPartialTbr.$k.setAtTs", j.getLong("setAtTs")),
-                    durationMin = j.getInt("durationMin"),
-                ).takeIf { it.valid }
-            }
-            e.ownPartialTbr = app.aaps.fuse.core.controller.PartialTbrOwnership.State(
-                confirmedRunning = id("confirmedRunning"),
-                pendingRequest = id("pendingRequest"),
-                pendingAttempts = own.optInt("pendingAttempts", 0),
-                ending = own.optJSONObject("ending")?.let {
-                    app.aaps.fuse.core.controller.PartialTbrOwnership.Ending(
-                        sinceTs = requireTs("ownPartialTbr.ending.sinceTs", it.getLong("sinceTs")),
-                        attempts = it.optInt("attempts", 0),
-                        lastRequestTs = it.optLong("lastRequestTs", 0L),
-                    )
-                },
-            )
+            e.ownPartialTbr = ownershipFrom(o.getJSONObject("ownPartialTbr"), "ownPartialTbr")
+        }
+        // Die Bilanz der Rechner-Mahlzeit: ein unlesbarer Eintrag faellt weg, er sperrt nicht den ganzen Ledger. Ohne
+        // Nachweis gilt eine laufende eigene Absenkung als fremd und laeuft bis zu ihrem Ende - weniger Insulin, nie mehr.
+        if (o.has("mealBalance") && !o.isNull("mealBalance")) {
+            e.mealBalance = runCatching { mealBalanceFrom(o.getJSONObject("mealBalance")) }.getOrNull()
+        }
+        if (o.has("mealWithdrawalTbr") && !o.isNull("mealWithdrawalTbr")) {
+            e.mealWithdrawalTbr = runCatching { ownershipFrom(o.getJSONObject("mealWithdrawalTbr"), "mealWithdrawalTbr") }
+                .getOrDefault(PartialTbrOwnership.State())
         }
         if (o.has("zeroLatch")) {
             val latch = o.getJSONObject("zeroLatch")
@@ -1555,6 +1523,110 @@ object LedgerCodec {
     }
 
     private fun requireAmountOrNull(name: String, v: Double?): Double? = v?.let { requireAmount(name, it) }
+
+    /** Ein Teil-TBR-Nachweis als JSON - leer und ohne laufenden Abbruch: kein Eintrag (NULL). */
+    private fun ownershipJson(s: PartialTbrOwnership.State): Any {
+        if (s.leer && s.ending == null) return JSONObject.NULL
+        fun id(i: PartialTbrOwnership.Identity?) =
+            i?.let {
+                JSONObject()
+                    .put("rateUPerH", it.rateUPerH)
+                    .put("setAtTs", it.setAtTs)
+                    .put("durationMin", it.durationMin)
+            } ?: JSONObject.NULL
+        return JSONObject()
+            .put("confirmedRunning", id(s.confirmedRunning))
+            .put("pendingRequest", id(s.pendingRequest))
+            .put("pendingAttempts", s.pendingAttempts)
+            .put(
+                "ending",
+                s.ending?.let {
+                    JSONObject()
+                        .put("sinceTs", it.sinceTs)
+                        .put("attempts", it.attempts)
+                        .put("lastRequestTs", it.lastRequestTs)
+                } ?: JSONObject.NULL,
+            )
+    }
+
+    /** Ein Teil-TBR-Nachweis aus JSON ([ownershipJson]); [name] benennt das Feld in den Fehlermeldungen. */
+    private fun ownershipFrom(own: JSONObject, name: String): PartialTbrOwnership.State {
+        fun id(k: String): PartialTbrOwnership.Identity? {
+            if (!own.has(k) || own.isNull(k)) return null
+            val j = own.getJSONObject(k)
+            // Ein unbrauchbarer Nachweis wird VERWORFEN, nicht
+            // repariert: dann gilt die laufende Absenkung als fremd,
+            // und das ist die Richtung, die nichts Fremdes anfasst.
+            return PartialTbrOwnership.Identity(
+                rateUPerH = j.getDouble("rateUPerH"),
+                setAtTs = requireTs("$name.$k.setAtTs", j.getLong("setAtTs")),
+                durationMin = j.getInt("durationMin"),
+            ).takeIf { it.valid }
+        }
+        return PartialTbrOwnership.State(
+            confirmedRunning = id("confirmedRunning"),
+            pendingRequest = id("pendingRequest"),
+            pendingAttempts = own.optInt("pendingAttempts", 0),
+            ending = own.optJSONObject("ending")?.let {
+                PartialTbrOwnership.Ending(
+                    sinceTs = requireTs("$name.ending.sinceTs", it.getLong("sinceTs")),
+                    attempts = it.optInt("attempts", 0),
+                    lastRequestTs = it.optLong("lastRequestTs", 0L),
+                )
+            },
+        )
+    }
+
+    /** Die Episode der Bilanz als JSON; nicht endliche Messwerte als NULL. */
+    private fun mealBalanceJson(m: MealBalance.Episode): JSONObject {
+        fun zahl(v: Double): Any = if (v.isFinite()) v else JSONObject.NULL
+        return JSONObject()
+            .put("authId", m.authId)
+            .put("disturbanceU", zahl(m.observation.disturbanceU))
+            .put("disturbanceValid", m.observation.valid)
+            .put("lastObsTs", m.observation.lastObsTs)
+            .put("lastBgMgdl", zahl(m.observation.lastBgMgdl))
+            .put("absorbedU", zahl(m.attribution.absorbedU))
+            .put("maxExcessU", m.attribution.maxExcessU?.let { zahl(it) } ?: JSONObject.NULL)
+            .put("lastArrivedU", zahl(m.attribution.lastArrivedU))
+            .put("done", m.done)
+            .put("eCarbs", JSONArray(m.eCarbs.map { JSONObject().put("id", it.entryId).put("origin", it.originAuthId) }))
+    }
+
+    /**
+     * Die Episode der Bilanz aus JSON ([mealBalanceJson]). Eine nicht endliche Stoerung ist ungueltig. Ohne `eCarbs`
+     * (Altdatei) kennt die Episode keine Eintraege: dann uebernimmt ein neuer Marker nichts - weniger, nie mehr.
+     */
+    private fun mealBalanceFrom(o: JSONObject): MealBalance.Episode {
+        fun wert(name: String): Double = if (!o.has(name) || o.isNull(name)) Double.NaN else o.getDouble(name)
+        fun menge(name: String): Double = wert(name).also { require(it.isFinite() && it >= 0.0 && it <= MAX_AMOUNT_U) { "$name $it" } }
+        val authId = o.getLong("authId")
+        require(authId > 0L) { "mealBalance.authId $authId" }
+        val stoerung = wert("disturbanceU")
+        return MealBalance.Episode(
+            authId = authId,
+            observation = ExpectationAccount.Observation(
+                disturbanceU = stoerung,
+                valid = o.getBoolean("disturbanceValid") && stoerung.isFinite(),
+                lastObsTs = requireTs("mealBalance.lastObsTs", o.getLong("lastObsTs")),
+                lastBgMgdl = wert("lastBgMgdl"),
+            ),
+            attribution = ECarbs.CobAttribution(
+                absorbedU = menge("absorbedU"),
+                maxExcessU = wert("maxExcessU").takeIf { it.isFinite() },
+                lastArrivedU = menge("lastArrivedU"),
+            ),
+            done = o.optBoolean("done", false),
+            eCarbs = o.optJSONArray("eCarbs")?.let { a ->
+                (0 until a.length()).map { i ->
+                    val e = a.getJSONObject(i)
+                    MealBalance.ECarbsRef(e.getLong("id"), e.getLong("origin")).also {
+                        require(it.entryId > 0L && it.originAuthId > 0L) { "mealBalance.eCarbs $it" }
+                    }
+                }
+            }.orEmpty(),
+        )
+    }
 
     private fun requireTs(name: String, v: Long): Long {
         require(v >= 0L) { "$name negative timestamp: $v" }

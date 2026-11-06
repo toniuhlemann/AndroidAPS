@@ -35,6 +35,16 @@ class NoCobDependencyTest {
      */
     private val verboten = listOf("CobInfo", "getCarbsFromTime", "AutosensData", "getLastAutosensData")
 
+    /**
+     * DIE EINE AUSNAHME (Entwurf B, Toni 05.11.2026: die gemeinsame Bilanz der Rechner-Mahlzeit): der eCarbs-Adapter
+     * liest die ANGEKUENDIGTEN eCarbs - KH-Eintraege mit Dauer - und zerlegt sie wie AAPS. Das ist kein COB: keine
+     * Aufnahme aus der deviation, kein Abbau, nichts in der Bahn. Die Aufnahme ordnet FUSE selbst zu, aus der
+     * beobachteten Stoerung (`ECarbs.CobAttribution` in :fuse:core). Erlaubt ist ihm genau die eine Lesung; fuer alles
+     * andere gilt die Liste auch dort.
+     */
+    private val ausnahmeDatei = "ECarbsQuelle.kt"
+    private val ausnahmeLesung = "getCarbsFromTimeNotExpanded"
+
     @Test
     fun `der Adapter liest nirgends COB oder die Autosens-Tabelle`() {
         val quellen = mainSources()
@@ -44,13 +54,20 @@ class NoCobDependencyTest {
 
         val treffer = buildList {
             for (f in quellen) {
-                val code = ohneKommentare(f.readText())
+                val roh = ohneKommentare(f.readText())
+                val code = if (f.name == ausnahmeDatei) roh.replace(ausnahmeLesung, "") else roh
                 for (t in verboten) if (code.contains(t)) add("${f.name}: $t")
             }
         }
         assertTrue(treffer.isEmpty()) {
             "FUSE darf COB nicht lesen - rSigned enthaelt die Mahlzeit bereits. " +
                 "Begruendung in TrajectoryCore an der meanBg-Zeile. Gefunden: $treffer"
+        }
+        // Die Ausnahme haengt an genau einer Datei, die die erlaubte Lesung auch wirklich macht - sonst waere sie tot oder
+        // ginge mit einer Umbenennung still an eine andere Stelle.
+        val adapter = quellen.filter { it.name == ausnahmeDatei }
+        assertTrue(adapter.size == 1 && ohneKommentare(adapter.single().readText()).contains(ausnahmeLesung)) {
+            "die Ausnahme fuer $ausnahmeDatei passt nicht mehr: $adapter"
         }
     }
 

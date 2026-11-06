@@ -1,6 +1,7 @@
 package app.aaps.fuse.plugin
 
 import app.aaps.core.data.model.BS
+import app.aaps.core.data.model.CA
 import app.aaps.core.data.model.GV
 import app.aaps.core.data.model.ICfg
 import app.aaps.core.data.model.IDs
@@ -28,6 +29,9 @@ import app.aaps.fuse.core.controller.EarlySupply
 import app.aaps.fuse.core.controller.ExpectationAccount
 import app.aaps.fuse.core.controller.LivenessChannel
 import app.aaps.fuse.core.controller.LowThreatGate
+import app.aaps.fuse.core.controller.MealBalance
+import app.aaps.fuse.core.controller.PartialTbrOwnership
+import app.aaps.fuse.core.controller.SlowCorrectionChannel
 import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.controller.MarkerReauthorization
 import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
@@ -35,6 +39,7 @@ import app.aaps.fuse.plugin.ledger.LedgerFacts
 import app.aaps.fuse.plugin.ledger.LedgerPublicationGate
 import app.aaps.shared.tests.TestBaseWithProfile
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -158,9 +163,13 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         GV(timestamp = t, value = v, raw = v, noise = 0.0, sourceSensor = SourceSensor.UNKNOWN, trendArrow = TrendArrow.FLAT)
     }
 
+    /** Das Basal, das die Pumpe ohne TBR abgibt (`pump.baseBasalRate`); NaN = unbekannt, dann gilt das Profilbasal. */
+    private var pumpenBasisUPerH = Double.NaN
+
     private fun testPumpe() = FuseActivePump(
         "GENERIC_AAPS", virtualPump = true, bolusStepU = 0.05, basalStepUPerH = Fuse20Folgen.BASAL_SCHRITT,
         gate = FusePumpGate.Result(FusePumpGate.Verdict.ALLOWED, "TestPump"),
+        baseBasalRateUPerH = pumpenBasisUPerH,
     )
 
     @BeforeEach
@@ -194,6 +203,10 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             boluses.filter { it.timestamp in from..to && it.isValid }
         }
         whenever(processedTbrEbData.getTempBasalIncludingConvertedExtended(any())).thenAnswer { inv -> pumpe.sicht(inv.getArgument(0), clock) }
+        // Wie die Datenbank: nur Eintraege ab dem gefragten Zeitpunkt - so prueft das Gestell auch, ab wann die Quelle liest.
+        whenever(persistenceLayer.getCarbsFromTimeNotExpanded(any(), any())).thenAnswer { inv ->
+            eCarbsEintraege?.filter { it.timestamp >= inv.getArgument<Long>(0) }
+        }
     }
 
     /**
@@ -2361,6 +2374,13 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     private var hclZusammen = false
     private var hclGespeichert = ""
 
+    /**
+     * Die KH-Eintraege, die die eCarbs-Quelle der gemeinsamen Bilanz liest (Entwurf B). `null` = nicht lesbar: dann
+     * rechnet die Bilanz nicht, und die Gegenproben der HCL-Anrechnung oben pruefen die Anrechnung allein, wie bisher.
+     * Eine Liste - auch eine leere - schaltet die Bilanz ein, wie am Geraet.
+     */
+    private var eCarbsEintraege: List<CA>? = null
+
     /** Eine HCL-Mahlzeit, die die Kurve deutlich ueberragt: der Rechner-Bolus deckt sie nicht, der Zucker steigt. */
     private val fHcl = Fuse20Folgen.Folge(
         "HCL", 1_700_474_400_000L, -90, 240,
@@ -2745,7 +2765,488 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(zyklen.none { it.o.hcl?.applied == true })
     }
 
+    // ---- DIE GEMEINSAME BILANZ DER RECHNER-MAHLZEIT (Entwurf B, Toni 05.11.2026: Grundfunktion) -------------------
+    //
+    // G begrenzt den SMB-Weg und den langsamen Kanal, und bei G < 0 nach dem Anstieg nimmt FUSE Basal zurueck - ueber den
+    // eigenen Teil-TBR-Lebenszyklus, nie unter einen Pumpenschritt. Der Rig spielt den Zucker als feste Folge; geprueft
+    // wird, was der Zyklus daraus entscheidet und an die Pumpe gibt. Alle Zahlen synthetisch.
+
+    /**
+     * Die Mahlzeit ist kleiner als der Rechner-Bolus: der Zucker sinkt leicht und bleibt flach - Ueberdeckung ohne Tief.
+     * Ab +165 steigt er wieder (eine zweite, unangekuendigte Welle).
+     */
+    private val fBilanz = Fuse20Folgen.Folge(
+        "BILANZ", 1_700_733_600_000L, -90, 240,
+        listOf(
+            -90 to 118.0, -10 to 118.0, 0 to 120.0, 20 to 124.0, 40 to 118.0, 60 to 110.0, 75 to 106.0, 165 to 106.0,
+            185 to 140.0, 240 to 190.0,
+        ),
+        markerMin = 0,
+    )
+
+    private fun bilanzTabelle(name: String, zyklen: List<Zyklus>) {
+        println("---- $name")
+        for (z in zyklen.filter { it.minute in -5..240 }) {
+            val b = z.o.mealBalance
+            println(
+                "${z.minute} bg=${z.o.bgMgdl?.let { "%.0f".format(it) }} smb=${z.o.decision.smbU} G=${b?.balanceU?.let { "%.2f".format(it) }} " +
+                    "grenze=${b?.smbCapU?.let { "%.2f".format(it) }} vor=${b?.smbBeforeCapU} wunsch=${b?.withdrawalRateUPerH} " +
+                    "grenzeBefehl=${b?.withdrawalLimitU?.let { "%.2f".format(it) }} grund=${b?.withdrawalReason} sperre=${b?.withdrawalBlock} " +
+                    "phase=${b?.phase} kmd=${b?.command} tbr=${z.o.tbr?.let { "${it.rateUPerH}/${it.durationMin}" }} " +
+                    "aktion=${z.o.decision.tbr} kanal=${z.o.slowChannel?.command} low=${z.o.lowThreat?.verdict}",
+            )
+        }
+    }
+
+    /** Laeuft an der Pumpe zu [ts] eine Absenkung unter das Profilbasal (ohne Null)? */
+    private fun laeuftAbsenkung(ts: Long): Boolean {
+        val basal = rigProfil.getBasal(ts)
+        return pumpe.laufende(ts)?.let { it.rate > 0.0 && it.rate < basal - Fuse20Folgen.BASAL_SCHRITT / 2.0 } == true
+    }
+
+    private fun Zyklus.ruecknahmeSetzt() = o.mealBalance?.command == FuseTbrTranslator.WITHDRAWAL_SET_REASON && o.tbr != null
+
+    /** Ohne Rechner-Mahlzeit gibt es keine Bilanz: mit lesbarer KH-Tabelle entscheidet jeder Zyklus wie ohne. */
+    @Test
+    fun `Bilanz - ohne Rechner-Mahlzeit kein Block und jede Entscheidung wie bisher`(@TempDir dir: File) = runBlocking<Unit> {
+        val ohne = hclLauf(fHcl, File(dir, "ohne").also(File::mkdirs), mitMarkerKennung = false) { hclKonfiguration(schalter = true) }
+        eCarbsEintraege = emptyList()
+        try {
+            val mit = hclLauf(fHcl, File(dir, "mit").also(File::mkdirs), mitMarkerKennung = false) { hclKonfiguration(schalter = true) }
+            assertTrue(mit.none { it.o.mealBalance != null })
+            assertEquals(ohne.size, mit.size)
+            for ((a, b) in mit.zip(ohne)) {
+                val k = "Minute ${a.minute}"
+                assertEquals(b.o.decision.smbU, a.o.decision.smbU, 0.0, k)
+                assertEquals(b.o.decision.block, a.o.decision.block, k)
+                assertEquals(b.o.decision.tbr, a.o.decision.tbr, k)
+                assertEquals(b.o.tbr, a.o.tbr, k)
+            }
+        } finally {
+            eCarbsEintraege = null
+        }
+    }
+
+    /**
+     * Flacher Zucker unter wirkendem Insulin ist eine laufende Mahlzeit - der gemessene Antrieb haelt G offen. Keine
+     * Ruecknahme, und keine Menge ueber G.
+     */
+    @Test
+    fun `Bilanz - flacher Zucker unter wirkendem Insulin nimmt nichts zurueck`(@TempDir dir: File) = runBlocking<Unit> {
+        eCarbsEintraege = emptyList()
+        try {
+            val zyklen = hclLauf(fBilanz, dir) { hclKonfiguration(schalter = true) }
+            bilanzTabelle("BILANZ", zyklen)
+            assertTrue(zyklen.any { it.o.mealBalance?.balanceU != null }) { "keine Bilanz gerechnet" }
+            assertTrue(zyklen.none { it.ruecknahmeSetzt() }) { "Ruecknahme bei flachem Zucker" }
+            for (z in zyklen) {
+                val grenze = z.o.mealBalance?.smbCapU ?: continue
+                assertTrue(z.o.decision.smbU <= maxOf(0.0, grenze) + 1e-9) { "Minute ${z.minute}: SMB ${z.o.decision.smbU} ueber $grenze" }
+            }
+        } finally {
+            eCarbsEintraege = null
+        }
+    }
+
+    /**
+     * Der Lauf fuer den Lebenszyklus der Ruecknahme: der Rechner-Bolus ueberdeckt den fruehen Verlauf (HCLTIEF), nach der
+     * Schutz-Null faellt der Zucker langsam weiter, dann kommt die Mahlzeit. Die Rampen-Unterkante steht hier hoch, damit
+     * "Anstieg vorbei" lange genug gilt, um Halten, Erneuern und Ende zu zeigen - die Rechnung bleibt dieselbe.
+     */
+    private suspend fun rueckLauf(dir: File, vorZyklus: suspend (Int) -> Unit = {}) =
+        hclLauf(fHclTief, dir, bolusU = HCL_TIEF_BOLUS_U, vorZyklus = vorZyklus) {
+            hclKonfiguration(schalter = true)
+            whenever(preferences.get(FuseDoubleKey.RiseRampLowR)).thenReturn(RUECK_RAMPE_UNTEN)
+            whenever(preferences.get(FuseDoubleKey.RiseRampHighR)).thenReturn(RUECK_RAMPE_OBEN)
+        }
+
+    /**
+     * DIE RUECKNAHME UEBER DEN LEBENSZYKLUS: bei Ueberdeckung nach dem Anstieg ein 30-min-Befehl, nie unter einen
+     * Pumpenschritt und je Befehl hoechstens die Ueberdeckung; bestaetigt, gehalten, ohne Luecke erneuert; der Anstieg
+     * der Mahlzeit beendet sie. Solange G < 0, kein SMB.
+     */
+    @Test
+    fun `Bilanz - die Ruecknahme setzt, haelt, erneuert und endet mit dem Anstieg`(@TempDir dir: File) = runBlocking<Unit> {
+        eCarbsEintraege = emptyList()
+        try {
+            val zyklen = rueckLauf(dir)
+            bilanzTabelle("RUECKNAHME", zyklen)
+            assertTrue(zyklen.any { it.o.mealBalance?.balanceU != null }) { "keine Bilanz gerechnet" }
+            val setzen = zyklen.filter { it.ruecknahmeSetzt() }
+            assertTrue(setzen.isNotEmpty()) { "keine Ruecknahme gestellt" }
+            for (z in setzen) {
+                val t = z.o.tbr!!
+                val b = z.o.mealBalance!!
+                val basal = rigProfil.getBasal(z.o.computeTs)
+                val k = "Minute ${z.minute}"
+                assertEquals(MealBalance.COMMAND_MIN, t.durationMin, k)
+                // Nie unter einen Pumpenschritt - die echte Null bleibt der Schutz-Null.
+                assertTrue(t.rateUPerH >= Fuse20Folgen.BASAL_SCHRITT - 1e-9 && t.rateUPerH < basal) { "$k: Rate ${t.rateUPerH}" }
+                // Je Befehl hoechstens die Ueberdeckung.
+                assertTrue((basal - t.rateUPerH) * MealBalance.COMMAND_MIN / 60.0 <= b.withdrawalLimitU + 1e-9) { "$k: ueber der Grenze" }
+                assertTrue(b.withdrawalLimitU <= b.overcoverageU + 1e-9) { k }
+                assertEquals(b.withdrawalRateUPerH!!, t.rateUPerH, 1e-9, k)
+            }
+            // Jede Menge bleibt unter G minus Kanal-Rest - solange G < 0, gibt es keinen SMB.
+            for (z in zyklen) {
+                val grenze = z.o.mealBalance?.smbCapU ?: continue
+                assertTrue(z.o.decision.smbU <= maxOf(0.0, grenze) + 1e-9) { "Minute ${z.minute}: SMB ${z.o.decision.smbU} ueber $grenze" }
+            }
+            // Ohne Luecke: laeuft die eigene Absenkung und bleibt der Wunsch, laeuft sie in der naechsten Minute weiter.
+            val luecken = zyklen.zipWithNext().filter { (a, b) ->
+                a.o.mealBalance?.withdrawalRateUPerH != null && b.o.mealBalance?.withdrawalRateUPerH != null &&
+                    laeuftAbsenkung(a.o.computeTs) && !laeuftAbsenkung(b.o.computeTs)
+            }
+            assertTrue(luecken.isEmpty()) { "Luecken nach Minute ${luecken.map { it.first.minute }}" }
+            // Bestaetigt: die Pumpe zeigt den Befehl, und der Lebenszyklus fuehrt ihn als eigenen.
+            assertTrue(zyklen.any { it.o.mealBalance?.phase == PartialTbrOwnership.Anzeige.RUNNING.name }) { "nie bestaetigt" }
+            // Erneuert: dieselbe Rate noch einmal, bevor ihr Befehl ablief.
+            assertTrue(
+                setzen.zipWithNext().any { (a, b) ->
+                    b.minute - a.minute in MealBalance.COMMAND_STEP_MIN until MealBalance.COMMAND_MIN &&
+                        a.o.tbr!!.rateUPerH == b.o.tbr!!.rateUPerH
+                },
+            ) { "keine Erneuerung vor dem Ablauf" }
+            // Im Takt: eine Rate aendert sich nie schneller als alle COMMAND_STEP_MIN Minuten, ausser die Grenze verlangt es.
+            for ((a, b) in setzen.zipWithNext()) {
+                if (b.minute - a.minute >= MealBalance.COMMAND_STEP_MIN) continue
+                val basal = rigProfil.getBasal(b.o.computeTs)
+                val rest = MealBalance.COMMAND_MIN - (b.minute - a.minute)
+                assertTrue(!MealBalance.holdsLimit(a.o.tbr!!.rateUPerH, rest.toDouble(), basal, b.o.mealBalance!!.withdrawalLimitU)) {
+                    "Minute ${b.minute}: neue Rate vor dem Takt ohne Not"
+                }
+            }
+            val erster = setzen.first()
+            // Der Anstieg beendet die Ruecknahme; am Ende laeuft keine eigene Absenkung mehr.
+            val ende = zyklen.firstOrNull { z ->
+                z.minute > erster.minute && z.o.mealBalance?.command?.let {
+                    it == FuseTbrTranslator.WITHDRAWAL_END_REASON || it == FuseTbrTranslator.WITHDRAWAL_END_BY_ZERO_REASON
+                } == true
+            }
+            assertTrue(ende != null) { "kein Abbruch nach dem Anstieg" }
+            assertTrue(!laeuftAbsenkung(zyklen.last().o.computeTs)) { "am Ende laeuft noch eine Absenkung" }
+            // Befehlshaeufigkeit: eigene Kommandos (Setzen und Abbruch; die durchgelassene Null ist die des Normalpfads) -
+            // der Takt ist oben geprueft, hier steht die Zahl.
+            val eigene = zyklen.count {
+                it.o.tbr != null && it.o.mealBalance?.command.let { k ->
+                    k == FuseTbrTranslator.WITHDRAWAL_SET_REASON || k == FuseTbrTranslator.WITHDRAWAL_END_REASON
+                }
+            }
+            val wunschMin = zyklen.count { it.o.mealBalance?.withdrawalRateUPerH != null }
+            println("RUECKNAHME: ${setzen.size} Befehle, $eigene eigene Kommandos in $wunschMin Minuten mit Wunsch")
+        } finally {
+            eCarbsEintraege = null
+        }
+    }
+
+    /**
+     * DIE BASIS DER RUECKNAHME (Durchsicht vor dem Release): weicht das Basal der Pumpe vom Profilbasal ab - kurz an einer
+     * Basal-Grenze oder nach einem Profilwechsel -, bleibt jede Ruecknahme eine echte Absenkung. Ihre Rate liegt mindestens
+     * einen Pumpenschritt unter Pumpen- UND Profilbasal, und was wirklich wegfaellt (gegen das Pumpenbasal), ist hoechstens
+     * ihre Grenze. Gegen das Profil allein gerechnet lag eine "Absenkung" bei tieferem Pumpenbasal ueber ihm (mehr
+     * Insulin) und nahm bei hoeherem mehr weg als die Ueberdeckung.
+     */
+    @Test
+    fun `Bilanz - die Ruecknahme bleibt bei abweichendem Pumpenbasal unter Pumpen- und Profilbasal`(@TempDir dir: File) = runBlocking<Unit> {
+        eCarbsEintraege = emptyList()
+        try {
+            val profil = rigProfil.getBasal(fHclTief.ts(0))
+            for ((name, basis) in listOf("tiefer" to profil - 4 * Fuse20Folgen.BASAL_SCHRITT, "hoeher" to profil + 4 * Fuse20Folgen.BASAL_SCHRITT)) {
+                pumpenBasisUPerH = basis
+                val zyklen = rueckLauf(File(dir, name).also(File::mkdirs))
+                bilanzTabelle("PUMPENBASIS $name", zyklen)
+                val setzen = zyklen.filter { it.ruecknahmeSetzt() }
+                assertTrue(setzen.isNotEmpty()) { "$name: keine Ruecknahme gestellt" }
+                for (z in setzen) {
+                    val t = z.o.tbr!!
+                    val b = z.o.mealBalance!!
+                    val p = rigProfil.getBasal(z.o.computeTs)
+                    val k = "$name, Minute ${z.minute}"
+                    assertTrue(t.rateUPerH >= Fuse20Folgen.BASAL_SCHRITT - 1e-9) { "$k: Rate ${t.rateUPerH} unter einem Pumpenschritt" }
+                    assertTrue(t.rateUPerH <= minOf(basis, p) - Fuse20Folgen.BASAL_SCHRITT + 1e-9) {
+                        "$k: Rate ${t.rateUPerH} nicht unter Pumpenbasis $basis und Profil $p"
+                    }
+                    assertTrue((basis - t.rateUPerH) * MealBalance.COMMAND_MIN / 60.0 <= b.withdrawalLimitU + 1e-9) {
+                        "$k: nimmt ${(basis - t.rateUPerH) * MealBalance.COMMAND_MIN / 60.0} U weg, Grenze ${b.withdrawalLimitU}"
+                    }
+                }
+                // Und an der Pumpe: solange eine eigene Absenkung laeuft, liegt sie nie ueber dem Pumpenbasal.
+                for (z in zyklen) {
+                    val lauf = pumpe.laufende(z.o.computeTs) ?: continue
+                    if (z.o.mealBalance?.phase == PartialTbrOwnership.Anzeige.RUNNING.name) {
+                        assertTrue(lauf.rate < basis) { "$name, Minute ${z.minute}: laufende Absenkung ${lauf.rate} ueber Pumpenbasis $basis" }
+                    }
+                }
+            }
+        } finally {
+            pumpenBasisUPerH = Double.NaN
+            eCarbsEintraege = null
+        }
+    }
+
+    /** Schutz-Null und Null-Riegel gehen vor: in ihren Zyklen stellt die Ruecknahme nichts, und sie stellt nie eine Null. */
+    @Test
+    fun `Bilanz - die Schutz-Null geht vor, die Ruecknahme stellt nie eine Null`(@TempDir dir: File) = runBlocking<Unit> {
+        eCarbsEintraege = emptyList()
+        try {
+            val zyklen = hclLauf(fHclTief, dir, bolusU = HCL_TIEF_BOLUS_U) { hclKonfiguration(schalter = true) }
+            bilanzTabelle("HCLTIEF mit Bilanz", zyklen)
+            val nullen = zyklen.filter { it.o.decision.tbr == app.aaps.fuse.core.controller.FuseController.TbrAction.ZERO_TEMP }
+            assertTrue(nullen.isNotEmpty()) { "Vorbedingung: eine Schutz-Null" }
+            for (z in nullen) {
+                assertTrue(!z.ruecknahmeSetzt()) { "Minute ${z.minute}: Ruecknahme statt Schutz-Null" }
+                z.o.tbr?.let { assertEquals(0.0, it.rateUPerH, 0.0, "Minute ${z.minute}: die Null geht hinaus") }
+            }
+            assertTrue(zyklen.filter { it.ruecknahmeSetzt() }.all { it.o.tbr!!.rateUPerH >= Fuse20Folgen.BASAL_SCHRITT - 1e-9 })
+        } finally {
+            eCarbsEintraege = null
+        }
+    }
+
+    /**
+     * Eine fremde Absenkung bleibt unberuehrt: die Ruecknahme wartet und fasst sie nie an. Ersetzen darf sie nur die
+     * Schutz-Null (SAFETY_ZERO_REPLACE) - wie bisher.
+     */
+    @Test
+    fun `Bilanz - eine fremde Absenkung bleibt unberuehrt`(@TempDir dir: File) = runBlocking<Unit> {
+        eCarbsEintraege = emptyList()
+        val fremdAb = 20
+        val fremdMin = 30
+        try {
+            val zyklen = rueckLauf(dir, vorZyklus = { m ->
+                if (m == fremdAb) {
+                    // Eine echte Absenkung, keine Null: die Haelfte des Profilbasals, auf den Basalschritt gerundet.
+                    val ts = fHclTief.ts(m)
+                    val rate = maxOf(Fuse20Folgen.BASAL_SCHRITT, Math.round(rigProfil.getBasal(ts) * 0.5 / Fuse20Folgen.BASAL_SCHRITT) * Fuse20Folgen.BASAL_SCHRITT)
+                    pumpe.anwenden(ts, rate, fremdMin, testPumpe().baseBasalRateUPerH, rigProfil.getBasal(ts))
+                }
+            })
+            bilanzTabelle("RUECKNAHME mit fremder Absenkung", zyklen)
+            // Solange die fremde TBR an der Pumpe laeuft.
+            val start = fHclTief.ts(fremdAb)
+            val i = pumpe.tbrs.indexOfFirst { it.start == start }
+            assertTrue(i >= 0) { "Vorbedingung: die fremde TBR" }
+            val ende = pumpe.ende(i, zyklen.last().o.computeTs)
+            val waehrend = zyklen.filter { it.o.computeTs in start until ende }
+            assertTrue(
+                waehrend.any { it.o.mealBalance?.withdrawalWantedUPerH != null && it.o.mealBalance?.withdrawalBlock == FuseCycleRunner.RUECK_FREMD },
+            ) { "Vorbedingung: ein Wunsch waehrend der fremden TBR" }
+            assertTrue(waehrend.none { it.o.mealBalance?.acted == true && it.o.tbr != null }) { "die Ruecknahme hat die fremde TBR angefasst" }
+            // Vor ihrem Ende ersetzt sie nur die Schutz-Null.
+            if (ende < start + fremdMin * 60_000L) {
+                val nachfolger = pumpe.tbrs.getOrNull(i + 1)?.takeIf { it.start == ende }
+                assertTrue(nachfolger != null && nachfolger.rate == 0.0) { "die fremde TBR endete nicht durch die Schutz-Null" }
+            }
+        } finally {
+            eCarbsEintraege = null
+        }
+    }
+
+    /**
+     * Mit steigender Mahlzeit traegt G jede Menge - auch den Teilschritt -, und der langsame Kanal plant nie ueber G hinaus;
+     * Kanal und Ruecknahme stellen nie im selben Zyklus.
+     */
+    @Test
+    fun `Bilanz - SMB und Kanal bleiben unter G, nie zusammen mit der Ruecknahme`(@TempDir dir: File) = runBlocking<Unit> {
+        eCarbsEintraege = emptyList()
+        try {
+            val zyklen = hclLauf(fHcl, dir) {
+                hclKonfiguration(schalter = true)
+                whenever(preferences.get(FuseBooleanKey.SlowChannelEnabled)).thenReturn(true)
+            }
+            bilanzTabelle("HCL mit Bilanz und Kanal", zyklen)
+            assertTrue(zyklen.any { it.o.mealBalance?.balanceU != null })
+            for (z in zyklen) {
+                val b = z.o.mealBalance ?: continue
+                val k = "Minute ${z.minute}"
+                b.smbCapU?.let { grenze -> assertTrue(z.o.decision.smbU <= maxOf(0.0, grenze) + 1e-9) { "$k: SMB ${z.o.decision.smbU} ueber $grenze" } }
+                val kanal = z.o.slowChannel
+                if (kanal?.command == FuseTbrTranslator.SLOW_SET_REASON && b.balanceU != null) {
+                    val zusatzU = kanal.extraUPerH * SlowCorrectionChannel.BLOCK_MIN / 60.0
+                    assertTrue(zusatzU <= b.balanceU!! - kanal.smbThisCycleU + 1e-6) { "$k: Kanal $zusatzU ueber G ${b.balanceU}" }
+                }
+                assertTrue(!(kanal?.acted == true && b.acted)) { "$k: Kanal und Ruecknahme zugleich" }
+            }
+        } finally {
+            eCarbsEintraege = null
+        }
+    }
+
+    /** Neustart mitten in der Ruecknahme: die Episode und die eigene Absenkung kommen aus dem Ledger zurueck. */
+    @Test
+    fun `Bilanz - Neustart - Episode und eigene Absenkung kommen zurueck`(@TempDir dir: File) = runBlocking<Unit> {
+        eCarbsEintraege = emptyList()
+        try {
+            var episode: MealBalance.Episode? = null
+            var nachweis: PartialTbrOwnership.State? = null
+            var neustartMin: Int? = null
+            val zyklen = rueckLauf(dir, vorZyklus = { m ->
+                // Neustart einmal, sobald eine eigene Absenkung bestaetigt laeuft.
+                if (neustartMin == null && ledger.episodes.mealWithdrawalTbr.confirmedRunning != null) {
+                    neustartMin = m
+                    episode = ledger.episodes.mealBalance
+                    nachweis = ledger.episodes.mealWithdrawalTbr
+                    neustart(dir, fHclTief, null)
+                }
+            })
+            val m = neustartMin ?: throw AssertionError("Vorbedingung: eine bestaetigte Absenkung")
+            val vorher = episode ?: throw AssertionError("Vorbedingung: eine Episode vor dem Neustart")
+            assertTrue(nachweis?.confirmedRunning != null)
+            val erster = zyklen.first { it.minute >= m }
+            assertEquals(vorher.authId, erster.o.mealBalance?.markerTs) { "nach dem Neustart eine andere Episode" }
+            assertTrue(erster.o.mealBalance?.balanceU != null) { "nach dem Neustart rechnet die Bilanz nicht weiter" }
+            assertTrue(erster.o.mealBalance?.withdrawalBlock != FuseCycleRunner.RUECK_FREMD) { "nach dem Neustart gilt die eigene Absenkung als fremd" }
+        } finally {
+            eCarbsEintraege = null
+        }
+    }
+
+    /**
+     * Zwei Rechner-Mahlzeiten ueberlappen: die erste in Minute 0, die zweite in Minute [ZWEITE_MIN]. Der Zucker steigt ueber
+     * die Erwartung der Sofort-KH, damit vor dem Wechsel Aufnahme der eCarbs verbucht ist.
+     */
+    private val fUeberlapp = Fuse20Folgen.Folge(
+        "UEBERLAPP", 1_700_820_000_000L, -90, 300,
+        listOf(
+            -90 to 118.0, 0 to 120.0, 20 to 135.0, 45 to 165.0, 70 to 190.0, 100 to 205.0, 128 to 200.0, 150 to 210.0,
+            180 to 215.0, 220 to 190.0, 260 to 160.0, 300 to 140.0,
+        ),
+        markerMin = 0,
+    )
+
+    private fun eCarbsEintrag(id: Long, f: Fuse20Folgen.Folge, abMin: Int, g: Double, dauerMin: Int) =
+        CA(id = id, timestamp = f.ts(abMin), duration = dauerMin * 60_000L, amount = g)
+
+    /**
+     * Der Lauf mit zwei Rechner-Mahlzeiten. Die erste traegt eCarbs ab Minute 0 ueber 4 h - sie beginnen weit vor dem
+     * Fenster des zweiten Markers - und einen spaeteren Eintrag ab +100, der in dessen Fenster liegt. Die zweite bringt
+     * eigene eCarbs mit.
+     */
+    private suspend fun ueberlappLauf(dir: File, vorZyklus: suspend (Int) -> Unit = {}): List<Zyklus> {
+        val f = fUeberlapp
+        ohneVorschuss = true
+        try {
+            hclKonfiguration(schalter = true)
+            hclGespeichert = JSONArray(
+                listOf(
+                    HclMahlzeiten.zuJson(hclRechnung(f.ts(0), UEBERLAPP_KH_INSULIN_U, UEBERLAPP_BOLUS_U)),
+                    HclMahlzeiten.zuJson(hclRechnung(f.ts(ZWEITE_MIN), ZWEITE_KH_INSULIN_U, ZWEITE_BOLUS_U)),
+                ),
+            ).toString()
+            eCarbsEintraege = listOf(eCarbsEintrag(E1_ID, f, 0, 36.0, 240), eCarbsEintrag(E1_SPAET_ID, f, 100, 9.0, 60))
+            return lauf(f, dir, vorZyklus = { m ->
+                if (m == 0) {
+                    hclCalcTs = f.ts(0)
+                    boliSetzen(boluses + normalBolus(f.ts(0), UEBERLAPP_BOLUS_U))
+                }
+                if (m == ZWEITE_MIN) {
+                    druecken(f.ts(m))
+                    hclCalcTs = f.ts(m)
+                    boliSetzen(boluses + normalBolus(f.ts(m), ZWEITE_BOLUS_U))
+                    eCarbsEintraege = eCarbsEintraege.orEmpty() + eCarbsEintrag(E2_ID, f, m, 18.0, 120)
+                }
+                vorZyklus(m)
+            }).filter { it.o.abortReason == null }
+        } finally {
+            ohneVorschuss = false
+            hclCalcTs = 0L
+            hclGespeichert = ""
+            eCarbsEintraege = null
+        }
+    }
+
+    /**
+     * UEBERLAPPENDE RECHNER-MAHLZEITEN (Codex 05.11.2026): laufende eCarbs behalten ihre Herkunft und ihren verbuchten
+     * Aufnahmezustand; der neue Marker darf ihren Rest weder verlieren noch erneut ansetzen. Ohne Uebernahme fielen die
+     * eCarbs der ersten Mahlzeit beim zweiten Marker weg (Beginn vor seinem Fenster), und ihr spaeterer Eintrag begaenne in
+     * seinem Fenster mit leerer Zuordnung neu. Ein Neustart danach aendert daran nichts.
+     */
+    @Test
+    fun `Bilanz - ein neuer Marker uebernimmt laufende eCarbs mit Herkunft und Aufnahmezustand`(@TempDir dir: File) = runBlocking<Unit> {
+        val f = fUeberlapp
+        val m1 = f.ts(0)
+        val m2 = f.ts(ZWEITE_MIN)
+        assertTrue(f.ts(0) < m2 - ECarbsQuelle.VOR_MS && f.ts(100) >= m2 - ECarbsQuelle.VOR_MS) { "Vorbedingung: Lage der Eintraege" }
+        var vorWechsel: MealBalance.Episode? = null
+        var nachWechsel: MealBalance.Episode? = null
+        var vorNeustart: MealBalance.Episode? = null
+        var nachNeustart: MealBalance.Episode? = null
+        val zyklen = ueberlappLauf(dir, vorZyklus = { m ->
+            if (m == ZWEITE_MIN) vorWechsel = ledger.episodes.mealBalance
+            if (m == ZWEITE_MIN + 1) nachWechsel = ledger.episodes.mealBalance
+            if (m == NEUSTART_MIN) {
+                vorNeustart = ledger.episodes.mealBalance
+                neustart(dir, f, null)
+                nachNeustart = ledger.episodes.mealBalance
+            }
+        })
+        bilanzTabelle("UEBERLAPP", zyklen)
+        val alt = vorWechsel ?: throw AssertionError("Vorbedingung: eine Episode vor dem zweiten Marker")
+        assertEquals(m1, alt.authId)
+        assertEquals(setOf(MealBalance.ECarbsRef(E1_ID, m1), MealBalance.ECarbsRef(E1_SPAET_ID, m1)), alt.eCarbs.toSet())
+        assertTrue(alt.attribution.absorbedU > 0.0) { "Vorbedingung: verbuchte Aufnahme vor dem Wechsel" }
+
+        // Der neue Marker fuehrt die Episode. Die eCarbs der ersten Mahlzeit behalten ihre Herkunft - auch der Eintrag in
+        // seinem Fenster zaehlt nicht als eigener -, die verbuchte Aufnahme bleibt.
+        val neu = nachWechsel ?: throw AssertionError("keine Episode nach dem Wechsel")
+        assertEquals(m2, neu.authId)
+        assertEquals(
+            setOf(MealBalance.ECarbsRef(E1_ID, m1), MealBalance.ECarbsRef(E1_SPAET_ID, m1), MealBalance.ECarbsRef(E2_ID, m2)),
+            neu.eCarbs.toSet(),
+        )
+        assertEquals(alt.attribution.absorbedU, neu.attribution.absorbedU, 0.0) { "die Aufnahme beginnt neu" }
+        val davor = zyklen.single { it.minute == ZWEITE_MIN - 1 }.o.mealBalance ?: throw AssertionError("kein Block vor dem Wechsel")
+        val wechsel = zyklen.single { it.minute == ZWEITE_MIN }.o.mealBalance ?: throw AssertionError("kein Block im Wechsel")
+        assertEquals(m2, wechsel.markerTs)
+        assertEquals(listOf(m1), wechsel.inheritedFrom)
+        assertEquals(45.0, wechsel.inheritedECarbsG!!, 1e-9)
+        assertEquals(18.0, wechsel.eCarbsG!!, 1e-9)
+        // Weder verloren noch neu angesetzt: in der Wechselminute kommt kein Teil der ersten Mahlzeit an und keiner verfaellt
+        // - ihr Rest ist genau der davor. Er zaehlt in G, hoechstens ganz.
+        assertEquals(davor.eCarbsRestU!!, wechsel.inheritedRestU!!, 1e-9)
+        assertTrue(wechsel.inheritedCountedU!! > 0.0 && wechsel.inheritedCountedU!! <= wechsel.inheritedRestU!! + 1e-12)
+
+        // Bis zum Ende: jede Mahlzeit mit ihren eigenen eCarbs, keine doppelt.
+        for (z in zyklen.filter { it.minute >= ZWEITE_MIN }) {
+            val b = z.o.mealBalance ?: continue
+            val eigeneG = b.eCarbsG ?: continue
+            val k = "Minute ${z.minute}"
+            assertEquals(18.0, eigeneG, 1e-9, k)
+            assertEquals(listOf(m1), b.inheritedFrom, k)
+            assertEquals(45.0, b.inheritedECarbsG!!, 1e-9, k)
+        }
+
+        // Neustart: Herkunft und Aufnahmezustand kommen aus dem Ledger zurueck, die Bilanz rechnet mit ihnen weiter.
+        val gespeichert = vorNeustart ?: throw AssertionError("Vorbedingung: eine Episode vor dem Neustart")
+        assertEquals(gespeichert, nachNeustart)
+        val erster = zyklen.single { it.minute == NEUSTART_MIN }.o.mealBalance ?: throw AssertionError("kein Block nach dem Neustart")
+        assertEquals(m2, erster.markerTs)
+        assertEquals(listOf(m1), erster.inheritedFrom)
+    }
+
     private companion object {
+
+        /** Die Probe mit zwei Rechner-Mahlzeiten: KH-Insulin und Bolus [U], die Kennungen der eCarbs-Eintraege. */
+        const val UEBERLAPP_KH_INSULIN_U = 2.0
+        const val UEBERLAPP_BOLUS_U = 2.0
+        const val ZWEITE_KH_INSULIN_U = 1.5
+        const val ZWEITE_BOLUS_U = 1.5
+        const val E1_ID = 101L
+        const val E1_SPAET_ID = 102L
+        const val E2_ID = 201L
+
+        /**
+         * Der zweite Marker [min]: weiter als das Markerfenster nach dem ersten (sonst bliebe die Rechnung beim ersten), und
+         * in dieser Minute kommt kein Teil der ersten Mahlzeit an und keiner verfaellt - ihr Rest muss genau bleiben.
+         */
+        const val ZWEITE_MIN = 128
+
+        /** Der Neustart nach dem Wechsel [min]. */
+        const val NEUSTART_MIN = 150
+
+        /** Die Rampe der Lebenszyklus-Probe der Ruecknahme [mg/dl/min] - hoch, damit "Anstieg vorbei" lange gilt. */
+        const val RUECK_RAMPE_UNTEN = 4.0
+        const val RUECK_RAMPE_OBEN = 6.0
 
         /** Synthetisches maxIOB des Gestells. */
         const val MAX_IOB = 7.0

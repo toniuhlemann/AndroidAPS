@@ -644,6 +644,9 @@ object FuseStateJson {
             .apply { outcome.slowChannel?.let { put("slowChannel", slowChannelJson(it)) } }
             // HCL Stufe 2 (Toni 25.10.2026): nur bei einem Marker aus dem Bolusrechner - sonst bleibt der Datensatz bitgleich.
             .apply { outcome.hcl?.let { put("hcl", hclJson(it)) } }
+            // Die gemeinsame Bilanz der Rechner-Mahlzeit (Entwurf B, Toni 05.11.2026): nur mit Episode oder eigener
+            // Absenkung - sonst bleibt der Datensatz bitgleich.
+            .apply { outcome.mealBalance?.let { put("mealBalance", mealBalanceJson(it)) } }
             // Wirkungs-Waechter (Toni 04.11.2026): jeder Zyklus mit Regellauf, damit jede Meldung nachpruefbar ist.
             .apply { outcome.insulinEffect?.let { put("insulinEffectWatch", insulinEffectJson(it)) } }
             .put("mealFoundation", JSONObject()
@@ -2513,6 +2516,35 @@ object FuseStateJson {
         .put("fallSinceTs", r.state.fallSinceTs ?: JSONObject.NULL)
         .put("lastMarkerTs", r.state.lastMarkerTs ?: JSONObject.NULL)
         .put("alarmKeyTs", r.state.alarmKeyTs ?: JSONObject.NULL)
+
+    /** Die gemeinsame Bilanz der Rechner-Mahlzeit und ihre Basal-Ruecknahme (s. [FuseCycleRunner.MealBalanceExport]). */
+    private fun mealBalanceJson(x: FuseCycleRunner.MealBalanceExport): JSONObject = JSONObject()
+        .put("markerTs", x.markerTs)
+        .put("minutesSinceMarker", fin(x.minutesSinceMarker))
+        .put("balanceU", fin(x.balanceU))
+        .put("smbCapU", fin(x.smbCapU))
+        .put("smbBeforeCapU", fin(x.smbBeforeCapU))
+        .put("announcedActive", x.announcedActive)
+        .put("immediateRestU", fin(x.immediateRestU))
+        .put("eCarbsG", fin(x.eCarbsG))
+        .put("eCarbsRestU", fin(x.eCarbsRestU))
+        .put("confirmation", fin(x.confirmation))
+        .put("weight", fin(x.weight))
+        .put("inheritedFrom", JSONArray(x.inheritedFrom))
+        .put("inheritedECarbsG", fin(x.inheritedECarbsG))
+        .put("inheritedRestU", fin(x.inheritedRestU))
+        .put("inheritedCountedU", fin(x.inheritedCountedU))
+        .put("episodeIobU", fin(x.episodeIobU))
+        .put("observedU", fin(x.observedU))
+        .put("withdrawalWantedUPerH", fin(x.withdrawalWantedUPerH))
+        .put("withdrawalRateUPerH", fin(x.withdrawalRateUPerH))
+        .put("withdrawalLimitU", fin(x.withdrawalLimitU))
+        .put("overcoverageU", fin(x.overcoverageU))
+        .put("withdrawalReason", x.withdrawalReason ?: JSONObject.NULL)
+        .put("withdrawalBlock", x.withdrawalBlock ?: JSONObject.NULL)
+        .put("phase", x.phase)
+        .put("acted", x.acted)
+        .put("command", x.command ?: JSONObject.NULL)
 
     private fun hclJson(x: FuseCycleRunner.HclExport): JSONObject = JSONObject()
         .put("calcTs", x.calcTs)

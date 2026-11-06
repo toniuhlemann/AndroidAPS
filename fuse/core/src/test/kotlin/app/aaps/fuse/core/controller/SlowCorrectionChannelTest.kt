@@ -526,4 +526,119 @@ class SlowCorrectionChannelTest {
         assertTrue(SlowCorrectionChannel.needsCommand(1.0, 1.0, 5, 0.05))
         assertTrue(SlowCorrectionChannel.needsCommand(0.9, 1.0, 20, 0.05))
     }
+
+    // ---- Die Luecke der Mahlzeit (Entwurf B, Toni 05.11.2026): der Kanal plant nur in die offene Luecke G ----------
+
+    private val faktor8 = Settings(enabled = true, entryMin = 0, factor = 8.0)
+
+    /** Der Zusatz eines frischen 30-min-Blocks auf dieser Gesamtrate [U]. */
+    private fun blockZusatzU(rate: Double, basal: Double = 0.5) = (rate - basal) * SlowCorrectionChannel.BLOCK_MIN / 60.0
+
+    @Test fun `Luecke - ohne Luecke wie heute, mit Luecke nur tiefer oder Ende, nie ein Start, den es ohne sie nicht gaebe`() {
+        var geprueft = 0
+        var gesenkt = 0
+        var beendet = 0
+        for (settings in listOf(sofort, an, faktor8)) for (q1 in listOf(100.0, 140.0, 185.0, 240.0))
+            for (trend in listOf(-1.0, 0.0, 1.5)) for (iob in listOf(0.0, 2.0, 7.6)) for (bedarf in listOf(null, -0.5, 0.3, 1.2, 5.0))
+                for (geplant in listOf(0.0, 0.6)) for (smb in listOf(0.0, 0.2))
+                    for ((aktiv, laeuft, rest) in listOf(Triple(false, null, null), Triple(true, 1.0, 20), Triple(true, 3.0, 25), Triple(true, 2.0, 3))) {
+                        val ein = input(
+                            0, q1 = q1, q1Vorher = q1, trend = trend, iob = iob, smb = smb, aktiv = aktiv,
+                            laeuft = laeuft, rest = rest, bedarf = bedarf, geplant = geplant,
+                        )
+                        val heute = SlowCorrectionChannel.step(settings, ein, Memory())
+                        // Ohne Luecke bitweise wie heute.
+                        assertEquals(heute, SlowCorrectionChannel.step(settings, ein.copy(coverageGapU = null), Memory()))
+                        for (luecke in listOf(-1.0, 0.0, 0.03, 0.2, 0.5, 2.0, 100.0)) {
+                            val mit = SlowCorrectionChannel.step(settings, ein.copy(coverageGapU = luecke), Memory())
+                            geprueft++
+                            if (!heute.want) {
+                                assertEquals(heute, mit, "ohne Block bleibt alles wie heute")
+                                continue
+                            }
+                            if (mit == heute) continue
+                            if (mit.want) {
+                                gesenkt++
+                                assertTrue(mit.stage < heute.stage, "Die Luecke hebt nie: ${mit.stage} gegen ${heute.stage}")
+                                assertTrue(blockZusatzU(mit.rateUPerH) <= luecke - smb + 1e-9, "der neue Block passt neben dem SMB in die Luecke")
+                                assertEquals(heute.reason, mit.reason, "Die Luecke aendert den Grund nicht, nur die Stufe")
+                            } else {
+                                beendet++
+                                assertEquals(Reason.COVERED, mit.reason)
+                            }
+                        }
+                    }
+        assertTrue(geprueft > 10_000 && gesenkt > 0 && beendet > 0) { "geprueft=$geprueft gesenkt=$gesenkt beendet=$beendet" }
+    }
+
+    @Test fun `Luecke - eine grosse Luecke aendert nichts`() {
+        for ((aktiv, laeuft, rest) in listOf(Triple(false, null, null), Triple(true, 3.0, 25), Triple(true, 2.0, 3))) {
+            val ein = input(0, q1Vorher = null, aktiv = aktiv, laeuft = laeuft, rest = rest)
+            assertEquals(
+                SlowCorrectionChannel.step(faktor8, ein, Memory()),
+                SlowCorrectionChannel.step(faktor8, ein.copy(coverageGapU = 100.0), Memory()),
+            )
+        }
+    }
+
+    @Test fun `Luecke - ein Start traegt hoechstens die offene Luecke, und zwar die hoechste Stufe, die passt`() {
+        val ein = input(0, q1Vorher = null, bedarf = 5.0)
+        val heute = SlowCorrectionChannel.step(faktor8, ein, Memory())
+        assertEquals(4.0, heute.rateUPerH, 1e-9)
+        val mit = SlowCorrectionChannel.step(faktor8, ein.copy(coverageGapU = 0.3), Memory())
+        assertTrue(mit.want)
+        assertEquals(Reason.START, mit.reason)
+        assertTrue(blockZusatzU(mit.rateUPerH) <= 0.3 + 1e-9)
+        // Faktor 8 auf 0,5 U/h: Stufen zu 0,125 U/h, auf 0,05 abgerundet. 0,6 U/h Zusatz (1,1 U/h) passt mit 0,3 U, die
+        // naechste Stufe (0,75 U/h Zusatz) nicht mehr.
+        assertEquals(1.1, mit.rateUPerH, 1e-9)
+        assertTrue(mit.detail!!.endsWith("gedeckt"))
+    }
+
+    @Test fun `Luecke - der SMB dieses Zyklus zaehlt in der Luecke genau einmal`() {
+        // Codex-Pruefung 05.11.: 0,3 U Luecke und 0,2 U SMB in diesem Zyklus - der Kanal darf nur noch 0,1 U dazugeben,
+        // nicht 0,3 U. Die Luecke kommt ohne diesen SMB (IOB vor der Abgabe), der Kanal zieht ihn selbst ab.
+        val ohneSmb = SlowCorrectionChannel.step(faktor8, input(0, q1Vorher = null, bedarf = 5.0).copy(coverageGapU = 0.3), Memory())
+        val mitSmb = SlowCorrectionChannel.step(faktor8, input(0, q1Vorher = null, bedarf = 5.0, smb = 0.2).copy(coverageGapU = 0.3), Memory())
+        assertEquals(1.1, ohneSmb.rateUPerH, 1e-9)
+        assertTrue(mitSmb.want)
+        assertTrue(blockZusatzU(mitSmb.rateUPerH) <= 0.1 + 1e-9)
+        assertEquals(0.6, mitSmb.rateUPerH, 1e-9)
+        // Ist der SMB so gross wie die Luecke, bleibt fuer den Kanal nichts.
+        val voll = SlowCorrectionChannel.step(faktor8, input(0, q1Vorher = null, bedarf = 5.0, smb = 0.3).copy(coverageGapU = 0.3), Memory())
+        assertEquals(Reason.COVERED, voll.reason)
+    }
+
+    @Test fun `Luecke - traegt die Luecke keine Stufe, setzt der Kanal keinen Block`() {
+        val mit = SlowCorrectionChannel.step(faktor8, input(0, q1Vorher = null).copy(coverageGapU = 0.02), Memory())
+        assertFalse(mit.want)
+        assertEquals(Reason.COVERED, mit.reason)
+        assertEquals(0.0, mit.rateUPerH, 0.0)
+    }
+
+    @Test fun `Luecke - ein laufender Block endet, wenn die Luecke zu ist`() {
+        val ein = input(0, aktiv = true, laeuft = 2.0, rest = 20)
+        assertTrue(SlowCorrectionChannel.step(faktor8, ein, Memory()).want)
+        for (luecke in listOf(-0.3, 0.0)) {
+            val mit = SlowCorrectionChannel.step(faktor8, ein.copy(coverageGapU = luecke), Memory())
+            assertFalse(mit.want)
+            assertEquals(Reason.COVERED, mit.reason)
+        }
+    }
+
+    @Test fun `Luecke - ein laufender Block sinkt, bis ein frischer Block in die Luecke passt`() {
+        val ein = input(0, aktiv = true, laeuft = 3.0, rest = 25)
+        val mit = SlowCorrectionChannel.step(faktor8, ein.copy(coverageGapU = 0.4), Memory())
+        assertTrue(mit.want)
+        assertEquals(Reason.CONTINUE, mit.reason)
+        assertTrue(mit.rateUPerH < 3.0)
+        assertTrue(blockZusatzU(mit.rateUPerH) <= 0.4 + 1e-9)
+    }
+
+    @Test fun `Luecke - ein laufender Block, dessen Rest in die Luecke passt, laeuft unveraendert weiter`() {
+        // 1,0 U/h auf 0,5 U/h Profilbasal, noch 10 min: Rest 0,083 U - die Luecke 0,1 U traegt ihn.
+        val ein = input(0, aktiv = true, laeuft = 1.0, rest = 10)
+        val heute = SlowCorrectionChannel.step(faktor8, ein, Memory())
+        assertEquals(heute, SlowCorrectionChannel.step(faktor8, ein.copy(coverageGapU = 0.1), Memory()))
+    }
 }

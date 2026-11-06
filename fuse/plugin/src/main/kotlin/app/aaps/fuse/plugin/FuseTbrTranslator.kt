@@ -1,6 +1,7 @@
 package app.aaps.fuse.plugin
 
 import app.aaps.fuse.core.controller.FuseController
+import app.aaps.fuse.core.controller.MealBalance
 import app.aaps.fuse.core.controller.PartialTbrOwnership
 import app.aaps.fuse.core.controller.SlowCorrectionChannel
 import app.aaps.fuse.core.controller.TbrPolicy
@@ -362,6 +363,63 @@ object FuseTbrTranslator {
         }
         return SlowOverlay(normal, acted = false)
     }
+
+    /**
+     * DIE BASAL-RUECKNAHME DER RECHNER-MAHLZEIT UEBER DEM ERGEBNIS (Entwurf B, Toni 05.11.2026: Grundfunktion) - nach
+     * der normalen Kombination und dem langsamen Kanal, und nur, wenn sie beteiligt ist; sonst bleibt das Ergebnis
+     * unveraendert. Den Wunsch (Rate, Grenze je Befehl, nie unter einen Pumpenschritt) rechnet
+     * [app.aaps.fuse.core.controller.MealBalance.withdrawal]; Schutz-Null, Null-Riegel, Teilstufe und Kanal gehen vor (der
+     * Aufrufer wuenscht dann nichts). [SlowOverlay.acted] = die Ruecknahme bestimmt die TBR-Ausgabe.
+     *
+     *  1. Abbruch der eigenen Absenkung faellig -> Abbruch (Rate 0, Dauer 0). Setzt der Normalpfad eine Null, geht die
+     *     hinaus - sie beendet die Absenkung ebenso und schuetzt sofort. Fliesst in diesem Zyklus ein SMB, bleibt die
+     *     Absenkung stehen (wie C7a: eine Zurueckhaltung endet nie im selben Zyklus mit einem SMB); der Abbruch kommt im
+     *     naechsten Zyklus, und ohne Erneuerung endet sie spaetestens mit ihrem Befehl.
+     *  2. Ruecknahme gewuenscht und Setzen erlaubt -> 30-min-TBR mit ihrer Rate (neu, geaendert oder erneuert). Nie
+     *     neben einem SMB.
+     *  3. Eigene Absenkung laeuft, steht aus oder endet, ohne Kommando -> kein TBR-Kommando des Normalpfads, ausser
+     *     einer Null.
+     *
+     * Den SMB fasst sie nie an. Das Ergebnis traegt dieselbe Form wie beim Kanal ([SlowOverlay], ohne SMB-Schnitt).
+     */
+    fun ueberlagereRuecknahme(
+        normal: Result,
+        want: Boolean,
+        rateUPerH: Double,
+        own: PartialTbrOwnership.Step,
+        current: TbrPolicy.Current?,
+        pumpBusy: Boolean,
+        basalStepUPerH: Double,
+    ): SlowOverlay {
+        val normalNull = normal.request?.let { it.rateUPerH == 0.0 && it.durationMin > 0 } == true
+        val smb = normal.decision.smbU > 0.0
+        fun mit(request: FuseController.TbrRequest?, grund: String) =
+            SlowOverlay(normal.copy(request = request, reason = "$grund|${normal.reason}"), acted = true)
+        if (own.sendCancel)
+            return when {
+                normalNull -> mit(normal.request, WITHDRAWAL_END_BY_ZERO_REASON)
+                pumpBusy -> mit(null, WITHDRAWAL_BUSY_REASON)
+                smb -> mit(null, WITHDRAWAL_HOLD_SMB_REASON)
+                else -> mit(FuseController.TbrRequest(0.0, 0), WITHDRAWAL_END_REASON)
+            }
+        if (want && own.allowSet && !smb && SlowCorrectionChannel.needsCommand(
+                rateUPerH, own.state.confirmedRunning?.rateUPerH, current?.remainingMin, basalStepUPerH,
+            )
+        )
+            return if (pumpBusy) mit(null, WITHDRAWAL_BUSY_REASON)
+            else mit(FuseController.TbrRequest(rateUPerH, MealBalance.COMMAND_MIN), WITHDRAWAL_SET_REASON)
+        if (own.smbBlocked)
+            return if (normalNull) mit(normal.request, WITHDRAWAL_END_BY_ZERO_REASON) else mit(null, WITHDRAWAL_HOLD_REASON)
+        return SlowOverlay(normal, acted = false)
+    }
+
+    /** Grund-Praefixe der Basal-Ruecknahme der Bilanz im RT und im Trail. */
+    const val WITHDRAWAL_SET_REASON = "MEAL_WITHDRAWAL_SET"
+    const val WITHDRAWAL_END_REASON = "MEAL_WITHDRAWAL_END"
+    const val WITHDRAWAL_END_BY_ZERO_REASON = "MEAL_WITHDRAWAL_END_BY_ZERO"
+    const val WITHDRAWAL_HOLD_REASON = "MEAL_WITHDRAWAL_HOLD"
+    const val WITHDRAWAL_HOLD_SMB_REASON = "MEAL_WITHDRAWAL_HOLD_SMB"
+    const val WITHDRAWAL_BUSY_REASON = "MEAL_WITHDRAWAL_PUMP_BUSY"
 
     /** Grund-Praefixe des langsamen Korrekturkanals im RT und im Trail. */
     const val SLOW_SET_REASON = "SLOW_CORRECTION_SET"

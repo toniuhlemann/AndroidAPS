@@ -1,6 +1,8 @@
 package app.aaps.fuse.plugin.ledger
 
 import app.aaps.fuse.core.controller.InterventionStamp
+import app.aaps.fuse.core.controller.MealBalance
+import app.aaps.fuse.core.controller.PartialTbrOwnership
 import app.aaps.core.data.model.BS
 import app.aaps.core.data.pump.defs.PumpType
 import app.aaps.fuse.core.ledger.AccountedTreatment
@@ -260,6 +262,19 @@ class EpisodeBudgets {
      */
     var ownPartialTbr: app.aaps.fuse.core.controller.PartialTbrOwnership.State =
         app.aaps.fuse.core.controller.PartialTbrOwnership.State()
+
+    /**
+     * DIE GEMEINSAME BILANZ DER RECHNER-MAHLZEIT (Entwurf B, Toni 05.11.2026) - RESTARTFEST: der Marker, die beobachtete
+     * Mahlzeitwirkung seit dem Marker und die Aufnahmezuordnung der eCarbs. Sie lebt laenger als das Kontofenster. Ginge
+     * sie beim Neustart verloren, zaehlte der ganze angekommene eCarbs-Rest wieder als ausstehend. `null` = keine Episode.
+     */
+    var mealBalance: MealBalance.Episode? = null
+
+    /**
+     * Der Nachweis der eigenen Basal-Ruecknahme der Bilanz - restartfest wie [ownPartialTbr]: ginge er verloren, liefe
+     * die eigene Absenkung danach als fremd bis zu ihrem Ende weiter.
+     */
+    var mealWithdrawalTbr: PartialTbrOwnership.State = PartialTbrOwnership.State()
 
     /**
      * DIE BEIM MARKERDRUCK EINGEFRORENE BASALLUECKEN-LAGE (Bauauftrag

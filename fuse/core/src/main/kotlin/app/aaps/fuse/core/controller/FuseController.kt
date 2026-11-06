@@ -813,11 +813,13 @@ object FuseController {
         guardPrediction: PredictorResult? = null,
         /** S. [decideInner]. Gilt nur zusammen mit [guardPrediction]. */
         guardRestraint: PredictorResult? = null,
+        /** S. [decideInner]. `null` = keine Grenze, bitgleich. */
+        balanceCapU: Double? = null,
     ): Decision {
         val d = decideInner(
             state, prediction, limits, tail, restraint,
             evidenceCreditActive, evidenceMayOverrideRebound, lowThreat, onsetCapU, expectationDemandU,
-            guardPrediction, guardRestraint,
+            guardPrediction, guardRestraint, balanceCapU,
         )
         val geschuetzt = lowThreat == LowThreatGate.Verdict.NONE
         return if (d.basalFloorProtected == geschuetzt) d else d.copy(basalFloorProtected = geschuetzt)
@@ -937,6 +939,12 @@ object FuseController {
          * vorhandener [restraint] = der Guard prueft die Bremsbahn ohne Mahlzeit (die strengere).
          */
         guardRestraint: PredictorResult? = null,
+        /**
+         * DIE GEMEINSAME BILANZ DER RECHNER-MAHLZEIT (Entwurf B, [MealBalance.smbCapU]): G minus Kanalplan [U]. Kein Weg
+         * verlangt mehr - weder der Normal- noch der Kontoweg. Sie senkt nur, sie hebt nie. `null` = keine Grenze,
+         * bitgleich.
+         */
+        balanceCapU: Double? = null,
     ): Decision {
         // Der Kontext gehoert an JEDEN Rueckgabepfad, nicht nur an den
         // Erfolgsfall. Gerade beim Blockieren ist die Frage "war das die
@@ -1096,8 +1104,8 @@ object FuseController {
         // vorleisten und die Mahlzeit anschliessend bedarfsgerecht weiter versorgen). Ersetzte der Kontobedarf ihn, kam
         // nach dem Ende der Kurve oder bei statischem R_mess <= 0 trotz steigender Fortschreibung bis zum Fensterende
         // nichts - mit Marker weniger als ohne.
-        val kontoReq = accountDemandU(expectationDemandU)
-        val insulinReq = jointDemandU(normalReq, kontoReq)
+        val kontoReqRoh = accountDemandU(expectationDemandU)
+        val insulinReqRoh = jointDemandU(normalReq, kontoReqRoh)
 
         // REBOUND-TOTBAND (v2): Nach einem Tief ist die Erholung bis leicht
         // ueber das Ziel das ZIEL der Traubenzucker-Aktion, keine Stoerung.
@@ -1119,12 +1127,20 @@ object FuseController {
         )
         if (deadbandMgdl > 0.0 && prediction.bgAtAnchor < state.targetMgdl + deadbandMgdl) {
             return Decision(
-                0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_DEMAND, insulinReq,
+                0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_DEMAND, insulinReqRoh,
                 releaseMean, minLower,
                 if (state.reboundWindow && deadbandMgdl == state.reboundDeadbandMgdl) "reboundDeadband" else "nightDeadband",
                 tail, context = ctx,
             ).tele()
         }
+
+        // DIE GEMEINSAME BILANZ (Entwurf B, Toni 05.11.2026: Grundfunktion): kein Weg verlangt mehr, als G minus Kanalplan
+        // traegt. Sie greift nach den Totbaendern - die sperren wie bisher. Ohne Grenze die Groessen von oben, ohne jede
+        // Rechenoperation (bitgleich).
+        val grenze = balanceCapU?.takeIf { it.isFinite() }
+        val bedarfNormalweg = if (grenze == null) normalReq else min(normalReq, grenze)
+        val kontoReq = if (grenze == null) kontoReqRoh else kontoReqRoh?.let { min(it, grenze) }
+        val insulinReq = if (grenze == null) insulinReqRoh else min(insulinReqRoh, grenze)
 
         if (insulinReq <= 0.0) {
             // NO_NEW_POSITIVE und NICHT ZERO_TEMP. Die erste Fassung stand hier
@@ -1185,13 +1201,13 @@ object FuseController {
         }
 
         val normalCandidates = listOfNotNull(
-            "smbRatio" to normalReq * state.effectiveSmbRatio,
+            "smbRatio" to bedarfNormalweg * state.effectiveSmbRatio,
             // B2 (Bauauftrag 7.2): effectiveDemandRatio = min(Basis, Kontext-
             // Cap) — als EIGENER Kandidat, nicht als Aenderung der Basis. Das
             // min der Liste IST die Formel, und bei echtem Griff traegt die
             // Grenze ihren Namen (bei Gleichstand gewinnt weiterhin der erste
             // Eintrag — der Cap wird nur benannt, wenn er real gekappt hat).
-            state.contextDemandRatioCap?.let { "demandRatioCap" to normalReq * it },
+            state.contextDemandRatioCap?.let { "demandRatioCap" to bedarfNormalweg * it },
             "iobThHeadroom" to fastHeadroom,
             "maxIobHeadroom" to maxIobHeadroom,
             "maxSmb" to state.maxSmbU,
@@ -1212,7 +1228,7 @@ object FuseController {
             ticksOf(kontoCandidates.minOf { it.second }, state.pumpIncrementU)
         val baseCandidates = if (kontoCandidates == null || normalImKontofenster) normalCandidates else kontoCandidates
         // Der Bedarf des Wegs, der die Menge traegt (Export, Rest-Zaehler).
-        val gewaehlterReq = if (normalImKontofenster) normalReq else kontoReq ?: normalReq
+        val gewaehlterReq = if (normalImKontofenster) bedarfNormalweg else kontoReq ?: bedarfNormalweg
         // Die Onset-Huelle gehoert zu den Basis-Kandidaten: sie ist die Grenze
         // des Kanals, der die Bahn gehoben hat - nicht Teil der Schwanzkosten.
         val baseWithOnset =

@@ -44,6 +44,13 @@ import kotlin.math.min
  *
  * Wie die TBR gesetzt, bestaetigt, erneuert und abgebrochen wird, regelt nicht dieses Objekt, sondern derselbe
  * Lebenszyklus wie bei der Teilbasal-Stufe ([PartialTbrOwnership]) mit eigenem Zustand.
+ *
+ * NUR IN DIE OFFENE LUECKE DER MAHLZEIT (Entwurf B, Toni 05.11.2026): Die echte Zeitspur einer Rechner-Mahlzeit zeigte
+ * den Kanal beim Start, Erhoehen und Erneuern ueber die offene Luecke hinaus, meist waehrend Guard oder Schwanz die SMB
+ * sperrten. Mit [Input.coverageGapU] - der gemeinsamen Bilanz G ([MealBalance]) - ist der Zusatz eines Blocks bis zu
+ * seinem Ende hoechstens die Luecke; ein laufender Block sinkt oder endet ([Reason.COVERED]). Die Luecke senkt nur. Der
+ * SMB-Weg hat seine eigene Grenze aus derselben Bilanz, und beide laufen weiter nebeneinander. Ohne Luecke (null) rechnet
+ * der Kanal wie bisher.
  */
 object SlowCorrectionChannel {
 
@@ -232,6 +239,16 @@ object SlowCorrectionChannel {
         val runningRateUPerH: Double? = null,
         /** Ihre Restlaufzeit laut Pumpe [min]. */
         val runningRemainingMin: Int? = null,
+        /**
+         * DIE OFFENE LUECKE DER MAHLZEIT [U] (Entwurf B, Toni 05.11.2026): die gemeinsame Bilanz G ([MealBalance]) - der
+         * offene Bedarf minus die schon vorhandene Insulinwirkung, OHNE den eigenen Restplan und OHNE den SMB dieses
+         * Zyklus ([smbThisCycleU]; den zieht der Kanal genau einmal selbst ab). Der Zusatz eines Blocks bis zu seinem Ende
+         * ist hoechstens die Luecke abzueglich dieses SMB. Traegt sie keine Stufe, setzt der Kanal keinen Block und beendet
+         * einen laufenden ([Reason.COVERED]). Die Luecke senkt nur: nie eine hoehere Stufe, nie ein Start, den es ohne sie
+         * nicht gaebe. null = keine Grenze, die Rechnung von heute - der Aufrufer setzt sie nur, solange die Bilanz einer
+         * Rechner-Mahlzeit aktiv ist.
+         */
+        val coverageGapU: Double? = null,
     )
 
     enum class Reason {
@@ -251,6 +268,12 @@ object SlowCorrectionChannel {
         MAX_IOB,
         START,
         CONTINUE,
+
+        /**
+         * Die schon vorhandene Insulinwirkung deckt den offenen Bedarf ([Input.coverageGapU] traegt keine Stufe) -
+         * kein neuer Block, ein laufender endet. Am Ende angehaengt, damit die Ordnungszahlen der anderen bleiben.
+         */
+        COVERED,
     }
 
     data class Step(
@@ -339,6 +362,21 @@ object SlowCorrectionChannel {
         val spielraum = input.maxIobU - input.iobU - smb
         if (!spielraum.isFinite()) return nein(Reason.MAX_IOB, "spielraum=$spielraum")
 
+        // Die offene Luecke der Mahlzeit (Entwurf B, Toni 05.11.2026) begrenzt den Zusatz bis zum Blockende - nur nach
+        // unten. Bleibt der laufende Block, zaehlt sein Rest; jeder neue Block (Start, Senken, Erneuerung) zaehlt ganz.
+        // Passt er nicht, geht es tiefer, bis ein frischer Block in die Luecke und in maxIOB passt; sonst kein Block.
+        // Der SMB DIESES Zyklus zaehlt genau einmal (Codex-Pruefung 05.11.): die Luecke kommt ohne ihn (IOB vor der
+        // Abgabe), hier wird er abgezogen - wie im Restbedarf und in maxIOB.
+        val deckung = input.coverageGapU?.takeIf { it.isFinite() }?.let { it - smb }
+        fun gedeckt(st: Step, laufBleibt: Boolean): Step {
+            if (deckung == null || !st.want) return st
+            val minuten = if (laufBleibt) restMin else BLOCK_MIN
+            if (max(0.0, st.rateUPerH - basal) * minuten / 60.0 <= deckung + 1e-9) return st
+            for (s in (st.stage - 1) downTo 1) if (traegt(s) && passt(s, deckung) && passt(s, spielraum))
+                return ja(s, st.reason, "$s/$stufen gedeckt")
+            return nein(Reason.COVERED, "luecke=$deckung")
+        }
+
         // ---- EIN BLOCK LAEUFT: halten oder abgestuft senken, nie mitten im Block anheben ------------------------
         if (input.active && laufend != null && restMin > RENEW_REMAINING_MIN) {
             val stufeLauf = (stufen downTo 1).firstOrNull { traegt(it) && rateVon(it) <= laufend + schritt / 2.0 } ?: 0
@@ -352,13 +390,21 @@ object SlowCorrectionChannel {
             val ueberGrenze = laufend > rateVon(stufen) + schritt / 2.0
             // Gehalten wird die LAUFENDE Rate, nicht die Stufenrate: hat AAPS sie gekappt (Max-Basal), loeste eine
             // andere Zahl hier ein Kommando aus, das nichts aendert.
-            if (!ueberGrenze && iobPasst && stufeBedarf >= stufeLauf)
-                return ja(stufeLauf, Reason.CONTINUE, if (bedarf == null) "block ohne Bedarf" else "block", rate = laufend)
+            if (!ueberGrenze && iobPasst && stufeBedarf >= stufeLauf) {
+                return gedeckt(
+                    ja(stufeLauf, Reason.CONTINUE, if (bedarf == null) "block ohne Bedarf" else "block", rate = laufend),
+                    laufBleibt = true,
+                )
+            }
             // Senken: hoechstens auf die Bedarfsstufe; passt der Rest nicht in maxIOB, mindestens eine Stufe tiefer -
             // ein ganzer Block auf derselben Stufe ist nie kleiner als ihr Rest.
             val obergrenze = minOf(stufeBedarf, stufen, if (iobPasst) stufen else stufeLauf - 1)
-            for (s in obergrenze downTo 1) if (traegt(s) && passt(s, spielraum))
-                return ja(s, Reason.CONTINUE, "$s/$stufen " + if (s < stufeBedarf || !iobPasst) "maxIob" else "bedarf")
+            for (s in obergrenze downTo 1) if (traegt(s) && passt(s, spielraum)) {
+                return gedeckt(
+                    ja(s, Reason.CONTINUE, "$s/$stufen " + if (s < stufeBedarf || !iobPasst) "maxIob" else "bedarf"),
+                    laufBleibt = false,
+                )
+            }
             return if (stufeBedarf == 0) nein(Reason.NO_DEMAND) else nein(Reason.MAX_IOB, "spielraum=$spielraum")
         }
 
@@ -367,11 +413,12 @@ object SlowCorrectionChannel {
         if (bedarf == null) return nein(Reason.NO_DEMAND_ESTIMATE)
         val stufeZiel = stufeFuer(2.0 * (geplant + bedarf - smb))
         if (stufeZiel == 0) return nein(Reason.NO_DEMAND, "bedarf=$bedarf")
-        for (s in stufeZiel downTo 1) if (traegt(s) && passt(s, spielraum))
-            return ja(
-                s, if (input.active) Reason.CONTINUE else Reason.START,
-                "$s/$stufen " + if (s < stufeZiel) "maxIob" else "bedarf",
+        for (s in stufeZiel downTo 1) if (traegt(s) && passt(s, spielraum)) {
+            return gedeckt(
+                ja(s, if (input.active) Reason.CONTINUE else Reason.START, "$s/$stufen " + if (s < stufeZiel) "maxIob" else "bedarf"),
+                laufBleibt = false,
             )
+        }
         return nein(Reason.MAX_IOB, "spielraum=$spielraum")
     }
 
