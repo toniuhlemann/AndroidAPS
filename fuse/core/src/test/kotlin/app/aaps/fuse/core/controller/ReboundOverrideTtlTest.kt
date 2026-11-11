@@ -55,6 +55,7 @@ class ReboundOverrideTtlTest {
         markerBoost = false,
         reboundOverrideByEvidence = reboundOverride,
         nightOverrideByEvidence = nightOverride,
+        correctionDeadbandMgdl = 0.0,
     )
 
     // ---- 1 + 2: die Kante ------------------------------------------------

@@ -72,6 +72,7 @@ internal val fuseEinstellbareKeys: Set<String> = setOf(
     FuseDoubleKey.TailFloorMgdl.key,
     FuseDoubleKey.TailRecoveryU.key,
     FuseDoubleKey.NightDeadbandMgdl.key,
+    FuseDoubleKey.CorrectionDeadbandMgdl.key,
     FuseDoubleKey.ReboundDeadbandMgdl.key,
     FuseIntKey.IobThPercent.key,
     FuseIntKey.ReleaseHorizonMin.key,
@@ -279,6 +280,7 @@ object FuseSettingsReport {
                 ),
                 "Nacht, Rebound und Basal" to listOf(
                     zahl(FuseDoubleKey.NightDeadbandMgdl, "Nacht-Band", "mg/dl"),
+                    zahl(FuseDoubleKey.CorrectionDeadbandMgdl, "Korrektur-Band (0 = aus)", "mg/dl"),
                     zeit(FuseIntKey.NightStartMin, "Nacht Beginn"),
                     zeit(FuseIntKey.NightEndMin, "Nacht Ende"),
                     zahl(FuseDoubleKey.ReboundDeadbandMgdl, "Rebound-Band", "mg/dl"),

@@ -33,28 +33,28 @@ class NightWindowTest {
     @Test
     fun `der groessere Schutzgrund gewinnt`() {
         // Nacht 45 schlaegt Rebound 25.
-        assertEquals(45.0, NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
+        assertEquals(45.0, NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false, correctionDeadbandMgdl = 0.0), 0.0)
         // Rebound allein.
-        assertEquals(25.0, NightWindow.effectiveDeadbandMgdl(true, 25.0, false, 45.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
+        assertEquals(25.0, NightWindow.effectiveDeadbandMgdl(true, 25.0, false, 45.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false, correctionDeadbandMgdl = 0.0), 0.0)
         // Nacht allein.
-        assertEquals(45.0, NightWindow.effectiveDeadbandMgdl(false, 25.0, true, 45.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
+        assertEquals(45.0, NightWindow.effectiveDeadbandMgdl(false, 25.0, true, 45.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false, correctionDeadbandMgdl = 0.0), 0.0)
         // Keiner.
-        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(false, 25.0, false, 45.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
+        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(false, 25.0, false, 45.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false, correctionDeadbandMgdl = 0.0), 0.0)
     }
 
     @Test
     fun `ein erklaerter Marker hebt NUR das Nacht-Totband auf`() {
         // Nachts mit Marker: Nacht-Totband weg...
-        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(false, 25.0, true, 45.0, markerBoost = true, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
+        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(false, 25.0, true, 45.0, markerBoost = true, reboundOverrideByEvidence = false, nightOverrideByEvidence = false, correctionDeadbandMgdl = 0.0), 0.0)
         // ...aber das Rebound-Totband bleibt (Hypo-Schutz ist nicht ansagbar).
-        assertEquals(25.0, NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, markerBoost = true, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
+        assertEquals(25.0, NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, markerBoost = true, reboundOverrideByEvidence = false, nightOverrideByEvidence = false, correctionDeadbandMgdl = 0.0), 0.0)
     }
 
     @Test
     fun `abgeschaltete Totbaender liefern null - Einseitigkeit`() {
-        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(true, 0.0, true, 0.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
+        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(true, 0.0, true, 0.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false, correctionDeadbandMgdl = 0.0), 0.0)
         // Negative Eingabe kann nie schuetzen, aber auch nie oeffnen.
-        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(false, 0.0, true, -10.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false), 0.0)
+        assertEquals(0.0, NightWindow.effectiveDeadbandMgdl(false, 0.0, true, -10.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false, correctionDeadbandMgdl = 0.0), 0.0)
     }
 
     /** Der gemessene Anlass: Abgaben am fruehen Morgen bei BG knapp ueber dem
@@ -62,7 +62,7 @@ class NightWindowTest {
     @Test
     fun `der gemessene Nachtfall waere gesperrt gewesen`() {
         val target = 98.0
-        val schwelle = target + NightWindow.effectiveDeadbandMgdl(false, 25.0, true, 45.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false)
+        val schwelle = target + NightWindow.effectiveDeadbandMgdl(false, 25.0, true, 45.0, false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false, correctionDeadbandMgdl = 0.0)
         assertEquals(143.0, schwelle, 0.0)
         for (bg in listOf(89.0, 97.0, 103.0, 109.0, 116.0)) assertTrue(bg < schwelle)
     }
@@ -82,7 +82,7 @@ class NightWindowTest {
     fun `Evidenzkredit entwaffnet beide Totbaender`() {
         assertEquals(
             0.0,
-            NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, markerBoost = false, reboundOverrideByEvidence = true, nightOverrideByEvidence = true),
+            NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, markerBoost = false, reboundOverrideByEvidence = true, nightOverrideByEvidence = true, correctionDeadbandMgdl = 0.0),
             0.0,
         )
     }
@@ -93,7 +93,7 @@ class NightWindowTest {
     fun `Evidenzkredit entwaffnet auch das Rebound-Totband`() {
         assertEquals(
             0.0,
-            NightWindow.effectiveDeadbandMgdl(true, 25.0, false, 0.0, markerBoost = false, reboundOverrideByEvidence = true, nightOverrideByEvidence = true),
+            NightWindow.effectiveDeadbandMgdl(true, 25.0, false, 0.0, markerBoost = false, reboundOverrideByEvidence = true, nightOverrideByEvidence = true, correctionDeadbandMgdl = 0.0),
             0.0,
         )
     }
@@ -104,7 +104,7 @@ class NightWindowTest {
     fun `ohne Kredit bleiben die Totbaender scharf`() {
         assertEquals(
             45.0,
-            NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, markerBoost = false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false),
+            NightWindow.effectiveDeadbandMgdl(true, 25.0, true, 45.0, markerBoost = false, reboundOverrideByEvidence = false, nightOverrideByEvidence = false, correctionDeadbandMgdl = 0.0),
             0.0,
         )
     }
@@ -135,8 +135,53 @@ class NightWindowTest {
         assertFalse(recht)
         assertEquals(
             45.0,
-            NightWindow.effectiveDeadbandMgdl(false, 25.0, true, 45.0, markerBoost = false, reboundOverrideByEvidence = false, nightOverrideByEvidence = recht),
+            NightWindow.effectiveDeadbandMgdl(false, 25.0, true, 45.0, markerBoost = false, reboundOverrideByEvidence = false, nightOverrideByEvidence = recht, correctionDeadbandMgdl = 0.0),
             0.0,
         )
+    }
+
+    // ---- Korrektur-Totband (Kandidat, Toni 11.11.2026) --------------------
+
+    private fun band(
+        rebound: Boolean = false, nacht: Boolean = false, marker: Boolean = false, kredit: Boolean = false,
+        nachtBand: Double = 45.0, korrektur: Double,
+    ) = NightWindow.effectiveDeadbandMgdl(
+        reboundWindow = rebound, reboundDeadbandMgdl = 40.0, isNight = nacht, nightDeadbandMgdl = nachtBand,
+        markerBoost = marker, reboundOverrideByEvidence = kredit, nightOverrideByEvidence = kredit,
+        correctionDeadbandMgdl = korrektur,
+    )
+
+    @Test
+    fun `das Korrektur-Totband gilt zu jeder Tageszeit und der groesste Wert gewinnt`() {
+        // Tags ohne Rebound: nur das Korrektur-Totband.
+        assertEquals(30.0, band(korrektur = 30.0), 0.0)
+        // Nachts gewinnt das groessere Nacht-Totband ...
+        assertEquals(45.0, band(nacht = true, korrektur = 30.0), 0.0)
+        // ... ein kleineres weicht dem Korrektur-Totband: am Nachtbeginn entsteht keine Kante.
+        assertEquals(30.0, band(nacht = true, nachtBand = 20.0, korrektur = 30.0), 0.0)
+        // Im Rebound-Fenster gewinnt das groessere Rebound-Totband.
+        assertEquals(40.0, band(rebound = true, korrektur = 30.0), 0.0)
+        assertEquals(60.0, band(rebound = true, korrektur = 60.0), 0.0)
+    }
+
+    /** Marker und Evidenzkredit entwaffnen es NICHT - ob es gilt, sagt der Aufrufer allein ueber den Wert. */
+    @Test
+    fun `weder Marker noch Evidenzkredit entwaffnen das Korrektur-Totband`() {
+        assertEquals(30.0, band(rebound = true, nacht = true, marker = true, kredit = true, korrektur = 30.0), 0.0)
+        assertEquals(0.0, band(rebound = true, nacht = true, marker = true, kredit = true, korrektur = 0.0), 0.0)
+    }
+
+    /** AUS IST BITGLEICH: mit 0 (und mit unsinnigen Werten) kommt in jeder Lage genau die Rechnung von vorher heraus. */
+    @Test
+    fun `ohne Korrektur-Totband ist die Rechnung die von vorher`() {
+        for (rebound in listOf(false, true)) for (nacht in listOf(false, true)) for (marker in listOf(false, true))
+            for (kredit in listOf(false, true)) {
+                val vorher = maxOf(
+                    if (rebound && !kredit) 40.0 else 0.0,
+                    if (nacht && !(marker || kredit)) 45.0 else 0.0,
+                )
+                for (aus in listOf(0.0, -10.0, Double.NaN, Double.POSITIVE_INFINITY))
+                    assertEquals(vorher, band(rebound, nacht, marker, kredit, korrektur = aus), 0.0) { "$rebound/$nacht/$marker/$kredit/$aus" }
+            }
     }
 }

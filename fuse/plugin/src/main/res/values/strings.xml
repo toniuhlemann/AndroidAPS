@@ -171,6 +171,8 @@
     <string name="fuse_zero_latch_max_bg_summary">Auf oder ueber diesem Zucker haelt die Verriegelung keine Null: dort entscheidet allein das Low-Tor, und die Null endet, sobald es keinen Grund mehr sieht. Darunter verriegelt sie wie bisher. 0 = keine Grenze.</string>
     <string name="fuse_rebound_window_title">Rebound-Dauer [min]</string>
     <string name="fuse_rebound_window_summary">Wie lange das Rebound-Fenster nach dem letzten q1 unter 75 laeuft. War bis 26.08. fest auf 45. Verlaengert nicht nur das Totband, sondern auch den Ratio-Deckel und die Liveness-Sperre. Am 26.08. sprang die Ratio bei Fensterende sofort von 0,15 auf 0,33 und der SMB von 0,10 auf 0,50 U; bis zum naechsten Tief flossen 3,45 U.</string>
+    <string name="fuse_correction_deadband_title">Korrektur-Totband [mg/dl ueber Ziel]</string>
+    <string name="fuse_correction_deadband_summary">Ausserhalb der Mahlzeiten-Frist gibt FUSE unter Ziel plus diesem Wert keinen Korrektur-SMB. Bei Ziel 100 und 30 also erst ab 130. Es gilt zu jeder Tageszeit; nachts zaehlt der groessere Wert aus diesem und dem Nacht-Totband. Mahlzeiten mit Marker, der Druck-Kanal und der langsame Kanal bleiben unberuehrt. 0 = aus.</string>
     <string name="fuse_rebound_deadband_title">Rebound-Totband [mg/dl ueber Ziel]</string>
     <string name="fuse_rebound_deadband_summary">War bis 09.08. fest auf 25. Haette in der Nacht 07./08.08. alle 20 Rebound-Dosen genullt (BG lief 65 auf 121 bei Ziel 97).</string>
     <string name="fuse_evidence_rebound_override_title">Evidenz darf Rebound entwaffnen [min]</string>

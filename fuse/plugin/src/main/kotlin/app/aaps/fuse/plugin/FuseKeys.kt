@@ -339,6 +339,14 @@ enum class FuseDoubleKey(
      *  0 = aus. Ein erklaerter Marker hebt es auf (Toni 09.08.). */
     NightDeadbandMgdl("fuse_night_deadband_mgdl", 45.0, 0.0, 100.0, title = TextRef.AndroidRes(R.string.fuse_night_deadband_title), summary = TextRef.AndroidRes(R.string.fuse_night_deadband_summary), unitType = UnitType.MGDL),
 
+    /**
+     * KORREKTUR-TOTBAND [mg/dl ueber Ziel] (Kandidat, Toni 11.11.2026): darunter gibt der Normalweg keinen SMB, solange
+     * keine Mahlzeit-Vollmacht laeuft (ausserhalb der Mahlzeiten-Frist) - zu jeder Tageszeit, der groesste Wert der
+     * Totbaender gilt. Anlass: tags gab es dort SMB bei Zucker nahe am Ziel, und danach folgte oft ein Tief. Mahlzeiten,
+     * Druck-Kanal und langsamer Kanal bleiben unberuehrt. 0 = aus, wie vorher.
+     */
+    CorrectionDeadbandMgdl("fuse_correction_deadband_mgdl", 0.0, 0.0, 100.0, title = TextRef.AndroidRes(R.string.fuse_correction_deadband_title), summary = TextRef.AndroidRes(R.string.fuse_correction_deadband_summary), unitType = UnitType.MGDL),
+
     /** Totband nach einem Tief [mg/dl ueber Ziel] - war bis 09.08. die feste
      *  Konstante 25. */
     ReboundDeadbandMgdl("fuse_rebound_deadband_mgdl", 25.0, 0.0, 100.0, title = TextRef.AndroidRes(R.string.fuse_rebound_deadband_title), summary = TextRef.AndroidRes(R.string.fuse_rebound_deadband_summary), unitType = UnitType.MGDL),

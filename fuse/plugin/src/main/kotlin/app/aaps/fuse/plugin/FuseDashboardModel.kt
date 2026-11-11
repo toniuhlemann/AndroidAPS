@@ -241,7 +241,7 @@ object FuseDashboardModel {
     private fun windowsText(outcome: FuseCycleRunner.Outcome): String? {
         val state = outcome.state
         val teile = mutableListOf<String>()
-        if (state != null && (state.nightWindow || state.reboundWindow)) {
+        if (state != null && (state.nightWindow || state.reboundWindow || state.correctionDeadbandMgdl > 0.0)) {
             // DAS ZYKLUSERGEBNIS, KEINE EIGENE RECHNUNG (Toni 19.08.). Das
             // Rebound-Sonderrecht haengt an einer beim MARKERDRUCK gepinnten
             // Frist; sie hier aus dem Markeralter nachzubauen waere eine
@@ -257,10 +257,13 @@ object FuseDashboardModel {
                 markerBoost = state.markerBoost,
                 reboundOverrideByEvidence = outcome.evidenceMayOverrideRebound,
                 nightOverrideByEvidence = outcome.evidenceMayOverrideNight,
+                // Der Wert dieses Zyklus aus dem Regler-Zustand: im Mahlzeitkontext steht dort 0.
+                correctionDeadbandMgdl = state.correctionDeadbandMgdl,
             )
             val fenster = listOfNotNull(
                 "Nacht".takeIf { state.nightWindow },
                 "Rebound".takeIf { state.reboundWindow },
+                "Korrektur".takeIf { state.correctionDeadbandMgdl > 0.0 },
             ).joinToString("+")
             teile += if (effektiv > 0.0)
                 "$fenster-Totband scharf bis ${f0(state.targetMgdl + effektiv)}"
@@ -360,6 +363,7 @@ object FuseDashboardModel {
 
     private fun limitLabel(bindingLimit: String): String = when {
         bindingLimit.startsWith("nightDeadband")   -> "Nacht-Totband"
+        bindingLimit.startsWith(FuseController.CORRECTION_DEADBAND_LIMIT) -> "Korrektur-Totband"
         bindingLimit.startsWith("reboundDeadband") -> "Rebound-Totband"
         bindingLimit.startsWith("smbRatio")        -> "SMB-Anteil ($bindingLimit)"
         bindingLimit.startsWith("iobThHeadroom")   -> "iobTH-Spielraum"

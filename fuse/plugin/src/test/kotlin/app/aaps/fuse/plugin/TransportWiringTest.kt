@@ -8624,6 +8624,117 @@ class TransportWiringTest : TestBaseWithProfile() {
         }
     }
 
+    // =====================================================================
+    // KORREKTUR-TOTBAND (Kandidat, Toni 11.11.2026)
+    // =====================================================================
+
+    /**
+     * Ein Anstieg aus dem Zielbereich, ohne Nacht und ohne Rebound, ohne Druck-Kanal: sechs Zyklen ohne Marker, dann -
+     * mit [mitMarker] - der Druck (mit Konto, damit die Vollmacht kein Rueckfall ist), dann 60 Zyklen. [band] ist das
+     * Korrektur-Totband, [kanalSchwelle] schaltet den langsamen Kanal mit dieser Schwelle ein.
+     */
+    private fun korrekturBandLauf(
+        dir: File, unterordner: String, band: Double, mitMarker: Boolean = false, kanalSchwelle: Double? = null,
+    ): List<Pair<FuseCycleRunner.Outcome, TbrKommando?>> = runBlocking {
+        nachtStartMin = 0
+        nachtEndeMin = 0
+        tailGuard = false
+        conditionalTail = true
+        livenessAn = false
+        flach = 100.0
+        steigungProMin = 2.0
+        maxSmbU = 0.3
+        whenever(preferences.get(FuseDoubleKey.CorrectionDeadbandMgdl)).thenReturn(band)
+        langsamerKanal(an = kanalSchwelle != null, schwelle = kanalSchwelle ?: 300.0, einstieg = 0)
+        if (mitMarker) {
+            kontoAn()
+            markerAuthorized = true
+        }
+        clock = start
+        rigTbr = null
+        transportReset()
+        neuerRunner(FuseLedgerAdapter().also { it.loadOnce(File(dir, unterordner).also(File::mkdirs), "test-epoch", start) })
+        markerAt = 0L
+        val vor = (0 until 6).map { zyklusMitPumpe() }
+        if (mitMarker) markerAt = clock + 60_000L
+        vor + (0 until 60).map { zyklusMitPumpe() }
+    }
+
+    private fun unterKorrekturBand(o: FuseCycleRunner.Outcome, band: Double) =
+        (o.signal?.q1 ?: Double.MAX_VALUE) < (o.targetMgdl ?: 0.0) + band
+
+    private fun bandBericht(lauf: List<Pair<FuseCycleRunner.Outcome, TbrKommando?>>) = lauf.joinToString("\n") { (o, k) ->
+        "t=${(o.computeTs - start) / 60_000L} q1=${o.signal?.q1?.let { "%.0f".format(it) }} ${o.dosingContextProfile} " +
+            "band=${o.state?.correctionDeadbandMgdl} ${o.decision.block}/${o.decision.bindingLimit} smb=${o.decision.smbU} " +
+            "kanal=${o.slowChannel?.let { "${it.reason}/${it.detail}" }} kmd=${k?.let { "${it.rateUPerH}/${it.durationMin}" }}"
+    }
+
+    /**
+     * OHNE MARKER SPERRT ES DEN KORREKTUR-SMB UNTER DER SCHWELLE. Zwei Laeufe desselben Anstiegs: ohne Totband dosiert der
+     * Normalweg schon im Zielbereich (die Lage, die am Geraet oft in ein Tief fuehrte); mit Totband 30 kommt unter
+     * Ziel + 30 nichts, die Grenze heisst beim Namen, und darueber dosiert er wieder.
+     */
+    @Test
+    fun `Korrektur-Totband - ohne Marker kein SMB unter der Schwelle, darueber wieder`(@TempDir dir: File) = runBlocking<Unit> {
+        val ohne = korrekturBandLauf(dir, "ohne", band = 0.0)
+        val mit = korrekturBandLauf(dir, "mit", band = 30.0)
+        assertTrue(ohne.any { unterKorrekturBand(it.first, 30.0) && it.first.decision.smbU > 0.0 }) {
+            "Vorbedingung: ohne Totband dosiert der Normalweg unter der Schwelle\n${bandBericht(ohne)}"
+        }
+        assertTrue(ohne.none { it.first.decision.bindingLimit == FuseController.CORRECTION_DEADBAND_LIMIT }) { bandBericht(ohne) }
+        assertTrue(ohne.all { (it.first.state?.correctionDeadbandMgdl ?: 0.0) == 0.0 }) { bandBericht(ohne) }
+
+        val unter = mit.filter { unterKorrekturBand(it.first, 30.0) }
+        assertTrue(unter.all { it.first.decision.smbU == 0.0 }) { "unter der Schwelle kein SMB\n${bandBericht(mit)}" }
+        assertTrue(unter.any { it.first.decision.bindingLimit == FuseController.CORRECTION_DEADBAND_LIMIT }) {
+            "die Grenze heisst beim Namen\n${bandBericht(mit)}"
+        }
+        assertTrue(mit.any { !unterKorrekturBand(it.first, 30.0) && it.first.decision.smbU > 0.0 }) {
+            "ueber der Schwelle dosiert er wieder\n${bandBericht(mit)}"
+        }
+        // Ohne Vollmacht traegt jeder gerechnete Zyklus den eingestellten Wert.
+        assertTrue(mit.mapNotNull { it.first.state }.all { it.correctionDeadbandMgdl == 30.0 }) { bandBericht(mit) }
+    }
+
+    /**
+     * IN DER MAHLZEIT-VOLLMACHT GILT ES NICHT: nach dem Markerdruck (mit Konto) steht im Zustand 0, und die Grenze bindet
+     * in keinem Mahlzeitzyklus - auch nicht unter der Schwelle. Vor dem Druck gilt der eingestellte Wert.
+     */
+    @Test
+    fun `Korrektur-Totband - in der Mahlzeit-Vollmacht gilt es nicht`(@TempDir dir: File) = runBlocking<Unit> {
+        val lauf = korrekturBandLauf(dir, "marker", band = 60.0, mitMarker = true)
+        val mahlzeit = lauf.filter {
+            it.first.dosingContextProfile == "MEAL" && it.first.erwartungskonto?.rueckfall == null && it.first.state != null
+        }
+        assertTrue(mahlzeit.any { unterKorrekturBand(it.first, 60.0) }) {
+            "Vorbedingung: Mahlzeitzyklen unter der Schwelle\n${bandBericht(lauf)}"
+        }
+        assertTrue(mahlzeit.all { it.first.state!!.correctionDeadbandMgdl == 0.0 }) { bandBericht(lauf) }
+        assertTrue(mahlzeit.none { it.first.decision.bindingLimit == FuseController.CORRECTION_DEADBAND_LIMIT }) { bandBericht(lauf) }
+        val davor = lauf.filter { it.first.dosingContextProfile == "CORRECTION" && it.first.state != null }
+        assertTrue(davor.isNotEmpty() && davor.all { it.first.state!!.correctionDeadbandMgdl == 60.0 }) {
+            "vor dem Druck gilt der eingestellte Wert\n${bandBericht(lauf)}"
+        }
+    }
+
+    /**
+     * DER LANGSAME KANAL BLEIBT UNBERUEHRT: mit einem Totband ueber der Kanalschwelle sperrt es den SMB, aber der Kanal
+     * steigt darunter trotzdem ein - er kennt nur Rebound- und Nacht-Totband und meldet keinen Totband-Stopp.
+     */
+    @Test
+    fun `Korrektur-Totband - der langsame Kanal bleibt unberuehrt`(@TempDir dir: File) = runBlocking<Unit> {
+        val lauf = korrekturBandLauf(dir, "kanal", band = 60.0, kanalSchwelle = 110.0)
+        val bericht = bandBericht(lauf)
+        val gesperrt = lauf.filter { it.first.decision.bindingLimit == FuseController.CORRECTION_DEADBAND_LIMIT }
+        assertTrue(gesperrt.isNotEmpty()) { "Vorbedingung: das Totband sperrt den SMB\n$bericht" }
+        assertTrue(lauf.none { it.first.slowChannel?.detail in setOf("NIGHT_DEADBAND", "REBOUND_DEADBAND") }) {
+            "der Kanal meldet keinen Totband-Stopp\n$bericht"
+        }
+        assertTrue(
+            lauf.any { (o, k) -> unterKorrekturBand(o, 60.0) && k?.grund?.startsWith(FuseTbrTranslator.SLOW_SET_REASON) == true },
+        ) { "der Kanal steigt unter dem Korrektur-Totband ein\n$bericht" }
+    }
+
 
 
     /**

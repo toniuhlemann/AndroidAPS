@@ -234,6 +234,7 @@ object FuseSettings {
                     "erklaerter Mahlzeitenmarker kann die Markerregeln oeffnen.",
             ),
             FuseDoubleKey.NightDeadbandMgdl,
+            FuseDoubleKey.CorrectionDeadbandMgdl,
             info("Nachtfenster", "Beginn und Ende als Uhrzeit. Das Fenster darf Mitternacht ueberschreiten; Beginn gleich Ende schaltet es aus."),
             FuseIntKey.NightStartMin, FuseIntKey.NightEndMin,
             FuseDoubleKey.ReboundDeadbandMgdl, FuseIntKey.ReboundWindowMin, FuseIntKey.EvidenceReboundOverrideMaxMin,

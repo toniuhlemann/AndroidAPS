@@ -487,6 +487,7 @@ class FuseCycleRunner(
             require(it.nightStartMin in 0..1439 && it.nightEndMin in 0..1439) { "nightWindow=${it.nightStartMin}..${it.nightEndMin}" }
             require(it.nightDeadbandMgdl.isFinite() && it.nightDeadbandMgdl in FuseDoubleKey.NightDeadbandMgdl.min..FuseDoubleKey.NightDeadbandMgdl.max) { "nightDeadbandMgdl=${it.nightDeadbandMgdl}" }
             require(it.reboundDeadbandMgdl.isFinite() && it.reboundDeadbandMgdl in FuseDoubleKey.ReboundDeadbandMgdl.min..FuseDoubleKey.ReboundDeadbandMgdl.max) { "reboundDeadbandMgdl=${it.reboundDeadbandMgdl}" }
+            require(it.correctionDeadbandMgdl.isFinite() && it.correctionDeadbandMgdl in FuseDoubleKey.CorrectionDeadbandMgdl.min..FuseDoubleKey.CorrectionDeadbandMgdl.max) { "correctionDeadbandMgdl=${it.correctionDeadbandMgdl}" }
             require(it.reboundWindowMin in FuseIntKey.ReboundWindowMin.min..FuseIntKey.ReboundWindowMin.max) { "reboundWindowMin=${it.reboundWindowMin}" }
             require(it.driveLowerQuantilePct in PairSlopeBand.MIN_PCT..PairSlopeBand.MAX_PCT) {
                 "driveLowerQuantile=${it.driveLowerQuantilePct}"
@@ -2813,6 +2814,10 @@ class FuseCycleRunner(
                         MidnightUtils.secondsFromMidnight(signal.sourceTs), cfg.nightStartMin, cfg.nightEndMin
                     ),
                     nightDeadbandMgdl = cfg.nightDeadbandMgdl,
+                    // KORREKTUR-TOTBAND (Kandidat, Toni 11.11.2026): nur ohne Mahlzeit-Vollmacht. Im Mahlzeitkontext
+                    // (Marker-Frist) steht 0 - Mahlzeiten bleiben unberuehrt. Im Rueckfall ohne Konto gilt es wie ohne
+                    // Marker.
+                    correctionDeadbandMgdl = if (dosierKontext.mealAuthorized) 0.0 else cfg.correctionDeadbandMgdl,
                     markerBoost = markerBoost,
                     markerArmedTs = markerTs,
                     markerNoPrime = markerNoPrime,
@@ -5539,6 +5544,9 @@ class FuseCycleRunner(
             markerBoost = state.markerBoost,
             reboundOverrideByEvidence = reboundOverrideErlaubt,
             nightOverrideByEvidence = nachtOverrideErlaubt,
+            // Das Korrektur-Totband gilt NUR fuer den SMB des Normalwegs. Der Kanal hat seine eigene Schwelle
+            // (Einstellung "Kanal: Schwelle") und bleibt davon unberuehrt.
+            correctionDeadbandMgdl = 0.0,
         )
         // Benannt wie im Regler (bindingLimit reboundDeadband / nightDeadband).
         val slowBandGrund =
@@ -8725,6 +8733,8 @@ class FuseCycleRunner(
         val mealRisingMinBgMgdl: Double = FuseDoubleKey.MealRisingMinBgMgdl.defaultValue,
         /** Toni 03.11.2026: Zero-Latch nur unter diesem q1 [mg/dl], 0 = keine Grenze - s. [FuseDoubleKey.ZeroLatchMaxBgMgdl]. */
         val zeroLatchMaxBgMgdl: Double = FuseDoubleKey.ZeroLatchMaxBgMgdl.defaultValue,
+        /** Kandidat, Toni 11.11.2026: Korrektur-Totband [mg/dl ueber Ziel], 0 = aus - s. [FuseDoubleKey.CorrectionDeadbandMgdl]. */
+        val correctionDeadbandMgdl: Double = FuseDoubleKey.CorrectionDeadbandMgdl.defaultValue,
         val expectationReleaseThresholdU: Double = FuseDoubleKey.ExpectationReleaseThresholdU.defaultValue,
         val expectationHorizonMin: Int = FuseIntKey.ExpectationHorizonMin.defaultValue,
         /** Die Kurve als Einstellungstext, unveraendert (Export: konfiguriert). */
@@ -8784,6 +8794,7 @@ class FuseCycleRunner(
         mealRunningMinR = preferences.get(FuseDoubleKey.MealRunningMinR),
         mealRisingMinBgMgdl = preferences.get(FuseDoubleKey.MealRisingMinBgMgdl),
         zeroLatchMaxBgMgdl = preferences.get(FuseDoubleKey.ZeroLatchMaxBgMgdl),
+        correctionDeadbandMgdl = preferences.get(FuseDoubleKey.CorrectionDeadbandMgdl),
         maxSmbU = preferences.get(FuseDoubleKey.MaxSmbU),
         guardFloorMgdl = preferences.get(FuseDoubleKey.GuardFloorMgdl),
         lowGateMinBenefitMgdl = preferences.get(FuseDoubleKey.LowGateMinBenefitMgdl),

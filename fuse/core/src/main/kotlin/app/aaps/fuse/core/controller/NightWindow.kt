@@ -67,6 +67,11 @@ object NightWindow {
      * Beide Rechte sind befristet: das Rebound-Recht bis zur Frist am
      * Markerdruck ([evidenceMayOverrideRebound]), das Nacht-Recht bis zum Ende
      * des Mahlzeitfensters ([evidenceMayOverrideNight]).
+     *
+     * DAS KORREKTUR-TOTBAND (Kandidat, Toni 11.11.2026): ein dritter Wert, der OHNE Mahlzeit-Vollmacht gilt, zu jeder
+     * Tageszeit - der groesste der drei gewinnt. Es kennt keine Ausnahme fuer den Evidenzkredit: nach dem Ende der
+     * Mahlzeiten-Frist ist ein Anstieg knapp ueber dem Ziel kein Anlass fuer einen Korrektur-SMB. Ob es gilt, entscheidet
+     * der Aufrufer ueber den Wert: 0 = aus.
      */
     fun effectiveDeadbandMgdl(
         reboundWindow: Boolean,
@@ -92,10 +97,17 @@ object NightWindow {
         reboundOverrideByEvidence: Boolean,
         /** Das NACHT-Sonderrecht - nur im Mahlzeitfenster, s. [evidenceMayOverrideNight]. */
         nightOverrideByEvidence: Boolean,
+        /**
+         * Das Korrektur-Totband dieses Zyklus [mg/dl ueber Ziel]; 0 = keines. OHNE DEFAULT wie die Rechte oben: jeder
+         * Aufrufer sagt ausdruecklich, ob es fuer ihn gilt (der langsame Kanal uebergibt 0).
+         */
+        correctionDeadbandMgdl: Double,
     ): Double {
         val rebound = if (reboundWindow && !reboundOverrideByEvidence) reboundDeadbandMgdl else 0.0
         val night = if (isNight && !(markerBoost || nightOverrideByEvidence)) nightDeadbandMgdl.coerceAtLeast(0.0) else 0.0
-        return maxOf(rebound, night)
+        val basis = maxOf(rebound, night)
+        // Ohne Korrektur-Totband genau die Rechnung von vorher (bitgleich).
+        return if (correctionDeadbandMgdl.isFinite() && correctionDeadbandMgdl > 0.0) maxOf(basis, correctionDeadbandMgdl) else basis
     }
 
     /**

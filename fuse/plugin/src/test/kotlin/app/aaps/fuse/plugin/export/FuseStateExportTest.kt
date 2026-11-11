@@ -632,6 +632,21 @@ class FuseStateExportTest {
         assertEquals(200.0, FuseStateJson.policyValues(an.copy(zeroLatchMaxBgMgdl = 200.0)).getDouble("zeroLatchMaxBgMgdl"), 1e-9)
     }
 
+    /** Kandidat, Toni 11.11.2026: das Korrektur-Totband steht nur in Hash und Export, wenn es gesetzt ist - ab Werk 0
+     *  bleibt beides bitgleich. */
+    @Test
+    fun `Korrektur-Totband bewegt Hash und Export nur, wenn es gesetzt ist`() {
+        val h = FuseStateJson.hashOf(cfg)!!
+        assertEquals(h, FuseStateJson.hashOf(cfg.copy(correctionDeadbandMgdl = 0.0)), "0 ist die Vorgabe")
+        assertTrue(FuseStateJson.hashOf(cfg.copy(correctionDeadbandMgdl = 30.0)) != h, "ein gesetztes Totband bewegt den Hash")
+        assertTrue(
+            FuseStateJson.hashOf(cfg.copy(correctionDeadbandMgdl = 30.0)) != FuseStateJson.hashOf(cfg.copy(correctionDeadbandMgdl = 40.0)),
+            "verschiedene Werte sind verschiedene Politiken",
+        )
+        assertTrue(FuseStateJson.policyValues(cfg).isNull("correctionDeadbandMgdl"))
+        assertEquals(30.0, FuseStateJson.policyValues(cfg.copy(correctionDeadbandMgdl = 30.0)).getDouble("correctionDeadbandMgdl"), 1e-9)
+    }
+
     /** KI-171: der Trail zeigt, was ein Zyklus von den AAPS-Ablagen sah - und
      *  ohne Messung steht ein ausdrueckliches null, keine leere Behauptung. */
     @Test

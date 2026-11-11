@@ -189,6 +189,11 @@ object FuseController {
         /** Totband der Nacht [mg/dl]; 0 = aus. Ein erklaerter Marker hebt es
          *  auf, das Rebound-Totband dagegen nicht - s. NightWindow. */
         val nightDeadbandMgdl: Double = 0.0,
+        /**
+         * KORREKTUR-TOTBAND dieses Zyklus [mg/dl ueber Ziel] (Kandidat, Toni 11.11.2026); 0 = keines. Darunter gibt der
+         * Normalweg keinen SMB. Der Aufrufer setzt es nur OHNE Mahlzeit-Vollmacht - im Mahlzeitkontext steht hier 0.
+         */
+        val correctionDeadbandMgdl: Double = 0.0,
         /** Marker-Sonderrechte aktiv (hebt NUR das Nacht-Totband auf). */
         val markerBoost: Boolean = false,
         /**
@@ -782,6 +787,22 @@ object FuseController {
     fun slowChannelDemandU(normalReqU: Double, accountReqU: Double?, mealRising: Boolean): Double =
         jointDemandU(normalReqU, accountReqU.takeIf { mealRising })
 
+    /** Der Name des Korrektur-Totbands als bindende Grenze (Trail, Anzeige). */
+    const val CORRECTION_DEADBAND_LIMIT = "correctionDeadband"
+
+    /**
+     * WELCHES TOTBAND BINDET (Name der Grenze im Trail)? Rebound und Nacht wie bisher - ohne Korrektur-Totband kommt
+     * genau der Name von vorher heraus. Das Korrektur-Totband wird nur genannt, wenn es der wirksame Wert ist und das
+     * Nacht-Totband nicht denselben Wert stellt: die Nachtkante (`FuseCycleRunner`, Nachlauf nach Nachtende) liest den
+     * Namen des Nacht-Totbands.
+     */
+    fun deadbandLimitName(state: State, effectiveMgdl: Double): String = when {
+        state.reboundWindow && effectiveMgdl == state.reboundDeadbandMgdl -> "reboundDeadband"
+        state.correctionDeadbandMgdl > 0.0 && effectiveMgdl == state.correctionDeadbandMgdl &&
+            !(state.nightWindow && effectiveMgdl == state.nightDeadbandMgdl) -> CORRECTION_DEADBAND_LIMIT
+        else -> "nightDeadband"
+    }
+
     /**
      * DER STEMPEL, DEN KEIN RUECKGABEPFAD VERGESSEN KANN (Toni 17.08.).
      *
@@ -1124,12 +1145,15 @@ object FuseController {
             markerBoost = state.markerBoost,
             reboundOverrideByEvidence = evidenceMayOverrideRebound,
             nightOverrideByEvidence = evidenceCreditActive,
+            // KORREKTUR-TOTBAND (Kandidat, Toni 11.11.2026): derselbe Riegel, der groesste Wert gilt. Anlass: tags gab
+            // der Normalweg ausserhalb der Mahlzeiten-Frist SMB bei Zucker nahe am Ziel, und danach folgte oft ein Tief.
+            correctionDeadbandMgdl = state.correctionDeadbandMgdl,
         )
         if (deadbandMgdl > 0.0 && prediction.bgAtAnchor < state.targetMgdl + deadbandMgdl) {
             return Decision(
                 0.0, TbrAction.NO_NEW_POSITIVE, Block.NO_DEMAND, insulinReqRoh,
                 releaseMean, minLower,
-                if (state.reboundWindow && deadbandMgdl == state.reboundDeadbandMgdl) "reboundDeadband" else "nightDeadband",
+                deadbandLimitName(state, deadbandMgdl),
                 tail, context = ctx,
             ).tele()
         }

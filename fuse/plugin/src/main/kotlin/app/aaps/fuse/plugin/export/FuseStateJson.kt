@@ -2074,6 +2074,8 @@ object FuseStateJson {
         .put("zeroLatchReasonGoneExitCycles", p.zeroLatchReasonGoneExitCycles)
         // Toni 03.11.2026: die BG-Grenze der Verriegelung nur, wenn gesetzt - sonst bleibt der Block bitgleich.
         .apply { if (p.zeroLatchMaxBgMgdl > 0.0) put("zeroLatchMaxBgMgdl", fin(p.zeroLatchMaxBgMgdl)) }
+        // Kandidat, Toni 11.11.2026: das Korrektur-Totband nur, wenn gesetzt - sonst bleibt der Block bitgleich.
+        .apply { if (p.correctionDeadbandMgdl > 0.0) put("correctionDeadbandMgdl", fin(p.correctionDeadbandMgdl)) }
         // 2.0 (Stufe 1, K2): der Serien-Deckel ist entfernt. Wirksam ist
         // "kein Deckel" (0 wie bisher fuer AUS) und damit auch kein Fenster
         // (null). Die Felder bleiben, damit Leser des Trails sie finden.
@@ -2351,6 +2353,12 @@ object FuseStateJson {
         val latchGrenzeTeile =
             if (p.zeroLatchEnabled && p.zeroLatchMaxBgMgdl > 0.0) listOf("zeroLatchMaxBg:" + Sha.lossless(p.zeroLatchMaxBgMgdl))
             else emptyList()
+        // Kandidat, Toni 11.11.2026: das Korrektur-Totband nur, wenn es gesetzt ist - ausgeschaltet bleibt jeder
+        // bisherige Hash bitgleich; verschiedene Werte sind verschiedene Regler. Ohne Anhebung von RULE_SET_VERSION
+        // (wie bei KI-141 und KI-170).
+        val korrekturBandTeile =
+            if (p.correctionDeadbandMgdl > 0.0) listOf("correctionDeadband:" + Sha.lossless(p.correctionDeadbandMgdl))
+            else emptyList()
         val parts = listOf("fuse-policy-v$RULE_SET_VERSION") +
             doubles.map { Sha.lossless(it) } +
             listOf(
@@ -2452,7 +2460,7 @@ object FuseStateJson {
                 p.absorptionCreditWindowMin,
                 p.markerBoostMaxMin,
             ).map { it.toString() } + modusTeile + kontoTeile + fruehTeile + slowTeile(p) + hclTeile + nurMarkerTeile +
-            latchGrenzeTeile
+            latchGrenzeTeile + korrekturBandTeile
         return Sha.of(parts.joinToString("|"))
     }
 

@@ -101,6 +101,9 @@ class FuseSchluesselRueckwegTest {
         // Toni 03.11.2026: 0 = keine BG-Grenze - der Hoch-Ausgang des Zero-Latch greift nur bei gesetzter Grenze
         // (FuseCycleRunner, hochAusgang).
         FuseDoubleKey.ZeroLatchMaxBgMgdl.key to 0.0,
+        // Kandidat, Toni 11.11.2026: 0 = kein Korrektur-Totband - der Normalweg dosiert ausserhalb der Mahlzeiten-Frist
+        // wie vorher (FuseCycleRunner: State.correctionDeadbandMgdl).
+        FuseDoubleKey.CorrectionDeadbandMgdl.key to 0.0,
         // Toni 26.10.2026: 0 = im Fenster von "Nur Marker" gilt die Tag- bzw. Nachtschwelle des Kanals. (Dass der Kanal
         // bei "Nur Marker" an bleibt, ist eine Regel der Wahl am Knopf und haengt nicht an diesem Schluessel.)
         FuseDoubleKey.LivenessBgMinMarkerOnlyMgdl.key to 0.0,

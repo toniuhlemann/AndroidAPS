@@ -98,6 +98,7 @@ class ConfigBoundsTest {
             Feld("positiveDescentHorizonMin", FuseDoubleKey.PositiveDescentHorizonMin) { c, v -> c.copy(positiveDescentHorizonMin = v) },
             Feld("nightDeadbandMgdl", FuseDoubleKey.NightDeadbandMgdl) { c, v -> c.copy(nightDeadbandMgdl = v) },
             Feld("reboundDeadbandMgdl", FuseDoubleKey.ReboundDeadbandMgdl) { c, v -> c.copy(reboundDeadbandMgdl = v) },
+            Feld("correctionDeadbandMgdl", FuseDoubleKey.CorrectionDeadbandMgdl) { c, v -> c.copy(correctionDeadbandMgdl = v) },
             Feld("tailFloorMgdl", FuseDoubleKey.TailFloorMgdl) { c, v -> c.copy(tailFloorMgdl = v) },
             Feld("tailRecoveryU", FuseDoubleKey.TailRecoveryU) { c, v -> c.copy(tailRecoveryU = v) },
             Feld("bolusShareLambda", FuseDoubleKey.BolusShareLambda) { c, v -> c.copy(bolusShareLambda = v) },
