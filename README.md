@@ -144,6 +144,20 @@ You describe your typical meal once, as an **expectation curve**: how much insul
 Without a valid curve (the factory state) the button still declares the meal, but FUSE doses as without a marker
 ("fallback"). The button and the FUSE tab show this.
 
+**A scaler per time of day (new in November 2026, off by default).** The budget is the early need of the curve times a
+scaler. Three optional scalers — breakfast, midday, evening — replace the general scaler for a press of *Mahlzeit* in
+their window (0 = not set, then the general scaler applies).
+
+- The windows go by the time of the press: breakfast from 04:00, then the two set times *Mittag beginnt* and *Abend
+  beginnt* (factory 10:30 and 15:00). The evening runs through the night until 04:00.
+- The scaler is replaced as a whole. It changes the budget and with it the **initial portion**, not only the later
+  portions. The budget maximum still caps it, and the scaler "after a low" never becomes larger than it.
+- *Snack* still books at most as much as a meal of that time of day. *Nur Marker* and bolus-calculator meals are not
+  touched.
+- The account keeps the scaler of the press. A later change of the setting or a restart does not move a running meal.
+- The times must rise (04:00, midday, evening). If they do not while a scaler is set, the early supply is off and the
+  settings show the reason — never a silent fall back to the general scaler.
+
 ### Bolus-calculator meals: the joint meal balance (new in November 2026)
 
 With the switch *Bolusrechner-Mahlzeiten anrechnen (HCL)* (factory off), a bolus from the AAPS bolus calculator with
@@ -187,13 +201,15 @@ gives no new insulin. The profile basal keeps running — "fail closed" does not
 | **maxIOB** | The AAPS maxIOB is respected and shared by SMB and temp basal. | AAPS setting |
 | **Night deadband** | At night FUSE does not chase small deviations below *target + band*. | 45 mg/dl, 23:00–07:00 |
 | **Rebound deadband** | After a low (glucose under 75 mg/dl) FUSE does not chase the recovery below *target + band*. | 25 mg/dl for 45 min |
+| **Correction deadband** | Outside a declared meal the normal path gives no SMB below *target + band*, at any time of day. The largest of the night, rebound and correction band counts. The liveness channel and the slow channel are not touched. | 0 = off |
 | **AAPS SMB switch** | If SMB is switched off in AAPS, FUSE gives no SMB either. | AAPS setting |
 | **Ledger and publication gate** | An amount leaves FUSE only after it is safely written down. Insulin on its way counts as given. Only an SMB that is proven never sent is released from the books — never just because time passed. | always |
 | **Pump allowlist** | FUSE doses only on VirtualPump (development) and the Medtrum Nano. Every other pump is blocked. | always |
 | **Patch epoch** | Every new patch starts a new epoch, so deliveries from an old and a new patch never mix. Unknown epoch: no SMB. | always |
 
 The deadbands exist to stop FUSE from chasing *unannounced* small deviations. A declared meal lifts the night band for
-its first phase, and measured, still unpaid rise after a meal declaration ("evidence credit") can lift both bands.
+its first phase, and measured, still unpaid rise after a meal declaration ("evidence credit") can lift both bands. The
+correction deadband (new in November 2026) has no such exception: it holds whenever no meal is authorized.
 
 ## What you see
 
@@ -288,7 +304,8 @@ FUSE 2 is a **consolidation**: fewer mechanisms, each easier to explain.
 - **New in October 2026:** the AAPS SMB switch applies to FUSE, and the slow correction channel (positive temp basal,
   switch, off by default), with the same night and rebound deadbands as SMB.
 - **New in November 2026:** the joint meal balance for bolus-calculator meals, with eCarbs and basal withdrawal (see
-  *Bolus-calculator meals*).
+  *Bolus-calculator meals*); a correction deadband for SMBs outside meals and a scaler per time of day for the meal
+  button (both off by default).
 
 ## Status
 
@@ -304,11 +321,12 @@ FUSE 2 is a **consolidation**: fewer mechanisms, each easier to explain.
 | Slow correction channel (positive temp basal) | implemented, tested, off by default | first live use on 21.10.2026 |
 | Liveness channel, zero latch, partial basal | implemented, tested, off by default | switched on by the operator at times |
 | Meal balance for bolus-calculator meals, eCarbs, basal withdrawal | implemented, tested (JVM, closed-loop simulation) | none yet |
+| Correction deadband, scaler per time of day | implemented, tested, off by default | none yet |
 | Real pump | Medtrum Nano only | one user |
 | General pump support | not available | — |
 | Clinical efficacy or safety claim | **none** | — |
 
-About 2,590 automated tests cover `fuse/**` (about 1,340 in `fuse/core` and 1,250 in `fuse/plugin`). That number is not
+About 2,620 automated tests cover `fuse/**` (about 1,360 in `fuse/core` and 1,260 in `fuse/plugin`). That number is not
 a quality claim. The user interface counts as checked only after someone has looked at the device.
 
 ### What FUSE deliberately does not do
@@ -383,6 +401,13 @@ fettreiche Mahlzeiten. Ein Tief im Fenster hält den Kanal danach nicht zurück 
 Mahlzeit); gemessenes Tief, erwartetes Tief und fallender Zucker stoppen ihn weiter. Ohne Kurve dosiert FUSE wie ohne
 Marker.
 
+**Skalierer je Tageszeit (neu im November 2026, ab Werk aus).** Auf Wunsch gilt für „Mahlzeit“ je Tageszeit ein eigener
+Skalierer: Frühstück ab 04:00, Mittag und Abend ab zwei einstellbaren Uhrzeiten (ab Werk 10:30 und 15:00); 0 = der
+allgemeine Skalierer. Er ersetzt ihn ganz und ändert damit das Budget **und die Anfangsportion**. Es zählt die Uhrzeit
+des Drucks; das Konto hält den Skalierer fest. Ein Snack bucht weiter höchstens so viel wie die Mahlzeit dieser
+Tageszeit, „Nur Marker“ und Mahlzeiten aus dem Bolusrechner bleiben unberührt. Stehen die Uhrzeiten nicht in der
+Reihenfolge 04:00, Mittag, Abend, ist die frühe Versorgung aus, und die Einstellungen nennen den Grund.
+
 **Mahlzeiten aus dem Bolusrechner (neu im November 2026).** Mit dem Schalter „Bolusrechner-Mahlzeiten anrechnen (HCL)“
 (ab Werk aus) ist ein Rechner-Bolus mit KH eine angekündigte Mahlzeit. Sie bekommt jetzt zusätzlich eine **gemeinsame
 Bilanz G** = (BG − Ziel + max(angekündigter Rest × ISF, r × τ)) / ISF − (IOB + Transport), ohne eigenen Schalter.
@@ -399,7 +424,9 @@ Rücknahme wirkt erst nach dem Anstieg.
 
 **Sicherheit.** Alle Prüfungen lesen die pessimistische Bahn. Grenzen unter anderem: Guard-Boden 70 mg/dl,
 Expositionsgrenze je Profil (Korrektur 3,0 U, Mahlzeit 7,0 U), capIOB = max(Netto-IOB, Bolus-IOB), maxIOB, Nacht- und
-Rebound-Totband, AAPS-SMB-Schalter, Pumpen-Freigabeliste und ein Ledger mit Veröffentlichungstor.
+Rebound-Totband, AAPS-SMB-Schalter, Pumpen-Freigabeliste und ein Ledger mit Veröffentlichungstor. Neu im November 2026:
+ein **Korrektur-Totband** (ab Werk 0 = aus) — außerhalb einer erklärten Mahlzeit gibt der Normalweg unter Ziel plus
+diesem Wert keinen SMB, zu jeder Tageszeit; die Kanäle bleiben unberührt.
 
 **Anzeige.** Im Hauptgraphen trägt jeder BG-Punkt die Farbe dessen, was FUSE in diesem Zyklus durfte oder tat (ein Tief
 bleibt rot); der Korrekturkanal steht als Band mit Faktor, Menge und Ende, die SMB-Dreiecke zeigen ihre Quelle
@@ -410,7 +437,7 @@ Legende erklärt die Farben. Reine Anzeige, abschaltbar.
 Zyklus, Übersetzung in SMB und TBR, Ledger, Trail und Oberfläche. AAPS bleibt Herr über die Pumpe. Jeder Zyklus steht
 als JSON-Zeile in `Documents/aapsLogs/fuse_state_history.jsonl`; FUSE enthält keinen Netzwerkcode.
 
-**Ehrlicher Stand.** Rund 2.590 automatische Tests auf der JVM — kein klinischer Nachweis. Der langsame Korrekturkanal
+**Ehrlicher Stand.** Rund 2.620 automatische Tests auf der JVM — kein klinischer Nachweis. Der langsame Korrekturkanal
 war am 21.10.2026 zum ersten Mal im Einsatz.
 
 ---
