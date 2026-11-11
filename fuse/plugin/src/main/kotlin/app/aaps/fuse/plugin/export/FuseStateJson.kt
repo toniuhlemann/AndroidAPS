@@ -2326,6 +2326,12 @@ object FuseStateJson {
             // Toni 24.10.2026: der Snack-Skalierer ebenso nur, wenn abweichend.
             p.earlySupplySnackScale.takeIf { it != app.aaps.fuse.plugin.FuseDoubleKey.EarlySupplySnackScale.defaultValue }
                 ?.let { "snack:" + Sha.lossless(it) },
+            // Kandidat, Toni 11.11.2026: die Skalierer je Tageszeit nur, wenn einer gesetzt ist - ohne sie bleibt jeder
+            // bisherige Hash bitgleich. Mit ihnen zaehlen auch die beiden Uhrzeiten: sie bestimmen, welcher gilt.
+            p.earlySupplyTimeScales?.takeIf { it.active }?.let { t ->
+                "timeOfDay:" + listOf(t.morning, t.midday, t.evening).joinToString(",") { Sha.lossless(it) } +
+                    ":" + t.middayStartMin + ":" + t.eveningStartMin
+            },
         )
         // HCL Stufe 2 (Toni 25.10.2026): die Anrechnung der Bolusrechner-Mahlzeiten nur, wenn sie gilt (Konto UND
         // Schalter) - sonst bleibt jeder bisherige Hash bitgleich.

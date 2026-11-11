@@ -34,6 +34,7 @@ import app.aaps.fuse.core.controller.PartialTbrOwnership
 import app.aaps.fuse.core.controller.SlowCorrectionChannel
 import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.controller.MarkerReauthorization
+import app.aaps.fuse.core.predictor.PredictorReason
 import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
 import app.aaps.fuse.plugin.ledger.LedgerFacts
 import app.aaps.fuse.plugin.ledger.LedgerPublicationGate
@@ -45,6 +46,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -2408,8 +2410,8 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         markerMin = 0,
     )
 
-    private suspend fun hclKonfiguration(schalter: Boolean) {
-        konfiguration(kontoAn = true)
+    private suspend fun hclKonfiguration(schalter: Boolean, mitFrueherVersorgung: Boolean = false) {
+        if (mitFrueherVersorgung) fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true) else konfiguration(kontoAn = true)
         whenever(preferences.get(FuseBooleanKey.HclMealsEnabled)).thenReturn(schalter)
         whenever(preferences.get(FuseLongKey.MealMarkerHclCalcTs)).thenAnswer { hclCalcTs }
         whenever(preferences.get(FuseLongKey.MealMarkerHclMerged)).thenAnswer { if (hclZusammen) 1L else 0L }
@@ -3224,7 +3226,262 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertEquals(listOf(m1), erster.inheritedFrom)
     }
 
+    // ---- KANDIDAT (Toni 11.11.2026): DER SKALIERER JE TAGESZEIT -----------------------------------------------------
+    //
+    // Gegenproben zur Buchung am Marker: "Mahlzeit" bucht mit dem Skalierer des Fensters, in dem der Marker liegt. Die
+    // Fenster werden um die Minute des Markers gelegt - das Gestell kennt die Zeitzone des Laufs nicht. Alle Zahlen
+    // synthetisch.
+
+    private fun gebucht(z: List<Zyklus>) = z.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }
+
+    private fun anfangsportion(z: List<Zyklus>) = z.filter { it.frueh()?.initial == true }.sumOf { it.dErw() }
+
+    /** Die Minute des Tages, in der der Marker der Folge liegt - in der Zeitzone des Laufs, wie sie der Regler liest. */
+    private fun markerMinute(f: Fuse20Folgen.Folge): Int {
+        val m = TageszeitSkalierer.minuteDesTages(f.ts(0))
+        // Die Uhrzeiten muessen aufsteigen (04:00 < Mittag < Abend): nur dazwischen laesst sich jedes Fenster um den Marker
+        // legen. In einer Zeitzone, die den Marker an den Rand des Tages legt, zeigt die Probe nichts.
+        assumeTrue(m in 242..1433) { "Marker in Minute $m des Tages - die Probe braucht 242..1433" }
+        return m
+    }
+
+    /** Gueltige Uhrzeiten, mit denen ein Marker in Minute [m] des Tages im Fenster [fenster] liegt. */
+    private fun zeitenUm(fenster: EarlySupply.MealTime, m: Int): Pair<Int, Int> = when (fenster) {
+        EarlySupply.MealTime.MORNING -> (m + 1) to (m + 2)
+        EarlySupply.MealTime.MIDDAY -> m to (m + 1)
+        EarlySupply.MealTime.EVENING -> 241 to 242
+    }
+
+    /** Die Skalierer je Tageszeit: [imFenster] im Fenster des Markers, [sonst] in den beiden anderen. */
+    private fun tageszeitKonfiguration(
+        fenster: EarlySupply.MealTime, m: Int, imFenster: Double, sonst: Double, zeiten: Pair<Int, Int> = zeitenUm(fenster, m),
+    ) {
+        fun skala(f: EarlySupply.MealTime) = if (f == fenster) imFenster else sonst
+        whenever(preferences.get(FuseDoubleKey.EarlySupplyScaleMorning)).thenReturn(skala(EarlySupply.MealTime.MORNING))
+        whenever(preferences.get(FuseDoubleKey.EarlySupplyScaleMidday)).thenReturn(skala(EarlySupply.MealTime.MIDDAY))
+        whenever(preferences.get(FuseDoubleKey.EarlySupplyScaleEvening)).thenReturn(skala(EarlySupply.MealTime.EVENING))
+        whenever(preferences.get(FuseIntKey.EarlySupplyMiddayStartMin)).thenReturn(zeiten.first)
+        whenever(preferences.get(FuseIntKey.EarlySupplyEveningStartMin)).thenReturn(zeiten.second)
+    }
+
+    /**
+     * "Mahlzeit" bucht mit dem Skalierer des Fensters, in dem der Marker liegt - je Fenster einmal. Er ersetzt den
+     * allgemeinen GANZ: Budget und Anfangsportion folgen ihm, nicht nur die weiteren Portionen. Ein Fenster ohne eigenen
+     * Skalierer bucht mit dem allgemeinen, auch wenn die anderen gesetzt sind.
+     */
+    @Test
+    fun `Skalierer je Tageszeit - Mahlzeit bucht mit dem des Fensters, Budget und Anfangsportion folgen`(@TempDir dir: File) = runBlocking<Unit> {
+        val m = markerMinute(fStabil)
+        val basisLauf = fruehLauf(fStabil, File(dir, "allgemein")) { fruehKonfiguration(g1 = true, g2 = true, budgetU = SNACK_PROBE_BUDGET_U) }
+        val allgemein = gebucht(basisLauf).konto!!
+        assertEquals(1.0, allgemein.phi0, 0.0)
+        assertTrue(allgemein.a0U > 0.0 && allgemein.a0U * TAGESZEIT_SKALA < SNACK_PROBE_BUDGET_U - 1e-9) { "Probe zeigt nichts: Budget ${allgemein.a0U}" }
+        val anfangAllgemein = anfangsportion(basisLauf)
+        for (fenster in EarlySupply.MealTime.entries) {
+            val zyklen = fruehLauf(fStabil, File(dir, fenster.name)) {
+                fruehKonfiguration(g1 = true, g2 = true, budgetU = SNACK_PROBE_BUDGET_U)
+                tageszeitKonfiguration(fenster, m, imFenster = TAGESZEIT_SKALA, sonst = ANDERE_SKALA)
+            }
+            val k = gebucht(zyklen).konto!!
+            assertEquals(TAGESZEIT_SKALA, k.phi0, 0.0, "$fenster: Skalierer")
+            assertEquals(allgemein.a0U * TAGESZEIT_SKALA, k.a0U, 1e-6, "$fenster: Budget")
+            val anfang = anfangsportion(zyklen)
+            assertTrue(anfang > 0.0 && anfang <= 0.5 * k.a0U + 1e-9) { "$fenster: Anfangsportion $anfang bei Budget ${k.a0U}" }
+            assertTrue(anfang >= anfangAllgemein - 1e-9) { "$fenster: Anfangsportion $anfang kleiner als mit dem allgemeinen ($anfangAllgemein)" }
+            pruefeMechanik(zyklen, 0.5, 1.0, 2.0)
+            // Das Fenster des Markers ohne eigenen Skalierer: es gilt der allgemeine - auch wenn die anderen gesetzt sind.
+            val ohne = gebucht(fruehLauf(fStabil, File(dir, fenster.name + "_ohne")) {
+                fruehKonfiguration(g1 = true, g2 = true, budgetU = SNACK_PROBE_BUDGET_U)
+                tageszeitKonfiguration(fenster, m, imFenster = 0.0, sonst = ANDERE_SKALA)
+            }).konto!!
+            assertEquals(1.0, ohne.phi0, 0.0, "$fenster ohne eigenen Skalierer")
+            assertEquals(allgemein.a0U, ohne.a0U, 1e-9, "$fenster ohne eigenen Skalierer: Budget")
+        }
+        // Ein kleinerer Skalierer: kleineres Budget UND kleinere Anfangsportion.
+        val klein = fruehLauf(fStabil, File(dir, "klein")) {
+            fruehKonfiguration(g1 = true, g2 = true, budgetU = SNACK_PROBE_BUDGET_U)
+            tageszeitKonfiguration(EarlySupply.MealTime.MIDDAY, m, imFenster = TAGESZEIT_KLEIN, sonst = ANDERE_SKALA)
+        }
+        val kKlein = gebucht(klein).konto!!
+        assertEquals(TAGESZEIT_KLEIN, kKlein.phi0, 0.0)
+        assertEquals(allgemein.a0U * TAGESZEIT_KLEIN, kKlein.a0U, 1e-6)
+        val anfangKlein = anfangsportion(klein)
+        assertTrue(anfangKlein <= 0.5 * kKlein.a0U + 1e-9) { "Anfangsportion $anfangKlein ueber dem Anteil" }
+        assertTrue(anfangKlein < anfangAllgemein - 1e-9) { "Anfangsportion $anfangKlein nicht kleiner als mit dem allgemeinen ($anfangAllgemein)" }
+    }
+
+    /** Die Regel des Snacks bleibt: er bucht hoechstens so viel wie eine Mahlzeit - jetzt die Mahlzeit dieser Tageszeit. */
+    @Test
+    fun `Skalierer je Tageszeit - ein Snack bucht hoechstens so viel wie die Mahlzeit der Tageszeit`(@TempDir dir: File) = runBlocking<Unit> {
+        val m = markerMinute(fStabil)
+        snack = true
+        try {
+            // Der Skalierer der Tageszeit liegt ueber dem des Snacks: der Snack bucht wie bisher.
+            val wieBisher = gebucht(fruehLauf(fStabil, File(dir, "wieBisher")) {
+                fruehKonfiguration(g1 = true, g2 = true, budgetU = SNACK_PROBE_BUDGET_U)
+                whenever(preferences.get(FuseDoubleKey.EarlySupplySnackScale)).thenReturn(SNACK_SKALA)
+                tageszeitKonfiguration(EarlySupply.MealTime.MIDDAY, m, imFenster = TAGESZEIT_SKALA, sonst = ANDERE_SKALA)
+            })
+            assertTrue(wieBisher.o.state?.markerSnack == true) { "die Wahl Snack steht nicht im Zustand" }
+            assertEquals(SNACK_SKALA, wieBisher.konto!!.phi0, 0.0)
+            // Er liegt darunter: der Snack bucht nicht mehr als die Mahlzeit dieser Tageszeit.
+            val gedeckelt = gebucht(fruehLauf(fStabil, File(dir, "gedeckelt")) {
+                fruehKonfiguration(g1 = true, g2 = true, budgetU = SNACK_PROBE_BUDGET_U)
+                whenever(preferences.get(FuseDoubleKey.EarlySupplySnackScale)).thenReturn(SNACK_SKALA)
+                tageszeitKonfiguration(EarlySupply.MealTime.MIDDAY, m, imFenster = TAGESZEIT_KLEIN, sonst = ANDERE_SKALA)
+            }).konto!!
+            assertEquals(TAGESZEIT_KLEIN, gedeckelt.phi0, 0.0)
+        } finally {
+            snack = false
+        }
+    }
+
+    /** Start im Tief: der Skalierer "nach Tief" bleibt, wird aber nie groesser als der des Fensters. */
+    @Test
+    fun `Skalierer je Tageszeit - nach Tief nie mehr als im Fenster`(@TempDir dir: File) = runBlocking<Unit> {
+        val m = markerMinute(fTief)
+        val allgemein = gebucht(fruehLauf(fTief, File(dir, "allgemein")) { fruehKonfiguration(g1 = true, g2 = true, skalaTief = NACH_TIEF_SKALA) }).konto!!
+        assertEquals(NACH_TIEF_SKALA, allgemein.phi0, 0.0) { "Vorbedingung: die Folge startet nach Tief" }
+        val hoeher = gebucht(fruehLauf(fTief, File(dir, "hoeher")) {
+            fruehKonfiguration(g1 = true, g2 = true, skalaTief = NACH_TIEF_SKALA)
+            tageszeitKonfiguration(EarlySupply.MealTime.MIDDAY, m, imFenster = TAGESZEIT_SKALA, sonst = ANDERE_SKALA)
+        }).konto!!
+        assertEquals(NACH_TIEF_SKALA, hoeher.phi0, 0.0)
+        val kleiner = gebucht(fruehLauf(fTief, File(dir, "kleiner")) {
+            fruehKonfiguration(g1 = true, g2 = true, skalaTief = NACH_TIEF_SKALA)
+            tageszeitKonfiguration(EarlySupply.MealTime.MIDDAY, m, imFenster = TAGESZEIT_KLEIN, sonst = ANDERE_SKALA)
+        }).konto!!
+        assertEquals(TAGESZEIT_KLEIN, kleiner.phi0, 0.0)
+    }
+
+    /**
+     * "Nur Marker" und der Marker aus dem Bolusrechner bleiben unberuehrt: derselbe Skalierer im Konto und dieselbe
+     * Dosierung in jedem Zyklus wie ohne Skalierer je Tageszeit.
+     */
+    @Test
+    fun `Skalierer je Tageszeit - Nur Marker und der Bolusrechner bleiben unberuehrt`(@TempDir dir: File) = runBlocking<Unit> {
+        fun spur(z: List<Zyklus>) = z.map { Triple(it.minute, it.geliefertU, it.o.decision.tbr) }
+        val m = markerMinute(fStabil)
+        ohneVorschuss = true
+        try {
+            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
+            val ohne = lauf(fStabil, File(dir, "nurMarkerOhne")).filter { it.o.abortReason == null }
+            fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true)
+            tageszeitKonfiguration(EarlySupply.MealTime.MIDDAY, m, imFenster = TAGESZEIT_SKALA, sonst = ANDERE_SKALA)
+            val mit = lauf(fStabil, File(dir, "nurMarkerMit")).filter { it.o.abortReason == null }
+            val k = mit.mapNotNull { it.konto }.last()
+            assertEquals(0.0, k.a0U, 0.0)
+            assertEquals(ohne.mapNotNull { it.konto }.last().phi0, k.phi0, 0.0)
+            assertEquals(1.0, k.phi0, 0.0)
+            assertEquals(spur(ohne), spur(mit))
+        } finally {
+            ohneVorschuss = false
+        }
+        val mHcl = markerMinute(fHcl)
+        val hclOhne = hclLauf(fHcl, File(dir, "hclOhne").also(File::mkdirs)) { hclKonfiguration(schalter = true, mitFrueherVersorgung = true) }
+        val hclMit = hclLauf(fHcl, File(dir, "hclMit").also(File::mkdirs)) {
+            hclKonfiguration(schalter = true, mitFrueherVersorgung = true)
+            tageszeitKonfiguration(EarlySupply.MealTime.MIDDAY, mHcl, imFenster = TAGESZEIT_SKALA, sonst = ANDERE_SKALA)
+        }
+        val kHcl = hclMit.mapNotNull { it.konto }.last()
+        assertEquals(HCL_KH_INSULIN_U / 3.0, kHcl.phi0, 1e-9)
+        assertEquals(0.0, kHcl.a0U, 0.0)
+        assertEquals(spur(hclOhne), spur(hclMit))
+    }
+
+    /**
+     * ES ZAEHLT DIE UHRZEIT DES MARKERS, nicht die des Zyklus: kann das Konto erst spaeter gebucht werden (hier fehlt
+     * zehn Minuten lang die Bahn, also das Insulinmodell), und liegt dazwischen eine Fenstergrenze, bucht es trotzdem
+     * den Skalierer des Fensters, in dem gedrueckt wurde.
+     */
+    @Test
+    fun `Skalierer je Tageszeit - eine spaete Buchung bucht das Fenster des Markers`(@TempDir dir: File) = runBlocking<Unit> {
+        val m = markerMinute(fStabil)
+        val zeiten = (m + 5) to (m + 6)
+        try {
+            val zyklen = fruehLauf(fStabil, dir, vorZyklus = { minute -> predictReject = if (minute in 0..9) PredictorReason.MISSING_ISF_SLOT else null }) {
+                fruehKonfiguration(g1 = true, g2 = true, budgetU = SNACK_PROBE_BUDGET_U)
+                tageszeitKonfiguration(EarlySupply.MealTime.MORNING, m, imFenster = TAGESZEIT_SKALA, sonst = ANDERE_SKALA, zeiten = zeiten)
+            }
+            val buchung = gebucht(zyklen)
+            assertTrue(buchung.minute >= 10) { "Vorbedingung: die Buchung kam schon in Minute ${buchung.minute}" }
+            // Zur Zeit der Buchung zeigt die Uhr auf den Abend - der Marker liegt im Fruehstueck.
+            val skalen = requireNotNull(EarlySupply.TimeOfDayScales.of(TAGESZEIT_SKALA, ANDERE_SKALA, ANDERE_SKALA, zeiten.first, zeiten.second))
+            assertEquals(EarlySupply.MealTime.MORNING, skalen.mealTimeAt(m))
+            assertEquals(EarlySupply.MealTime.EVENING, skalen.mealTimeAt(TageszeitSkalierer.minuteDesTages(buchung.o.computeTs)))
+            val k = buchung.konto!!
+            assertEquals(fStabil.ts(0), k.authId)
+            assertEquals(TAGESZEIT_SKALA, k.phi0, 0.0)
+        } finally {
+            predictReject = null
+        }
+    }
+
+    /**
+     * AM MARKER FESTGEHALTEN: weder ein Neustart noch eine spaetere Aenderung der Einstellung verschiebt die laufende
+     * Mahlzeit - das Konto traegt den Skalierer und das Budget vom Druck, und es wird nicht neu gebucht.
+     */
+    @Test
+    fun `Skalierer je Tageszeit - Neustart und spaetere Aenderung lassen die laufende Mahlzeit stehen`(@TempDir dir: File) = runBlocking<Unit> {
+        val m = markerMinute(fStabil)
+        val neustartMin = 30
+        val zyklen = fruehLauf(fStabil, dir, vorZyklus = { minute ->
+            if (minute == neustartMin) {
+                neustart(dir, fStabil, null)
+                tageszeitKonfiguration(EarlySupply.MealTime.MIDDAY, m, imFenster = TAGESZEIT_KLEIN, sonst = TAGESZEIT_KLEIN)
+            }
+        }) {
+            fruehKonfiguration(g1 = true, g2 = true, budgetU = SNACK_PROBE_BUDGET_U)
+            tageszeitKonfiguration(EarlySupply.MealTime.MIDDAY, m, imFenster = TAGESZEIT_SKALA, sonst = ANDERE_SKALA)
+        }
+        val vorher = zyklen.last { it.minute < neustartMin }.konto!!
+        assertEquals(TAGESZEIT_SKALA, vorher.phi0, 0.0)
+        val danach = zyklen.filter { it.minute >= neustartMin }.mapNotNull { z -> z.konto?.let { z.minute to it } }
+        assertTrue(danach.isNotEmpty()) { "Vorbedingung: das Konto lebt nach dem Neustart" }
+        for ((minute, k) in danach) {
+            assertEquals(vorher.authId, k.authId, "Minute $minute: Marker")
+            assertEquals(TAGESZEIT_SKALA, k.phi0, 0.0, "Minute $minute: Skalierer")
+            assertEquals(vorher.a0U, k.a0U, 0.0, "Minute $minute: Budget")
+        }
+        assertEquals(1, zyklen.count { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }, "genau eine Buchung")
+    }
+
+    /**
+     * VERDREHTE UHRZEITEN GELTEN NICHT: mit gesetztem Skalierer schaltet eine falsche Reihenfolge die fruehe Versorgung
+     * ab - kein Budget, kein stiller Ersatz durch den allgemeinen Skalierer. Ohne gesetzten Skalierer aendern dieselben
+     * Uhrzeiten nichts.
+     */
+    @Test
+    fun `Skalierer je Tageszeit - verdrehte Uhrzeiten schalten die fruehe Versorgung ab`(@TempDir dir: File) = runBlocking<Unit> {
+        val m = markerMinute(fStabil)
+        val verdreht = (m + 2) to (m + 1)
+        val allgemein = gebucht(fruehLauf(fStabil, File(dir, "allgemein")) { fruehKonfiguration(g1 = true, g2 = true) }).konto!!
+        assertTrue(allgemein.a0U > 0.0)
+        val zyklen = fruehLauf(fStabil, File(dir, "verdreht")) {
+            fruehKonfiguration(g1 = true, g2 = true)
+            tageszeitKonfiguration(EarlySupply.MealTime.MORNING, m, imFenster = TAGESZEIT_SKALA, sonst = ANDERE_SKALA, zeiten = verdreht)
+        }
+        val k = gebucht(zyklen).konto!!
+        assertEquals(0.0, k.a0U, 0.0)
+        assertEquals(0.0, zyklen.sumOf { it.dErw() }, 0.0)
+        // Ohne gesetzten Skalierer: dieselben Uhrzeiten, dieselbe Buchung wie immer.
+        val ohneSkalierer = gebucht(fruehLauf(fStabil, File(dir, "ohneSkalierer")) {
+            fruehKonfiguration(g1 = true, g2 = true)
+            tageszeitKonfiguration(EarlySupply.MealTime.MORNING, m, imFenster = 0.0, sonst = 0.0, zeiten = verdreht)
+        }).konto!!
+        assertEquals(allgemein.phi0, ohneSkalierer.phi0, 0.0)
+        assertEquals(allgemein.a0U, ohneSkalierer.a0U, 1e-12)
+    }
+
     private companion object {
+
+        /** Synthetische Skalierer der Tageszeit-Proben: im Fenster des Markers, in den anderen Fenstern, und ein kleiner. */
+        const val TAGESZEIT_SKALA = 1.4
+        const val ANDERE_SKALA = 0.7
+        const val TAGESZEIT_KLEIN = 0.5
+
+        /** Synthetischer Skalierer "nach Tief" der Tageszeit-Probe: zwischen dem kleinen und dem des Fensters. */
+        const val NACH_TIEF_SKALA = 0.8
 
         /** Die Probe mit zwei Rechner-Mahlzeiten: KH-Insulin und Bolus [U], die Kennungen der eCarbs-Eintraege. */
         const val UEBERLAPP_KH_INSULIN_U = 2.0

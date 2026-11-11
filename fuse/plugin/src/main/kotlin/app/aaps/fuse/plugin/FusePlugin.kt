@@ -44,6 +44,7 @@ import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.icons.IcPluginOpenAPS
+import app.aaps.fuse.core.controller.EarlySupply
 import app.aaps.fuse.core.controller.ExpectationLedger
 import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.controller.MarkerPrompt
@@ -1323,11 +1324,17 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
      *
      * E-034 v2: wie der Regler es am Marker buchen wuerde - mit DEMSELBEN Einheitskern-Bau (aktives Insulin,
      * Profil-DIA) und derselben Snack-Regel ([app.aaps.fuse.core.controller.EarlySupply.Settings.forSnack]).
+     *
+     * Kandidat, Toni 11.11.2026: mit dem Skalierer des Tageszeitfensters, in dem JETZT gedrueckt wuerde - am Knopf steht,
+     * was der Regler bucht ([TageszeitSkalierer]). Ein ungueltiger Tageszeit-Wert: kein Angebot, wie im Regler.
      */
     private suspend fun markerAngebote(): Pair<MarkerAngebot?, MarkerAngebot?> {
         val keine = null to null
         val kurve = app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(wirksameKurve().text) ?: return keine
         if (!preferences.get(FuseBooleanKey.EarlySupplyEnabled)) return keine
+        val tageszeit = TageszeitSkalierer.lesen(preferences)
+        if (tageszeit.fehler != null) return keine
+        val jetzt = dateUtil.now()
         val einstellung = app.aaps.fuse.core.controller.EarlySupply.Settings.of(
             scaleStable = preferences.get(FuseDoubleKey.EarlySupplyScaleStable),
             scaleAfterLow = preferences.get(FuseDoubleKey.EarlySupplyScaleAfterLow),
@@ -1337,8 +1344,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             maxPerPeriodU = preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU),
             periodMin = preferences.get(FuseIntKey.EarlySupplyPeriodMin),
             topUpShare = preferences.get(FuseDoubleKey.EarlySupplyTopUpShare),
-        ) ?: return keine
-        val kern = einheitskernJetzt(dateUtil.now()) ?: return keine
+        )?.forTimeOfDay(TageszeitSkalierer.fuerMarker(tageszeit.wirksam, jetzt)) ?: return keine
+        val kern = einheitskernJetzt(jetzt) ?: return keine
         val wirkung = app.aaps.fuse.core.controller.EarlySupply.unitActionOf(kern.kernel)
         val horizont = preferences.get(FuseIntKey.ExpectationHorizonMin)
         fun angebot(s: app.aaps.fuse.core.controller.EarlySupply.Settings): MarkerAngebot? =
@@ -2926,6 +2933,9 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             FuseBooleanKey.EarlySupplyEnabled.key, FuseDoubleKey.EarlySupplyBudgetMaxU.key,
             FuseDoubleKey.EarlySupplyScaleStable.key, FuseDoubleKey.EarlySupplyScaleAfterLow.key,
             FuseDoubleKey.EarlySupplySnackScale.key,
+            FuseDoubleKey.EarlySupplyScaleMorning.key, FuseDoubleKey.EarlySupplyScaleMidday.key,
+            FuseDoubleKey.EarlySupplyScaleEvening.key,
+            FuseIntKey.EarlySupplyMiddayStartMin.key, FuseIntKey.EarlySupplyEveningStartMin.key,
             FuseDoubleKey.EarlySupplyInitialShare.key, FuseDoubleKey.EarlySupplyMaxPortionU.key,
             FuseDoubleKey.EarlySupplyMaxPerPeriodU.key, FuseIntKey.EarlySupplyPeriodMin.key,
             FuseDoubleKey.EarlySupplyTopUpShare.key,
@@ -2973,6 +2983,16 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             FuseDoubleKey.EarlySupplyScaleStable.key -> FruehVersorgungText.skalierer(d(FuseDoubleKey.EarlySupplyScaleStable), false, l)
             FuseDoubleKey.EarlySupplyScaleAfterLow.key -> FruehVersorgungText.skalierer(d(FuseDoubleKey.EarlySupplyScaleAfterLow), true, l)
             FuseDoubleKey.EarlySupplySnackScale.key -> FruehVersorgungText.snackSkalierer(d(FuseDoubleKey.EarlySupplySnackScale), l)
+            FuseDoubleKey.EarlySupplyScaleMorning.key ->
+                FruehVersorgungText.tageszeitSkalierer(d(FuseDoubleKey.EarlySupplyScaleMorning), EarlySupply.MealTime.MORNING, l)
+            FuseDoubleKey.EarlySupplyScaleMidday.key ->
+                FruehVersorgungText.tageszeitSkalierer(d(FuseDoubleKey.EarlySupplyScaleMidday), EarlySupply.MealTime.MIDDAY, l)
+            FuseDoubleKey.EarlySupplyScaleEvening.key ->
+                FruehVersorgungText.tageszeitSkalierer(d(FuseDoubleKey.EarlySupplyScaleEvening), EarlySupply.MealTime.EVENING, l)
+            FuseIntKey.EarlySupplyMiddayStartMin.key ->
+                FruehVersorgungText.tageszeitBeginn(preferences.get(FuseIntKey.EarlySupplyMiddayStartMin), abend = false, l)
+            FuseIntKey.EarlySupplyEveningStartMin.key ->
+                FruehVersorgungText.tageszeitBeginn(preferences.get(FuseIntKey.EarlySupplyEveningStartMin), abend = true, l)
             FuseDoubleKey.EarlySupplyInitialShare.key -> FruehVersorgungText.anfangsanteil(d(FuseDoubleKey.EarlySupplyInitialShare), l)
             FuseDoubleKey.EarlySupplyMaxPortionU.key -> FruehVersorgungText.portion(d(FuseDoubleKey.EarlySupplyMaxPortionU), l)
             FuseDoubleKey.EarlySupplyMaxPerPeriodU.key -> FruehVersorgungText.jeZeitraum(
@@ -3047,6 +3067,9 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             preferences.get(FuseDoubleKey.EarlySupplyMaxPortionU), preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU),
             preferences.get(FuseIntKey.EarlySupplyPeriodMin), preferences.get(FuseDoubleKey.MealExposureLimitU),
             preferences.get(FuseDoubleKey.EarlySupplyTopUpShare),
+            preferences.get(FuseDoubleKey.EarlySupplyScaleMorning), preferences.get(FuseDoubleKey.EarlySupplyScaleMidday),
+            preferences.get(FuseDoubleKey.EarlySupplyScaleEvening),
+            preferences.get(FuseIntKey.EarlySupplyMiddayStartMin), preferences.get(FuseIntKey.EarlySupplyEveningStartMin),
             fruehModellSchluessel() ?: "-",
         ).joinToString("|")
         fruehLageCache?.takeIf { it.first == stand }?.let { return it.second }
@@ -3076,6 +3099,9 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             if (bedarfJetzt == null || rollen[i] != app.aaps.fuse.core.controller.EarlySupply.CornerRole.Binding) null
             else bedarfAus(ecken.toDoubleArray().also { it[i] += 0.1 })?.let { it - bedarfJetzt }
         }
+        // Kandidat, Toni 11.11.2026: die Skalierer je Tageszeit - ein ungueltiger Wert macht die Einstellungen ungueltig
+        // wie im Regler, und der Grund steht am Feld.
+        val tageszeit = TageszeitSkalierer.lesen(preferences)
         return FruehVersorgungText.Lage(
             // Das Konto gilt mit gueltiger Kurve - dieselbe Regel wie im Regler.
             kontoAn = kurve != null,
@@ -3085,7 +3111,7 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             rollen = rollen,
             bedarf = if (kurve == null || wirkung == null) null else app.aaps.fuse.core.controller.EarlySupply.need(kurve, horizont, wirkung),
             bedarfJeZehntelU = jeZehntel,
-            einstellung = app.aaps.fuse.core.controller.EarlySupply.Settings.of(
+            einstellung = if (tageszeit.fehler != null) null else app.aaps.fuse.core.controller.EarlySupply.Settings.of(
                 scaleStable = preferences.get(FuseDoubleKey.EarlySupplyScaleStable),
                 scaleAfterLow = preferences.get(FuseDoubleKey.EarlySupplyScaleAfterLow),
                 budgetMaxU = preferences.get(FuseDoubleKey.EarlySupplyBudgetMaxU),
@@ -3096,6 +3122,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 topUpShare = preferences.get(FuseDoubleKey.EarlySupplyTopUpShare),
             ),
             expositionU = preferences.get(FuseDoubleKey.MealExposureLimitU),
+            tageszeit = tageszeit.skalen,
+            tageszeitFehler = tageszeit.fehler?.let(TageszeitSkalierer::fehlerText),
         )
     }
 

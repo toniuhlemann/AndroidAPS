@@ -17,6 +17,8 @@ class FruehVersorgungTextTest {
         kurveGueltig: Boolean = true,
         kontoAn: Boolean = true,
         fruehAn: Boolean = true,
+        tageszeit: EarlySupply.TimeOfDayScales? = null,
+        tageszeitFehler: String? = null,
     ) = FruehVersorgungText.Lage(
         kontoAn = kontoAn,
         fruehAn = fruehAn,
@@ -25,8 +27,11 @@ class FruehVersorgungTextTest {
         rollen = listOf(EarlySupply.CornerRole.From(0.77), EarlySupply.CornerRole.Never, EarlySupply.CornerRole.From(3.2), EarlySupply.CornerRole.Binding),
         bedarf = EarlySupply.Need(bedarfU, 120),
         bedarfJeZehntelU = listOf(null, null, null, 0.13),
-        einstellung = requireNotNull(EarlySupply.Settings.of(1.2, scaleAfterLow, 8.0, 0.4, 1.0, 2.0, 15)),
+        // Wie im Plugin: ein ungueltiger Tageszeit-Wert macht die Einstellungen ungueltig.
+        einstellung = if (tageszeitFehler != null) null else requireNotNull(EarlySupply.Settings.of(1.2, scaleAfterLow, 8.0, 0.4, 1.0, 2.0, 15)),
         expositionU = 2.5,
+        tageszeit = tageszeit,
+        tageszeitFehler = tageszeitFehler,
     )
 
     @Test
@@ -81,6 +86,93 @@ class FruehVersorgungTextTest {
             FruehVersorgungText.snackSkalierer(1.4, l),
         )
         assertEquals("0,0 - kein Snack-Knopf: ein Snack bekaeme kein Budget", FruehVersorgungText.snackSkalierer(0.0, l))
+    }
+
+    /** Kandidat, Toni 11.11.2026: je Fenster die Uhrzeiten, das Budget und - weil er sie mit aendert - die Anfangsportion. */
+    @Test
+    fun `Skalierer je Tageszeit zeigt Fenster, Budget und Anfangsportion`() {
+        val l = lage(tageszeit = requireNotNull(EarlySupply.TimeOfDayScales.of(1.4, 0.0, 1.0, 630, 900)))
+        assertEquals(
+            "1,40 - 04:00 bis 10:30: Budget 7,7 U, am Druck 3,1 U",
+            FruehVersorgungText.tageszeitSkalierer(1.4, EarlySupply.MealTime.MORNING, l),
+        )
+        assertEquals(
+            "0,00 - 10:30 bis 15:00 nicht gesetzt: es gilt der allgemeine Skalierer (1,20)",
+            FruehVersorgungText.tageszeitSkalierer(0.0, EarlySupply.MealTime.MIDDAY, l),
+        )
+        assertEquals(
+            "1,00 - 15:00 bis 04:00: Budget 5,5 U, am Druck 2,2 U",
+            FruehVersorgungText.tageszeitSkalierer(1.0, EarlySupply.MealTime.EVENING, l),
+        )
+        // Budget-Max bleibt die Grenze - ein hoeherer Skalierer hebt es nicht.
+        assertEquals(
+            "1,60 - 04:00 bis 10:30: Budget 8,0 U, am Druck 3,2 U (Budget-Max deckelt)",
+            FruehVersorgungText.tageszeitSkalierer(1.6, EarlySupply.MealTime.MORNING, l),
+        )
+        assertEquals("10:30 - ab hier Mittag; davor, ab 04:00, Fruehstueck", FruehVersorgungText.tageszeitBeginn(630, abend = false, l))
+        assertEquals("15:00 - ab hier Abend, bis 04:00 am Morgen", FruehVersorgungText.tageszeitBeginn(900, abend = true, l))
+    }
+
+    @Test
+    fun `mit Skalierern je Tageszeit sagen die allgemeinen Zeilen, wo sie noch gelten`() {
+        val teils = lage(tageszeit = requireNotNull(EarlySupply.TimeOfDayScales.of(1.4, 0.0, 1.0, 630, 900)))
+        assertEquals(
+            "1,2 - frueher Bedarf 5,5 U x 1,2 = Budget 6,6 U; gilt, wo je Tageszeit keiner gesetzt ist",
+            FruehVersorgungText.skalierer(1.2, false, teils),
+        )
+        assertEquals(
+            "0,8 - frueher Bedarf 5,5 U x 0,8 = Budget 4,4 U; hoechstens der Skalierer der Tageszeit",
+            FruehVersorgungText.skalierer(0.8, true, teils),
+        )
+        assertEquals(
+            "An - Budget heute 6,6 U stabil, 4,4 U nach Tief (allgemeiner Skalierer; je Tageszeit steht es am Feld)",
+            FruehVersorgungText.hauptschalter(teils),
+        )
+        assertEquals(
+            "1,0 - Snack-Budget 5,5 U, am Druck 2,2 U; je Tageszeit hoechstens der Skalierer des Fensters",
+            FruehVersorgungText.snackSkalierer(1.0, teils),
+        )
+        val ueberall = lage(tageszeit = requireNotNull(EarlySupply.TimeOfDayScales.of(1.4, 1.3, 1.0, 630, 900)))
+        assertEquals(
+            "1,2 - frueher Bedarf 5,5 U x 1,2 = Budget 6,6 U; gilt nicht mehr, je Tageszeit ist ueberall einer gesetzt",
+            FruehVersorgungText.skalierer(1.2, false, ueberall),
+        )
+    }
+
+    /** Aus bleibt aus: ohne gesetzten Skalierer stehen die alten Zeilen, und die Uhrzeiten sagen, dass sie nichts bewirken. */
+    @Test
+    fun `ohne gesetzten Skalierer je Tageszeit bleiben die Zeilen wie bisher`() {
+        val aus = lage(tageszeit = requireNotNull(EarlySupply.TimeOfDayScales.of(0.0, 0.0, 0.0, 630, 900)))
+        val alt = lage()
+        assertEquals(FruehVersorgungText.skalierer(1.2, false, alt), FruehVersorgungText.skalierer(1.2, false, aus))
+        assertEquals(FruehVersorgungText.skalierer(0.8, true, alt), FruehVersorgungText.skalierer(0.8, true, aus))
+        assertEquals(FruehVersorgungText.hauptschalter(alt), FruehVersorgungText.hauptschalter(aus))
+        assertEquals(
+            "0,00 - 04:00 bis 10:30 nicht gesetzt: es gilt der allgemeine Skalierer (1,20)",
+            FruehVersorgungText.tageszeitSkalierer(0.0, EarlySupply.MealTime.MORNING, aus),
+        )
+        assertEquals(
+            "10:30 - ohne Wirkung, solange kein Skalierer je Tageszeit gesetzt ist",
+            FruehVersorgungText.tageszeitBeginn(630, abend = false, aus),
+        )
+    }
+
+    /** Verdrehte Uhrzeiten: der Fehler steht an jedem betroffenen Feld und am Hauptschalter - die fruehe Versorgung ist aus. */
+    @Test
+    fun `verdrehte Uhrzeiten stehen als Fehler am Feld`() {
+        val grund = TageszeitSkalierer.fehlerText(EarlySupply.TimeOfDayScales.Violation.TIMES_OUT_OF_ORDER)
+        assertEquals("die Uhrzeiten muessen aufsteigen (04:00, dann 'Mittag beginnt', dann 'Abend beginnt')", grund)
+        val l = lage(tageszeitFehler = grund)
+        assertEquals(
+            "1,40 - gilt nicht: $grund. Fruehe Versorgung aus",
+            FruehVersorgungText.tageszeitSkalierer(1.4, EarlySupply.MealTime.MORNING, l),
+        )
+        assertEquals("15:00 - gilt nicht: $grund. Fruehe Versorgung aus", FruehVersorgungText.tageszeitBeginn(900, abend = false, l))
+        assertEquals("10:30 - gilt nicht: $grund. Fruehe Versorgung aus", FruehVersorgungText.tageszeitBeginn(630, abend = true, l))
+        assertEquals("An, aber ohne fruehe Versorgung: $grund", FruehVersorgungText.hauptschalter(l))
+        // Jeder Fehler hat seinen eigenen Text.
+        val texte = EarlySupply.TimeOfDayScales.Violation.entries.map(TageszeitSkalierer::fehlerText)
+        assertEquals(texte.size, texte.toSet().size)
     }
 
     @Test

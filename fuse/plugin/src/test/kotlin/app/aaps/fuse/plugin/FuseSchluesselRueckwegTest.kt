@@ -104,6 +104,15 @@ class FuseSchluesselRueckwegTest {
         // Kandidat, Toni 11.11.2026: 0 = kein Korrektur-Totband - der Normalweg dosiert ausserhalb der Mahlzeiten-Frist
         // wie vorher (FuseCycleRunner: State.correctionDeadbandMgdl).
         FuseDoubleKey.CorrectionDeadbandMgdl.key to 0.0,
+        // Kandidat, Toni 11.11.2026: 0 = kein Skalierer je Tageszeit - "Mahlzeit" bucht mit dem allgemeinen wie vorher
+        // (FuseCycleRunner, ekFruehEinstellungen: EarlySupply.Settings.forTimeOfDay laesst die Einstellungen dann stehen).
+        FuseDoubleKey.EarlySupplyScaleMorning.key to 0.0,
+        FuseDoubleKey.EarlySupplyScaleMidday.key to 0.0,
+        FuseDoubleKey.EarlySupplyScaleEvening.key to 0.0,
+        // Die beiden Uhrzeiten dazu wirken nur mit gesetztem Skalierer: ohne ihn werden sie weder angewandt noch geprueft
+        // (EarlySupply.TimeOfDayScales.violation) - jede Uhrzeit ist dann das bisherige Verhalten.
+        FuseIntKey.EarlySupplyMiddayStartMin.key to 630,
+        FuseIntKey.EarlySupplyEveningStartMin.key to 900,
         // Toni 26.10.2026: 0 = im Fenster von "Nur Marker" gilt die Tag- bzw. Nachtschwelle des Kanals. (Dass der Kanal
         // bei "Nur Marker" an bleibt, ist eine Regel der Wahl am Knopf und haengt nicht an diesem Schluessel.)
         FuseDoubleKey.LivenessBgMinMarkerOnlyMgdl.key to 0.0,
@@ -199,6 +208,11 @@ class FuseSchluesselRueckwegTest {
                 assertTrue(neutral in k.min..k.max) { "neutrale Vorgabe von $key nicht einstellbar" }
             }
             is Boolean -> assertEquals(neutral, FuseBooleanKey.entries.single { it.key == key }.defaultValue, "Vorgabe von $key")
+            is Int     -> {
+                val k = FuseIntKey.entries.single { it.key == key }
+                assertEquals(neutral, k.defaultValue, "Vorgabe von $key")
+                assertTrue(neutral in k.min..k.max) { "neutrale Vorgabe von $key nicht einstellbar" }
+            }
             else       -> throw AssertionError("Typ der neutralen Vorgabe von $key nicht geprueft")
         }
         assertTrue(neuMitNeutralerVorgabe.keys.none { it in stand1x }) { "kein 1.x-Schluessel ist neu" }

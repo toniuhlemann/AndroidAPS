@@ -144,6 +144,9 @@ object FuseSettings {
             absatz(FruehVersorgungText.BLOCK_FRUEH),
             FuseBooleanKey.EarlySupplyEnabled, FuseDoubleKey.EarlySupplyBudgetMaxU, FuseDoubleKey.EarlySupplyScaleStable,
             FuseDoubleKey.EarlySupplyScaleAfterLow, FuseDoubleKey.EarlySupplySnackScale,
+            // Kandidat, Toni 11.11.2026: die Skalierer je Tageszeit und ihre beiden Uhrzeiten.
+            FuseDoubleKey.EarlySupplyScaleMorning, FuseDoubleKey.EarlySupplyScaleMidday, FuseDoubleKey.EarlySupplyScaleEvening,
+            FuseIntKey.EarlySupplyMiddayStartMin, FuseIntKey.EarlySupplyEveningStartMin,
             FuseDoubleKey.EarlySupplyInitialShare, FuseDoubleKey.EarlySupplyMaxPortionU,
             FuseDoubleKey.EarlySupplyMaxPerPeriodU, FuseIntKey.EarlySupplyPeriodMin,
             FuseDoubleKey.EarlySupplyTopUpShare,

@@ -2,6 +2,7 @@ package app.aaps.fuse.plugin.export
 
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.RT
+import app.aaps.fuse.core.controller.EarlySupply
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.SlowCorrectionChannel
 import app.aaps.fuse.core.controller.TailLiability
@@ -645,6 +646,33 @@ class FuseStateExportTest {
         )
         assertTrue(FuseStateJson.policyValues(cfg).isNull("correctionDeadbandMgdl"))
         assertEquals(30.0, FuseStateJson.policyValues(cfg.copy(correctionDeadbandMgdl = 30.0)).getDouble("correctionDeadbandMgdl"), 1e-9)
+    }
+
+    /**
+     * Kandidat, Toni 11.11.2026: die Skalierer je Tageszeit stehen nur im Hash, wenn einer gesetzt ist - ohne sie bleibt
+     * er bitgleich. Mit ihnen zaehlen auch die beiden Uhrzeiten, denn sie bestimmen, welcher Skalierer gilt.
+     */
+    @Test
+    fun `Skalierer je Tageszeit bewegen den Hash nur, wenn einer gesetzt ist`() {
+        val frueh = cfg.copy(
+            expectationAccountEnabled = true, earlySupplyEnabled = true,
+            earlySupplySettings = requireNotNull(EarlySupply.Settings.of(1.0, 0.5, 8.0, 0.5, 1.0, 2.0, 10)),
+        )
+        fun skalen(morgens: Double, mittags: Double, abends: Double, mittagAb: Int = 630, abendAb: Int = 900) =
+            requireNotNull(EarlySupply.TimeOfDayScales.of(morgens, mittags, abends, mittagAb, abendAb))
+        fun hash(t: EarlySupply.TimeOfDayScales?) = requireNotNull(FuseStateJson.hashOf(frueh.copy(earlySupplyTimeScales = t)))
+        val ohne = requireNotNull(FuseStateJson.hashOf(frueh))
+        assertEquals(ohne, hash(null), "keine Skalierer ist die Vorgabe")
+        // Nichts gesetzt ist bitgleich, auch mit anderen Uhrzeiten (der Runner gibt dann `null`; der Hash haelt es trotzdem).
+        assertEquals(ohne, hash(skalen(0.0, 0.0, 0.0, mittagAb = 700, abendAb = 1000)), "ohne gesetzten Skalierer zaehlen die Uhrzeiten nicht")
+        val gesetzt = hash(skalen(1.4, 0.0, 0.0))
+        assertTrue(gesetzt != ohne, "ein gesetzter Skalierer bewegt den Hash")
+        assertTrue(gesetzt != hash(skalen(1.5, 0.0, 0.0)), "verschiedene Werte sind verschiedene Politiken")
+        assertTrue(gesetzt != hash(skalen(0.0, 1.4, 0.0)), "das Fenster zaehlt")
+        assertTrue(gesetzt != hash(skalen(1.4, 0.0, 0.0, mittagAb = 700)), "Mittag beginnt zaehlt")
+        assertTrue(gesetzt != hash(skalen(1.4, 0.0, 0.0, abendAb = 1000)), "Abend beginnt zaehlt")
+        // Ohne fruehe Versorgung wirken sie nicht und stehen nicht im Hash.
+        assertEquals(FuseStateJson.hashOf(cfg), FuseStateJson.hashOf(cfg.copy(earlySupplyTimeScales = skalen(1.4, 1.2, 1.3))), "ohne fruehe Versorgung")
     }
 
     /** KI-171: der Trail zeigt, was ein Zyklus von den AAPS-Ablagen sah - und

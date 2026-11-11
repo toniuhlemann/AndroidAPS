@@ -31,9 +31,23 @@ object FruehVersorgungText {
         val einstellung: EarlySupply.Settings?,
         /** Expositionsgrenze im Mahlzeitkontext [U IOB]. */
         val expositionU: Double,
+        /**
+         * Kandidat, Toni 11.11.2026: die Skalierer je Tageszeit, geprueft - auch ohne gesetzten Skalierer (dann fuer die
+         * Uhrzeiten der Fenster). `null` mit [tageszeitFehler].
+         */
+        val tageszeit: EarlySupply.TimeOfDayScales? = null,
+        /** Warum die Skalierer je Tageszeit nicht gelten, als Satzteil; `null` = sie gelten. Dann ist [einstellung] `null`. */
+        val tageszeitFehler: String? = null,
     ) {
         val budgetStabilU: Double? get() = budget(einstellung?.scaleStable)
         val budgetTiefU: Double? get() = budget(einstellung?.scaleAfterLow)
+
+        /** Ist ein Skalierer je Tageszeit gesetzt? Dann gilt der allgemeine nur noch in den Fenstern ohne eigenen. */
+        val tageszeitGesetzt: Boolean get() = tageszeit?.active == true
+
+        /** Gilt der allgemeine Skalierer noch in mindestens einem Fenster? */
+        val allgemeinerGilt: Boolean
+            get() = tageszeit?.let { it.morning == 0.0 || it.midday == 0.0 || it.evening == 0.0 } ?: true
         private fun budget(skala: Double?): Double? {
             val b = bedarf ?: return null
             val e = einstellung ?: return null
@@ -97,7 +111,52 @@ object FruehVersorgungText {
         val b = lage.bedarf ?: return eigen
         val budget = (if (nachTief) lage.budgetTiefU else lage.budgetStabilU) ?: return eigen
         if (wert == 0.0) return "$eigen - " + (if (nachTief) "nach Tief keine fruehe Versorgung" else "keine fruehe Versorgung")
-        return "$eigen - frueher Bedarf ${u(b.rawU)} x ${z(wert)} = Budget ${u(budget)}"
+        val text = "$eigen - frueher Bedarf ${u(b.rawU)} x ${z(wert)} = Budget ${u(budget)}"
+        // Kandidat, Toni 11.11.2026: mit Skalierern je Tageszeit sagt die Zeile, wo dieser noch gilt.
+        if (!lage.tageszeitGesetzt) return text
+        return when {
+            nachTief -> "$text; hoechstens der Skalierer der Tageszeit"
+            lage.allgemeinerGilt -> "$text; gilt, wo je Tageszeit keiner gesetzt ist"
+            else -> "$text; gilt nicht mehr, je Tageszeit ist ueberall einer gesetzt"
+        }
+    }
+
+    private fun uhr(minute: Int) = String.format(Locale.GERMANY, "%02d:%02d", minute / 60, minute % 60)
+
+    /**
+     * Kandidat, Toni 11.11.2026: der Skalierer eines Tageszeitfensters - was "Mahlzeit" dort bei stabilem Start bucht und
+     * davon am Druck abgibt. Er aendert Budget UND Anfangsportion. 0 = nicht gesetzt, dann gilt der allgemeine.
+     */
+    fun tageszeitSkalierer(wert: Double, fenster: EarlySupply.MealTime, lage: Lage): String {
+        val eigen = z(wert, 2)
+        lage.tageszeitFehler?.let { return "$eigen - gilt nicht: $it. Fruehe Versorgung aus" }
+        val frueh = EarlySupply.TimeOfDayScales.MORNING_START_MIN
+        val zeiten = lage.tageszeit?.let { t ->
+            when (fenster) {
+                EarlySupply.MealTime.MORNING -> "${uhr(frueh)} bis ${uhr(t.middayStartMin)}"
+                EarlySupply.MealTime.MIDDAY -> "${uhr(t.middayStartMin)} bis ${uhr(t.eveningStartMin)}"
+                EarlySupply.MealTime.EVENING -> "${uhr(t.eveningStartMin)} bis ${uhr(frueh)}"
+            }
+        } ?: return eigen
+        if (wert == 0.0) {
+            return "$eigen - $zeiten nicht gesetzt: es gilt der allgemeine Skalierer" +
+                (lage.einstellung?.let { " (${z(it.scaleStable, 2)})" } ?: "")
+        }
+        val b = lage.bedarf ?: return "$eigen - $zeiten"
+        val e = lage.einstellung ?: return "$eigen - $zeiten"
+        val budget = max(0.0, min(e.budgetMaxU, wert * b.rawU))
+        val text = StringBuilder("$eigen - $zeiten: Budget ${u(budget)}, am Druck ${u(e.initialShare * budget)}")
+        if (wert * b.rawU > e.budgetMaxU) text.append(" (Budget-Max deckelt)")
+        return text.toString()
+    }
+
+    /** Kandidat, Toni 11.11.2026: die beiden Uhrzeiten der Tageszeitfenster - was ab hier gilt, oder dass sie nichts bewirken. */
+    fun tageszeitBeginn(minute: Int, abend: Boolean, lage: Lage): String {
+        val eigen = uhr(minute)
+        lage.tageszeitFehler?.let { return "$eigen - gilt nicht: $it. Fruehe Versorgung aus" }
+        if (!lage.tageszeitGesetzt) return "$eigen - ohne Wirkung, solange kein Skalierer je Tageszeit gesetzt ist"
+        val frueh = uhr(EarlySupply.TimeOfDayScales.MORNING_START_MIN)
+        return if (abend) "$eigen - ab hier Abend, bis $frueh am Morgen" else "$eigen - ab hier Mittag; davor, ab $frueh, Fruehstueck"
     }
 
     /**
@@ -113,6 +172,8 @@ object FruehVersorgungText {
         if (budget <= 0.0) return "$eigen - kein Snack-Knopf: ein Snack bekaeme kein Budget"
         val text = StringBuilder("$eigen - Snack-Budget ${u(budget)}, am Druck ${u(e.initialShare * budget)}")
         if (wert > e.scaleStable) text.append(" (hoechstens wie Mahlzeit, Skalierer ${z(e.scaleStable)})")
+        // Kandidat, Toni 11.11.2026: mit Skalierern je Tageszeit ist die Mahlzeit die der Tageszeit.
+        if (lage.tageszeitGesetzt) text.append("; je Tageszeit hoechstens der Skalierer des Fensters")
         return text.toString()
     }
 
@@ -149,9 +210,12 @@ object FruehVersorgungText {
     fun hauptschalter(lage: Lage): String {
         if (!lage.fruehAn) return "Aus - 'Mahlzeit' und 'Snack' laufen ueber das Konto ohne fruehe Versorgung"
         if (!lage.kontoAn) return "An, aber wirkungslos: das Erwartungskonto ist aus"
+        // Kandidat, Toni 11.11.2026: ein ungueltiger Tageszeit-Wert schaltet die fruehe Versorgung ab - mit dem Grund.
+        lage.tageszeitFehler?.let { return "An, aber ohne fruehe Versorgung: $it" }
         val s = lage.budgetStabilU ?: return "An - Budget nicht berechenbar (Kurve oder Werte pruefen)"
         val t = lage.budgetTiefU
-        return "An - Budget heute ${u(s)} stabil" + (t?.let { ", ${u(it)} nach Tief" } ?: "")
+        val text = "An - Budget heute ${u(s)} stabil" + (t?.let { ", ${u(it)} nach Tief" } ?: "")
+        return if (lage.tageszeitGesetzt) "$text (allgemeiner Skalierer; je Tageszeit steht es am Feld)" else text
     }
 
     const val G1 = "Anfangsportion uebergeht den Guard (wie die Direktdosis)"

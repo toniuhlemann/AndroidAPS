@@ -70,6 +70,15 @@ object EarlySupply {
             return copy(scaleStable = min(scaleStable, s), scaleAfterLow = min(scaleAfterLow, s))
         }
 
+        /**
+         * Kandidat, Toni 11.11.2026: der Skalierer des Tageszeitfensters ([TimeOfDayScales]) ersetzt den "bei stabilem
+         * Start". Der "nach Tief" wird hoechstens so gross - ein Start im Tief bucht nie mehr als ein stabiler. `null`
+         * (im Fenster nichts gesetzt) oder ein ungueltiger Wert laesst die Einstellungen unveraendert.
+         */
+        fun forTimeOfDay(scale: Double?): Settings =
+            if (scale == null || !scale.isFinite() || scale <= 0.0 || scale > MAX_SCALE) this
+            else copy(scaleStable = scale, scaleAfterLow = min(scaleAfterLow, scale))
+
         companion object {
             /**
              * HCL STUFE 2 (Toni 25.10.2026): das Konto einer Mahlzeit aus dem Bolusrechner - nur der Skalierer [scale]
@@ -100,6 +109,91 @@ object EarlySupply {
              * ungueltige Werte): kein Budget, keine Portion - es fliesst nur der gemessene Anteil.
              */
             val NEUTRAL = Settings(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, MAX_PERIOD_MIN)
+        }
+    }
+
+    /** Die drei Tageszeitfenster des Knopfs "Mahlzeit" ([TimeOfDayScales]). */
+    enum class MealTime { MORNING, MIDDAY, EVENING }
+
+    /**
+     * SKALIERER JE TAGESZEIT (Kandidat, Toni 11.11.2026). Anlass: am Trail passte fuer den Rest einer Mahlzeit morgens ein
+     * hoeherer Skalierer als mittags und abends - eine Zahl fuer alle Tageszeiten ist ein Kompromiss.
+     *
+     * Drei Fenster nach der Uhrzeit des MARKERS: Fruehstueck von [MORNING_START_MIN] bis [middayStartMin], Mittag von
+     * dort bis [eveningStartMin], Abend der Rest (auch die Nacht bis [MORNING_START_MIN]). Je Fenster ein Skalierer;
+     * 0 = nicht gesetzt, dann gilt der allgemeine "bei stabilem Start". Er wird am Marker festgehalten wie jeder
+     * Skalierer - eine spaetere Aenderung verschiebt eine laufende Mahlzeit nicht.
+     *
+     * Er ersetzt den Skalierer GANZ: mit ihm aendern sich das Budget und damit die Anfangsportion, die Anforderung der
+     * weiteren Portionen und die Erwartung, an der die Mahlzeit gemessen wird - nicht nur die Folgeportionen.
+     *
+     * Die Uhrzeiten muessen aufsteigen: [MORNING_START_MIN] < [middayStartMin] < [eveningStartMin]. Sonst gilt die
+     * Eingabe nicht ([violation]) - ein verdrehtes Paar liesse ein Fenster still verschwinden. Geprueft wird das nur, wenn
+     * ein Skalierer gesetzt ist: ohne ihn sind die Uhrzeiten ohne Wirkung, und aus bleibt aus.
+     */
+    data class TimeOfDayScales(
+        val morning: Double,
+        val midday: Double,
+        val evening: Double,
+        /** Beginn des Mittagsfensters [min ab Mitternacht]. */
+        val middayStartMin: Int,
+        /** Beginn des Abendfensters [min ab Mitternacht]. */
+        val eveningStartMin: Int,
+    ) {
+        /** Warum eine Eingabe nicht gilt ([violation]). */
+        enum class Violation {
+            /** Ein Skalierer liegt ausserhalb 0..[MAX_SCALE]. */
+            SCALE_OUT_OF_RANGE,
+
+            /** Eine Uhrzeit liegt ausserhalb des Tages. */
+            TIME_OUT_OF_RANGE,
+
+            /** Die Uhrzeiten steigen nicht auf: [MORNING_START_MIN] < Mittag beginnt < Abend beginnt. */
+            TIMES_OUT_OF_ORDER,
+        }
+
+        /** Ist ueberhaupt ein Fenster gesetzt? Ohne das gilt ueberall der allgemeine Skalierer. */
+        val active: Boolean get() = morning > 0.0 || midday > 0.0 || evening > 0.0
+
+        /** Das Fenster zur Uhrzeit [minuteOfDay] (0..1439) - fuer jede Eingabe genau eines. */
+        fun mealTimeAt(minuteOfDay: Int): MealTime = when {
+            minuteOfDay >= MORNING_START_MIN && minuteOfDay < middayStartMin -> MealTime.MORNING
+            minuteOfDay >= middayStartMin && minuteOfDay < eveningStartMin -> MealTime.MIDDAY
+            else -> MealTime.EVENING
+        }
+
+        /** Der Skalierer des Fensters zur Uhrzeit [minuteOfDay]; `null` = dort nicht gesetzt. */
+        fun scaleAt(minuteOfDay: Int): Double? = when (mealTimeAt(minuteOfDay)) {
+            MealTime.MORNING -> morning
+            MealTime.MIDDAY -> midday
+            MealTime.EVENING -> evening
+        }.takeIf { it > 0.0 }
+
+        companion object {
+            /** Ab hier zaehlt ein Marker als Fruehstueck [min ab Mitternacht] (04:00); davor gehoert er zum Abend. */
+            const val MORNING_START_MIN = 240
+
+            /** Vorgabe "Mittag beginnt" (10:30) und "Abend beginnt" (15:00) [min ab Mitternacht]. */
+            const val MIDDAY_START_DEFAULT_MIN = 630
+            const val EVENING_START_DEFAULT_MIN = 900
+
+            /** Der Grund, warum die Eingabe nicht gilt; `null` = sie gilt. Die Reihenfolge zaehlt nur mit gesetztem Skalierer. */
+            fun violation(morning: Double, midday: Double, evening: Double, middayStartMin: Int, eveningStartMin: Int): Violation? {
+                fun ok(x: Double) = x.isFinite() && x >= 0.0 && x <= MAX_SCALE
+                if (!ok(morning) || !ok(midday) || !ok(evening)) return Violation.SCALE_OUT_OF_RANGE
+                if (middayStartMin !in 0..1439 || eveningStartMin !in 0..1439) return Violation.TIME_OUT_OF_RANGE
+                val gesetzt = morning > 0.0 || midday > 0.0 || evening > 0.0
+                if (gesetzt && !(MORNING_START_MIN < middayStartMin && middayStartMin < eveningStartMin)) return Violation.TIMES_OUT_OF_ORDER
+                return null
+            }
+
+            /**
+             * Geprueft; `null` = ungueltig ([violation]). Der Aufrufer schaltet dann die fruehe Versorgung ab wie bei
+             * jedem ungueltigen Wert - nie ein stiller Ersatz durch den allgemeinen Skalierer.
+             */
+            fun of(morning: Double, midday: Double, evening: Double, middayStartMin: Int, eveningStartMin: Int): TimeOfDayScales? =
+                if (violation(morning, midday, evening, middayStartMin, eveningStartMin) != null) null
+                else TimeOfDayScales(morning, midday, evening, middayStartMin, eveningStartMin)
         }
     }
 

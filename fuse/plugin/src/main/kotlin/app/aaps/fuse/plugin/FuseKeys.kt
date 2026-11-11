@@ -10,6 +10,7 @@ import app.aaps.core.keys.interfaces.NonPreferenceKey
 import app.aaps.core.keys.interfaces.StringNonPreferenceKey
 import app.aaps.core.keys.interfaces.StringPreferenceKey
 import app.aaps.core.keys.interfaces.TextRef
+import app.aaps.fuse.core.controller.EarlySupply
 import app.aaps.fuse.core.controller.SlowCorrectionChannel
 
 /**
@@ -464,6 +465,17 @@ enum class FuseDoubleKey(
      */
     EarlySupplySnackScale("fuse_early_supply_snack_scale", 1.0, 0.0, app.aaps.fuse.core.controller.EarlySupply.MAX_SCALE, title = TextRef.AndroidRes(R.string.fuse_early_supply_snack_scale_title), summary = TextRef.AndroidRes(R.string.fuse_early_supply_snack_scale_summary), unitType = UnitType.DOUBLE_2),
 
+    /**
+     * Kandidat, Toni 11.11.2026: der Skalierer je Tageszeit (0..2). Bei "Mahlzeit" am Marker ersetzt der Skalierer des
+     * Fensters den "bei stabilem Start" - mit ihm aendern sich Budget und Anfangsportion. 0 (ab Werk) = nicht gesetzt,
+     * dann gilt der allgemeine. Die Fenster nach der Uhrzeit des Markers: Fruehstueck ab 04:00 bis
+     * [FuseIntKey.EarlySupplyMiddayStartMin], Mittag bis [FuseIntKey.EarlySupplyEveningStartMin], Abend der Rest
+     * ([EarlySupply.TimeOfDayScales]).
+     */
+    EarlySupplyScaleMorning("fuse_early_supply_scale_morning", 0.0, 0.0, EarlySupply.MAX_SCALE, title = TextRef.AndroidRes(R.string.fuse_early_supply_scale_morning_title), summary = TextRef.AndroidRes(R.string.fuse_early_supply_scale_morning_summary), unitType = UnitType.DOUBLE_2),
+    EarlySupplyScaleMidday("fuse_early_supply_scale_midday", 0.0, 0.0, EarlySupply.MAX_SCALE, title = TextRef.AndroidRes(R.string.fuse_early_supply_scale_midday_title), summary = TextRef.AndroidRes(R.string.fuse_early_supply_scale_midday_summary), unitType = UnitType.DOUBLE_2),
+    EarlySupplyScaleEvening("fuse_early_supply_scale_evening", 0.0, 0.0, EarlySupply.MAX_SCALE, title = TextRef.AndroidRes(R.string.fuse_early_supply_scale_evening_title), summary = TextRef.AndroidRes(R.string.fuse_early_supply_scale_evening_summary), unitType = UnitType.DOUBLE_2),
+
     /** Obergrenze des Gesamtbudgets je Mahlzeit [U]. Standard 0 = keine fruehe Versorgung. */
     EarlySupplyBudgetMaxU("fuse_early_supply_budget_max_u", 0.0, 0.0, app.aaps.fuse.core.controller.EarlySupply.MAX_BUDGET_U, title = TextRef.AndroidRes(R.string.fuse_early_supply_budget_max_title), summary = TextRef.AndroidRes(R.string.fuse_early_supply_budget_max_summary), unitType = UnitType.DOUBLE_2),
 
@@ -767,6 +779,14 @@ enum class FuseIntKey(
 
     /** Fruehe Versorgung: Laenge des Zeitraums fuer die Hoechstmenge der weiteren Portionen [min]. */
     EarlySupplyPeriodMin("fuse_early_supply_period_min", 10, app.aaps.fuse.core.controller.EarlySupply.MIN_PERIOD_MIN, app.aaps.fuse.core.controller.EarlySupply.MAX_PERIOD_MIN, title = TextRef.AndroidRes(R.string.fuse_early_supply_period_title), summary = TextRef.AndroidRes(R.string.fuse_early_supply_period_summary), unitType = UnitType.MIN),
+
+    /**
+     * Kandidat, Toni 11.11.2026: die beiden Uhrzeiten der Skalierer je Tageszeit [min ab Mitternacht] - s.
+     * [FuseDoubleKey.EarlySupplyScaleMorning]. Sie muessen aufsteigen (04:00, Mittag, Abend); sonst gilt die Eingabe
+     * nicht, sobald ein Skalierer gesetzt ist.
+     */
+    EarlySupplyMiddayStartMin("fuse_early_supply_midday_start_min", EarlySupply.TimeOfDayScales.MIDDAY_START_DEFAULT_MIN, 0, 1439, title = TextRef.AndroidRes(R.string.fuse_early_supply_midday_start_title), summary = TextRef.AndroidRes(R.string.fuse_early_supply_midday_start_summary), unitType = UnitType.TIME_OF_DAY),
+    EarlySupplyEveningStartMin("fuse_early_supply_evening_start_min", EarlySupply.TimeOfDayScales.EVENING_START_DEFAULT_MIN, 0, 1439, title = TextRef.AndroidRes(R.string.fuse_early_supply_evening_start_title), summary = TextRef.AndroidRes(R.string.fuse_early_supply_evening_start_summary), unitType = UnitType.TIME_OF_DAY),
 }
 
 /**

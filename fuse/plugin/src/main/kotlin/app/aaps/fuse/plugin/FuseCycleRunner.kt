@@ -24,6 +24,7 @@ import app.aaps.core.data.model.ICfg
 import app.aaps.core.data.model.iobCalc
 import app.aaps.fuse.core.adapter.CoreInputGuard
 import app.aaps.fuse.core.adapter.CycleAssembly
+import app.aaps.fuse.core.controller.EarlySupply
 import app.aaps.fuse.core.controller.ExpectationLedger
 import app.aaps.fuse.core.controller.TbrActuation
 import app.aaps.fuse.core.controller.EpisodeDeadline
@@ -6750,8 +6751,10 @@ class FuseCycleRunner(
                 hclMahlzeiten.rechnung(hclCalcTs)
                     ?.let { app.aaps.fuse.core.controller.EarlySupply.hclScale(it.carbsInsulinU, p.curve) } ?: 0.0
             }
+            // Kandidat, Toni 11.11.2026: der Knopf bucht mit dem Skalierer der Tageszeit des Markers; der Marker aus dem
+            // Bolusrechner bleibt bei dem der Rechnung.
             val frueh = if (hclSkalierer != null) app.aaps.fuse.core.controller.EarlySupply.Settings.forHcl(hclSkalierer)
-            else ekFruehEinstellungen(cfg, nurErwartung, snack)
+            else ekFruehEinstellungen(cfg, nurErwartung, snack, markerTs = dosingCtx.authorizationId)
             val schalter =
                 if (hclSkalierer == null && cfg.earlySupplySettings != null) cfg.earlySupplySwitches
                 else app.aaps.fuse.core.controller.EarlySupply.Switches.NONE
@@ -7165,17 +7168,26 @@ class FuseCycleRunner(
         )
     }
 
-    /** Was der Druck bucht: "Mahlzeit" die Einstellungen, "Snack" mit dem Snack-Skalierer, "Nur Marker" Budget 0. */
+    /**
+     * Was der Druck bucht: "Mahlzeit" die Einstellungen, "Snack" mit dem Snack-Skalierer, "Nur Marker" Budget 0.
+     *
+     * Kandidat, Toni 11.11.2026: bei "Mahlzeit" gilt der Skalierer des Tageszeitfensters, in dem der Marker liegt
+     * ([markerTs]), wenn dort einer gesetzt ist ([EarlySupply.TimeOfDayScales]). Es zaehlt die Uhrzeit des MARKERS,
+     * nicht die des Zyklus - kommt die Buchung erst spaeter (das Insulinmodell fehlte, ein Neustart lag vor dem ersten
+     * Zyklus) und liegt dazwischen eine Fenstergrenze, bucht sie trotzdem das Fenster des Markers. Ein "Snack" bucht
+     * weiter hoechstens so viel wie diese Mahlzeit; "Nur Marker" bleibt beim allgemeinen Skalierer. Ohne [markerTs]
+     * (die Frage nach dem Budget-Max) wie bisher.
+     */
     private fun ekFruehEinstellungen(
-        cfg: Config, nurErwartung: Boolean, snack: Boolean = false,
-    ): app.aaps.fuse.core.controller.EarlySupply.Settings =
+        cfg: Config, nurErwartung: Boolean, snack: Boolean = false, markerTs: Long? = null,
+    ): EarlySupply.Settings =
         cfg.earlySupplySettings?.let { s ->
-            when {
-                !nurErwartung || !cfg.earlySupplyEnabled -> s.copy(budgetMaxU = 0.0)
-                snack -> s.forSnack(cfg.earlySupplySnackScale)
-                else -> s
+            if (!nurErwartung || !cfg.earlySupplyEnabled) s.copy(budgetMaxU = 0.0)
+            else {
+                val mahlzeit = s.forTimeOfDay(markerTs?.let { TageszeitSkalierer.fuerMarker(cfg.earlySupplyTimeScales, it) })
+                if (snack) mahlzeit.forSnack(cfg.earlySupplySnackScale) else mahlzeit
             }
-        } ?: app.aaps.fuse.core.controller.EarlySupply.Settings.NEUTRAL
+        } ?: EarlySupply.Settings.NEUTRAL
 
     /** E-034 v2: braucht die Buchung jetzt das Insulinmodell? Nur ein moegliches Budget > 0 braucht es. */
     private fun ekBuchungBrauchtModell(cfg: Config, nurErwartung: Boolean): Boolean =
@@ -8751,6 +8763,12 @@ class FuseCycleRunner(
         /** Toni 24.10.2026: der Skalierer bei "Snack" - s. [FuseDoubleKey.EarlySupplySnackScale]; geprueft in `forSnack`. */
         val earlySupplySnackScale: Double = FuseDoubleKey.EarlySupplySnackScale.defaultValue,
         /**
+         * Kandidat, Toni 11.11.2026: die Skalierer je Tageszeit - nur wenn einer gesetzt ist, sonst `null` (dann gilt
+         * ueberall der allgemeine, bitgleich zu vorher). Ein ungueltiger Wert macht [earlySupplySettings] ungueltig.
+         * Gelesen in [TageszeitSkalierer].
+         */
+        val earlySupplyTimeScales: EarlySupply.TimeOfDayScales? = null,
+        /**
          * HCL STUFE 2 (Toni 25.10.2026): Guard und Schwanz rechnen die bestaetigte Mahlzeit eines Markers aus dem
          * Bolusrechner an - s. [FuseBooleanKey.HclMealsEnabled]. Vorgabe aus: ohne HCL-Marker bitgleich.
          */
@@ -8908,11 +8926,15 @@ class FuseCycleRunner(
      * dasselbe Muster wie das Konto: aus bleibt die Konfiguration auf den
      * Standardwerten, und GN-A sieht dieselbe Konfiguration wie vorher.
      */
-    private fun mitFrueherVersorgung(basis: Config): Config =
-        if (!preferences.get(FuseBooleanKey.EarlySupplyEnabled)) basis
-        else basis.copy(
+    private fun mitFrueherVersorgung(basis: Config): Config {
+        if (!preferences.get(FuseBooleanKey.EarlySupplyEnabled)) return basis
+        // Kandidat, Toni 11.11.2026: die Skalierer je Tageszeit. Ein ungueltiger Wert - auch verdrehte Uhrzeiten bei
+        // gesetztem Skalierer - macht die fruehe Versorgung ungueltig wie jeder andere Wert dieses Blocks: nie ein stiller
+        // Ersatz durch den allgemeinen Skalierer. Ohne gesetzten Skalierer bleibt alles wie vorher.
+        val tageszeit = TageszeitSkalierer.lesen(preferences)
+        return basis.copy(
             earlySupplyEnabled = true,
-            earlySupplySettings = app.aaps.fuse.core.controller.EarlySupply.Settings.of(
+            earlySupplySettings = if (tageszeit.fehler != null) null else app.aaps.fuse.core.controller.EarlySupply.Settings.of(
                 scaleStable = preferences.get(FuseDoubleKey.EarlySupplyScaleStable),
                 scaleAfterLow = preferences.get(FuseDoubleKey.EarlySupplyScaleAfterLow),
                 budgetMaxU = preferences.get(FuseDoubleKey.EarlySupplyBudgetMaxU),
@@ -8929,7 +8951,9 @@ class FuseCycleRunner(
                 tailWithExpectation = preferences.get(FuseBooleanKey.EarlySupplyTailWithExpectation),
             ),
             earlySupplySnackScale = preferences.get(FuseDoubleKey.EarlySupplySnackScale),
+            earlySupplyTimeScales = tageszeit.wirksam,
         )
+    }
 
     /**
      * Baut die Predictor-Eingabe. Die beiden Zeitachsen-Gates sind hier
