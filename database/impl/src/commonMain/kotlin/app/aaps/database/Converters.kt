@@ -26,8 +26,13 @@ class Converters {
     @TypeConverter
     fun fromAction(action: Action?) = action?.name
 
+    /**
+     * An action name this build does not know reads as [Action.UNKNOWN] instead of throwing. Such a row
+     * comes from another build (a fork, an older or a newer version) that wrote the same table. With
+     * `valueOf` one such row made every read of the user entries fail.
+     */
     @TypeConverter
-    fun toAction(action: String?) = action?.let { Action.valueOf(it) }
+    fun toAction(action: String?) = action?.let { name -> Action.entries.firstOrNull { it.name == name } ?: Action.UNKNOWN }
 
     @TypeConverter
     fun fromSource(source: Sources?) = source?.name
