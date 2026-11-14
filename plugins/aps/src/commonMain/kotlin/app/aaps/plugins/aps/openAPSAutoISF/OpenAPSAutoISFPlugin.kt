@@ -153,7 +153,7 @@ open class OpenAPSAutoISFPlugin(
     override var lastAPSResult: APSResult? = null
     private var consoleError = mutableListOf<String>()
     private var consoleLog = mutableListOf<String>()
-    val autoIsfVersion = "3.2.0"
+    val autoIsfVersion = "3.2.1"
     val autoIsfWeights; get() = preferences.get(BooleanKey.ApsUseAutoIsfWeights)
     private val autoISF_max; get() = preferences.get(DoubleKey.ApsAutoIsfMax)
     private val autoISF_min; get() = preferences.get(DoubleKey.ApsAutoIsfMin)
@@ -897,7 +897,9 @@ open class OpenAPSAutoISFPlugin(
         val useSleepState = automationStateService.inState("Sleeping", "True")
         aapsLogger.debug(LTag.APS, "State json for Sleep mode: {\"Sleeping\":\"${automationStateService.getState("Sleeping")}\"}")
         // really still sleeping?
-        if (existSleepState && useSleepState && (recentSteps5Minutes+recentSteps10Minutes+recentSteps15Minutes < recentSteps30Minutes) ) {  // && now>=inactivity_idle_end) {
+        // AutoISF 3.2.1 (T-o-b-i-a-s 3.4.2.6+aisf3.2.1): ask when there were no steps between 15 and 30 minutes ago.
+        // The 5, 10 and 15 minute values are 5 minute slices, the 30 minute value is the whole half hour.
+        if (useSleepState && (recentSteps5Minutes+recentSteps10Minutes+recentSteps15Minutes == recentSteps30Minutes) ) {     //no steps between 15m and 30m; was: && now>=inactivity_idle_end) {
             automationStateService.setState("query_got_up", "query_it")
         }
         aapsLogger.debug(LTag.APS, "State json for got up query: {\"query_got_up\":\"${automationStateService.getState("query_got_up")}\"}")

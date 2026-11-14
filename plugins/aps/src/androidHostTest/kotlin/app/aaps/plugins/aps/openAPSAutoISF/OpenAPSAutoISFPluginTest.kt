@@ -26,6 +26,10 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.Mock
+import org.mockito.kotlin.any
+import org.mockito.kotlin.eq
+import org.mockito.kotlin.never
+import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 
 class OpenAPSAutoISFPluginTest : TestBaseWithProfile() {
@@ -121,6 +125,29 @@ class OpenAPSAutoISFPluginTest : TestBaseWithProfile() {
         // assertThat(openAPSAutoISFPlugin.activityMonitor(false, 99.0, 90.0, 2)).isEqualTo(1.3) // inactivity; disable phoneMoved first for this to work !!
         //whenever(StepService.getRecentStepCount5Min()).thenReturn(500)
         // assertThat(openAPSAutoISFPlugin.activityMonitor(false, 99.0, 90.0, 2)).isEqualTo(0.85) // activity
+    }
+
+    /** The version string goes into the profile of every run and into the logs - it names the official release. */
+    @Test
+    fun `the autoISF version is 3_2_1`() {
+        assertThat(openAPSAutoISFPlugin.autoIsfVersion).isEqualTo("3.2.1")
+    }
+
+    /**
+     * AutoISF 3.2.1 (T-o-b-i-a-s 3.4.2.6+aisf3.2.1): while the state "Sleeping" is "True", the got up query is set when
+     * there were no steps between 15 and 30 minutes ago. Without step data every slice is 0, so the query is set while
+     * sleeping. The version before 3.2.1 asked only when there WERE steps in that half hour, so here it stayed quiet.
+     */
+    @Test
+    fun `the got up query follows autoISF 3_2_1`() = runTest {
+        whenever(automationStateService.hasStateValues("Sleeping")).thenReturn(true)
+        whenever(automationStateService.inState("Sleeping", "True")).thenReturn(false)
+        openAPSAutoISFPlugin.activityMonitor(false, 99.0, 90.0, 2)
+        verify(automationStateService, never()).setState(eq("query_got_up"), any())
+
+        whenever(automationStateService.inState("Sleeping", "True")).thenReturn(true)
+        openAPSAutoISFPlugin.activityMonitor(false, 99.0, 90.0, 2)
+        verify(automationStateService).setState("query_got_up", "query_it")
     }
 
     @Test
