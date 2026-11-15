@@ -56,13 +56,15 @@ class FuseChipStandTest {
         bindung: String = "smbRatio",
         block: FuseController.Block = FuseController.Block.NONE,
         state: FuseController.State? = state(),
+        /** Der Bedarf des Reglers; `null` = in diesem Zyklus nicht gerechnet (Stopp am Guard oder am Schwanz). */
+        bedarfU: Double? = 0.8,
     ) = FuseCycleRunner.Outcome(
         tbrChanged = false,
         decision = FuseController.Decision(
             smbU = 0.2,
             tbr = FuseController.TbrAction.KEEP_CURRENT,
             block = block,
-            insulinReqU = 0.8,
+            insulinReqU = bedarfU,
             predAtReleaseMgdl = 130.0,
             minLowerMgdl = 90.0,
             bindingLimit = bindung,
@@ -106,8 +108,10 @@ class FuseChipStandTest {
         kontoStatus: AccountStatus? = null,
         erwartet: Double? = null,
         kanal: FuseOverviewSource.ChannelState? = null,
-        /** Der Bedarf des Reglers; `null` = in diesem Zyklus nicht gerechnet (Stopp am Guard oder am Schwanz). */
+        /** Der Bedarf des Ringpunkts; `null` = in diesem Zyklus keiner. */
         bedarfU: Double? = 0.8,
+        /** Der Bedarf des Ringpunkts ist der des Kontos, nicht der des Reglers. */
+        bedarfVomKonto: Boolean = false,
     ) = FuseOverviewSource.Point(
         timestamp = jetzt - 60_000L,
         driveMgdlPerMin = 1.2,
@@ -124,6 +128,7 @@ class FuseChipStandTest {
         channel = kanal,
         bindingLimit = "smbRatio",
         insulinReqU = bedarfU,
+        insulinReqFromAccount = bedarfVomKonto,
     )
 
     private fun konto(budgetU: Double = 4.0, gebuchtU: Double = 0.8, skalierer: Double = 1.4) = ExpectationAccount.State(
@@ -369,40 +374,67 @@ class FuseChipStandTest {
 
     // ---- Bedarf ------------------------------------------------------------------------------------------------
 
+    /** Der Chip rechnet den Bedarf nicht selbst: er zeigt den des Ringpunkts, mit dessen Kennzeichen. */
+    @Test
+    fun `der Bedarf ist der des Ringpunkts`() {
+        val vomKonto = FuseChipStand.aus(outcome(), punkt(bedarfU = 0.7, bedarfVomKonto = true), null)
+        assertEquals(0.7, vomKonto.insulinReqU)
+        assertTrue(vomKonto.insulinReqFromAccount)
+
+        val vomRegler = FuseChipStand.aus(outcome(), punkt(bedarfU = 0.8), null)
+        assertEquals(0.8, vomRegler.insulinReqU)
+        assertFalse(vomRegler.insulinReqFromAccount)
+
+        val keiner = FuseChipStand.aus(outcome(), punkt(bedarfU = null), null)
+        assertNull(keiner.insulinReqU)
+        assertFalse(keiner.insulinReqFromAccount)
+    }
+
+    /** Der Chip-Stand ueber die Kette des Plugins: der Ringpunkt aus dem Ausgang, der Chip aus beiden. */
+    private fun ueberRingpunkt(o: FuseCycleRunner.Outcome) = FuseChipStand.aus(o, FuseGraphZyklus.punkt(o, null), null)
+
     /**
      * Stoppt der Normalweg am Guard, rechnet der Regler keinen Bedarf - die Portion kommt ueber die Marker-Freigabe aus
-     * dem Konto. Dann zeigt die Kachel den Bedarf des Kontos (Toni 15.11.2026), und sagt, woher er kommt.
+     * dem Konto. Dann traegt der Ringpunkt den Bedarf des Kontos (Toni 15.11.2026) und sagt, woher er kommt - fuer die
+     * Kachel und fuer die Halte-Pille des Hauptgraphen.
      */
     @Test
-    fun `ohne Bedarf des Reglers zeigt die Kachel den des Kontos`() {
-        val chip = FuseChipStand.aus(mit(outcome(), kontoExport()), punkt(kontoStatus = AccountStatus.AKTIV, bedarfU = null), null)
+    fun `ohne Bedarf des Reglers zeigen Ringpunkt und Kachel den des Kontos`() {
+        val o = mit(outcome(bedarfU = null), kontoExport())
+        val punkt = FuseGraphZyklus.punkt(o, null)
 
         // lieferbar = min(Anforderung, gemessener Anteil + Rest dieses Zyklus)
+        assertEquals(0.7, punkt.insulinReqU!!, 1e-12)
+        assertTrue(punkt.insulinReqFromAccount)
+        val chip = ueberRingpunkt(o)
         assertEquals(0.7, chip.insulinReqU!!, 1e-12)
         assertTrue(chip.insulinReqFromAccount)
     }
 
     @Test
     fun `der Bedarf des Reglers geht vor dem des Kontos`() {
-        val chip = FuseChipStand.aus(mit(outcome(), kontoExport()), punkt(kontoStatus = AccountStatus.AKTIV, bedarfU = 0.8), null)
+        val chip = ueberRingpunkt(mit(outcome(bedarfU = 0.8), kontoExport()))
 
         assertEquals(0.8, chip.insulinReqU)
         assertFalse(chip.insulinReqFromAccount)
         // Auch ein gerechneter Bedarf von null ist ein Bedarf des Reglers.
-        val nullBedarf = FuseChipStand.aus(mit(outcome(), kontoExport()), punkt(kontoStatus = AccountStatus.AKTIV, bedarfU = 0.0), null)
+        val nullBedarf = ueberRingpunkt(mit(outcome(bedarfU = 0.0), kontoExport()))
         assertEquals(0.0, nullBedarf.insulinReqU)
         assertFalse(nullBedarf.insulinReqFromAccount)
+        // Ein nicht endlicher Bedarf des Reglers ist keiner: dann gilt der des Kontos.
+        val nichtEndlich = ueberRingpunkt(mit(outcome(bedarfU = Double.NaN), kontoExport()))
+        assertEquals(0.7, nichtEndlich.insulinReqU!!, 1e-12)
+        assertTrue(nichtEndlich.insulinReqFromAccount)
     }
 
     /** Ohne geltendes Konto gibt es keinen Kontobedarf - weder im Rueckfall noch ausserhalb einer Mahlzeit. */
     @Test
     fun `ohne Bedarf des Reglers und ohne geltendes Konto bleibt die Kachel leer`() {
-        val rueckfall = mit(outcome(), kontoExport(gilt = false, rueckfall = "ACCOUNT_LOST"))
-        val imRueckfall = FuseChipStand.aus(rueckfall, punkt(kontoStatus = AccountStatus.OHNE_KONTO, bedarfU = null), null)
+        val imRueckfall = ueberRingpunkt(mit(outcome(bedarfU = null), kontoExport(gilt = false, rueckfall = "ACCOUNT_LOST")))
         assertNull(imRueckfall.insulinReqU)
         assertFalse(imRueckfall.insulinReqFromAccount)
 
-        val ohneMahlzeit = FuseChipStand.aus(outcome(), punkt(bedarfU = null), null)
+        val ohneMahlzeit = ueberRingpunkt(outcome(bedarfU = null))
         assertNull(ohneMahlzeit.insulinReqU)
         assertFalse(ohneMahlzeit.insulinReqFromAccount)
     }
@@ -410,7 +442,7 @@ class FuseChipStandTest {
     /** Der Kontobedarf ist die lieferbare Menge des Kontos - dieselbe, die der Regler als Kontobedarf bekommt. */
     @Test
     fun `der Kontobedarf ist die lieferbare Menge, nicht berechenbar zaehlt als null`() {
-        fun bedarf(eval: ExpectationAccount.Evaluation) = FuseChipStand.kontoBedarfU(mit(outcome(), kontoExport(eval = eval)))
+        fun bedarf(eval: ExpectationAccount.Evaluation) = FuseGraphZyklus.kontoBedarfU(mit(outcome(), kontoExport(eval = eval)))
 
         // Die Anforderung begrenzt.
         assertEquals(0.5, bedarf(auswertung(anforderungU = 0.5, gemessenU = 0.4, restZyklusU = 0.3))!!, 1e-12)
@@ -421,18 +453,18 @@ class FuseChipStandTest {
         // Nicht berechenbar zaehlt als 0, wie im Regler.
         assertEquals(0.0, bedarf(auswertung(anforderungU = Double.NaN))!!, 0.0)
         // Ohne geltendes Konto gibt es keinen.
-        assertNull(FuseChipStand.kontoBedarfU(outcome()))
-        assertNull(FuseChipStand.kontoBedarfU(mit(outcome(), kontoExport(gilt = false, rueckfall = "NO_CURVE"))))
+        assertNull(FuseGraphZyklus.kontoBedarfU(outcome()))
+        assertNull(FuseGraphZyklus.kontoBedarfU(mit(outcome(), kontoExport(gilt = false, rueckfall = "NO_CURVE"))))
     }
 
     /** Wie im Regler: bei einer Rechner-Mahlzeit verlangt kein Weg mehr, als die gemeinsame Bilanz traegt. */
     @Test
     fun `die Grenze der Bilanz deckelt den Kontobedarf`() {
         val o = mit(outcome(), kontoExport(), bilanz(g = 0.5))
-        assertEquals(0.5, FuseChipStand.kontoBedarfU(o)!!, 1e-12)
+        assertEquals(0.5, FuseGraphZyklus.kontoBedarfU(o)!!, 1e-12)
         // Eine weitere Grenze aendert nichts, eine nicht endliche zaehlt nicht.
-        assertEquals(0.7, FuseChipStand.kontoBedarfU(mit(outcome(), kontoExport(), bilanz(g = 3.0)))!!, 1e-12)
-        assertEquals(0.7, FuseChipStand.kontoBedarfU(mit(outcome(), kontoExport(), bilanz(g = null)))!!, 1e-12)
+        assertEquals(0.7, FuseGraphZyklus.kontoBedarfU(mit(outcome(), kontoExport(), bilanz(g = 3.0)))!!, 1e-12)
+        assertEquals(0.7, FuseGraphZyklus.kontoBedarfU(mit(outcome(), kontoExport(), bilanz(g = null)))!!, 1e-12)
     }
 
     @Test

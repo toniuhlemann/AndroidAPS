@@ -120,8 +120,12 @@ class FuseGraphDataBuilderTest {
         source: SmbSource? = null,
         channel: ChannelState? = null,
         binding: String? = "guardFloor=70.0",
-        demand: Double? = 0.4
-    ) = point(min).copy(cycleState = state, smbU = smbU, smbSource = source, channel = channel, bindingLimit = binding, insulinReqU = demand)
+        demand: Double? = 0.4,
+        demandFromAccount: Boolean = false
+    ) = point(min).copy(
+        cycleState = state, smbU = smbU, smbSource = source, channel = channel, bindingLimit = binding,
+        insulinReqU = demand, insulinReqFromAccount = demandFromAccount
+    )
 
     private fun running(rate: Double = 2.0, extra: Double = 1.5, delivered: Double = 0.1) =
         ChannelState(phase = "RUNNING", reason = "CONTINUE", rateUPerH = rate, extraUPerH = extra, deliveredU = delivered)
@@ -148,8 +152,30 @@ class FuseGraphDataBuilderTest {
         assertThat(data.cycles.map { it.state }).containsExactly(CycleState.GUARD, CycleState.CHANNEL).inOrder()
         assertThat(data.cycles[0].bindingLimit).isEqualTo("guardFloor=70.0")
         assertThat(data.cycles[0].insulinReqU).isEqualTo(0.4)
+        assertThat(data.cycles[0].insulinReqFromAccount).isFalse()
         assertThat(data.cycles[0].channelFactor).isNull()
         assertThat(data.cycles[1].channelFactor).isWithin(1e-9).of(4.0)
+    }
+
+    /**
+     * Where the decision calculated no demand and the meal account carries the cycle, the point holds the demand of the
+     * account. The cycle says so, for the press-and-hold pill - and never without a demand to go with it.
+     */
+    @Test
+    fun `a demand that comes from the meal account keeps its mark`() {
+        val points = listOf(
+            cycle(0, demand = 0.4, demandFromAccount = true),
+            cycle(1, demand = null, demandFromAccount = true),
+            cycle(2, demand = Double.NaN, demandFromAccount = true)
+        )
+        val data = FuseGraphDataBuilder.build(layersSource(points), 0L, Long.MAX_VALUE)
+
+        assertThat(data.cycles[0].insulinReqU).isEqualTo(0.4)
+        assertThat(data.cycles[0].insulinReqFromAccount).isTrue()
+        assertThat(data.cycles[1].insulinReqU).isNull()
+        assertThat(data.cycles[1].insulinReqFromAccount).isFalse()
+        assertThat(data.cycles[2].insulinReqU).isNull()
+        assertThat(data.cycles[2].insulinReqFromAccount).isFalse()
     }
 
     @Test

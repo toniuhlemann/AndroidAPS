@@ -49,12 +49,17 @@ data class FuseStatusSegment(
     val status: FuseOverviewSource.AccountStatus
 )
 
-/** One FUSE cycle for the main graph. [channelFactor] is set while a channel TBR is wanted, pending or ending. */
+/**
+ * One FUSE cycle for the main graph. [channelFactor] is set while a channel TBR is wanted, pending or ending.
+ * [insulinReqFromAccount] says that [insulinReqU] is the demand of the meal account, because the decision calculated
+ * none in this cycle (see [FuseOverviewSource.Point.insulinReqU]).
+ */
 data class FuseCycleInfo(
     val timestamp: Long,
     val state: FuseOverviewSource.CycleState,
     val bindingLimit: String? = null,
     val insulinReqU: Double? = null,
+    val insulinReqFromAccount: Boolean = false,
     val channelFactor: Double? = null
 )
 

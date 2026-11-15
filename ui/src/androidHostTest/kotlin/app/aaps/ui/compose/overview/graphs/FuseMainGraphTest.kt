@@ -8,6 +8,8 @@ import app.aaps.core.interfaces.overview.graph.FuseCycleInfo
 import app.aaps.core.interfaces.overview.graph.FuseGraphData
 import app.aaps.core.interfaces.overview.graph.FuseSmbSend
 import app.aaps.core.interfaces.utils.DecimalFormatter
+import app.aaps.core.ui.CoreUiStrings
+import app.aaps.shared.tests.generatedTextResolver
 import com.google.common.truth.Truth.assertThat
 import org.junit.jupiter.api.Test
 import org.mockito.kotlin.any
@@ -32,6 +34,22 @@ internal class FuseMainGraphTest {
         assertThat(fuseLabelSpots(center = 10f, lo = 30f, hi = 50f, step = 10f)).containsExactly(30f, 40f, 50f).inOrder()
         // no room: only the middle
         assertThat(fuseLabelSpots(center = 10f, lo = 50f, hi = 30f, step = 10f)).containsExactly(10f)
+    }
+
+    /**
+     * While the normal path stops at the guard, the decision calculates no demand and the portion comes from the meal
+     * account. The pill then shows the demand of the account, and says where it is from (Toni 15.11.2026).
+     */
+    @Test
+    fun `the pill names a demand that comes from the meal account`() {
+        val texts = generatedTextResolver()
+        val decision = FuseCycleInfo(at(0), CycleState.FREE, insulinReqU = 0.4)
+        val account = decision.copy(insulinReqFromAccount = true)
+
+        assertThat(fuseDemandRef(decision)).isEqualTo(CoreUiStrings.fuse_demand)
+        assertThat(texts.gs(fuseDemandRef(decision), "0,40 U")).isEqualTo("Bedarf 0,40 U")
+        assertThat(fuseDemandRef(account)).isEqualTo(CoreUiStrings.fuse_demand_account)
+        assertThat(texts.gs(fuseDemandRef(account), "0,40 U")).isEqualTo("Bedarf 0,40 U aus dem Konto")
     }
 
     @Test

@@ -226,7 +226,10 @@ correction deadband (new in November 2026) has no such exception: it holds whene
   slow correction channel — then guard margin, tail margin and the meal (the rest of the account, or the balance G of
   a bolus-calculator meal). A tap on a tile pins it to the closed chip; a long press opens the FUSE tab. When the last
   cycle is older than ten minutes the chip is greyed out and names its age. It took the place of the insulinReq chip
-  beside IOB and COB. Display only: every value is read from the cycle, nothing is calculated a second time.
+  beside IOB and COB. While a meal account gives its portions the normal path often stops at the guard, and the
+  decision then calculates no demand. The chip and the press-and-hold pill of the main graph show the demand of the
+  account in such a cycle, marked *aus dem Konto*. Display only: every value is read from the cycle, nothing is
+  calculated a second time.
 - **The FUSE tab:** state, signal, decision, a coloured SMB status (free, or stopped with a named reason), the limit that
   bound, meal and evidence status, budget and profile — and a full settings report under *technical details*.
 - **The trail:** one JSON line per cycle in `Documents/aapsLogs/fuse_state_history.jsonl` — signal, state, forecasts,
@@ -442,7 +445,9 @@ Legende erklärt die Farben. Reine Anzeige, abschaltbar. Unter der Zeile mit dem
 zugeklappt der Zustand des letzten Zyklus und bis zu vier angeheftete Werte, aufgeklappt neun Kacheln entlang der
 Dosierkette (Störung r, Bedarf, Anteil, SMB, Grenze, Kanal) sowie Guard, Schwanz und Mahlzeit. Eine Kachel antippen
 heftet sie an, lang drücken öffnet den FUSE-Reiter; ein Zyklus älter als zehn Minuten wird grau und nennt sein Alter.
-Der Chip ersetzt den Bedarf-Chip neben IOB und COB.
+Der Chip ersetzt den Bedarf-Chip neben IOB und COB. Rechnet der Regler in einem Zyklus keinen Bedarf, weil der Normalweg
+am Guard stoppt und die Portion aus dem Mahlzeitkonto kommt, zeigen Chip und Halte-Pille den Bedarf des Kontos, mit dem
+Zusatz „aus dem Konto“.
 
 **Architektur.** `fuse/core` enthält die Dosierlogik in reinem Kotlin ohne Android. `fuse/plugin` verbindet sie mit AAPS:
 Zyklus, Übersetzung in SMB und TBR, Ledger, Trail und Oberfläche. AAPS bleibt Herr über die Pumpe. Jeder Zyklus steht

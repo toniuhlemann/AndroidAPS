@@ -63,8 +63,15 @@ interface FuseOverviewSource {
         val channel: ChannelState? = null,
         /** The binding limit of the decision as FUSE writes it (`decision.bindingLimit`), for the press-and-hold pill. */
         val bindingLimit: String? = null,
-        /** insulinReq of the decision [U], for the press-and-hold pill. */
+        /**
+         * The demand of this cycle [U], for the press-and-hold pill and the chip: insulinReq of the decision. Where the
+         * decision calculated none, because the normal path stopped at the guard or the tail before it got that far,
+         * and a meal account applies, it is the demand of the account - the same amount FUSE reports as demand in an
+         * account cycle without such a stop. `null` = not calculated in this cycle.
+         */
         val insulinReqU: Double? = null,
+        /** [insulinReqU] is the demand of the meal account, not the insulinReq of the decision. */
+        val insulinReqFromAccount: Boolean = false,
     )
 
     companion object {

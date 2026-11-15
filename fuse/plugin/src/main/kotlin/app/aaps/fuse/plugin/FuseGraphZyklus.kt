@@ -1,7 +1,10 @@
 package app.aaps.fuse.plugin
 
 import app.aaps.core.interfaces.overview.FuseOverviewSource
+import app.aaps.fuse.core.controller.ExpectationAccount
+import app.aaps.fuse.core.controller.FuseController
 import org.json.JSONObject
+import kotlin.math.min
 
 /**
  * DER ZYKLUS FUER DEN HAUPTGRAPHEN (Toni 21.10.2026) - eine Regel fuer den Live-Ring und den Warmstart aus dem Trail.
@@ -18,6 +21,7 @@ internal fun FuseOverviewSource.Point.mitHauptgraph(f: FuseGraphZyklus.Felder): 
     channel = f.kanal,
     bindingLimit = f.bindung,
     insulinReqU = f.bedarfU,
+    insulinReqFromAccount = f.bedarfVomKonto,
 )
 
 internal object FuseGraphZyklus {
@@ -96,14 +100,48 @@ internal object FuseGraphZyklus {
     /** Die Hauptgraph-Felder eines Live-Zyklus - aus dem endgueltigen Ausgang und der Menge, die AAPS bekam. */
     fun felder(o: FuseCycleRunner.Outcome, publizierteSmbU: Double?): Felder {
         val smbU = publizierteSmbU?.takeIf { it.isFinite() && it > 0.0 }
+        val reglerBedarf = o.decision.insulinReqU?.takeIf { it.isFinite() }
+        val kontoBedarf = if (reglerBedarf == null) kontoBedarfU(o) else null
         return Felder(
             zustand = zustand(o.decision.block.name, o.decision.tbr.name, o.currentZeroTbrActive, o.slowChannel?.phase, o.smbState, o.smbStopReason),
             smbU = smbU,
             quelle = smbU?.let { quelle(o.exposureFinalSource) },
             kanal = o.slowChannel?.let { kanal(it) },
             bindung = o.decision.bindingLimit,
-            bedarfU = o.decision.insulinReqU?.takeIf { it.isFinite() },
+            bedarfU = reglerBedarf ?: kontoBedarf,
+            bedarfVomKonto = kontoBedarf != null,
         )
+    }
+
+    /**
+     * DER BEDARF DES KONTOS in diesem Zyklus [U] - dieselbe Groesse, die der Regler in einem Kontozyklus ohne Stopp als
+     * Bedarf ausweist (`FuseController.decide`, `kontoReq`): die lieferbare Kontomenge ueber dieselben beiden
+     * Kernfunktionen wie dort und im Trail (`deliverableU`), hoechstens die Grenze der gemeinsamen Bilanz der
+     * Rechner-Mahlzeit. `null` ohne geltendes Konto - im Rueckfall gibt es keinen Kontobedarf.
+     *
+     * Er steht im Ringpunkt nur dort, wo der Regler KEINEN Bedarf gerechnet hat (Toni 15.11.2026: "Bedarf vom Konto
+     * zeigen"): stoppt der Normalweg am Guard oder am Schwanz, kommt die Portion ueber die Marker-Freigabe aus dem
+     * Konto, und Chip wie Halte-Pille stuenden genau in der Phase leer, in der das Konto liefert.
+     */
+    fun kontoBedarfU(o: FuseCycleRunner.Outcome): Double? {
+        val eval = o.erwartungskonto?.takeIf { it.gilt }?.zyklus?.eval ?: return null
+        val roh = FuseController.accountDemandU(ExpectationAccount.deliverableU(eval)) ?: return null
+        val grenze = o.mealBalance?.smbCapU?.takeIf { it.isFinite() }
+        return if (grenze == null) roh else min(roh, grenze)
+    }
+
+    /**
+     * Derselbe Kontobedarf aus einer Trail-Zeile (Warmstart): `expectationAccount.deliverableU` ist dieselbe Zahl, die
+     * [kontoBedarfU] live rechnet, `mealBalance.smbCapU` dieselbe Grenze. Das Feld steht nur in Zeilen mit einer
+     * Auswertung des Kontos; ein JSON-null darin heisst "nicht berechenbar" und zaehlt wie im Regler als 0. Aeltere
+     * Zeilen ohne das Feld liefern keinen Kontobedarf.
+     */
+    fun kontoBedarfU(j: JSONObject): Double? {
+        val konto = j.optJSONObject("expectationAccount")?.takeIf { it.optBoolean("applies", false) } ?: return null
+        if (!konto.has("deliverableU")) return null
+        val roh = konto.zahl("deliverableU") ?: 0.0
+        val grenze = j.optJSONObject("mealBalance")?.zahl("smbCapU")
+        return if (grenze == null) roh else min(roh, grenze)
     }
 
     /** Dieselben Felder aus einer Trail-Zeile (Warmstart). Android liefert fuer JSON-null "null" - daher isNull(). */
@@ -122,6 +160,8 @@ internal object FuseGraphZyklus {
             )
         }
         val smbU = j.optJSONObject("rt")?.zahl("units")?.takeIf { it > 0.0 }
+        val reglerBedarf = dec?.zahl("insulinReqU")
+        val kontoBedarf = if (reglerBedarf == null) kontoBedarfU(j) else null
         return Felder(
             zustand = zustand(
                 block = dec?.text("block"),
@@ -135,7 +175,8 @@ internal object FuseGraphZyklus {
             quelle = smbU?.let { quelle(j.optJSONObject("exposure")?.text("source")) },
             kanal = kanal,
             bindung = dec?.text("bindingLimit"),
-            bedarfU = dec?.zahl("insulinReqU"),
+            bedarfU = reglerBedarf ?: kontoBedarf,
+            bedarfVomKonto = kontoBedarf != null,
         )
     }
 
@@ -145,7 +186,10 @@ internal object FuseGraphZyklus {
         val quelle: FuseOverviewSource.SmbSource?,
         val kanal: FuseOverviewSource.ChannelState?,
         val bindung: String?,
+        /** Der Bedarf des Reglers; hat der keinen gerechnet, der des Kontos ([kontoBedarfU]). */
         val bedarfU: Double?,
+        /** [bedarfU] ist der Bedarf des Kontos, nicht der des Reglers. */
+        val bedarfVomKonto: Boolean,
     )
 
     /** `computeTs` einer Zeile, ohne sie zu parsen - zum Vorsieben beim Warmstart. */

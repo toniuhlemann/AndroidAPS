@@ -596,6 +596,13 @@ internal fun fuseBindingText(raw: String?): String? {
 internal fun fuseBindingCore(raw: String): String = raw.substringBefore('|').substringBefore('=').trim()
 
 /**
+ * The text of the demand in the press-and-hold pill. Where the decision calculated no demand and the meal account
+ * carries the cycle, the demand is the one of the account - and the pill says so, like the chip on the main screen.
+ */
+internal fun fuseDemandRef(cycle: FuseCycleInfo): TextRef =
+    if (cycle.insulinReqFromAccount) CoreUiStrings.fuse_demand_account else CoreUiStrings.fuse_demand
+
+/**
  * The word for a limit or lock as FUSE writes it; `null` = no word for it. One table for the press-and-hold pill of
  * the main graph and the tile "Grenze" of the FUSE chip, so both name the same cycle the same way.
  *

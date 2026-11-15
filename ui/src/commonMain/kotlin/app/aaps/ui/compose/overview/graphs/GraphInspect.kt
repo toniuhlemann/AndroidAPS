@@ -595,7 +595,7 @@ fun GraphInspectPill(
                     fuseBindingText(cycle.bindingLimit)?.let { PillText(stringResource(CoreUiStrings.fuse_binding, it), MaterialTheme.colorScheme.onSurfaceVariant) }
                     cycle.insulinReqU?.let {
                         PillText(
-                            stringResource(CoreUiStrings.fuse_demand, stringResource(InterfacesStrings.format_insulin_units, it)),
+                            stringResource(fuseDemandRef(cycle), stringResource(InterfacesStrings.format_insulin_units, it)),
                             MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }

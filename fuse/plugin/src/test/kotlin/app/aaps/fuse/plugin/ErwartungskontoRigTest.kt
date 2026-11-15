@@ -36,12 +36,14 @@ import app.aaps.fuse.core.controller.SlowCorrectionChannel
 import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.controller.MarkerReauthorization
 import app.aaps.fuse.core.predictor.PredictorReason
+import app.aaps.fuse.plugin.export.FuseStateJson
 import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
 import app.aaps.fuse.plugin.ledger.LedgerFacts
 import app.aaps.fuse.plugin.ledger.LedgerPublicationGate
 import app.aaps.shared.tests.TestBaseWithProfile
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -3493,6 +3495,15 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         }
     }
 
+    /** Die Trail-Zeile eines Zyklus, wie sie in der Datei steht und beim Warmstart gelesen wird (als Text und zurueck). */
+    private fun trailZeile(o: FuseCycleRunner.Outcome, geliefertU: Double?): JSONObject {
+        val rt = RT(
+            algorithm = APSResult.Algorithm.FUSE, timestamp = o.computeTs,
+            rate = null, duration = null, units = geliefertU, deliverAt = geliefertU?.let { o.computeTs },
+        )
+        return JSONObject(FuseStateJson.record("ek#${o.computeTs}", o, rt, o.policy, null, 0L, null) { 0L }.toString())
+    }
+
     /** Die Pflichten des Chips, die fuer JEDEN Zyklus gelten. */
     private fun pruefeChip(staende: List<Pair<Zyklus, FuseOverviewSource.Chip>>) {
         assertTrue(staende.isNotEmpty()) { "kein Zyklus" }
@@ -3528,10 +3539,20 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
                 assertEquals(reglerBedarf, chip.insulinReqU, "$wo: Bedarf des Reglers")
                 assertFalse(chip.insulinReqFromAccount, "$wo: Bedarf des Reglers als Kontobedarf gekennzeichnet")
             } else {
-                assertEquals(FuseChipStand.kontoBedarfU(o), chip.insulinReqU, "$wo: Bedarf des Kontos")
+                assertEquals(FuseGraphZyklus.kontoBedarfU(o), chip.insulinReqU, "$wo: Bedarf des Kontos")
                 assertEquals(chip.insulinReqU != null, chip.insulinReqFromAccount, "$wo: Kennzeichen des Kontobedarfs")
                 if (o.erwartungskonto?.gilt != true) assertNull(chip.insulinReqU, "$wo: Kontobedarf ohne geltendes Konto")
             }
+            // DIE HALTE-PILLE DES HAUPTGRAPHEN liest den Ringpunkt: er traegt denselben Bedarf wie der Chip. Und nach
+            // einem Neustart kommt der Ringpunkt aus der Trail-Zeile des Zyklus (Warmstart) - sie liefert denselben
+            // Bedarf mit demselben Kennzeichen wie der Live-Zyklus.
+            val live = FuseGraphZyklus.felder(o, gegeben)
+            assertEquals(chip.insulinReqU, live.bedarfU, "$wo: Bedarf im Ringpunkt")
+            assertEquals(chip.insulinReqFromAccount, live.bedarfVomKonto, "$wo: Kennzeichen im Ringpunkt")
+            val ausTrail = FuseGraphZyklus.felder(trailZeile(o, gegeben))
+            assertEquals(live.bedarfU == null, ausTrail.bedarfU == null, "$wo: Bedarf aus dem Trail vorhanden")
+            live.bedarfU?.let { assertEquals(it, ausTrail.bedarfU!!, 1e-12, "$wo: Bedarf aus dem Trail") }
+            assertEquals(live.bedarfVomKonto, ausTrail.bedarfVomKonto, "$wo: Kennzeichen aus dem Trail")
             // Mahlzeit: mit geltendem Konto sein Fenster und sein Budget - und der Rest NACH der Buchung dieses Zyklus:
             // der Stand des Zyklus (wie im Trail) abzueglich dessen, was der Zyklus selbst aus dem Konto gebucht hat. So
             // steht ein SMB aus dem Konto nie neben einem Rest, von dem er noch nicht abgezogen ist. Ohne geltendes Konto

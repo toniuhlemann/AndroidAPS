@@ -94,11 +94,13 @@ internal object FuseGraphDataBuilder {
     /** One entry per cycle that carries a state. */
     internal fun cycles(points: List<FuseOverviewSource.Point>): List<FuseCycleInfo> = points.mapNotNull { p ->
         val state = p.cycleState ?: return@mapNotNull null
+        val demand = p.insulinReqU?.takeIf { it.isFinite() }
         FuseCycleInfo(
             timestamp = p.timestamp,
             state = state,
             bindingLimit = p.bindingLimit,
-            insulinReqU = p.insulinReqU?.takeIf { it.isFinite() },
+            insulinReqU = demand,
+            insulinReqFromAccount = demand != null && p.insulinReqFromAccount,
             channelFactor = p.channel?.takeIf { it.active }?.factor
         )
     }

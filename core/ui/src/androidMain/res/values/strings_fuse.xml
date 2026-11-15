@@ -148,6 +148,7 @@
     <string name="fuse_binding_partial_basal">Teilbasal</string>
     <string name="fuse_binding_publication">Publikations-Tor</string>
     <string name="fuse_demand" comment="%1$s=insulin with unit. Example: Bedarf 0,30 U">Bedarf %1$s</string>
+    <string name="fuse_demand_account" comment="%1$s=insulin with unit: the demand of the meal account, shown where the decision calculated none. Example: Bedarf 0,30 U aus dem Konto">Bedarf %1$s aus dem Konto</string>
     <!-- Legend of the FUSE layers, opened from the main graph. -->
     <string name="fuse_legend">Legende</string>
     <string name="fuse_legend_title">FUSE im Hauptgraphen</string>
