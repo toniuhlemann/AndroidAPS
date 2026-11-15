@@ -2,7 +2,6 @@ package app.aaps.fuse.plugin
 
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.fuse.core.signal.SignalWindow
-import kotlin.math.roundToInt
 
 /**
  * Was auf dem FUSE-Schirm steht — als reiner Text, ohne Android.
@@ -276,10 +275,9 @@ object FuseScreenModel {
             // roundToInt statt toInt (30.08.): ein rechnerisch glatter Anteil wie 8 % ist binaer
             // oft 7,999... - Abschneiden zeigte 7 %, gemeint sind 8 %. Der
             // Viewer rechnet dieselbe Zeile ("Rampe x %") jetzt identisch.
-            val rampPct = it.rSignedMgdlPerMin?.let { r ->
-                (((r - it.riseRampLowRPerMin) / (it.riseRampHighRPerMin - it.riseRampLowRPerMin))
-                    .coerceIn(0.0, 1.0) * 100).roundToInt()
-            }
+            // EINE Rechnung fuer den Reiter und den Chip auf dem Hauptbildschirm (15.11.2026): ohne gueltige Rampe
+            // steht hier wie dort ein Strich.
+            val rampPct = FuseChipStand.rampenProzent(it.rSignedMgdlPerMin, it.riseRampLowRPerMin, it.riseRampHighRPerMin)
             // Eigene Mini-Sektion statt Kombizeile (Tonis Layout 08.08.):
             // Rampe, wirksamer Deckel und Effektivwert je als Label-Wert-Paar.
             sec(b, "SMB-Ratio")

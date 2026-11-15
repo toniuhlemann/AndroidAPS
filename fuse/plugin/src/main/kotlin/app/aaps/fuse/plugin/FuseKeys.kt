@@ -2,6 +2,7 @@ package app.aaps.fuse.plugin
 
 import app.aaps.core.keys.PreferenceType
 import app.aaps.core.keys.UnitType
+import app.aaps.core.keys.interfaces.BooleanNonPreferenceKey
 import app.aaps.core.keys.interfaces.BooleanPreferenceKey
 import app.aaps.core.keys.interfaces.DoublePreferenceKey
 import app.aaps.core.keys.interfaces.IntPreferenceKey
@@ -1223,8 +1224,9 @@ enum class FuseRetiredKey(
 }
 
 /**
- * Text-ZUSTAND ausserhalb des Einstellungsdialogs - keine Einstellung, nie exportiert: ein Settings-Import darf keinen
- * alten Zustand wiederbeleben.
+ * Text ausserhalb des Einstellungsdialogs. ZUSTAND ist nie exportierbar: ein Settings-Import darf keinen alten Zustand
+ * wiederbeleben. Eine AUSWAHL DER ANZEIGE dagegen gehoert zu dem, was der Nutzer eingerichtet hat, und geht in die
+ * Sicherung - je Schluessel entschieden.
  */
 enum class FuseStringNonKey(
     override val key: String,
@@ -1234,6 +1236,27 @@ enum class FuseStringNonKey(
 
     /** HCL Teil 1 (Toni 25.10.2026): die Rechnungen aus dem Bolusrechner der letzten 24 h als JSON ([HclMahlzeiten]). */
     HclMeals("fuse_hcl_meals", "", exportable = false),
+
+    /**
+     * FUSE-CHIP AUF DEM HAUPTBILDSCHIRM (Toni 15.11.2026): die angehefteten Kacheln in der Reihenfolge des Anheftens,
+     * als Namen aus `FuseOverviewSource.ChipTile`, mit Komma getrennt ([FuseChipStand.pinsAusText]). NUR ANZEIGE -
+     * kein Zyklus liest den Wert. Ab Werk Bedarf, Guard und Mahlzeit.
+     */
+    ChipPins("fuse_chip_pins", "DEMAND,GUARD,MEAL"),
+}
+
+/**
+ * Schalter ausserhalb des Einstellungsdialogs, die NUR die Anzeige betreffen (Toni 15.11.2026). Kein Zyklus liest sie.
+ * Sie gehoeren zu dem, was der Nutzer eingerichtet hat, und gehen in die Sicherung.
+ */
+enum class FuseBooleanNonKey(
+    override val key: String,
+    override val defaultValue: Boolean,
+    override val exportable: Boolean = true,
+) : BooleanNonPreferenceKey {
+
+    /** Der FUSE-Chip auf dem Hauptbildschirm ist aufgeklappt. Ab Werk zu. */
+    ChipExpanded("fuse_chip_expanded", false),
 }
 
 /**
@@ -1242,11 +1265,11 @@ enum class FuseStringNonKey(
  */
 internal val fuseSchluesselKlassen: List<Class<out NonPreferenceKey>> = listOf(
     FuseDoubleKey::class.java, FuseIntKey::class.java, FuseBooleanKey::class.java, FuseLongKey::class.java,
-    FuseStringKey::class.java, FuseRetiredKey::class.java, FuseStringNonKey::class.java,
+    FuseStringKey::class.java, FuseRetiredKey::class.java, FuseStringNonKey::class.java, FuseBooleanNonKey::class.java,
 )
 
 /** v4: die Registrierung (`ownPreferences`) nimmt die Schluessel selbst, nicht ihre Klassen - dieselbe Menge. */
 internal val fuseSchluessel: List<NonPreferenceKey> =
     FuseDoubleKey.entries + FuseIntKey.entries + FuseBooleanKey.entries + FuseLongKey.entries +
-        FuseStringKey.entries + FuseRetiredKey.entries + FuseStringNonKey.entries
+        FuseStringKey.entries + FuseRetiredKey.entries + FuseStringNonKey.entries + FuseBooleanNonKey.entries
 

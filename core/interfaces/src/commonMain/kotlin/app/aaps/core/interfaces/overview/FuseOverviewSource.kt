@@ -21,7 +21,7 @@ interface FuseOverviewSource {
         val driveMgdlPerMin: Double?,
         /** BGI-bereinigter schneller Antrieb (ukfRate + activity*isf). */
         val fastDriveMgdlPerMin: Double?,
-        /** minLower - guardFloor [mg/dl], an der Quelle auf -50..150 geklippt:
+        /** minLower - guardFloor [mg/dl], an der Quelle auf [MARGIN_LOWER_MGDL]..[MARGIN_UPPER_MGDL] geklippt:
          *  interessant ist der Nulldurchgang, nicht die Tiefe einer
          *  unphysiologischen Bahn. */
         val guardMarginMgdl: Double?,
@@ -66,6 +66,16 @@ interface FuseOverviewSource {
         /** insulinReq of the decision [U], for the press-and-hold pill. */
         val insulinReqU: Double? = null,
     )
+
+    companion object {
+
+        /**
+         * The two stops of the guard and the tail margin [mg/dl]. The source holds both margins inside them: the message
+         * is the crossing of zero, not the depth of a path that cannot happen. A value at a stop means "at least this far".
+         */
+        const val MARGIN_LOWER_MGDL = -150.0
+        const val MARGIN_UPPER_MGDL = 150.0
+    }
 
     /** Zustand des Erwartungskontos je Zyklus - der Streifen am oberen Rand des Guard-Untergraphen. */
     enum class AccountStatus { AKTIV, WARTET, PAUSIERT, EINGEFROREN, GESPERRT, OHNE_KONTO, BEENDET }
@@ -170,24 +180,113 @@ interface FuseOverviewSource {
      */
     fun fuseMahlzeitFensterLaeuft(now: Long): Boolean = false
 
-    /**
-     * v4-Port (Toni): insulinReq des letzten FUSE-Zyklus fuer den Chip auf dem Hauptbildschirm - aus der
-     * Entscheidung selbst, nicht aus dem RT: der RT traegt ein nicht gerechnetes insulinReq als 0,0 ein.
-     * `null` = noch kein Zyklus in diesem Prozess.
-     */
-    fun fuseInsulinReq(): InsulinReq? = null
+    // ---- The FUSE chip on the main screen (Toni 15.11.2026) ---------------
+    //
+    // One chip under the sensitivity chip: closed it shows the state of the last cycle and the pinned values, open it
+    // shows nine tiles in the order of the dosing chain. It took the place of the insulinReq chip beside IOB and COB.
+    // Display only: no cycle reads any of this, and nothing here is calculated a second time - every value is read
+    // from the cycle that produced it.
 
-    /** insulinReq eines Zyklus mit den Zeilen "Grenze" und "Block" aus dem Abschnitt "Menge" des FUSE-Reiters. */
-    data class InsulinReq(
-        /** Zeitpunkt der Entscheidung [ms]. */
+    /** The tiles of the FUSE chip in the order they are shown: the dosing chain first, then protection and meal. */
+    enum class ChipTile { DRIVE, DEMAND, RATIO, SMB, LIMIT, CHANNEL, GUARD, TAIL, MEAL }
+
+    /** Which rule gave the SMB share of a cycle: the rise ramp, the correction value, or the cap after a low. */
+    enum class RatioMode { RAMP, CORRECTION, REBOUND }
+
+    /** An SMB that a cycle handed to AAPS. */
+    data class ChipSmb(
         val timestamp: Long,
-        /** [U]; `null` = in diesem Zyklus nicht gerechnet (angezeigt als "-", nie als 0). */
-        val units: Double?,
-        /** Die bindende Grenze, wie im Reiter. */
-        val grenze: String,
-        /** Der Block, wie im Reiter. */
-        val block: String,
+        val units: Double,
+        val source: SmbSource,
     )
+
+    /** The meal of a cycle for the tile "Mahlzeit": the expectation account, or the balance of a bolus calculator meal. */
+    data class ChipMeal(
+        /** The account state, as in the strip of F.GRD; `null` = no account in this cycle. */
+        val status: AccountStatus?,
+        /**
+         * What the account may still give [U], after the booking of this cycle: budget plus top-up minus what is booked.
+         * `null` = no account.
+         */
+        val restU: Double?,
+        /** The account runs without a budget (the choice "Nur Marker"). */
+        val withoutBudget: Boolean,
+        /** End of the meal window [ms]; 0 = none. */
+        val windowEndTs: Long,
+        /** The scaler booked at the marker; `null` = no account, no budget, or a bolus calculator meal. */
+        val scale: Double?,
+        /** The meal comes from the bolus calculator. */
+        val calculator: Boolean,
+        /** The balance G of a bolus calculator meal [U]; `null` = no such meal, or not calculable in this cycle. */
+        val balanceU: Double?,
+    )
+
+    /** The values of one FUSE cycle for the chip on the main screen. */
+    data class Chip(
+        /** When FUSE calculated this cycle [ms]. The chip is greyed out when this is old. */
+        val timestamp: Long,
+        /** What FUSE did in this cycle: the colour and the word of the closed chip. */
+        val cycleState: CycleState,
+        /** The insulin adjusted disturbance r [mg/dl/min]; `null` = not estimable. */
+        val driveMgdlPerMin: Double?,
+        /** The meal effect the account expects now [mg/dl/min]; `null` = none. */
+        val expectedMealDriveMgdlPerMin: Double?,
+        /** insulinReq of the decision [U]; `null` = not calculated in this cycle (shown as a dash, never as 0). */
+        val insulinReqU: Double?,
+        /** The share of the demand that may go out as SMB in this cycle (0..1); `null` = the cycle did not get that far. */
+        val smbRatio: Double?,
+        /** Which rule gave [smbRatio]; `null` together with it. */
+        val ratioMode: RatioMode?,
+        /** Where r stands on the rise ramp, 0..100 percent; `null` = r is unknown or there is no ramp. */
+        val rampPercent: Int?,
+        /** The SMB handed to AAPS in this cycle; `null` = none. */
+        val smb: ChipSmb?,
+        /**
+         * What FUSE wanted before the last checks [U], when they cut the SMB of this cycle or let nothing out;
+         * `null` = nothing was cut.
+         */
+        val smbWantedU: Double?,
+        /** The newest SMB up to and including this cycle; `null` = none in the data of this process. */
+        val lastSmb: ChipSmb?,
+        /** The limit or lock that holds the SMB back, as FUSE names it; `null` = nothing holds it back ("frei"). */
+        val limit: String?,
+        /** Room up to the tightest amount limit (maxIOB, iobTH, exposure limit) [U]; `null` = not known. */
+        val roomU: Double?,
+        /** The slow correction channel; `null` = off. */
+        val channel: ChannelState?,
+        /** Guard and tail margin [mg/dl], without and with the announced meal, as in F.GRD (held at the two stops). */
+        val guardMarginMgdl: Double?,
+        val guardWithMealMarginMgdl: Double?,
+        val tailMarginMgdl: Double?,
+        val tailWithMealMarginMgdl: Double?,
+        /** The meal of this cycle; `null` = none. */
+        val meal: ChipMeal?,
+    )
+
+    /** How the user set the chip up: the tiles pinned to the closed chip, in the order they were pinned, and open or closed. */
+    data class ChipLayout(
+        val pinned: List<ChipTile> = DEFAULT_PINS,
+        val expanded: Boolean = false,
+    ) {
+
+        companion object {
+
+            /** At most this many tiles show on the closed chip. */
+            const val MAX_PINS = 4
+
+            /** Pinned from the start (Toni): demand, guard margin and the meal. */
+            val DEFAULT_PINS: List<ChipTile> = listOf(ChipTile.DEMAND, ChipTile.GUARD, ChipTile.MEAL)
+        }
+    }
+
+    /** The last FUSE cycle for the chip on the main screen; `null` = no cycle in this process yet. */
+    fun fuseChip(): Chip? = null
+
+    /** The stored layout of the chip. */
+    fun fuseChipLayout(): ChipLayout = ChipLayout()
+
+    /** Stores the layout of the chip. It is kept across restarts and goes into the settings export. */
+    fun fuseStoreChipLayout(layout: ChipLayout) {}
 
     /** `null` = ohne Rueckfrage ausfuehren (Ruecknahme). */
     suspend fun fuseMarkerPrompt(now: Long): MarkerPromptFacts?

@@ -2,18 +2,30 @@ package app.aaps.ui.compose.overview
 
 import android.content.Context
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import app.aaps.core.data.model.RM
+import app.aaps.core.interfaces.aps.APS
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.overview.graph.TbrState
+import app.aaps.core.ui.compose.navigation.NavigationRequest
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
 import app.aaps.ui.compose.main.TempTargetChipState
+import app.aaps.ui.compose.overview.chips.FUSE_CHIP_HEADER_TAG
 import app.aaps.ui.compose.testing.AapsScreenFixture
 import app.aaps.ui.compose.testing.OverviewViewModelFixture
 import app.aaps.ui.compose.testing.setAapsContent
+import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -24,6 +36,9 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.verify
+import org.mockito.kotlin.whenever
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
@@ -93,7 +108,7 @@ class OverviewScreenVariantsTest {
 
     private enum class Variant { STACKED, SPLIT, TABLET }
 
-    private fun setScreen(variant: Variant) {
+    private fun setScreen(variant: Variant, onNavigate: (NavigationRequest) -> Unit = {}) {
         val graph = viewModels.graphViewModel
         val chips = viewModels.chipsViewModel
         val manage = viewModels.manageViewModel
@@ -109,7 +124,7 @@ class OverviewScreenVariantsTest {
                     tbrState = TbrState.NONE, smbEnabled = false, isSimpleMode = true,
                     graphViewModel = graph, chipsViewModel = chips, manageViewModel = manage,
                     statusViewModel = status, statusLightsDef = statusLightsDef,
-                    onNavigate = {}, onTbrChipClick = {}, onIobChipClick = {},
+                    onNavigate = onNavigate, onTbrChipClick = {}, onIobChipClick = {},
                     paddingValues = PaddingValues(0.dp)
                 )
 
@@ -122,7 +137,7 @@ class OverviewScreenVariantsTest {
                     tbrState = TbrState.NONE, smbEnabled = false, isSimpleMode = true,
                     graphViewModel = graph, chipsViewModel = chips, manageViewModel = manage,
                     statusViewModel = status, statusLightsDef = statusLightsDef,
-                    onNavigate = {}, onTbrChipClick = {}, onIobChipClick = {},
+                    onNavigate = onNavigate, onTbrChipClick = {}, onIobChipClick = {},
                     paddingValues = PaddingValues(0.dp)
                 )
 
@@ -135,7 +150,7 @@ class OverviewScreenVariantsTest {
                     tbrState = TbrState.NONE, smbEnabled = false, isSimpleMode = true,
                     graphViewModel = graph, chipsViewModel = chips, manageViewModel = manage,
                     statusViewModel = status, statusLightsDef = statusLightsDef,
-                    onNavigate = {}, onTbrChipClick = {}, onIobChipClick = {},
+                    onNavigate = onNavigate, onTbrChipClick = {}, onIobChipClick = {},
                     paddingValues = PaddingValues(0.dp)
                 )
             }
@@ -241,6 +256,88 @@ class OverviewScreenVariantsTest {
         compose.onNodeWithText(statusHeading).assertIsDisplayed()
         compose.onNodeWithContentDescription(collapseLabel).assertIsDisplayed()
         compose.onNodeWithContentDescription(expandLabel).assertDoesNotExist()
+    }
+
+    // ---------------------------------------------------------------- FUSE chip (fork, Toni 15.11.2026)
+
+    /** FUSE as the active APS with one finished cycle. A mock that is an APS and the FUSE source at once, as the plugin is. */
+    private fun fuseActive(): FuseOverviewSource {
+        val fuse = mock<APS>(extraInterfaces = arrayOf(FuseOverviewSource::class))
+        val source = fuse as FuseOverviewSource
+        whenever(source.fuseChip()).thenReturn(
+            FuseOverviewSource.Chip(
+                timestamp = OverviewViewModelFixture.NOW - 60_000L,
+                cycleState = FuseOverviewSource.CycleState.FREE,
+                driveMgdlPerMin = 1.2, expectedMealDriveMgdlPerMin = null,
+                insulinReqU = 0.8, smbRatio = 0.25, ratioMode = FuseOverviewSource.RatioMode.RAMP, rampPercent = 50,
+                smb = null, smbWantedU = null, lastSmb = null, limit = null, roomU = 2.3, channel = null,
+                guardMarginMgdl = 18.0, guardWithMealMarginMgdl = null, tailMarginMgdl = 25.0, tailWithMealMarginMgdl = null,
+                meal = null
+            )
+        )
+        whenever(source.fuseChipLayout()).thenReturn(FuseOverviewSource.ChipLayout())
+        whenever(viewModels.activePlugin.activeAPS).thenReturn(fuse)
+        whenever(screen.config.APS).thenReturn(true)
+        return source
+    }
+
+    @Test
+    fun `stacked layout has no FUSE chip without FUSE`() {
+        setScreen(Variant.STACKED)
+
+        compose.onAllNodesWithTag(FUSE_CHIP_HEADER_TAG).assertCountEquals(0)
+    }
+
+    /** Over the whole width, like the status card below it - not squeezed into the column beside the BG circle. */
+    @Test
+    fun `stacked layout shows the FUSE chip over the whole width`() {
+        fuseActive()
+        setScreen(Variant.STACKED)
+
+        compose.onNodeWithTag(FUSE_CHIP_HEADER_TAG).assertIsDisplayed()
+        val chip = compose.onNodeWithTag(FUSE_CHIP_HEADER_TAG).fetchSemanticsNode().boundsInRoot
+        val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
+        assertThat(chip.width).isGreaterThan(root.width * 0.9f)
+    }
+
+    @Test
+    @Config(qualifiers = WIDE)
+    fun `split layout shows the FUSE chip`() {
+        fuseActive()
+        setScreen(Variant.SPLIT)
+
+        compose.onNodeWithTag(FUSE_CHIP_HEADER_TAG).assertIsDisplayed()
+    }
+
+    @Test
+    @Config(qualifiers = WIDE)
+    fun `tablet layout shows the FUSE chip`() {
+        fuseActive()
+        setScreen(Variant.TABLET)
+
+        compose.onNodeWithTag(FUSE_CHIP_HEADER_TAG).assertIsDisplayed()
+    }
+
+    @Test
+    fun `a tap on the FUSE chip stores it as open`() {
+        val source = fuseActive()
+        setScreen(Variant.STACKED)
+
+        compose.onNodeWithTag(FUSE_CHIP_HEADER_TAG).performClick()
+
+        verify(source).fuseStoreChipLayout(FuseOverviewSource.ChipLayout(expanded = true))
+    }
+
+    @Test
+    fun `a long press on the FUSE chip asks for the FUSE tab`() {
+        val source = fuseActive()
+        val requests = mutableListOf<NavigationRequest>()
+        setScreen(Variant.STACKED, onNavigate = { requests += it })
+
+        compose.onNodeWithTag(FUSE_CHIP_HEADER_TAG).performTouchInput { longClick() }
+
+        assertThat(requests).containsExactly(NavigationRequest.Plugin(source::class.simpleName.orEmpty()))
+        assertThat(source::class.simpleName.orEmpty()).isNotEmpty()
     }
 
     companion object {

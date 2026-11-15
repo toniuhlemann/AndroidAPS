@@ -35,9 +35,10 @@ internal object FuseGraphMargin {
     /** Dieselbe Klippung wie beim Guard-Abstand: der Nulldurchgang ist die
      *  Aussage, nicht die Tiefe einer unphysiologischen Bahn. Toni: unten weiter
      *  als -50 - sonst klebt eine tief gesperrte Kante am Rand und man sieht
-     *  nicht, wie weit sie zu ist. */
-    const val LOWER_MGDL = -150.0
-    const val UPPER_MGDL = 150.0
+     *  nicht, wie weit sie zu ist. Die beiden Anschlaege stehen an der Schnittstelle, weil auch der Chip auf dem
+     *  Hauptbildschirm sie kennen muss: ein Wert am Anschlag heisst dort "mindestens so weit". */
+    const val LOWER_MGDL = FuseOverviewSource.MARGIN_LOWER_MGDL
+    const val UPPER_MGDL = FuseOverviewSource.MARGIN_UPPER_MGDL
 
     /** Der Guard-Abstand einer Untergrenze [mg/dl]: `lower - floor`, geklippt; nicht auswertbar = Luecke. */
     fun guardMarginMgdl(lowerMgdl: Double?, floorMgdl: Double?): Double? {

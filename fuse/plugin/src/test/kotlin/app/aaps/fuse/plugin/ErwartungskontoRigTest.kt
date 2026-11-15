@@ -13,6 +13,7 @@ import app.aaps.core.interfaces.aps.AutosensDataStore
 import app.aaps.core.interfaces.aps.IobTotal
 import app.aaps.core.interfaces.aps.RT
 import app.aaps.core.interfaces.db.PersistenceLayer
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.profile.EffectiveProfile
 import app.aaps.core.interfaces.profile.ProfileFunction
 import app.aaps.core.interfaces.queue.CommandQueue
@@ -3471,6 +3472,124 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         }).konto!!
         assertEquals(allgemein.phi0, ohneSkalierer.phi0, 0.0)
         assertEquals(allgemein.a0U, ohneSkalierer.a0U, 1e-12)
+    }
+
+    // ---- DER FUSE-CHIP AUF DEM HAUPTBILDSCHIRM (Toni 15.11.2026) -----------------------------------------------
+    //
+    // Am Geraet baut das Plugin den Chip-Stand aus dem endgueltigen Ausgang eines Zyklus und seinem Ringpunkt
+    // (FuseGraphZyklus.punkt, FuseChipStand.aus). Hier laeuft dieselbe Kette ueber echte Laeufe des Reglers: die
+    // Pflichten unten gelten in JEDEM Zyklus, nicht nur an von Hand gebauten Ausgaengen.
+
+    /**
+     * Der Chip-Stand je Zyklus, wie ihn das Plugin beim Anhaengen des Ringpunkts bildet - mit dem juengsten SMB davor und
+     * dem Konto aus dem Ledger NACH dem Zyklus.
+     */
+    private fun chipStaende(zyklen: List<Zyklus>): List<Pair<Zyklus, FuseOverviewSource.Chip>> {
+        var letzterSmb: FuseOverviewSource.ChipSmb? = null
+        return zyklen.map { z ->
+            val chip = FuseChipStand.aus(z.o, FuseGraphZyklus.punkt(z.o, z.geliefertU.takeIf { it > 0.0 }), letzterSmb, kontoDanach = z.konto)
+            chip.smb?.let { letzterSmb = it }
+            z to chip
+        }
+    }
+
+    /** Die Pflichten des Chips, die fuer JEDEN Zyklus gelten. */
+    private fun pruefeChip(staende: List<Pair<Zyklus, FuseOverviewSource.Chip>>) {
+        assertTrue(staende.isNotEmpty()) { "kein Zyklus" }
+        var schonSmb = false
+        for ((z, chip) in staende) {
+            val o = z.o
+            val wo = "Minute ${z.minute}"
+            val gegeben = z.geliefertU.takeIf { it > 0.0 }
+            // Der SMB der Kachel ist genau die Menge, die hinausging - und von da an gibt es immer einen juengsten.
+            assertEquals(gegeben, chip.smb?.units, "$wo: SMB")
+            if (chip.smb != null) schonSmb = true
+            assertEquals(schonSmb, chip.lastSmb != null, "$wo: juengster SMB")
+            // "Frei" darf nie falsch sein: nur bei freiem oder bedarfslosem SMB-Status, ohne letzten Riegel, und nie,
+            // wenn weniger hinausging als gewollt.
+            if (chip.limit == null) {
+                assertTrue(o.smbState == "FREE" || o.smbState == "NO_DEMAND") { "$wo: frei beim Status ${o.smbState}" }
+                assertNull(o.smbFinalBlock?.takeIf { it != "NONE" }, "$wo: frei trotz letztem Riegel")
+                assertNull(chip.smbWantedU, "$wo: frei, obwohl gekuerzt")
+                assertTrue((o.smbRequestedU ?: 0.0) <= z.geliefertU + FuseChipStand.GEKUERZT_EPS_U) {
+                    "$wo: frei, aber gewollt ${o.smbRequestedU} und gegeben ${z.geliefertU} (${o.decision.bindingLimit})"
+                }
+            }
+            if (o.smbState == "STOP") assertNotNull(chip.limit, "$wo: Stopp ohne Grenze")
+            chip.smbWantedU?.let { assertTrue(it > z.geliefertU + FuseChipStand.GEKUERZT_EPS_U) { "$wo: gewollt $it, gegeben ${z.geliefertU}" } }
+            // Zeit, Zustand, Anteil und Bedarf sind die des Zyklus - nichts ist neu gerechnet.
+            assertEquals(o.computeTs, chip.timestamp, "$wo: Zeit")
+            assertEquals(FuseGraphZyklus.felder(o, gegeben).zustand, chip.cycleState, "$wo: Zustand")
+            assertEquals(o.state?.effectiveSmbRatio, chip.smbRatio, "$wo: Anteil")
+            assertEquals(o.decision.insulinReqU?.takeIf { it.isFinite() }, chip.insulinReqU, "$wo: Bedarf")
+            // Mahlzeit: mit geltendem Konto sein Fenster und sein Budget - und der Rest NACH der Buchung dieses Zyklus:
+            // der Stand des Zyklus (wie im Trail) abzueglich dessen, was der Zyklus selbst aus dem Konto gebucht hat. So
+            // steht ein SMB aus dem Konto nie neben einem Rest, von dem er noch nicht abgezogen ist. Ohne geltendes Konto
+            // steht kein Rest und kein Fenster da - auch nicht im Rueckfall.
+            val konto = o.erwartungskonto?.takeIf { it.gilt }?.zyklus?.state
+            if (konto != null) {
+                val m = chip.meal
+                assertNotNull(m, "$wo: Konto ohne Kachel")
+                assertEquals(konto.windowEndTs, m!!.windowEndTs, "$wo: Fensterende")
+                assertEquals(konto.a0U <= 1e-9, m.withoutBudget, "$wo: ohne Budget")
+                val danach = z.konto?.takeIf { it.authId == konto.authId }
+                assertEquals((danach ?: konto).restU, m.restU!!, 0.0, "$wo: Rest")
+                // Ging die Menge hinaus (oder wurde nichts gebucht), ist das genau der Stand des Zyklus minus seine Buchung.
+                if (danach != null && (z.dErw() == 0.0 || z.geliefertU > 0.0)) {
+                    assertEquals(maxOf(0.0, konto.restU - z.dErw()), m.restU!!, 1e-9, "$wo: Rest nach der Buchung")
+                }
+            } else {
+                assertNull(chip.meal?.restU, "$wo: Rest ohne geltendes Konto")
+                assertEquals(0L, chip.meal?.windowEndTs ?: 0L, "$wo: Fenster ohne geltendes Konto")
+            }
+            if (o.erwartungskonto == null && o.mealBalance == null) assertNull(chip.meal, "$wo: Kachel ohne Mahlzeit")
+        }
+    }
+
+    @Test
+    fun `FUSE-Chip - der Stand folgt einer Mahlzeit mit frueher Versorgung`(@TempDir dir: File) = runBlocking<Unit> {
+        val staende = chipStaende(fruehLauf(fStabil, dir) { fruehKonfiguration(g1 = true, g2 = true) })
+        pruefeChip(staende)
+        // Vor dem Druck keine Mahlzeit; danach das Konto mit seinem gebuchten Skalierer, und keine Rechner-Mahlzeit.
+        assertTrue(staende.filter { it.first.minute < 0 }.all { it.second.meal == null }) { "Mahlzeit vor dem Druck" }
+        val mitKonto = staende.mapNotNull { it.second.meal }.filter { it.restU != null }
+        assertTrue(mitKonto.isNotEmpty()) { "kein Konto am Chip" }
+        assertTrue(mitKonto.all { it.scale == 1.0 && !it.calculator && it.balanceU == null }) { "Skalierer oder Rechner falsch" }
+        // Der Rest sinkt nur: jede Portion des Kontos zieht ihn herunter, und mindestens eine ging hinaus.
+        val reste = mitKonto.map { it.restU!! }
+        assertTrue(reste.zipWithNext().all { (a, b) -> b <= a + 1e-9 }) { "der Rest steigt" }
+        assertTrue(reste.last() < reste.first() - 1e-9) { "kein Verbrauch am Chip" }
+        assertTrue(staende.any { it.second.smb?.source == FuseOverviewSource.SmbSource.EXPECTATION }) { "kein SMB aus dem Konto" }
+        // Der Lauf zeigt beide Seiten der Kachel "Grenze".
+        assertTrue(staende.any { it.second.limit == null }) { "nie frei" }
+        assertTrue(staende.any { it.second.limit != null }) { "nie eine Grenze" }
+    }
+
+    @Test
+    fun `FUSE-Chip - ohne Mahlzeit bleibt die Kachel leer`(@TempDir dir: File) = runBlocking<Unit> {
+        konfiguration(kontoAn = true)
+        val staende = chipStaende(lauf(ohneDruck(fStabil), dir).filter { it.o.abortReason == null })
+        pruefeChip(staende)
+        assertTrue(staende.all { it.second.meal == null }) { "Mahlzeit ohne Druck" }
+        assertTrue(staende.all { it.second.expectedMealDriveMgdlPerMin == null }) { "Erwartung ohne Konto" }
+    }
+
+    @Test
+    fun `FUSE-Chip - eine Rechner-Mahlzeit zeigt die Bilanz G und keinen Skalierer`(@TempDir dir: File) = runBlocking<Unit> {
+        eCarbsEintraege = emptyList()
+        try {
+            val staende = chipStaende(hclLauf(fBilanz, dir) { hclKonfiguration(schalter = true) })
+            pruefeChip(staende)
+            val mitBilanz = staende.mapNotNull { it.second.meal }.filter { it.balanceU != null }
+            assertTrue(mitBilanz.isNotEmpty()) { "keine Bilanz am Chip" }
+            assertTrue(mitBilanz.all { it.calculator && it.scale == null }) { "Rechner-Mahlzeit mit Skalierer" }
+            // Die Zahl ist die des Zyklus.
+            for ((z, chip) in staende) {
+                assertEquals(z.o.mealBalance?.takeIf { it.markerTs > 0L }?.balanceU, chip.meal?.balanceU, "Minute ${z.minute}: G")
+            }
+        } finally {
+            eCarbsEintraege = null
+        }
     }
 
     private companion object {

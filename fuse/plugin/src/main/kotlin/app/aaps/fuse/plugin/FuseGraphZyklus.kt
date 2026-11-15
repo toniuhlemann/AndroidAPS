@@ -60,6 +60,39 @@ internal object FuseGraphZyklus {
         deliveredU = x.deliveredU.takeIf { it.isFinite() },
     )
 
+    /**
+     * DER RINGPUNKT EINES LIVE-ZYKLUS - aus dem ENDGUELTIGEN Ausgang und der Menge, die AAPS bekam. Eine Funktion fuer den
+     * Graph-Ring und fuer den Chip auf dem Hauptbildschirm ([FuseChipStand]): beide zeigen denselben Zyklus aus denselben
+     * Werten. Ein paar Felder, keine Ein-/Ausgabe.
+     */
+    fun punkt(o: FuseCycleRunner.Outcome, publizierteSmbU: Double?): FuseOverviewSource.Point {
+        val sig = o.signal
+        return FuseOverviewSource.Point(
+            timestamp = o.sourceTs ?: o.computeTs,
+            driveMgdlPerMin = sig?.rSigned?.takeIf { it.isFinite() },
+            fastDriveMgdlPerMin = sig?.let { (it.ukfRatePerMin + it.activityAtAnchor * it.isfAtAnchor).takeIf { v -> v.isFinite() } },
+            guardMarginMgdl = FuseGraphMargin.guardMarginMgdl(o.decision.minLowerMgdl, o.policy?.guardFloorMgdl ?: 70.0),
+            // Schwanz-Kante in mg/dl - Regeln s. FuseGraphMargin
+            // (der unphysiologische Ausgang hat KEINEN ISF-Nenner,
+            // sperrt aber; er gehoert auf den unteren Anschlag).
+            tailMarginMgdl = o.decision.tail?.let { t ->
+                FuseGraphMargin.tailMarginMgdl(t.headroomU, t.isfTailMgdlPerU, t.invalidReason)
+            },
+            // Konto: dieselben Regeln wie im Warmstart aus dem Trail (FuseGraphMargin).
+            mealWindow = o.erwartungskonto?.let { it.gilt || it.rueckfall != null } == true,
+            expectedMealDriveMgdlPerMin = o.erwartungskonto?.takeIf { it.gilt }
+                ?.zyklus?.eval?.early?.expectedDriveMgdlPerMin?.takeIf { it.isFinite() },
+            guardWithMealMarginMgdl = o.erwartungskonto?.fruehUntenMitMahlzeitMgdl
+                ?.let { FuseGraphMargin.guardMarginMgdl(it, o.policy?.guardFloorMgdl ?: 70.0) },
+            tailWithMealMarginMgdl = o.erwartungskonto?.fruehSchwanzMitMahlzeit?.let { t ->
+                FuseGraphMargin.tailMarginMgdl(t.headroomU, t.isfTailMgdlPerU, t.invalidReason)
+            },
+            accountStatus = o.erwartungskonto?.let {
+                FuseGraphMargin.accountStatus(it.gilt, it.rueckfall, it.zyklus?.eval?.status)
+            },
+        ).mitHauptgraph(felder(o, publizierteSmbU))
+    }
+
     /** Die Hauptgraph-Felder eines Live-Zyklus - aus dem endgueltigen Ausgang und der Menge, die AAPS bekam. */
     fun felder(o: FuseCycleRunner.Outcome, publizierteSmbU: Double?): Felder {
         val smbU = publizierteSmbU?.takeIf { it.isFinite() && it > 0.0 }

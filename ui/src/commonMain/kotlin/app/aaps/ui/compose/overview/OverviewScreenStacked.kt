@@ -22,6 +22,7 @@ import app.aaps.core.data.model.ActiveSceneState
 import app.aaps.core.data.model.RM
 import app.aaps.core.data.model.TT
 import app.aaps.core.interfaces.overview.graph.TbrState
+import app.aaps.core.ui.compose.AapsSpacing
 import app.aaps.core.ui.compose.AapsTheme
 import app.aaps.core.ui.compose.LocalConfig
 import app.aaps.core.ui.compose.navigation.NavigationRequest
@@ -149,6 +150,13 @@ fun OverviewScreenStacked(
                     .padding(start = 8.dp)
             )
         }
+
+        // Fork (Toni): the FUSE chip, over the whole width like the status section below it.
+        FuseChipBlock(
+            chipsViewModel = chipsViewModel,
+            onNavigate = onNavigate,
+            modifier = Modifier.padding(start = AapsSpacing.small, end = AapsSpacing.small, bottom = AapsSpacing.small)
+        )
 
         OverviewStatusSection(
             sensorStatus = statusState.sensorStatus,

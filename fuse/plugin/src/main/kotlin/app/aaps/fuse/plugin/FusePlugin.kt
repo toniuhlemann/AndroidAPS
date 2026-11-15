@@ -725,38 +725,41 @@ class FusePlugin(
      * Steht nach der Uebergabe an AAPS; ein paar Felder und ein kurzer synchronisierter Block, keine Ein-/Ausgabe.
      */
     private fun ringAnhaengen(o: FuseCycleRunner.Outcome, publizierteSmbU: Double?) {
-        val ts = o.sourceTs ?: o.computeTs
-        val sig = o.signal
-        val punkt = app.aaps.core.interfaces.overview.FuseOverviewSource.Point(
-            timestamp = ts,
-            driveMgdlPerMin = sig?.rSigned?.takeIf { it.isFinite() },
-            fastDriveMgdlPerMin = sig?.let { (it.ukfRatePerMin + it.activityAtAnchor * it.isfAtAnchor).takeIf { v -> v.isFinite() } },
-            guardMarginMgdl = FuseGraphMargin.guardMarginMgdl(o.decision.minLowerMgdl, o.policy?.guardFloorMgdl ?: 70.0),
-            // Schwanz-Kante in mg/dl - Regeln s. FuseGraphMargin
-            // (der unphysiologische Ausgang hat KEINEN ISF-Nenner,
-            // sperrt aber; er gehoert auf den unteren Anschlag).
-            tailMarginMgdl = o.decision.tail?.let { t ->
-                FuseGraphMargin.tailMarginMgdl(t.headroomU, t.isfTailMgdlPerU, t.invalidReason)
-            },
-            // Konto: dieselben Regeln wie im Warmstart oben (FuseGraphMargin).
-            mealWindow = o.erwartungskonto?.let { it.gilt || it.rueckfall != null } == true,
-            expectedMealDriveMgdlPerMin = o.erwartungskonto?.takeIf { it.gilt }
-                ?.zyklus?.eval?.early?.expectedDriveMgdlPerMin?.takeIf { it.isFinite() },
-            guardWithMealMarginMgdl = o.erwartungskonto?.fruehUntenMitMahlzeitMgdl
-                ?.let { FuseGraphMargin.guardMarginMgdl(it, o.policy?.guardFloorMgdl ?: 70.0) },
-            tailWithMealMarginMgdl = o.erwartungskonto?.fruehSchwanzMitMahlzeit?.let { t ->
-                FuseGraphMargin.tailMarginMgdl(t.headroomU, t.isfTailMgdlPerU, t.invalidReason)
-            },
-            accountStatus = o.erwartungskonto?.let {
-                FuseGraphMargin.accountStatus(it.gilt, it.rueckfall, it.zyklus?.eval?.status)
-            },
-        ).mitHauptgraph(FuseGraphZyklus.felder(o, publizierteSmbU))
-        synchronized(graphRing) {
+        val punkt = FuseGraphZyklus.punkt(o, publizierteSmbU)
+        val ts = punkt.timestamp
+        val letzterSmb = synchronized(graphRing) {
             if (graphRing.lastOrNull()?.timestamp != ts) {
                 graphRing.addLast(punkt)
                 while (graphRing.size > 1_500) graphRing.removeFirst()
             }
+            // Fuer den Chip: der juengste SMB im Ring. Der Ring ist nach Zeit geordnet, die Suche laeuft vom Ende.
+            graphRing.lastOrNull { (it.smbU ?: 0.0) > 0.0 }
         }
+        // Der Chip auf dem Hauptbildschirm zeigt denselben Zyklus wie der Ringpunkt - aus denselben Werten. Das Konto aus
+        // dem Ledger traegt die Buchung dieses Zyklus schon: hier ist sie abgeschlossen (nach dem Publikations-Gate).
+        chipStand = FuseChipStand.aus(
+            o, punkt,
+            letzterSmb?.let { p ->
+                FuseOverviewSource.ChipSmb(p.timestamp, p.smbU ?: 0.0, p.smbSource ?: FuseOverviewSource.SmbSource.OTHER)
+            },
+            kontoDanach = ledgerAdapter.episodes.expectation,
+        )
+    }
+
+    /** Der Chip-Stand des letzten Zyklus ([ringAnhaengen]); `null` bis zum ersten Zyklus dieses Prozesses. */
+    @Volatile private var chipStand: FuseOverviewSource.Chip? = null
+
+    override fun fuseChip(): FuseOverviewSource.Chip? = chipStand
+
+    // Die Auswahl des Nutzers am Chip - nur Anzeige, kein Zyklus liest sie (FuseSchluesselRueckwegTest).
+    override fun fuseChipLayout(): FuseOverviewSource.ChipLayout = FuseOverviewSource.ChipLayout(
+        pinned = FuseChipStand.pinsAusText(preferences.get(FuseStringNonKey.ChipPins)),
+        expanded = preferences.get(FuseBooleanNonKey.ChipExpanded),
+    )
+
+    override fun fuseStoreChipLayout(layout: FuseOverviewSource.ChipLayout) {
+        preferences.put(FuseStringNonKey.ChipPins, FuseChipStand.pinsAlsText(layout.pinned))
+        preferences.put(FuseBooleanNonKey.ChipExpanded, layout.expanded)
     }
 
     /**
@@ -1234,21 +1237,6 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
 
     // v4-Port: der Knopf auf dem Hauptbildschirm sagt "Neue Mahlzeit" wie der Reiter (s. MahlzeitFenster).
     override fun fuseMahlzeitFensterLaeuft(now: Long): Boolean = mahlzeitFensterEndeTs() > now
-
-    /**
-     * v4-Port (Toni): der insulinReq-Chip auf dem Hauptbildschirm - dieselben Werte wie der Abschnitt "Menge" im
-     * Reiter (FuseScreenModel), aus dem LETZTEN Zyklus. Nicht aus dem RT: der traegt ein nicht gerechnetes
-     * insulinReq als 0,0 ein.
-     */
-    override fun fuseInsulinReq(): FuseOverviewSource.InsulinReq? = lastOutcome?.let { o ->
-        val d = o.decision
-        FuseOverviewSource.InsulinReq(
-            timestamp = o.computeTs,
-            units = d.insulinReqU,
-            grenze = d.bindingLimit + if (d.restraintBound) "  (gebremst)" else "",
-            block = d.block.name,
-        )
-    }
 
     /**
      * Die Zahlen fuer die Rueckfrage - aus dem LETZTEN Zyklus, nicht neu gerechnet. Ein zweiter Rechenweg fuer

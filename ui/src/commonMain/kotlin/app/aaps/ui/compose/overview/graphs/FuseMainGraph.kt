@@ -41,6 +41,7 @@ import app.aaps.core.interfaces.overview.graph.FuseCycleInfo
 import app.aaps.core.interfaces.overview.graph.FuseGraphData
 import app.aaps.core.interfaces.overview.graph.FuseSmbSend
 import app.aaps.core.interfaces.utils.DecimalFormatter
+import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.stringResource
 import com.patrykandpatrick.vico.compose.cartesian.CartesianDrawingContext
@@ -588,21 +589,49 @@ internal fun fuseChannelEndText(end: FuseChannelEnd): String = stringResource(
 @Composable
 internal fun fuseBindingText(raw: String?): String? {
     if (raw.isNullOrBlank()) return null
-    if (raw.startsWith("signal epoch already consumed")) return stringResource(CoreUiStrings.fuse_channel_end_restart)
-    if (raw.startsWith("drive not estimable")) return stringResource(CoreUiStrings.fuse_binding_signal)
-    val core = raw.substringBefore('|').substringBefore('=').trim()
-    return when (core) {
-        "guardFloor"                                                -> stringResource(CoreUiStrings.fuse_binding_guard)
-        "SAFETY_HOLD"                                               -> stringResource(CoreUiStrings.fuse_binding_safety_hold)
-        "tailHeadroom"                                              -> stringResource(CoreUiStrings.fuse_binding_tail)
-        "markerAuth"                                                -> stringResource(CoreUiStrings.fuse_binding_marker)
-        "demandRatioCap", "liveness:demandRatioCap"                 -> stringResource(CoreUiStrings.fuse_binding_demand_ratio)
-        "smbRatio", "liveness:smbRatio"                             -> stringResource(CoreUiStrings.fuse_binding_smb_ratio)
-        "correctionExposureLimit", "liveness:correctionExposureLimit" -> stringResource(CoreUiStrings.fuse_binding_exposure)
-        "measuredDescentRisk"                                       -> stringResource(CoreUiStrings.fuse_channel_end_descent)
-        "reboundDeadband"                                           -> stringResource(CoreUiStrings.fuse_channel_end_rebound)
-        "nightDeadband"                                             -> stringResource(CoreUiStrings.fuse_channel_end_night)
-        else                                                        -> core
+    return fuseBindingRef(raw)?.let { stringResource(it) } ?: fuseBindingCore(raw)
+}
+
+/** The name of a limit without what follows `|` and without its value after `=` - shown when the limit has no word. */
+internal fun fuseBindingCore(raw: String): String = raw.substringBefore('|').substringBefore('=').trim()
+
+/**
+ * The word for a limit or lock as FUSE writes it; `null` = no word for it. One table for the press-and-hold pill of
+ * the main graph and the tile "Grenze" of the FUSE chip, so both name the same cycle the same way.
+ *
+ * The slow path and the checks after the basic decision put their own word in front of the limit
+ * (`liveness:smbRatio`, `candidate:GUARD_FLOOR`, `finalShortened:GUARD_FLOOR`): the limit behind it is the same.
+ */
+internal fun fuseBindingRef(raw: String): TextRef? {
+    if (raw.startsWith("signal epoch already consumed")) return CoreUiStrings.fuse_channel_end_restart
+    if (raw.startsWith("drive not estimable")) return CoreUiStrings.fuse_binding_signal
+    if (raw.startsWith("PUBLICATION_GATE")) return CoreUiStrings.fuse_binding_publication
+    if (raw.startsWith("REVERSAL_") || raw.startsWith("REARM_")) return CoreUiStrings.fuse_binding_correction_latch
+    return when (fuseBindingCore(raw).substringAfter(':')) {
+        "guardFloor", "GUARD_FLOOR", "BELOW_TARGET_BAND"    -> CoreUiStrings.fuse_binding_guard
+        "SAFETY_HOLD"                                       -> CoreUiStrings.fuse_binding_safety_hold
+        "tailHeadroom", "TAIL_LIABILITY"                    -> CoreUiStrings.fuse_binding_tail
+        "markerAuth"                                        -> CoreUiStrings.fuse_binding_marker
+        "demandRatioCap"                                    -> CoreUiStrings.fuse_binding_demand_ratio
+        "smbRatio"                                          -> CoreUiStrings.fuse_binding_smb_ratio
+        "correctionExposureLimit", "mealExposureLimit"      -> CoreUiStrings.fuse_binding_exposure
+        "measuredDescentRisk", "expectationDescentRisk"     -> CoreUiStrings.fuse_channel_end_descent
+        "reboundDeadband"                                   -> CoreUiStrings.fuse_channel_end_rebound
+        "nightDeadband"                                     -> CoreUiStrings.fuse_channel_end_night
+        "correctionDeadband"                                -> CoreUiStrings.fuse_binding_correction_deadband
+        "maxSmb"                                            -> CoreUiStrings.fuse_binding_max_smb
+        "maxIobHeadroom", "maxIOB", "maxIob"                -> CoreUiStrings.fuse_channel_end_max_iob
+        "iobThHeadroom", "iobTH", "iobTh"                   -> CoreUiStrings.fuse_binding_iob_th
+        "mealBalance"                                       -> CoreUiStrings.fuse_binding_meal_balance
+        "ledgerHold", "LEDGER_HOLD"                         -> CoreUiStrings.fuse_binding_ledger
+        "PUMP_GATE"                                         -> CoreUiStrings.fuse_binding_pump
+        "SMB_SWITCH_OFF"                                    -> CoreUiStrings.fuse_binding_smb_off
+        "SAFETY_ZERO"                                       -> CoreUiStrings.fuse_channel_end_safety_zero
+        "PARTIAL_RECOVERY", "PARTIAL_ENDING"                -> CoreUiStrings.fuse_binding_partial_basal
+        "SLOW_CORRECTION"                                   -> CoreUiStrings.fuse_state_channel
+        // `insulinReq<=0`, cut at its `=`
+        "insulinReq<"                                       -> CoreUiStrings.fuse_channel_end_no_demand
+        else                                                -> null
     }
 }
 

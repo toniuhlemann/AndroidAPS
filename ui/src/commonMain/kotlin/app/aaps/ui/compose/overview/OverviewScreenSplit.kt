@@ -178,6 +178,13 @@ fun OverviewScreenSplit(
                     }
                 }
 
+                // Fork (Toni): the FUSE chip, over the whole width of this column like the status section below it.
+                FuseChipBlock(
+                    chipsViewModel = chipsViewModel,
+                    onNavigate = onNavigate,
+                    modifier = Modifier.padding(horizontal = AapsSpacing.small)
+                )
+
                 OverviewStatusSection(
                     sensorStatus = statusState.sensorStatus,
                     insulinStatus = statusState.insulinStatus,

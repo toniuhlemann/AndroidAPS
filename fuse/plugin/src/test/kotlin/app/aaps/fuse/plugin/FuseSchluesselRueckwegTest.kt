@@ -164,6 +164,19 @@ class FuseSchluesselRueckwegTest {
         FuseBooleanKey.MainGraphLayers.key to true,
     )
 
+    /**
+     * Neue AUSWAHL DER ANZEIGE ausserhalb des Einstellungsdialogs (der FUSE-Chip auf dem Hauptbildschirm, Toni
+     * 15.11.2026) - je mit ihrer Vorgabe. Kein Zyklus liest sie (geprueft unten). Anders als ein Zustand gehoert sie zu
+     * dem, was der Nutzer eingerichtet hat, und ist exportierbar; fehlt sie in einer alten Sicherung, steht die Vorgabe
+     * da, und keine Funktionskombination aendert sich.
+     */
+    private val neuAnzeigeAuswahl: Map<String, Any> = mapOf(
+        // Die angehefteten Kacheln: ab Werk Bedarf, Guard und Mahlzeit.
+        FuseStringNonKey.ChipPins.key to "DEMAND,GUARD,MEAL",
+        // Ab Werk ist der Chip zu.
+        FuseBooleanNonKey.ChipExpanded.key to false,
+    )
+
     @Test
     fun `reine Anzeigeschalter stehen auf ihrer Vorgabe und kein Zyklus liest sie`() {
         for ((key, vorgabe) in neuNurAnzeige) {
@@ -176,6 +189,27 @@ class FuseSchluesselRueckwegTest {
             "fuse/plugin/src/main/kotlin/app/aaps/fuse/plugin/FuseCycleRunner.kt",
         ).map(::File).first { it.exists() }.readText()
         assertTrue(!runner.contains("FuseBooleanKey.MainGraphLayers")) { "der Runner liest einen Anzeigeschalter" }
+    }
+
+    @Test
+    fun `die Auswahl der Anzeige ist exportierbar, steht auf ihrer Vorgabe und kein Zyklus liest sie`() {
+        for ((key, vorgabe) in neuAnzeigeAuswahl) {
+            assertTrue(key !in stand1x) { "$key ist kein neuer Schluessel" }
+            assertEquals(true, exportierbar(key), "Exportierbarkeit von $key")
+            when (vorgabe) {
+                is String  -> assertEquals(vorgabe, FuseStringNonKey.entries.single { it.key == key }.defaultValue, "Vorgabe von $key")
+                is Boolean -> assertEquals(vorgabe, FuseBooleanNonKey.entries.single { it.key == key }.defaultValue, "Vorgabe von $key")
+                else       -> throw AssertionError("Typ der Vorgabe von $key nicht geprueft")
+            }
+        }
+        // Der Regler liest die Auswahl nicht: weder der Runner noch der Kern kennen die beiden Schluesselklassen des Chips.
+        val runner = listOf(
+            "src/main/kotlin/app/aaps/fuse/plugin/FuseCycleRunner.kt",
+            "fuse/plugin/src/main/kotlin/app/aaps/fuse/plugin/FuseCycleRunner.kt",
+        ).map(::File).first { it.exists() }.readText()
+        assertTrue(!runner.contains("FuseBooleanNonKey.")) { "der Runner liest einen Anzeigeschalter des Chips" }
+        assertTrue(!runner.contains("FuseStringNonKey.ChipPins")) { "der Runner liest die Auswahl des Chips" }
+        assertTrue(!runner.contains("FuseChipStand")) { "der Runner kennt den Chip" }
     }
 
     private val alle get() = fuseSchluesselKlassen.flatMap { it.enumConstants!!.asIterable() }
@@ -193,7 +227,8 @@ class FuseSchluesselRueckwegTest {
     @Test
     fun `es kommt kein neuer Schluessel hinzu und keiner doppelt`() {
         val schluessel = alle.map { it.key }
-        val neu = schluessel.toSet() - stand1x - neuMitNeutralerVorgabe.keys - neuHinterSchalter.keys - neuNurAnzeige.keys - neuZustand
+        val neu = schluessel.toSet() - stand1x - neuMitNeutralerVorgabe.keys - neuHinterSchalter.keys - neuNurAnzeige.keys -
+            neuAnzeigeAuswahl.keys - neuZustand
         assertTrue(neu.isEmpty()) { "neu - fehlt in jeder alten Sicherung (Uebernahmevertrag pruefen): $neu" }
         assertEquals(schluessel.size, schluessel.toSet().size, "doppelt registriert")
     }
