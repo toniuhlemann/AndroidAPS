@@ -220,6 +220,13 @@ correction deadband (new in November 2026) has no such exception: it holds whene
   with the sum per run, and a strip above the basal for protective zero and channel. Press and hold shows the state,
   the binding limit and the demand of that cycle; a small *Legende* button explains the colours. Display only, with a
   switch in the FUSE settings.
+- **The FUSE chip** (new in November 2026) on the main screen, under the row with the BG value. Closed it shows the
+  state of the last cycle in the colour of the BG points, and up to four pinned values. A tap opens nine tiles in the
+  order of the dosing chain — disturbance r, demand, SMB share, SMB, the limit that holds the SMB back (or *frei*),
+  slow correction channel — then guard margin, tail margin and the meal (the rest of the account, or the balance G of
+  a bolus-calculator meal). A tap on a tile pins it to the closed chip; a long press opens the FUSE tab. When the last
+  cycle is older than ten minutes the chip is greyed out and names its age. It took the place of the insulinReq chip
+  beside IOB and COB. Display only: every value is read from the cycle, nothing is calculated a second time.
 - **The FUSE tab:** state, signal, decision, a coloured SMB status (free, or stopped with a named reason), the limit that
   bound, meal and evidence status, budget and profile — and a full settings report under *technical details*.
 - **The trail:** one JSON line per cycle in `Documents/aapsLogs/fuse_state_history.jsonl` — signal, state, forecasts,
@@ -326,7 +333,7 @@ FUSE 2 is a **consolidation**: fewer mechanisms, each easier to explain.
 | General pump support | not available | — |
 | Clinical efficacy or safety claim | **none** | — |
 
-About 2,620 automated tests cover `fuse/**` (about 1,360 in `fuse/core` and 1,260 in `fuse/plugin`). That number is not
+About 2,650 automated tests cover `fuse/**` (about 1,360 in `fuse/core` and 1,300 in `fuse/plugin`). That number is not
 a quality claim. The user interface counts as checked only after someone has looked at the device.
 
 ### What FUSE deliberately does not do
@@ -431,13 +438,17 @@ diesem Wert keinen SMB, zu jeder Tageszeit; die Kanäle bleiben unberührt.
 **Anzeige.** Im Hauptgraphen trägt jeder BG-Punkt die Farbe dessen, was FUSE in diesem Zyklus durfte oder tat (ein Tief
 bleibt rot); der Korrekturkanal steht als Band mit Faktor, Menge und Ende, die SMB-Dreiecke zeigen ihre Quelle
 (Mahlzeitkonto, Normalweg, andere) samt Summe je Serie. Gedrückt halten zeigt Zustand, Bindung und Bedarf; eine kleine
-Legende erklärt die Farben. Reine Anzeige, abschaltbar.
+Legende erklärt die Farben. Reine Anzeige, abschaltbar. Unter der Zeile mit dem BG-Wert steht der **FUSE-Chip**:
+zugeklappt der Zustand des letzten Zyklus und bis zu vier angeheftete Werte, aufgeklappt neun Kacheln entlang der
+Dosierkette (Störung r, Bedarf, Anteil, SMB, Grenze, Kanal) sowie Guard, Schwanz und Mahlzeit. Eine Kachel antippen
+heftet sie an, lang drücken öffnet den FUSE-Reiter; ein Zyklus älter als zehn Minuten wird grau und nennt sein Alter.
+Der Chip ersetzt den Bedarf-Chip neben IOB und COB.
 
 **Architektur.** `fuse/core` enthält die Dosierlogik in reinem Kotlin ohne Android. `fuse/plugin` verbindet sie mit AAPS:
 Zyklus, Übersetzung in SMB und TBR, Ledger, Trail und Oberfläche. AAPS bleibt Herr über die Pumpe. Jeder Zyklus steht
 als JSON-Zeile in `Documents/aapsLogs/fuse_state_history.jsonl`; FUSE enthält keinen Netzwerkcode.
 
-**Ehrlicher Stand.** Rund 2.620 automatische Tests auf der JVM — kein klinischer Nachweis. Der langsame Korrekturkanal
+**Ehrlicher Stand.** Rund 2.650 automatische Tests auf der JVM — kein klinischer Nachweis. Der langsame Korrekturkanal
 war am 21.10.2026 zum ersten Mal im Einsatz.
 
 ---
