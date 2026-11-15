@@ -1,5 +1,6 @@
 package app.aaps.ui.compose.overview.chips
 
+import app.aaps.core.interfaces.InterfacesStrings
 import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.overview.FuseOverviewSource.AccountStatus
 import app.aaps.core.interfaces.overview.FuseOverviewSource.ChipTile
@@ -57,11 +58,19 @@ internal class FuseChipTexts(
         )
     }
 
-    private fun demand(chip: FuseOverviewSource.Chip?): FuseChipTileUi = FuseChipTileUi(
-        tile = ChipTile.DEMAND,
-        label = rh.gs(CoreUiStrings.fuse_chip_tile_demand),
-        value = chip?.insulinReqU?.takeIf { it.isFinite() }?.let { insulin(it) } ?: NONE
-    )
+    /**
+     * The demand. Where the normal path calculated none and the meal account carries the cycle, it is the demand of the
+     * account - and the tile says so.
+     */
+    private fun demand(chip: FuseOverviewSource.Chip?): FuseChipTileUi {
+        val demand = chip?.insulinReqU?.takeIf { it.isFinite() }
+        return FuseChipTileUi(
+            tile = ChipTile.DEMAND,
+            label = rh.gs(CoreUiStrings.fuse_chip_tile_demand),
+            value = demand?.let { insulin(it) } ?: NONE,
+            sub = if (demand != null && chip.insulinReqFromAccount) rh.gs(CoreUiStrings.fuse_chip_demand_account) else ""
+        )
+    }
 
     /** The SMB share of the demand, and the rule it comes from. */
     private fun ratio(chip: FuseOverviewSource.Chip?): FuseChipTileUi = FuseChipTileUi(
@@ -69,7 +78,7 @@ internal class FuseChipTexts(
         label = rh.gs(CoreUiStrings.fuse_chip_tile_ratio),
         value = chip?.smbRatio?.takeIf { it.isFinite() }?.let { decimalFormatter.to2Decimal(it) } ?: NONE,
         sub = when (chip?.ratioMode) {
-            RatioMode.RAMP       -> chip?.rampPercent?.let { rh.gs(CoreUiStrings.fuse_chip_ratio_ramp, it) }.orEmpty()
+            RatioMode.RAMP       -> chip.rampPercent?.let { rh.gs(CoreUiStrings.fuse_chip_ratio_ramp, it) }.orEmpty()
             RatioMode.CORRECTION -> rh.gs(CoreUiStrings.fuse_chip_ratio_correction)
             RatioMode.REBOUND    -> rh.gs(CoreUiStrings.fuse_chip_ratio_rebound)
             null                 -> ""
@@ -141,7 +150,8 @@ internal class FuseChipTexts(
                     ?: rh.gs(CoreUiStrings.fuse_channel_running)
             },
             sub = channel?.takeIf { it.active }?.rateUPerH?.takeIf { it.isFinite() }
-                ?.let { rh.gs(CoreUiStrings.fuse_chip_rate, decimalFormatter.to2Decimal(it)) }.orEmpty()
+                ?.let { rh.gs(CoreUiStrings.value_with_unit, decimalFormatter.to2Decimal(it), rh.gs(InterfacesStrings.profile_ins_units_per_hour)) }
+                .orEmpty()
         )
     }
 
@@ -194,7 +204,7 @@ internal class FuseChipTexts(
         }
         return when {
             balance != null                         -> {
-                val text = rh.gs(CoreUiStrings.fuse_chip_insulin, signed(balance, 2))
+                val text = insulinText(signed(balance, 2))
                 FuseChipTileUi(
                     tile = ChipTile.MEAL, label = label, value = rh.gs(CoreUiStrings.fuse_chip_meal_balance, text), sub = sub,
                     pinLabel = rh.gs(CoreUiStrings.fuse_chip_pin_balance), pinValue = text, tone = tone
@@ -240,7 +250,13 @@ internal class FuseChipTexts(
     }
 
     /** An insulin amount with two decimals and its unit. */
-    private fun insulin(units: Double): String = rh.gs(CoreUiStrings.fuse_chip_insulin, decimalFormatter.to2Decimal(units))
+    private fun insulin(units: Double): String = insulinText(decimalFormatter.to2Decimal(units))
+
+    /**
+     * An amount that is already formatted, with the insulin unit AAPS shows everywhere else on the screen ("U", in
+     * German "IE") - not a unit of its own, so the chip never reads differently from the IOB chip above it (Toni).
+     */
+    private fun insulinText(amount: String): String = rh.gs(CoreUiStrings.value_with_unit, amount, rh.gs(CoreUiStrings.insulin_unit_shortname))
 
     /**
      * A number with its sign: "+1,20", "-0,40", "0,00". Rounded first, so that a value that shows as zero has no sign

@@ -1,12 +1,16 @@
 package app.aaps.ui.compose.overview.chips
 
+import app.aaps.core.interfaces.InterfacesStrings
 import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.overview.FuseOverviewSource.AccountStatus
 import app.aaps.core.interfaces.overview.FuseOverviewSource.ChipTile
 import app.aaps.core.interfaces.overview.FuseOverviewSource.CycleState
 import app.aaps.core.interfaces.overview.FuseOverviewSource.RatioMode
 import app.aaps.core.interfaces.overview.FuseOverviewSource.SmbSource
+import app.aaps.core.interfaces.resources.TextResolver
 import app.aaps.core.interfaces.utils.DecimalFormatter
+import app.aaps.core.keys.interfaces.TextRef
+import app.aaps.core.ui.CoreUiStrings
 import app.aaps.shared.tests.generatedTextResolver
 import com.google.common.truth.Truth.assertThat
 import org.junit.jupiter.api.BeforeEach
@@ -26,15 +30,35 @@ internal class FuseChipTextsTest {
     private val minute = 60_000L
     private val now = 1_800_000_000_000L
 
+    private lateinit var formatter: DecimalFormatter
     private lateinit var texts: FuseChipTexts
 
     @BeforeEach
     fun setUp() {
-        val formatter = mock<DecimalFormatter>()
+        formatter = mock()
         whenever(formatter.to0Decimal(any())).thenAnswer { String.format(Locale.GERMANY, "%.0f", it.arguments[0] as Double) }
         whenever(formatter.to1Decimal(any())).thenAnswer { String.format(Locale.GERMANY, "%.1f", it.arguments[0] as Double) }
         whenever(formatter.to2Decimal(any())).thenAnswer { String.format(Locale.GERMANY, "%.2f", it.arguments[0] as Double) }
         texts = FuseChipTexts(generatedTextResolver(), formatter)
+    }
+
+    /**
+     * The same texts, but with the insulin units as a German phone has them. The generated texts are the base ones
+     * ("U"), so this is the only way to see here that the chip takes its unit from AAPS and brings none of its own.
+     */
+    private fun textsWithGermanUnits(): FuseChipTexts {
+        val base = generatedTextResolver()
+        val german = object : TextResolver {
+            override fun gs(ref: TextRef): String = when (ref) {
+                CoreUiStrings.insulin_unit_shortname        -> "IE"
+                InterfacesStrings.profile_ins_units_per_hour -> "IE/h"
+                else                                         -> base.gs(ref)
+            }
+
+            override fun gs(ref: TextRef, vararg args: Any?): String = base.gs(ref, *args)
+            override fun gsNotLocalised(ref: TextRef): String = base.gsNotLocalised(ref)
+        }
+        return FuseChipTexts(german, formatter)
     }
 
     private fun chip(
@@ -42,6 +66,7 @@ internal class FuseChipTextsTest {
         drive: Double? = 1.2,
         expected: Double? = null,
         insulinReq: Double? = 0.8,
+        demandFromAccount: Boolean = false,
         ratio: Double? = 0.25,
         mode: RatioMode? = RatioMode.RAMP,
         ramp: Int? = 50,
@@ -62,6 +87,7 @@ internal class FuseChipTextsTest {
         driveMgdlPerMin = drive,
         expectedMealDriveMgdlPerMin = expected,
         insulinReqU = insulinReq,
+        insulinReqFromAccount = demandFromAccount,
         smbRatio = ratio,
         ratioMode = mode,
         rampPercent = ramp,
@@ -156,6 +182,54 @@ internal class FuseChipTextsTest {
         assertThat(none.value).doesNotContain("0")
         // A calculated zero is a zero.
         assertThat(tile(chip(insulinReq = 0.0), ChipTile.DEMAND).value).isEqualTo("0,00 U")
+        // The insulinReq of the decision needs no word under it.
+        assertThat(tile.sub).isEmpty()
+    }
+
+    /**
+     * While the normal path stops at the guard, the decision calculates no demand and the portion comes from the meal
+     * account. The tile then shows the demand of the account, and says where it is from (Toni 15.11.2026).
+     */
+    @Test
+    fun `a demand that comes from the meal account says so`() {
+        val tile = tile(chip(insulinReq = 0.45, demandFromAccount = true), ChipTile.DEMAND)
+
+        assertThat(tile.value).isEqualTo("0,45 U")
+        assertThat(tile.sub).isEqualTo("aus dem Konto")
+        assertThat(tile.pinLabel).isEqualTo("Bedarf")
+        assertThat(tile.pinValue).isEqualTo("0,45 U")
+        // Without a value there is nothing to explain.
+        assertThat(tile(chip(insulinReq = null, demandFromAccount = true), ChipTile.DEMAND).sub).isEmpty()
+    }
+
+    /**
+     * The chip brings no unit of its own: it takes the one AAPS shows on the chips above it. On a German phone that is
+     * "IE" (Toni: the chip said "U" right under an IOB chip that said "IE").
+     */
+    @Test
+    fun `insulin amounts carry the unit AAPS shows elsewhere`() {
+        val german = textsWithGermanUnits()
+        val chip = chip(
+            insulinReq = 0.8,
+            smb = FuseOverviewSource.ChipSmb(now - minute, 0.2, SmbSource.NORMAL), wanted = 0.45,
+            room = 2.3,
+            channel = FuseOverviewSource.ChannelState(phase = "RUNNING", rateUPerH = 1.6, extraUPerH = 0.8),
+            meal = meal()
+        )
+        fun tile(tile: ChipTile, of: FuseOverviewSource.Chip = chip) = german.tiles(of, now).single { it.tile == tile }
+
+        assertThat(tile(ChipTile.DEMAND).value).isEqualTo("0,80 IE")
+        assertThat(tile(ChipTile.SMB).value).isEqualTo("0,20 IE")
+        assertThat(tile(ChipTile.SMB).sub).isEqualTo("gewollt 0,45 IE")
+        assertThat(tile(ChipTile.LIMIT).sub).isEqualTo("Platz 2,30 IE")
+        assertThat(tile(ChipTile.CHANNEL).sub).isEqualTo("1,60 IE/h")
+        assertThat(tile(ChipTile.MEAL).value).isEqualTo("3,20 IE Rest")
+        assertThat(tile(ChipTile.MEAL).pinValue).isEqualTo("3,20 IE")
+        val last = chip(lastSmb = FuseOverviewSource.ChipSmb(now - 12 * minute, 0.3, SmbSource.NORMAL))
+        assertThat(tile(ChipTile.SMB, last).sub).isEqualTo("0,30 IE vor 12 min")
+        val balance = chip(meal = meal(scale = null, calculator = true, balance = 0.7))
+        assertThat(tile(ChipTile.MEAL, balance).value).isEqualTo("G +0,70 IE")
+        assertThat(tile(ChipTile.MEAL, balance).pinValue).isEqualTo("+0,70 IE")
     }
 
     @Test

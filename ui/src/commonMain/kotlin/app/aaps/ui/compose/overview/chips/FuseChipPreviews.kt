@@ -9,14 +9,14 @@ import app.aaps.core.interfaces.overview.FuseOverviewSource.CycleState
 /** Example values only: none of them comes from a real day. */
 private val previewTiles = listOf(
     FuseChipTileUi(ChipTile.DRIVE, label = "Störung r", value = "+1,20 /min", sub = "erwartet +0,90", pinLabel = "r", pinValue = "+1,20"),
-    FuseChipTileUi(ChipTile.DEMAND, label = "Bedarf", value = "0,80 U"),
+    FuseChipTileUi(ChipTile.DEMAND, label = "Bedarf", value = "0,80 IE", sub = "aus dem Konto"),
     FuseChipTileUi(ChipTile.RATIO, label = "Anteil", value = "0,25", sub = "Rampe 50 %"),
-    FuseChipTileUi(ChipTile.SMB, label = "SMB", value = "0,20 U", sub = "Mahlzeitkonto"),
-    FuseChipTileUi(ChipTile.LIMIT, label = "Grenze", value = "frei", sub = "Platz 2,30 U", tone = FuseChipTone.FREE),
+    FuseChipTileUi(ChipTile.SMB, label = "SMB", value = "0,20 IE", sub = "Mahlzeitkonto"),
+    FuseChipTileUi(ChipTile.LIMIT, label = "Grenze", value = "frei", sub = "Platz 2,30 IE", tone = FuseChipTone.FREE),
     FuseChipTileUi(ChipTile.CHANNEL, label = "Kanal", value = "aus"),
     FuseChipTileUi(ChipTile.GUARD, label = "Guard", value = "+18 mg/dl", sub = "mit Mahlzeit +42", pinValue = "+18"),
     FuseChipTileUi(ChipTile.TAIL, label = "Schwanz", value = "+25 mg/dl", pinValue = "+25"),
-    FuseChipTileUi(ChipTile.MEAL, label = "Mahlzeit", value = "3,20 U Rest", sub = "aktiv · 85 min · ×1,4", pinLabel = "Konto", pinValue = "3,20 U")
+    FuseChipTileUi(ChipTile.MEAL, label = "Mahlzeit", value = "3,20 IE Rest", sub = "aktiv · 85 min · ×1,4", pinLabel = "Konto", pinValue = "3,20 IE")
 )
 
 private val previewState = FuseChipUiState(

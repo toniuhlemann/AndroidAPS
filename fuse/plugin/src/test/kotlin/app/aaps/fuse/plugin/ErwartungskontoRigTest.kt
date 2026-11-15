@@ -3521,7 +3521,17 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             assertEquals(o.computeTs, chip.timestamp, "$wo: Zeit")
             assertEquals(FuseGraphZyklus.felder(o, gegeben).zustand, chip.cycleState, "$wo: Zustand")
             assertEquals(o.state?.effectiveSmbRatio, chip.smbRatio, "$wo: Anteil")
-            assertEquals(o.decision.insulinReqU?.takeIf { it.isFinite() }, chip.insulinReqU, "$wo: Bedarf")
+            // Der Bedarf ist der des Reglers. Hat der keinen gerechnet (Stopp am Guard oder am Schwanz), der des Kontos -
+            // und nur dann traegt er dessen Kennzeichen.
+            val reglerBedarf = o.decision.insulinReqU?.takeIf { it.isFinite() }
+            if (reglerBedarf != null) {
+                assertEquals(reglerBedarf, chip.insulinReqU, "$wo: Bedarf des Reglers")
+                assertFalse(chip.insulinReqFromAccount, "$wo: Bedarf des Reglers als Kontobedarf gekennzeichnet")
+            } else {
+                assertEquals(FuseChipStand.kontoBedarfU(o), chip.insulinReqU, "$wo: Bedarf des Kontos")
+                assertEquals(chip.insulinReqU != null, chip.insulinReqFromAccount, "$wo: Kennzeichen des Kontobedarfs")
+                if (o.erwartungskonto?.gilt != true) assertNull(chip.insulinReqU, "$wo: Kontobedarf ohne geltendes Konto")
+            }
             // Mahlzeit: mit geltendem Konto sein Fenster und sein Budget - und der Rest NACH der Buchung dieses Zyklus:
             // der Stand des Zyklus (wie im Trail) abzueglich dessen, was der Zyklus selbst aus dem Konto gebucht hat. So
             // steht ein SMB aus dem Konto nie neben einem Rest, von dem er noch nicht abgezogen ist. Ohne geltendes Konto
@@ -3560,6 +3570,17 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertTrue(reste.zipWithNext().all { (a, b) -> b <= a + 1e-9 }) { "der Rest steigt" }
         assertTrue(reste.last() < reste.first() - 1e-9) { "kein Verbrauch am Chip" }
         assertTrue(staende.any { it.second.smb?.source == FuseOverviewSource.SmbSource.EXPECTATION }) { "kein SMB aus dem Konto" }
+        // DER FALL VOM GERAET (Toni 15.11.2026): der Normalweg stoppt am Guard, die Portion kommt ueber die Freigabe aus
+        // dem Konto - der Regler rechnet in diesen Zyklen keinen Bedarf. Die Kachel zeigt dann den des Kontos, nie einen
+        // Strich neben einem SMB aus dem Konto; und der Kontobedarf deckt die Portion, die hinausging.
+        val portionOhneReglerBedarf = staende.filter { (z, chip) ->
+            chip.smb?.source == FuseOverviewSource.SmbSource.EXPECTATION && z.o.decision.insulinReqU == null
+        }
+        assertTrue(portionOhneReglerBedarf.isNotEmpty()) { "der Lauf zeigt keine Portion ohne Bedarf des Reglers" }
+        for ((z, chip) in portionOhneReglerBedarf) {
+            assertTrue(chip.insulinReqFromAccount) { "Minute ${z.minute}: Portion aus dem Konto, aber kein Kontobedarf" }
+            assertTrue(chip.insulinReqU!! >= z.dErw() - 1e-9) { "Minute ${z.minute}: Kontobedarf ${chip.insulinReqU} unter der Buchung ${z.dErw()}" }
+        }
         // Der Lauf zeigt beide Seiten der Kachel "Grenze".
         assertTrue(staende.any { it.second.limit == null }) { "nie frei" }
         assertTrue(staende.any { it.second.limit != null }) { "nie eine Grenze" }

@@ -59,7 +59,7 @@ enum class FuseChipTone { NEUTRAL, FREE, GUARD, BLOCKED }
  * Fork (Toni 15.11.2026): one tile of the FUSE chip, with its texts ready to draw.
  *
  * @property label the name on the tile ("Bedarf")
- * @property value the big value ("0,80 U"), a dash when the cycle has none
+ * @property value the big value ("0,80 IE"), a dash when the cycle has none
  * @property sub the small line under the value ("Rampe 50 %"), empty when there is none
  * @property pinLabel the name on the closed chip when the tile is pinned - shorter where the tile name is long
  * @property pinValue the value on the closed chip, without the parts that only fit on the tile

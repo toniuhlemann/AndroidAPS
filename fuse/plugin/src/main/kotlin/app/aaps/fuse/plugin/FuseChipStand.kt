@@ -2,6 +2,8 @@ package app.aaps.fuse.plugin
 
 import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.fuse.core.controller.ExpectationAccount
+import app.aaps.fuse.core.controller.FuseController
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -39,6 +41,10 @@ internal object FuseChipStand {
         val smb = punkt.smbU?.takeIf { it.isFinite() && it > 0.0 }?.let {
             FuseOverviewSource.ChipSmb(punkt.timestamp, it, punkt.smbSource ?: FuseOverviewSource.SmbSource.OTHER)
         }
+        // Der Bedarf ist der des Reglers. Stoppt der Normalweg am Guard oder am Schwanz, rechnet der Regler keinen - die
+        // Portion kommt dann ueber die Marker-Freigabe aus dem Konto, und die Kachel stuende genau in der Phase leer, in
+        // der das Konto liefert. Dann zeigt sie den Bedarf des Kontos (Toni 15.11.2026: "Bedarf vom Konto zeigen").
+        val kontoBedarf = if (punkt.insulinReqU == null) kontoBedarfU(o) else null
         return FuseOverviewSource.Chip(
             // Wann FUSE gerechnet hat - nicht der Zeitstempel des Messwerts: daran wird der Chip grau.
             timestamp = o.computeTs,
@@ -46,7 +52,8 @@ internal object FuseChipStand {
             driveMgdlPerMin = punkt.driveMgdlPerMin,
             // 0 heisst beim Konto "es erwartet nichts" ("Nur Marker", vor dem Budget) - dann steht nichts da.
             expectedMealDriveMgdlPerMin = punkt.expectedMealDriveMgdlPerMin?.takeIf { it > 0.0 },
-            insulinReqU = punkt.insulinReqU,
+            insulinReqU = punkt.insulinReqU ?: kontoBedarf,
+            insulinReqFromAccount = kontoBedarf != null,
             smbRatio = st?.effectiveSmbRatio?.takeIf { it.isFinite() },
             // Dieselbe Dreiteilung wie `FuseController.State.effectiveSmbRatio`: nach einem Tief der Korrekturanteil,
             // ausserhalb des Mahlzeitfensters ebenso, sonst die Rampe.
@@ -73,6 +80,19 @@ internal object FuseChipStand {
             tailWithMealMarginMgdl = punkt.tailWithMealMarginMgdl,
             meal = mahlzeit(o, punkt.accountStatus, kontoDanach),
         )
+    }
+
+    /**
+     * DER BEDARF DES KONTOS in diesem Zyklus [U] - dieselbe Groesse, die der Regler in einem Kontozyklus ohne Stopp als
+     * Bedarf ausweist (`FuseController.decide`, `kontoReq`): die lieferbare Kontomenge ueber dieselben beiden
+     * Kernfunktionen wie dort und im Trail (`deliverableU`), hoechstens die Grenze der gemeinsamen Bilanz der
+     * Rechner-Mahlzeit. `null` ohne geltendes Konto - im Rueckfall gibt es keinen Kontobedarf.
+     */
+    fun kontoBedarfU(o: FuseCycleRunner.Outcome): Double? {
+        val eval = o.erwartungskonto?.takeIf { it.gilt }?.zyklus?.eval ?: return null
+        val roh = FuseController.accountDemandU(ExpectationAccount.deliverableU(eval)) ?: return null
+        val grenze = o.mealBalance?.smbCapU?.takeIf { it.isFinite() }
+        return if (grenze == null) roh else min(roh, grenze)
     }
 
     /**

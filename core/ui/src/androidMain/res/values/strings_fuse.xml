@@ -68,26 +68,26 @@
     <string name="fuse_chip_parts_3" comment="%1$s, %2$s, %3$s=three short parts of one line. Example: aktiv · 85 min · ×1,4">%1$s · %2$s · %3$s</string>
     <string name="fuse_chip_drive_value" comment="%1$s=disturbance r in mg/dl per minute, with its sign. Example: +1,20 /min">%1$s /min</string>
     <string name="fuse_chip_drive_expected" comment="%1$s=the meal effect the account expects in mg/dl per minute, with its sign. Example: erwartet +0,90">erwartet %1$s</string>
+    <!-- Under the demand, when it is the demand of the meal account and not the insulinReq of the decision. -->
+    <string name="fuse_chip_demand_account">aus dem Konto</string>
     <string name="fuse_chip_ratio_ramp" comment="%1$d=where r stands on the rise ramp, in percent. Example: Rampe 50 %">Rampe %1$d %%</string>
     <string name="fuse_chip_ratio_correction">Korrektur</string>
     <string name="fuse_chip_ratio_rebound">Rebound</string>
-    <string name="fuse_chip_smb_wanted" comment="%1$s=the SMB FUSE wanted before a limit cut it, with unit. Example: gewollt 0,45 U">gewollt %1$s</string>
-    <string name="fuse_chip_smb_last_min" comment="%1$s=the last SMB with unit, %2$d=minutes since then. Example: 0,30 U vor 12 min">%1$s vor %2$d min</string>
-    <string name="fuse_chip_smb_last_hours" comment="%1$s=the last SMB with unit, %2$d=hours since then. Example: 0,30 U vor 3 h">%1$s vor %2$d h</string>
+    <string name="fuse_chip_smb_wanted" comment="%1$s=the SMB FUSE wanted before a limit cut it, with unit. Example: gewollt 0,45 IE">gewollt %1$s</string>
+    <string name="fuse_chip_smb_last_min" comment="%1$s=the last SMB with unit, %2$d=minutes since then. Example: 0,30 IE vor 12 min">%1$s vor %2$d min</string>
+    <string name="fuse_chip_smb_last_hours" comment="%1$s=the last SMB with unit, %2$d=hours since then. Example: 0,30 IE vor 3 h">%1$s vor %2$d h</string>
     <string name="fuse_chip_limit_free">frei</string>
-    <string name="fuse_chip_limit_room" comment="%1$s=room up to the tightest amount limit, with unit. Example: Platz 2,30 U">Platz %1$s</string>
+    <string name="fuse_chip_limit_room" comment="%1$s=room up to the tightest amount limit, with unit. Example: Platz 2,30 IE">Platz %1$s</string>
     <string name="fuse_chip_channel_off">aus</string>
     <string name="fuse_chip_channel_waiting">wartet</string>
     <string name="fuse_chip_margin" comment="%1$s=margin in mg/dl with its sign. Example: +18 mg/dl">%1$s mg/dl</string>
     <string name="fuse_chip_margin_min" comment="%1$s=the lower stop of the margin with its sign: the margin is at or below it. Example: ≤ -150">≤ %1$s</string>
     <string name="fuse_chip_margin_max" comment="%1$s=the upper stop of the margin with its sign: the margin is at or above it. Example: ≥ +150">≥ %1$s</string>
     <string name="fuse_chip_margin_with_meal" comment="%1$s=the margin with the announced meal, with its sign. Example: mit Mahlzeit +42">mit Mahlzeit %1$s</string>
-    <string name="fuse_chip_insulin" comment="%1$s=insulin amount, already formatted, with its sign where the tile shows one. Example: 0,80 U">%1$s U</string>
-    <string name="fuse_chip_rate" comment="%1$s=basal rate, already formatted. Example: 1,60 U/h">%1$s U/h</string>
-    <string name="fuse_chip_meal_rest" comment="%1$s=what the meal account may still give, with unit. Example: 3,20 U Rest">%1$s Rest</string>
+    <string name="fuse_chip_meal_rest" comment="%1$s=what the meal account may still give, with unit. Example: 3,20 IE Rest">%1$s Rest</string>
     <string name="fuse_chip_meal_marker_only">Nur Marker</string>
     <string name="fuse_chip_meal_no_account">ohne Konto</string>
-    <string name="fuse_chip_meal_balance" comment="%1$s=the balance G of a bolus calculator meal with sign and unit. Example: G +0,70 U">G %1$s</string>
+    <string name="fuse_chip_meal_balance" comment="%1$s=the balance G of a bolus calculator meal with sign and unit. Example: G +0,70 IE">G %1$s</string>
     <string name="fuse_chip_meal_calculator">Rechner</string>
     <string name="fuse_chip_meal_scale" comment="%1$s=the scaler booked at the marker. Example: ×1,4">×%1$s</string>
     <string name="fuse_chip_meal_status_active">aktiv</string>

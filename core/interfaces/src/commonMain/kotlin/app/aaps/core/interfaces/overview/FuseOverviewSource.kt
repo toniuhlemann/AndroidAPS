@@ -231,8 +231,15 @@ interface FuseOverviewSource {
         val driveMgdlPerMin: Double?,
         /** The meal effect the account expects now [mg/dl/min]; `null` = none. */
         val expectedMealDriveMgdlPerMin: Double?,
-        /** insulinReq of the decision [U]; `null` = not calculated in this cycle (shown as a dash, never as 0). */
+        /**
+         * The demand of this cycle [U]: insulinReq of the decision. Where the decision calculated none, because the
+         * normal path stopped at the guard or the tail before it got that far, and a meal account applies, it is the
+         * demand of the account - the same amount FUSE reports as demand in an account cycle without such a stop.
+         * `null` = not calculated in this cycle (shown as a dash, never as 0).
+         */
         val insulinReqU: Double?,
+        /** [insulinReqU] is the demand of the meal account, not the insulinReq of the decision. */
+        val insulinReqFromAccount: Boolean = false,
         /** The share of the demand that may go out as SMB in this cycle (0..1); `null` = the cycle did not get that far. */
         val smbRatio: Double?,
         /** Which rule gave [smbRatio]; `null` together with it. */

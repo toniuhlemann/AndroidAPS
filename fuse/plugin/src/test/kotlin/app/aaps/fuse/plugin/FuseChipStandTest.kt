@@ -106,6 +106,8 @@ class FuseChipStandTest {
         kontoStatus: AccountStatus? = null,
         erwartet: Double? = null,
         kanal: FuseOverviewSource.ChannelState? = null,
+        /** Der Bedarf des Reglers; `null` = in diesem Zyklus nicht gerechnet (Stopp am Guard oder am Schwanz). */
+        bedarfU: Double? = 0.8,
     ) = FuseOverviewSource.Point(
         timestamp = jetzt - 60_000L,
         driveMgdlPerMin = 1.2,
@@ -121,7 +123,7 @@ class FuseChipStandTest {
         smbSource = quelle,
         channel = kanal,
         bindingLimit = "smbRatio",
-        insulinReqU = 0.8,
+        insulinReqU = bedarfU,
     )
 
     private fun konto(budgetU: Double = 4.0, gebuchtU: Double = 0.8, skalierer: Double = 1.4) = ExpectationAccount.State(
@@ -144,21 +146,23 @@ class FuseChipStandTest {
         curveValues = emptyList(),
     )
 
-    private fun auswertung(status: String = "ACTIVE") = ExpectationAccount.Evaluation(
-        rMessU = 0.4, phiZU = 0.3, rRohU = 0.7, requestU = 0.7, restEffU = 0.3,
-        expired = false, paused = false, released = true, frozen = false, status = status,
+    /** Die Auswertung des Kontos: lieferbar ist min(Anforderung, gemessener Anteil + Rest dieses Zyklus). */
+    private fun auswertung(anforderungU: Double = 0.7, gemessenU: Double = 0.4, restZyklusU: Double = 0.3) = ExpectationAccount.Evaluation(
+        rMessU = gemessenU, phiZU = 0.3, rRohU = anforderungU, requestU = anforderungU, restEffU = restZyklusU,
+        expired = false, paused = false, released = true, frozen = false, status = "ACTIVE",
     )
 
     private fun kontoExport(
         gilt: Boolean = true,
         rueckfall: String? = null,
         zustand: ExpectationAccount.State? = konto(),
+        eval: ExpectationAccount.Evaluation = auswertung(),
     ) = FuseCycleRunner.ErwartungskontoExport(
         gilt = gilt,
         kontextAbweichung = false,
         verworfenBeimLaden = false,
         zyklus = zustand?.let {
-            FuseCycleRunner.ErwartungskontoZyklus(state = it, eval = auswertung(), armiertInDiesemZyklus = false, stabil = true, pausiert = false)
+            FuseCycleRunner.ErwartungskontoZyklus(state = it, eval = eval, armiertInDiesemZyklus = false, stabil = true, pausiert = false)
         },
         buchung = null,
         bodenU = 0.0,
@@ -361,6 +365,74 @@ class FuseChipStandTest {
         assertEquals(30.0, chip.tailWithMealMarginMgdl)
         assertNull(chip.channel)
         assertNull(chip.meal)
+    }
+
+    // ---- Bedarf ------------------------------------------------------------------------------------------------
+
+    /**
+     * Stoppt der Normalweg am Guard, rechnet der Regler keinen Bedarf - die Portion kommt ueber die Marker-Freigabe aus
+     * dem Konto. Dann zeigt die Kachel den Bedarf des Kontos (Toni 15.11.2026), und sagt, woher er kommt.
+     */
+    @Test
+    fun `ohne Bedarf des Reglers zeigt die Kachel den des Kontos`() {
+        val chip = FuseChipStand.aus(mit(outcome(), kontoExport()), punkt(kontoStatus = AccountStatus.AKTIV, bedarfU = null), null)
+
+        // lieferbar = min(Anforderung, gemessener Anteil + Rest dieses Zyklus)
+        assertEquals(0.7, chip.insulinReqU!!, 1e-12)
+        assertTrue(chip.insulinReqFromAccount)
+    }
+
+    @Test
+    fun `der Bedarf des Reglers geht vor dem des Kontos`() {
+        val chip = FuseChipStand.aus(mit(outcome(), kontoExport()), punkt(kontoStatus = AccountStatus.AKTIV, bedarfU = 0.8), null)
+
+        assertEquals(0.8, chip.insulinReqU)
+        assertFalse(chip.insulinReqFromAccount)
+        // Auch ein gerechneter Bedarf von null ist ein Bedarf des Reglers.
+        val nullBedarf = FuseChipStand.aus(mit(outcome(), kontoExport()), punkt(kontoStatus = AccountStatus.AKTIV, bedarfU = 0.0), null)
+        assertEquals(0.0, nullBedarf.insulinReqU)
+        assertFalse(nullBedarf.insulinReqFromAccount)
+    }
+
+    /** Ohne geltendes Konto gibt es keinen Kontobedarf - weder im Rueckfall noch ausserhalb einer Mahlzeit. */
+    @Test
+    fun `ohne Bedarf des Reglers und ohne geltendes Konto bleibt die Kachel leer`() {
+        val rueckfall = mit(outcome(), kontoExport(gilt = false, rueckfall = "ACCOUNT_LOST"))
+        val imRueckfall = FuseChipStand.aus(rueckfall, punkt(kontoStatus = AccountStatus.OHNE_KONTO, bedarfU = null), null)
+        assertNull(imRueckfall.insulinReqU)
+        assertFalse(imRueckfall.insulinReqFromAccount)
+
+        val ohneMahlzeit = FuseChipStand.aus(outcome(), punkt(bedarfU = null), null)
+        assertNull(ohneMahlzeit.insulinReqU)
+        assertFalse(ohneMahlzeit.insulinReqFromAccount)
+    }
+
+    /** Der Kontobedarf ist die lieferbare Menge des Kontos - dieselbe, die der Regler als Kontobedarf bekommt. */
+    @Test
+    fun `der Kontobedarf ist die lieferbare Menge, nicht berechenbar zaehlt als null`() {
+        fun bedarf(eval: ExpectationAccount.Evaluation) = FuseChipStand.kontoBedarfU(mit(outcome(), kontoExport(eval = eval)))
+
+        // Die Anforderung begrenzt.
+        assertEquals(0.5, bedarf(auswertung(anforderungU = 0.5, gemessenU = 0.4, restZyklusU = 0.3))!!, 1e-12)
+        // Gemessener Anteil plus Rest dieses Zyklus begrenzen.
+        assertEquals(0.6, bedarf(auswertung(anforderungU = 2.0, gemessenU = 0.4, restZyklusU = 0.2))!!, 1e-12)
+        // Ein negativer gemessener Anteil zaehlt nicht mit.
+        assertEquals(0.2, bedarf(auswertung(anforderungU = 2.0, gemessenU = -1.0, restZyklusU = 0.2))!!, 1e-12)
+        // Nicht berechenbar zaehlt als 0, wie im Regler.
+        assertEquals(0.0, bedarf(auswertung(anforderungU = Double.NaN))!!, 0.0)
+        // Ohne geltendes Konto gibt es keinen.
+        assertNull(FuseChipStand.kontoBedarfU(outcome()))
+        assertNull(FuseChipStand.kontoBedarfU(mit(outcome(), kontoExport(gilt = false, rueckfall = "NO_CURVE"))))
+    }
+
+    /** Wie im Regler: bei einer Rechner-Mahlzeit verlangt kein Weg mehr, als die gemeinsame Bilanz traegt. */
+    @Test
+    fun `die Grenze der Bilanz deckelt den Kontobedarf`() {
+        val o = mit(outcome(), kontoExport(), bilanz(g = 0.5))
+        assertEquals(0.5, FuseChipStand.kontoBedarfU(o)!!, 1e-12)
+        // Eine weitere Grenze aendert nichts, eine nicht endliche zaehlt nicht.
+        assertEquals(0.7, FuseChipStand.kontoBedarfU(mit(outcome(), kontoExport(), bilanz(g = 3.0)))!!, 1e-12)
+        assertEquals(0.7, FuseChipStand.kontoBedarfU(mit(outcome(), kontoExport(), bilanz(g = null)))!!, 1e-12)
     }
 
     @Test
