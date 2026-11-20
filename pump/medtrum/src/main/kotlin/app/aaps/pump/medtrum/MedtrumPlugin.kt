@@ -22,6 +22,7 @@ import app.aaps.core.interfaces.protection.ProtectionCheck
 import app.aaps.core.interfaces.pump.BlePreCheck
 import app.aaps.core.interfaces.pump.DetailedBolusInfo
 import app.aaps.core.interfaces.pump.Medtrum
+import app.aaps.core.interfaces.pump.PlungerTravel
 import app.aaps.core.interfaces.pump.Pump
 import app.aaps.core.interfaces.pump.PumpEnactResult
 import app.aaps.core.interfaces.pump.PumpInsulin
@@ -47,6 +48,7 @@ import app.aaps.core.ui.compose.icons.IcPluginMedtrum
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
 import app.aaps.pump.medtrum.comm.enums.MedtrumPumpState
 import app.aaps.pump.medtrum.compose.MedtrumComposeContent
+import app.aaps.pump.medtrum.diagnosis.PlungerWatch
 import app.aaps.pump.medtrum.keys.MedtrumBooleanKey
 import app.aaps.pump.medtrum.keys.MedtrumBooleanNonKey
 import app.aaps.pump.medtrum.keys.MedtrumDoubleNonKey
@@ -107,7 +109,7 @@ class MedtrumPlugin(
     ownPreferences = MedtrumStringKey.entries + MedtrumIntKey.entries + MedtrumBooleanKey.entries + MedtrumIntNonKey.entries +
         MedtrumLongNonKey.entries + MedtrumStringNonKey.entries + MedtrumDoubleNonKey.entries + MedtrumBooleanNonKey.entries,
     aapsLogger, rh, preferences, commandQueue, notificationManager
-), Pump, Medtrum {
+), Pump, Medtrum, PlungerTravel {
 
     private var scope: CoroutineScope? = null
     private var medtrumService: MedtrumService? = null
@@ -392,6 +394,10 @@ class MedtrumPlugin(
             }
         }
     }
+
+    // Fork diagnosis: the loop reads this to word its own warning, see PlungerWatch.
+    override val slowPlungerPercent: Int?
+        get() = medtrumPump.plungerStatus.takeIf { it.state == PlungerWatch.State.SLOW }?.percentOfNormal
 
     // Medtrum interface
     override fun loadEvents(): PumpEnactResult {

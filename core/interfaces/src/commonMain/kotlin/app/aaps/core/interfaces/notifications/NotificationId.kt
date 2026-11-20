@@ -278,7 +278,32 @@ enum class NotificationId(
     // Fork (FUSE): the glucose keeps rising although the model expects a clear fall from the insulin on board -
     // possibly a dead site or patch (InsulinEffectWatch). URGENT: it is an insulin-delivery failure, and the pump
     // itself may report it hours later. It only warns; FUSE doses on as before. Appended at the END (ordinals).
-    FUSE_INSULIN_NO_EFFECT(URGENT, PUMP);
+    FUSE_INSULIN_NO_EFFECT(URGENT, PUMP),
+
+    // Fork diagnosis (Medtrum, Toni 20.11.2026): the measured plunger of the patch does not follow the delivery the
+    // pump reports - no insulin leaves the reservoir (PlungerWatch). URGENT: the pump itself reports a patch fault
+    // hours later, or never at the end of a reservoir. It only warns. Appended at the END (ordinals).
+    FORK_MEDTRUM_PLUNGER_STALLED(URGENT, PUMP),
+
+    // Fork diagnosis (Medtrum): the pump sent an alarm bit or a status code that the driver has no name for.
+    // NORMAL: nobody knows what it means, but it must not stay unseen. Appended at the END (ordinals).
+    FORK_MEDTRUM_UNKNOWN_SIGNAL(NORMAL, PUMP),
+
+    // Fork (FUSE, Toni 20.11.2026): FUSE has not calculated for a while (every cycle ends as "no input"), and the
+    // glucose is high or rising (NoInputWatch). In that time FUSE gives nothing but the basal, and nobody sees it
+    // without a look at the chip. Two stages, and the caller names the level of each: first IMPORTANT without
+    // sound, later URGENT with sound. It only warns. Appended at the END (ordinals).
+    FUSE_NO_INPUT(IMPORTANT, LOOP),
+
+    // Fork diagnosis (Medtrum, Toni 20.11.2026): the plunger of the patch moves, but clearly less far than the
+    // delivery the pump reports asks for - probably less insulin than counted (PlungerWatch). NORMAL, no sound: it
+    // also shows up about once a week without a known cause. Appended at the END (ordinals).
+    FORK_MEDTRUM_PLUNGER_SLOW(NORMAL, PUMP),
+
+    // Fork (FUSE + Medtrum diagnosis): the glucose has been rising against the insulin on board for some minutes,
+    // AND the pump says its plunger moves too short. Each alone is weak, both together point at the patch.
+    // IMPORTANT, no sound: the loud alarm stays FUSE_INSULIN_NO_EFFECT. Appended at the END (ordinals).
+    FUSE_RISE_WITH_SLOW_PLUNGER(IMPORTANT, PUMP);
 
     companion object {
 

@@ -21,6 +21,7 @@ import app.aaps.pump.medtrum.comm.enums.AlarmState
 import app.aaps.pump.medtrum.comm.enums.BasalType
 import app.aaps.pump.medtrum.comm.enums.MedtrumPumpState
 import app.aaps.pump.medtrum.comm.enums.ModelType
+import app.aaps.pump.medtrum.diagnosis.PlungerWatch
 import app.aaps.pump.medtrum.extension.toByteArray
 import app.aaps.pump.medtrum.extension.toInt
 import app.aaps.pump.medtrum.keys.MedtrumBooleanKey
@@ -152,6 +153,69 @@ class MedtrumPump(
         set(value) {
             _batteryVoltage_BFlow.value = value
         }
+
+    // ---- Fork diagnosis (Toni 20.11.2026) ---------------------------------------------------------------------
+    // Values the patch sends and the upstream driver does not use. Everything here is OUR reading of the raw
+    // values - not a state or an alarm the pump reports itself. The UI and the notifications say so.
+
+    /** Does the plunger follow the delivery the pump reports? See [PlungerWatch]. */
+    private val plungerWatch = PlungerWatch()
+    private val _plungerStatusFlow = MutableStateFlow(PlungerWatch.Status())
+    val plungerStatusFlow: StateFlow<PlungerWatch.Status> = _plungerStatusFlow.asStateFlow()
+    val plungerStatus: PlungerWatch.Status get() = _plungerStatusFlow.value
+
+    /** The alarm flags as the pump sent them last (all 16 bits; the driver only names bits 1 to 3); 0 = none. */
+    private val _rawAlarmFlagsFlow = MutableStateFlow(0)
+    val rawAlarmFlagsFlow: StateFlow<Int> = _rawAlarmFlagsFlow.asStateFlow()
+    var rawAlarmFlags: Int
+        get() = _rawAlarmFlagsFlow.value
+        set(value) {
+            _rawAlarmFlagsFlow.value = value
+        }
+
+    /** A status code of the pump the driver has no name for (0..255); `null` = none seen since the patch started. */
+    private val _unknownStateCodeFlow = MutableStateFlow<Int?>(null)
+    val unknownStateCodeFlow: StateFlow<Int?> = _unknownStateCodeFlow.asStateFlow()
+    var unknownStateCode: Int?
+        get() = _unknownStateCodeFlow.value
+        set(value) {
+            _unknownStateCodeFlow.value = value
+        }
+
+    /**
+     * One alarm record of the pump history: the pump writes it when it raises an alarm, and the upstream driver skips
+     * it.
+     *
+     * @property time when the pump raised the alarm
+     * @property code the number of the alarm bit, as in the alarm flags
+     * @property patchId the patch that raised it
+     */
+    data class AlarmRecord(val time: Long, val code: Int, val patchId: Long)
+
+    /** The last alarm record read since the app started; `null` = none. It stays over a patch change: it has a date. */
+    @Volatile var lastAlarmRecord: AlarmRecord? = null
+
+    /**
+     * A status message carried the measured plunger position [steps]. An active patch is compared with its counted
+     * reservoir; before activation and after a stop the series starts again; in a fault state the last verdict stays.
+     */
+    fun handlePlungerPosition(position: Int) {
+        val state = pumpState
+        when {
+            state == MedtrumPumpState.ACTIVE || state == MedtrumPumpState.ACTIVE_ALT ->
+                _plungerStatusFlow.value = plungerWatch.onSample(dateUtil.now(), position, reservoir)
+
+            state < MedtrumPumpState.ACTIVE || state == MedtrumPumpState.STOPPED     -> resetDiagnosis()
+        }
+    }
+
+    /** A new patch: nothing of the old one counts for the fork diagnosis. */
+    private fun resetDiagnosis() {
+        plungerWatch.reset()
+        _plungerStatusFlow.value = plungerWatch.status
+        rawAlarmFlags = 0
+        unknownStateCode = null
+    }
 
     /** Stuff stored in preferences */
     private var _patchSessionToken = 0L
@@ -672,9 +736,11 @@ class MedtrumPump(
         reservoir = 0.0
         batteryVoltage_B = 0.0
         patchStartTime = 0L
+        resetDiagnosis()
     }
 
     fun handleNewPatch(newPatchId: Long, sequenceNumber: Int, newStartTime: Long) {
+        resetDiagnosis()
         patchId = newPatchId
         patchStartTime = newStartTime
         currentSequenceNumber = sequenceNumber // We are activated, set the new seq nr

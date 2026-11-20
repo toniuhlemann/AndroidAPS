@@ -14,6 +14,8 @@ import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.StatusLevel
+import app.aaps.core.ui.compose.pump.PumpInfoGroup
+import app.aaps.core.ui.compose.pump.PumpInfoRow
 import app.aaps.pump.medtrum.MedtrumPlugin
 import app.aaps.pump.medtrum.MedtrumPump
 import app.aaps.pump.medtrum.R
@@ -21,6 +23,7 @@ import app.aaps.pump.medtrum.code.ConnectionState
 import app.aaps.pump.medtrum.comm.enums.AlarmState
 import app.aaps.pump.medtrum.comm.enums.BasalType
 import app.aaps.pump.medtrum.comm.enums.MedtrumPumpState
+import app.aaps.pump.medtrum.diagnosis.PlungerWatch
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +33,8 @@ import org.junit.jupiter.api.Test
 import org.mockito.Mock
 import org.mockito.MockitoAnnotations
 import org.mockito.kotlin.any
+import org.mockito.kotlin.anyOrNull
+import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
 import java.util.EnumSet
@@ -119,6 +124,23 @@ internal class MedtrumOverviewViewModelTest {
         whenever(rh.gs(R.string.change_patch_label)).thenReturn("Change patch")
         whenever(rh.gs(CoreUiR.string.pump_unpair)).thenReturn("Unpair")
         whenever(rh.gs(CoreUiStrings.pump_unpair)).thenReturn("Unpair")
+        // Fork diagnosis block (Toni 20.11.2026): read at build time, so the mock must answer
+        whenever(medtrumPump.plungerStatus).thenReturn(PlungerWatch.Status())
+        whenever(medtrumPump.unknownStateCode).thenReturn(null)   // a mock answers 0 for Int?, the pump answers null
+        whenever(rh.gs(CoreUiR.string.fork_diag_title)).thenReturn("Fork-Diagnose")
+        whenever(rh.gs(CoreUiR.string.fork_diag_title_value)).thenReturn("eigene Auswertung, nicht von AAPS")
+        whenever(rh.gs(CoreUiR.string.fork_diag_plunger)).thenReturn("Kolben")
+        whenever(rh.gs(CoreUiR.string.fork_diag_plunger_unknown)).thenReturn("noch keine Aussage")
+        whenever(rh.gs(CoreUiR.string.fork_diag_alarm_bits)).thenReturn("Alarmbits der Pumpe (roh)")
+        whenever(rh.gs(CoreUiR.string.fork_diag_alarm_bits_none)).thenReturn("keine")
+        whenever(rh.gs(CoreUiR.string.fork_diag_unknown_state)).thenReturn("Unbekannter Statuscode")
+        whenever(rh.gs(eq(CoreUiR.string.fork_diag_plunger_moving), anyOrNull(), anyOrNull())).thenAnswer { "läuft · ${it.arguments[1]} Schritte je IE (rund ${it.arguments[2]} %)" }
+        whenever(rh.gs(eq(CoreUiR.string.fork_diag_plunger_slow), anyOrNull(), anyOrNull())).thenAnswer { "läuft zu kurz · ${it.arguments[1]} Schritte je IE (rund ${it.arguments[2]} %)" }
+        whenever(rh.gs(CoreUiR.string.fork_diag_alarm_record)).thenReturn("Letzter Alarm-Eintrag der Pumpe")
+        whenever(rh.gs(eq(CoreUiR.string.fork_diag_alarm_record_value), anyOrNull(), anyOrNull())).thenAnswer { "${it.arguments[1]} · Bit ${it.arguments[2]}" }
+        whenever(rh.gs(eq(CoreUiR.string.fork_diag_plunger_stalled), anyOrNull())).thenAnswer { "STEHT seit ${it.arguments[1]}" }
+        whenever(rh.gs(eq(CoreUiR.string.fork_diag_alarm_bits_value), anyOrNull(), anyOrNull())).thenAnswer { "${it.arguments[1]} · Bit ${it.arguments[2]}" }
+        whenever(rh.gs(eq(CoreUiR.string.fork_diag_unknown_state_value), anyOrNull())).thenAnswer { "Code ${it.arguments[1]}" }
     }
 
     private fun createViewModel() = MedtrumOverviewViewModel(
@@ -156,5 +178,99 @@ internal class MedtrumOverviewViewModelTest {
         // disconnected + pump-active -> refresh enabled
         assertThat(state.primaryActions.first { it.label == "Refresh" }.enabled).isTrue()
         assertThat(state.managementActions.map { it.label }).contains("Unpair")
+    }
+
+    // ---- Fork diagnosis (Toni 20.11.2026) ----------------------------------------------------------------------
+
+    /** Our own reading stands as ONE block under the rows of the pump, and its first row names it. */
+    @Test
+    fun forkDiagnosis_isOneBlockUnderThePumpRows_andNamesItself() {
+        whenever(medtrumPump.connectionState).thenReturn(ConnectionState.DISCONNECTED)
+        whenever(medtrumPump.pumpState).thenReturn(MedtrumPumpState.ACTIVE)
+        whenever(medtrumPump.pumpSN).thenReturn(12345L)
+
+        val rows = createViewModel().uiState.value.infoRows
+
+        assertThat(rows.filterIsInstance<PumpInfoGroup>()).hasSize(1)
+        val block = rows.last() as PumpInfoGroup
+        assertThat(block.list.map { it.label }).containsExactly("Fork-Diagnose", "Kolben", "Alarmbits der Pumpe (roh)").inOrder()
+        assertThat(block.list[0].value).isEqualTo("eigene Auswertung, nicht von AAPS")
+        assertThat(block.list[1].value).isEqualTo("noch keine Aussage")
+        assertThat(block.list[2].value).isEqualTo("keine")
+        // Nothing of it stands among the rows the pump reports itself
+        assertThat(rows.filterIsInstance<PumpInfoRow>().map { it.label }).containsNoneOf("Fork-Diagnose", "Kolben", "Alarmbits der Pumpe (roh)")
+    }
+
+    @Test
+    fun forkDiagnosis_aMovingPlungerShowsItsStepsPerUnit() {
+        whenever(medtrumPump.connectionState).thenReturn(ConnectionState.DISCONNECTED)
+        whenever(medtrumPump.pumpState).thenReturn(MedtrumPumpState.ACTIVE)
+        whenever(medtrumPump.pumpSN).thenReturn(12345L)
+        whenever(medtrumPump.plungerStatus).thenReturn(PlungerWatch.Status(PlungerWatch.State.MOVING, 20.4, null, 1500))
+        whenever(medtrumPump.rawAlarmFlags).thenReturn(4)
+
+        val block = createViewModel().uiState.value.infoRows.last() as PumpInfoGroup
+
+        assertThat(block.list[1].value).isEqualTo("läuft · 20 Schritte je IE (rund 100 %)")
+        assertThat(block.list[1].level).isEqualTo(StatusLevel.NORMAL)
+        // A bit the driver reads itself is shown, but it is no warning of ours
+        assertThat(block.list[2].value).isEqualTo("4 · Bit 2")
+        assertThat(block.list[2].level).isEqualTo(StatusLevel.UNSPECIFIED)
+    }
+
+    /** A standing plunger is critical; a bit or a status code nobody has a name for is a warning. */
+    @Test
+    fun forkDiagnosis_aStandingPlungerIsCritical_andUnknownSignalsAreWarnings() {
+        whenever(medtrumPump.connectionState).thenReturn(ConnectionState.DISCONNECTED)
+        whenever(medtrumPump.pumpState).thenReturn(MedtrumPumpState.ACTIVE)
+        whenever(medtrumPump.pumpSN).thenReturn(12345L)
+        whenever(medtrumPump.plungerStatus).thenReturn(PlungerWatch.Status(PlungerWatch.State.STALLED, 0.0, 1_800_000_000_000L, 1000))
+        whenever(medtrumPump.rawAlarmFlags).thenReturn(4 + 128)
+        whenever(medtrumPump.unknownStateCode).thenReturn(104)
+        whenever(dateUtil.timeString(1_800_000_000_000L)).thenReturn("03:04")
+
+        val block = createViewModel().uiState.value.infoRows.last() as PumpInfoGroup
+
+        assertThat(block.list.map { it.label }).containsExactly("Fork-Diagnose", "Kolben", "Alarmbits der Pumpe (roh)", "Unbekannter Statuscode").inOrder()
+        assertThat(block.list[1].value).isEqualTo("STEHT seit 03:04")
+        assertThat(block.list[1].level).isEqualTo(StatusLevel.CRITICAL)
+        assertThat(block.list[2].value).isEqualTo("132 · Bit 2, 7")
+        assertThat(block.list[2].level).isEqualTo(StatusLevel.WARNING)
+        assertThat(block.list[3].value).isEqualTo("Code 104")
+        assertThat(block.list[3].level).isEqualTo(StatusLevel.WARNING)
+    }
+
+    /** The hint below the alarm: a plunger that moves too short is a warning, with its share of the usual travel. */
+    @Test
+    fun forkDiagnosis_aSlowPlungerIsAWarning_withItsShareOfTheUsualTravel() {
+        whenever(medtrumPump.connectionState).thenReturn(ConnectionState.DISCONNECTED)
+        whenever(medtrumPump.pumpState).thenReturn(MedtrumPumpState.ACTIVE)
+        whenever(medtrumPump.pumpSN).thenReturn(12345L)
+        whenever(medtrumPump.plungerStatus).thenReturn(PlungerWatch.Status(PlungerWatch.State.SLOW, PlungerWatch.NORMAL_STEPS_PER_U * 0.8, null, 1500, slowSince = 1_800_000_000_000L))
+
+        val block = createViewModel().uiState.value.infoRows.last() as PumpInfoGroup
+
+        assertThat(block.list[1].value).isEqualTo("läuft zu kurz · 16 Schritte je IE (rund 80 %)")
+        assertThat(block.list[1].level).isEqualTo(StatusLevel.WARNING)
+    }
+
+    /** The last alarm record of the pump history stands in the block; a code nobody has a name for is a warning. */
+    @Test
+    fun forkDiagnosis_theLastAlarmRecordOfThePumpIsShown() {
+        whenever(medtrumPump.connectionState).thenReturn(ConnectionState.DISCONNECTED)
+        whenever(medtrumPump.pumpState).thenReturn(MedtrumPumpState.ACTIVE)
+        whenever(medtrumPump.pumpSN).thenReturn(12345L)
+        whenever(dateUtil.dateAndTimeString(1_800_000_000_000L)).thenReturn("01.02.26 03:04")
+
+        whenever(medtrumPump.lastAlarmRecord).thenReturn(MedtrumPump.AlarmRecord(1_800_000_000_000L, 10, 7))
+        val known = createViewModel().uiState.value.infoRows.last() as PumpInfoGroup
+        assertThat(known.list.map { it.label }).containsExactly("Fork-Diagnose", "Kolben", "Alarmbits der Pumpe (roh)", "Letzter Alarm-Eintrag der Pumpe").inOrder()
+        assertThat(known.list[3].value).isEqualTo("01.02.26 03:04 · Bit 10")
+        assertThat(known.list[3].level).isEqualTo(StatusLevel.UNSPECIFIED)
+
+        whenever(medtrumPump.lastAlarmRecord).thenReturn(MedtrumPump.AlarmRecord(1_800_000_000_000L, 7, 7))
+        val unknown = createViewModel().uiState.value.infoRows.last() as PumpInfoGroup
+        assertThat(unknown.list[3].value).isEqualTo("01.02.26 03:04 · Bit 7")
+        assertThat(unknown.list[3].level).isEqualTo(StatusLevel.WARNING)
     }
 }

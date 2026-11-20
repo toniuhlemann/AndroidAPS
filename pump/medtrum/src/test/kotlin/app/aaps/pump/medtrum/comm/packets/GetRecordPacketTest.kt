@@ -8,6 +8,7 @@ import app.aaps.core.interfaces.pump.DetailedBolusInfoStorage
 import app.aaps.core.interfaces.pump.PumpInsulin
 import app.aaps.core.interfaces.pump.PumpRate
 import app.aaps.core.interfaces.pump.PumpSync
+import app.aaps.pump.medtrum.MedtrumPump
 import app.aaps.pump.medtrum.MedtrumTestBase
 import app.aaps.pump.medtrum.util.MedtrumTimeUtil
 import com.google.common.truth.Truth.assertThat
@@ -463,5 +464,30 @@ class GetRecordPacketTest : MedtrumTestBase() {
 
         assertThat(result).isTrue()
         assertThat(packet.failed).isFalse()
+    }
+
+    /** Fork diagnosis: the alarm record of the pump history is read, not only counted. Made-up record. */
+    @Test fun handleResponseGivenAlarmRecordThenTheRecordIsKept() {
+        // Header as in the basal records above, type 3; then patch age, time, code 10, 0xFFFF and two measured values
+        val data = byteArrayOf(39, 99, 7, 1, 0, 0, -86, 32, 3, -1, 38, 105, -77, 57, 56, 0, 30, 0, 16, 14, 0, 0, -85, -85, 62, 18, 10, 0, -1, -1, 1, 2, 3, 4, 0, 0, 0, 0, -125)
+        assertThat(medtrumPump.lastAlarmRecord).isNull()
+
+        val packet = GetRecordPacket(packetInjector, 0)
+        val result = packet.handleResponse(data)
+
+        assertThat(result).isTrue()
+        assertThat(packet.failed).isFalse()
+        assertThat(medtrumPump.lastAlarmRecord).isEqualTo(MedtrumPump.AlarmRecord(time = 1694631467000, code = 10, patchId = 56))
+    }
+
+    /** A record that is too short to carry the alarm is left alone, and it breaks nothing. */
+    @Test fun handleResponseGivenAlarmRecordWhenTooShortThenNothingIsKept() {
+        val data = byteArrayOf(27, 99, 7, 1, 0, 0, -86, 32, 3, -1, 38, 105, -77, 57, 56, 0, 30, 0, 16, 14, 0, 0, -85, -85, 62, 18, -125)
+
+        val packet = GetRecordPacket(packetInjector, 0)
+        val result = packet.handleResponse(data)
+
+        assertThat(result).isTrue()
+        assertThat(medtrumPump.lastAlarmRecord).isNull()
     }
 }

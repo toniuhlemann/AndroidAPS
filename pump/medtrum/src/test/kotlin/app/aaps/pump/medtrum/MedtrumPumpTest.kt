@@ -9,6 +9,8 @@ import app.aaps.core.objects.extensions.pureProfileFromJson
 import app.aaps.core.objects.profile.ProfileSealed
 import app.aaps.pump.medtrum.comm.enums.BasalType
 import app.aaps.pump.medtrum.comm.enums.ModelType
+import app.aaps.pump.medtrum.comm.enums.MedtrumPumpState
+import app.aaps.pump.medtrum.diagnosis.PlungerWatch
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
@@ -749,5 +751,39 @@ class MedtrumPumpTest : MedtrumTestBase() {
             medtrumPump.pumpType(),
             medtrumPump.pumpSN.toString(radix = 16)
         )
+    }
+
+    // ---- Fork diagnosis (Toni 20.11.2026) ----------------------------------------------------------------------
+
+    @Test fun forkDiagnosisGivenStoppedPatchThenItStartsAgain() {
+        // An active patch whose pump counts one unit while the plunger stands
+        medtrumPump.pumpState = MedtrumPumpState.ACTIVE
+        medtrumPump.reservoir = 100.0
+        medtrumPump.handlePlungerPosition(2000)
+        now += 60_000L
+        medtrumPump.reservoir = 99.0
+        medtrumPump.handlePlungerPosition(2000)
+        medtrumPump.rawAlarmFlags = 1024
+        medtrumPump.unknownStateCode = 104
+        assertThat(medtrumPump.plungerStatus.state).isEqualTo(PlungerWatch.State.STALLED)
+
+        // The patch is stopped: nothing of it counts for the next one
+        medtrumPump.resetPatchParameters()
+
+        assertThat(medtrumPump.plungerStatus).isEqualTo(PlungerWatch.Status())
+        assertThat(medtrumPump.rawAlarmFlags).isEqualTo(0)
+        assertThat(medtrumPump.unknownStateCode).isNull()
+    }
+
+    @Test fun forkDiagnosisGivenPatchNotActiveThenNoVerdict() {
+        // Before activation the plunger moves while the pump primes: that is no delivery to compare
+        medtrumPump.pumpState = MedtrumPumpState.PRIMING
+        medtrumPump.reservoir = 100.0
+        medtrumPump.handlePlungerPosition(2000)
+        now += 60_000L
+        medtrumPump.reservoir = 99.0
+        medtrumPump.handlePlungerPosition(2000)
+
+        assertThat(medtrumPump.plungerStatus).isEqualTo(PlungerWatch.Status())
     }
 }

@@ -237,6 +237,27 @@ correction deadband (new in November 2026) has no such exception: it holds whene
   exactly this amount in that minute?"* is answered from this file. It rotates at 32 MB and keeps about 30 days. FUSE contains no network
   code; the trail stays on the phone.
 
+### Warnings that only tell (new in November 2026)
+
+None of these gives insulin or holds it back. They only say what the fork sees. A text that begins with
+*Fork-Diagnose* is the fork's own reading of raw values — not a state or an alarm that the pump or AAPS reports.
+A warning without sound shows as the bell on the main screen and in the notification list.
+
+| Warning | When | How |
+|---|---|---|
+| **Insulin has no effect** | The glucose has been rising for about an hour although the model expects a clear fall from the insulin on board. After a meal marker the rule waits one hour. | Alarm with sound |
+| **FUSE does not calculate** | Every cycle ends without input while the glucose is high or rising — for example after a sensor pause, while the signal matures. FUSE gives nothing but the basal in that time. | First visible without sound, later with sound |
+| **Plunger stands** *(Medtrum)* | The pump reports delivery, but the measured plunger of the patch does not follow: no insulin leaves the reservoir. The pump itself reports a patch fault hours later, or never at the end of a reservoir. | Alarm with sound and a reminder |
+| **Plunger moves too short** *(Medtrum)* | The plunger moves, but clearly less far than the reported delivery asks for. Probably less insulin was given than the pump counts and AAPS books as IOB. | Hint without sound |
+| **Rise with a short plunger** | The glucose rises against the insulin on board for some minutes, and the pump says its plunger moves too short. Each sign alone is weak; together they point at the patch. | Warning without sound |
+| **Unknown signal** *(Medtrum)* | The pump sends an alarm bit or a status code that the driver has no name for. | Notice without sound |
+
+The Medtrum page shows one block **Fork-Diagnose** under the rows of the pump: the plunger travel in steps per unit
+and as a share of the usual travel, the raw alarm bits, an unknown status code, and the last alarm entry of the pump
+history. Background: the patch sends the measured position of its plunger with every status message, and the
+upstream driver does not use it. The reservoir value of the pump is only counted. A plunger that stands proves that
+nothing is delivered. A plunger that moves proves only that insulin left the reservoir — not that it works in the body.
+
 ## Architecture
 
 ```mermaid
@@ -448,6 +469,17 @@ heftet sie an, lang drücken öffnet den FUSE-Reiter; ein Zyklus älter als zehn
 Der Chip ersetzt den Bedarf-Chip neben IOB und COB. Rechnet der Regler in einem Zyklus keinen Bedarf, weil der Normalweg
 am Guard stoppt und die Portion aus dem Mahlzeitkonto kommt, zeigen Chip und Halte-Pille den Bedarf des Kontos, mit dem
 Zusatz „aus dem Konto“.
+
+**Warnungen und Fork-Diagnose.** Keine davon gibt Insulin oder hält welches zurück. *Insulin wirkt nicht*: der Zucker
+steigt rund eine Stunde, obwohl deutlich Insulin wirken müsste (Alarm mit Ton). *FUSE rechnet nicht*: die Zyklen enden
+ohne Eingang, während der Zucker hoch ist oder steigt — erst sichtbar ohne Ton, später laut. Texte, die mit
+*Fork-Diagnose* beginnen, sind die eigene Auswertung des Forks und keine Meldung der Pumpe: der Medtrum-Patch sendet
+die gemessene Stellung seines Kolbens, der Treiber nutzt sie nicht. Steht der Kolben trotz gemeldeter Abgabe, kommt ein
+Alarm mit Ton. Läuft er deutlich zu kurz, kommt ein Hinweis ohne Ton (wahrscheinlich wurde weniger Insulin abgegeben,
+als die Pumpe zählt), und steigt dabei der Zucker trotz Insulin, eine Warnung ohne Ton. Die Medtrum-Seite zeigt dazu
+den Block *Fork-Diagnose*: Kolbenweg in Schritten je IE und als Anteil am Üblichen, rohe Alarmbits, einen unbekannten
+Statuscode und den letzten Alarm-Eintrag der Pumpe. Ein laufender Kolben beweist nur, dass Insulin das Reservoir
+verlassen hat — nicht, dass es wirkt.
 
 **Architektur.** `fuse/core` enthält die Dosierlogik in reinem Kotlin ohne Android. `fuse/plugin` verbindet sie mit AAPS:
 Zyklus, Übersetzung in SMB und TBR, Ledger, Trail und Oberfläche. AAPS bleibt Herr über die Pumpe. Jeder Zyklus steht

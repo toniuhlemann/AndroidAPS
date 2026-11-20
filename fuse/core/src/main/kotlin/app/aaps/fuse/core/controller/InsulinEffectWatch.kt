@@ -24,6 +24,20 @@ package app.aaps.fuse.core.controller
  *
  * Eine Pause von mehr als [GAP_MIN] zwischen zwei Zyklen beginnt jede Zaehlung neu. Der Zustand ist prozesslokal:
  * ein Neustart beginnt von vorn, die Meldung kommt dann spaeter, nie frueher.
+ *
+ * DIE SENSORPAUSE IM SCHNELLEN ANSTIEG (Toni 20.11.2026): bei hohen Werten und schnellem Anstieg liefert der Sensor
+ * immer wieder gut zehn Minuten keinen Aktualwert - genau dann, wenn der Waechter gebraucht wird. Jede solche Pause
+ * begann die Zaehlung neu, und FUSE selbst brach danach mangels Signalreife ab: der Waechter lief gar nicht. Seitdem
+ * rechnet er auch in Abbruchzyklen mit Signal, und eine Pause bis [BRIDGE_MIN] zaehlt nicht als Luecke, wenn der
+ * Zucker ueber sie hinweg mindestens mit [MIN_RISE_MGDL_PER_MIN] gestiegen ist. Ohne Messwert davor oder danach, und
+ * bei gleichem oder gefallenem Zucker, bleibt es eine Luecke wie bisher.
+ *
+ * DER FRUEHE HINWEIS MIT DEM KOLBEN (Toni 20.11.2026): meldet die Pumpe zugleich, dass ihr Kolben deutlich weniger
+ * weit laeuft als die gemeldete Abgabe verlangt, reichen schon [RISE_WITH_PLUNGER_MIN] "steigt trotz Insulin" am
+ * Stueck fuer einen Hinweis OHNE Ton ([riseWithSlowPlunger]). Jedes der beiden Zeichen allein ist schwach - nach
+ * einer Mahlzeit steigt der Zucker oft eine Weile trotz Insulin, und der Kolben laeuft etwa einmal in der Woche ohne
+ * erkennbaren Grund zu kurz. Zusammen zeigen sie auf den Patch. Die Wartezeit nach dem Marker gilt hier nicht: der
+ * Anlass war ein Anstieg in der Stunde nach einem Snack. Der laute Alarm bleibt die Regel oben.
  */
 object InsulinEffectWatch {
 
@@ -48,11 +62,17 @@ object InsulinEffectWatch {
     /** Eine laengere Pause [min] zwischen zwei Zyklen beginnt jede Zaehlung neu. */
     const val GAP_MIN = 10
 
+    /** Bis zu dieser Pause [min] laeuft die Zaehlung weiter, wenn der Zucker ueber sie hinweg gestiegen ist. */
+    const val BRIDGE_MIN = 30
+
     /** Nach dieser Zeit [min] kommt bei weiter anliegendem Alarm eine neue Kennung - die Meldung klingelt erneut. */
     const val REMIND_MIN = 60
 
     /** So lange [min] muss der Zucker am Stueck fallen, bis die Episode endet. */
     const val END_FALL_MIN = 10
+
+    /** So lange [min] muss "steigt trotz Insulin" am Stueck gelten, bevor es zusammen mit einem zu kurzen Kolbenweg gemeldet wird. */
+    const val RISE_WITH_PLUNGER_MIN = 10
 
     private const val MIN_MS = 60_000L
 
@@ -68,10 +88,14 @@ object InsulinEffectWatch {
         val expectedFallMgdlPerMin: Double,
         val bolusIobU: Double,
         val markerTs: Long,
+        /** Der Messwert dieses Zyklus [mg/dl], fuer die Sensorpause; nicht endlich = unbekannt. */
+        val bgMgdl: Double = Double.NaN,
     )
 
     data class State(
         val lastTs: Long? = null,
+        /** Der Messwert des letzten Zyklus [mg/dl]; `null` = unbekannt. */
+        val lastBgMgdl: Double? = null,
         /** Seit wann "steigt trotz Insulin" am Stueck gilt; `null` = gerade nicht. */
         val riseSinceTs: Long? = null,
         /** Seit wann die ganze Regel am Stueck haelt; `null` = gerade nicht. */
@@ -91,12 +115,34 @@ object InsulinEffectWatch {
         val alarm: Boolean,
     )
 
+    /** Volle Minuten, die "steigt trotz Insulin" bis zum letzten Zyklus am Stueck gilt; 0 = gerade nicht. */
+    fun risingMinutes(s: State): Int {
+        val seit = s.riseSinceTs ?: return 0
+        val zuletzt = s.lastTs ?: return 0
+        return ((zuletzt - seit) / MIN_MS).toInt().coerceAtLeast(0)
+    }
+
+    /**
+     * Der fruehe Hinweis: der Zucker steigt seit [RISE_WITH_PLUNGER_MIN] trotz Insulin, und die Pumpe meldet einen zu
+     * kurzen Kolbenweg. In einer offenen Episode schweigt er - dann spricht der laute Alarm.
+     *
+     * @param slowPlungerPercent der Kolbenweg in Prozent des Ueblichen, wenn er zu kurz ist; `null` = unauffaellig
+     *   oder keine Aussage
+     */
+    fun riseWithSlowPlunger(s: State, slowPlungerPercent: Int?): Boolean =
+        slowPlungerPercent != null && !s.episodeOpen && risingMinutes(s) >= RISE_WITH_PLUNGER_MIN
+
     fun step(s: State, x: Sample): Result {
         val last = s.lastTs
         // Derselbe Messwert noch einmal (etwa nach einem Neustart im selben Zyklus): nichts weiterzaehlen.
         if (last != null && x.ts <= last) return Result(s, s.riseSinceTs != null, s.ruleSinceTs != null, false)
 
-        val luecke = last == null || x.ts - last > GAP_MIN * MIN_MS
+        // Eine Sensorpause, ueber die hinweg der Zucker weiter gestiegen ist, unterbricht den Anstieg nicht.
+        val pauseMin = if (last == null) null else (x.ts - last) / MIN_MS.toDouble()
+        val vorher = s.lastBgMgdl
+        val ueberbrueckt = pauseMin != null && pauseMin > GAP_MIN && pauseMin <= BRIDGE_MIN &&
+            vorher != null && x.bgMgdl.isFinite() && (x.bgMgdl - vorher) / pauseMin >= MIN_RISE_MGDL_PER_MIN
+        val luecke = last == null || (x.ts - last > GAP_MIN * MIN_MS && !ueberbrueckt)
         val marker = x.markerTs.takeIf { it in 1..x.ts }
         val lastMarker = listOfNotNull(s.lastMarkerTs, marker).maxOrNull()
         val werteDa = x.observedRateMgdlPerMin.isFinite() && x.expectedFallMgdlPerMin.isFinite() && x.bolusIobU.isFinite()
@@ -122,6 +168,7 @@ object InsulinEffectWatch {
         return Result(
             State(
                 lastTs = x.ts,
+                lastBgMgdl = x.bgMgdl.takeIf { it.isFinite() },
                 riseSinceTs = riseSince,
                 ruleSinceTs = ruleSince,
                 lastMarkerTs = lastMarker,

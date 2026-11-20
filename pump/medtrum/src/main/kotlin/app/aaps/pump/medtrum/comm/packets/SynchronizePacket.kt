@@ -33,10 +33,16 @@ class SynchronizePacket(injector: MetroMemberInjector) : MedtrumPacket(injector)
     override fun handleResponse(data: ByteArray): Boolean {
         var success = super.handleResponse(data)
         if (success) {
-            val state = MedtrumPumpState.fromByte(data[RESP_STATE_START])
+            val state = MedtrumPumpState.entries.find { it.state == data[RESP_STATE_START] }
 
             aapsLogger.debug(LTag.PUMPCOMM, "SynchronizePacket: state: $state")
-            if (state != medtrumPump.pumpState) {
+            if (state == null) {
+                // Fork diagnosis: a status code the driver has no name for - kept for the user instead of an
+                // exception, the state stays as it was (see NotificationPacket.handleNotification).
+                val code = data[RESP_STATE_START].toInt() and 0xFF
+                aapsLogger.error(LTag.PUMPCOMM, "Unknown pump state code: $code")
+                medtrumPump.unknownStateCode = code
+            } else if (state != medtrumPump.pumpState) {
                 aapsLogger.debug(LTag.PUMPCOMM, "State changed from ${medtrumPump.pumpState} to $state")
                 medtrumPump.pumpState = state
             }

@@ -24,6 +24,7 @@ import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
 import app.aaps.core.interfaces.notifications.AlarmSound
 import app.aaps.core.interfaces.notifications.NotificationId
+import app.aaps.core.interfaces.notifications.NotificationLevel
 import app.aaps.core.interfaces.notifications.NotificationManager
 import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.plugin.ActivePlugin
@@ -31,6 +32,7 @@ import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.plugin.PluginBaseWithPreferences
 import app.aaps.core.interfaces.plugin.PluginDescription
 import app.aaps.core.interfaces.profile.ProfileFunction
+import app.aaps.core.interfaces.pump.PlungerTravel
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.resources.TextResolver
 import app.aaps.core.interfaces.rx.bus.RxBus
@@ -46,11 +48,13 @@ import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.icons.IcPluginOpenAPS
 import app.aaps.fuse.core.controller.EarlySupply
 import app.aaps.fuse.core.controller.ExpectationLedger
+import app.aaps.fuse.core.controller.InsulinEffectWatch
 import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.controller.MarkerPrompt
 import app.aaps.fuse.core.controller.MarkerReauthorization
 import app.aaps.fuse.core.controller.MarkerRuecknahme
 import app.aaps.fuse.core.controller.MarkerTimeline
+import app.aaps.fuse.core.controller.NoInputWatch
 import app.aaps.fuse.plugin.expectation.FuseExpectationRecorder
 import app.aaps.fuse.plugin.expectation.FuseExpectationStore
 import app.aaps.fuse.plugin.export.FuseStateExporter
@@ -2167,6 +2171,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         meldeLedgerHold(aktivePumpe)
         meldePumpenRiegel(aktivePumpe)
         meldeWirkung(outcome)
+        meldeAnstiegMitKolben(outcome)
+        meldeOhneEingang(outcome)
 
         exportState(
             exportOutcome, publishRt, cycleId,
@@ -2367,6 +2373,100 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
     /** Der Wirkungs-Alarm (Toni 04.11.2026) - eigener Kanal, eigener Zustand, derselbe Automat. */
     private val wirkungAlarm = FuseHoldAlarm.Zustand()
 
+    /** Der Eingangs-Alarm (Toni 20.11.2026) - eigener Kanal, eigener Zustand, derselbe Automat. */
+    private val eingangAlarm = FuseHoldAlarm.Zustand()
+    private var eingangZustand = NoInputWatch.State()
+
+    /**
+     * FUSE RECHNET NICHT, UND DER ZUCKER IST HOCH ODER STEIGT (Toni 20.11.2026).
+     *
+     * Die Regel steht in [app.aaps.fuse.core.controller.NoInputWatch]; hier wird nur gemeldet. Ein Zyklus mit Abbruch
+     * ist ein Zyklus ohne Eingang - gleich aus welchem Grund, der Grund steht in der Meldung. ZWEI STUFEN auf
+     * derselben Meldung: erst sichtbar ohne Ton, spaeter laut. Die Kennung traegt die Stufe und den laufenden
+     * Alarmton: der Wechsel der Stufe und jede Erinnerung der lauten Stufe melden erneut, der erste Zyklus mit
+     * Eingang nimmt die Meldung zurueck. Die Meldung dosiert nichts.
+     */
+    private fun meldeOhneEingang(outcome: FuseCycleRunner.Outcome?) {
+        val o = outcome ?: return
+        val r = NoInputWatch.step(
+            eingangZustand,
+            NoInputWatch.Sample(
+                ts = o.computeTs,
+                hasInput = o.abortReason == null,
+                bgMgdl = o.signal?.rawBg ?: o.bgMgdl ?: Double.NaN,
+                rateMgdlPerMin = o.signal?.ukfRatePerMin ?: Double.NaN,
+            ),
+        )
+        eingangZustand = r.state
+        val laut = r.stage == NoInputWatch.Stage.LOUD
+        eingangAlarm.verarbeite(
+            hold = r.stage != NoInputWatch.Stage.NONE,
+            kennung = FuseHoldAlarm.Kennung(r.state.alarmKeyTs ?: 0L, "NO_INPUT_${r.stage.name}"),
+            ursachen = emptyMap(),
+            textBauer = { _, _ ->
+                "FUSE rechnet seit ${r.minutesWithoutInput} Minuten nicht (${o.abortReason ?: "ohne Eingang"}), und der " +
+                    "Zucker ist hoch oder steigt. FUSE gibt solange ausser dem Basal kein Insulin. Sensor pruefen."
+            },
+            melden = { text ->
+                runCatching {
+                    // Dieselbe Meldung, neu gesetzt: der Manager ersetzt Text, Stufe und Ton in einem Zug.
+                    notificationManager.post(
+                        NotificationId.FUSE_NO_INPUT,
+                        text,
+                        level = if (laut) NotificationLevel.URGENT else NotificationLevel.IMPORTANT,
+                        sound = if (laut) AlarmSound.ALARM else null,
+                    )
+                }.onFailure { aapsLogger.error(LTag.APS, "FUSE Eingangs-Meldung fehlgeschlagen", it) }.isSuccess
+            },
+            zuruecknehmen = {
+                runCatching { notificationManager.dismiss(NotificationId.FUSE_NO_INPUT) }
+                aapsLogger.info(LTag.APS, "FUSE Eingangs-Waechter: FUSE rechnet wieder oder der Zucker ist unten - Meldung zurueckgenommen")
+            },
+        ).also { if (it is FuseHoldAlarm.Aktion.Melden) aapsLogger.warn(LTag.APS, "FUSE OHNE EINGANG ${it.kennung}") }
+    }
+
+    /** Der fruehe Hinweis "steigt trotz Insulin, und der Kolben laeuft zu kurz" - eigener Kanal, eigener Zustand. */
+    private val kolbenAnstiegAlarm = FuseHoldAlarm.Zustand()
+
+    /**
+     * FORK-DIAGNOSE: der Kolbenweg der Pumpe in Prozent des Ueblichen, wenn er zu kurz ist; `null` = unauffaellig,
+     * keine Aussage, oder die Pumpe misst ihren Kolben nicht.
+     */
+    private fun kolbenZuKurzProzent(): Int? =
+        (runCatching { activePlugin.activePumpInternal }.getOrNull() as? PlungerTravel)?.slowPlungerPercent
+
+    /**
+     * DER ZUCKER STEIGT TROTZ INSULIN, UND DER KOLBEN LAEUFT ZU KURZ (Toni 20.11.2026).
+     *
+     * Die Regel steht in [app.aaps.fuse.core.controller.InsulinEffectWatch.riseWithSlowPlunger]; hier wird nur
+     * gemeldet - sichtbar, ohne Ton. Einmal je Anstieg: die Kennung ist sein Beginn. Faellt eines der beiden Zeichen
+     * weg oder oeffnet der laute Alarm seine Episode, verschwindet der Hinweis. Ein Zyklus ohne Regellauf laesst
+     * alles, wie es ist. Die Meldung dosiert nichts.
+     */
+    private fun meldeAnstiegMitKolben(outcome: FuseCycleRunner.Outcome?) {
+        val w = outcome?.insulinEffect ?: return
+        val prozent = kolbenZuKurzProzent()
+        kolbenAnstiegAlarm.verarbeite(
+            hold = InsulinEffectWatch.riseWithSlowPlunger(w.state, prozent),
+            kennung = FuseHoldAlarm.Kennung(w.state.riseSinceTs ?: 0L, "RISE_WITH_SLOW_PLUNGER"),
+            ursachen = emptyMap(),
+            textBauer = { _, _ ->
+                "Fork-Diagnose: der Zucker steigt seit mindestens ${InsulinEffectWatch.RISE_WITH_PLUNGER_MIN} Minuten trotz " +
+                    "Insulin, und der Kolben des Patches laeuft nur rund $prozent % des ueblichen Wegs. Wahrscheinlich " +
+                    "kommt weniger Insulin an, als die Pumpe zaehlt. Patch pruefen."
+            },
+            melden = { text ->
+                runCatching {
+                    notificationManager.post(NotificationId.FUSE_RISE_WITH_SLOW_PLUNGER, text)
+                }.onFailure { aapsLogger.error(LTag.APS, "FUSE Kolben-Hinweis fehlgeschlagen", it) }.isSuccess
+            },
+            zuruecknehmen = {
+                runCatching { notificationManager.dismiss(NotificationId.FUSE_RISE_WITH_SLOW_PLUNGER) }
+                aapsLogger.info(LTag.APS, "FUSE Kolben-Hinweis: Anstieg oder kurzer Kolbenweg vorbei - Meldung zurueckgenommen")
+            },
+        ).also { if (it is FuseHoldAlarm.Aktion.Melden) aapsLogger.warn(LTag.APS, "FUSE STEIGT TROTZ INSULIN, KOLBEN ZU KURZ ${it.kennung}") }
+    }
+
     /**
      * INSULIN WIRKT NICHT - MOEGLICHER PATCH-AUSFALL (Toni 04.11.2026).
      *
@@ -2382,8 +2482,10 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             kennung = FuseHoldAlarm.Kennung(w.state.alarmKeyTs ?: 0L, "INSULIN_NO_EFFECT"),
             ursachen = emptyMap(),
             textBauer = { _, _ ->
+                // Der Kolbenbefund der Pumpe gehoert in den Alarm, wenn es einen gibt: er sagt, wo zu suchen ist.
+                val kolben = kolbenZuKurzProzent()?.let { " Fork-Diagnose: der Kolben des Patches laeuft nur rund $it % des ueblichen Wegs." } ?: ""
                 "Insulin wirkt nicht: der Zucker steigt seit ueber einer Stunde, obwohl laut Modell deutlich Insulin " +
-                    "wirken muesste. Patch und Einstichstelle pruefen. FUSE dosiert unveraendert weiter; die Meldung " +
+                    "wirken muesste. Patch und Einstichstelle pruefen.$kolben FUSE dosiert unveraendert weiter; die Meldung " +
                     "verschwindet, sobald der Zucker wieder faellt."
             },
             melden = { text ->

@@ -126,10 +126,17 @@ class NotificationPacket(val injector: MetroMemberInjector) {
     }
 
     fun handleNotification(notification: ByteArray) {
-        val state = MedtrumPumpState.fromByte(notification[0])
+        val state = MedtrumPumpState.entries.find { it.state == notification[0] }
         aapsLogger.debug(LTag.PUMPCOMM, "Notification state: $state, current state: ${medtrumPump.pumpState}")
 
-        if (state != medtrumPump.pumpState) {
+        if (state == null) {
+            // Fork diagnosis: a status code the driver has no name for. It used to end in an exception here, and the
+            // whole message was lost without a word. Now the code is kept for the user, the state stays as it was,
+            // and the fields of the message are still read.
+            val code = notification[0].toInt() and 0xFF
+            aapsLogger.error(LTag.PUMPCOMM, "Unknown pump state code: $code")
+            medtrumPump.unknownStateCode = code
+        } else if (state != medtrumPump.pumpState) {
             aapsLogger.debug(LTag.PUMPCOMM, "State changed from ${medtrumPump.pumpState} to $state")
             medtrumPump.pumpState = state
         }
@@ -345,6 +352,8 @@ class NotificationPacket(val injector: MetroMemberInjector) {
         val alarmFlags = data.copyOfRange(offset, offset + 2).toInt()
         val alarmParameter = data.copyOfRange(offset + 2, offset + 4).toInt()
         aapsLogger.debug(LTag.PUMPCOMM, "Alarm notification received, Alarm flags: $alarmFlags, alarm parameter: $alarmParameter")
+        // Fork diagnosis: keep all 16 bits as they came. The loop below only reads bits 1 to 3.
+        medtrumPump.rawAlarmFlags = alarmFlags
 
         // If no alarm, clear activeAlarm list
         if (alarmFlags == 0 && medtrumPump.activeAlarms.isNotEmpty()) {
@@ -380,6 +389,9 @@ class NotificationPacket(val injector: MetroMemberInjector) {
         aapsLogger.debug(LTag.PUMPCOMM, "Magneto placement notification received!")
         val magnetoPlacement = data.copyOfRange(offset, offset + 2).toInt()
         aapsLogger.debug(LTag.PUMPCOMM, "Magneto placement: $magnetoPlacement")
+        // Fork diagnosis: this is the measured position of the plunger. The reservoir of the same message was read
+        // before it (the fields come in the order of their mask bits), so the two belong together.
+        medtrumPump.handlePlungerPosition(magnetoPlacement)
         return offset + SIZE_MAGNETO_PLACE
     }
 

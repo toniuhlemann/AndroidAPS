@@ -28,6 +28,7 @@ import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.ui.compose.ScreenAction
 import app.aaps.core.ui.compose.StatusLevel
 import app.aaps.core.ui.compose.pump.PumpCommunicationStatus
+import app.aaps.core.ui.compose.pump.PumpInfoGroup
 import app.aaps.core.ui.compose.pump.PumpInfoRow
 import app.aaps.core.ui.compose.pump.PumpOverviewStateBuilder
 import app.aaps.core.ui.compose.pump.PumpOverviewUiState
@@ -41,6 +42,8 @@ import app.aaps.pump.medtrum.code.PatchStep
 import app.aaps.pump.medtrum.comm.enums.BasalType
 import app.aaps.pump.medtrum.comm.enums.MedtrumPumpState
 import app.aaps.pump.medtrum.comm.enums.ModelType
+import app.aaps.pump.medtrum.diagnosis.PlungerWatch
+import app.aaps.pump.medtrum.diagnosis.PumpAlarmBits
 import app.aaps.pump.medtrum.keys.MedtrumStringNonKey
 import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.ContributesIntoMap
@@ -338,11 +341,75 @@ class MedtrumOverviewViewModel(
         return PumpOverviewUiState(
             statusBanner = statusBanner,
             queueStatus = queueStatus,
-            infoRows = commonRows + specificRows,
+            infoRows = commonRows + specificRows + buildDiagnosisGroup(),
             primaryActions = primaryActions,
             managementActions = managementActions
         )
     }
+
+    /**
+     * FORK DIAGNOSIS (Toni 20.11.2026): our own reading of raw values the patch sends, as ONE block under the rows
+     * of the pump. Its first row names it, so that nothing in it is taken for a state the pump reports itself.
+     */
+    private fun buildDiagnosisGroup(): PumpInfoGroup {
+        val rows = mutableListOf(
+            PumpInfoRow(label = rh.gs(CoreUiR.string.fork_diag_title), value = rh.gs(CoreUiR.string.fork_diag_title_value))
+        )
+        // The plunger: does it follow the delivery the pump reports?
+        val plunger = medtrumPump.plungerStatus
+        rows += when (plunger.state) {
+            PlungerWatch.State.UNKNOWN -> PumpInfoRow(label = rh.gs(CoreUiR.string.fork_diag_plunger), value = rh.gs(CoreUiR.string.fork_diag_plunger_unknown))
+
+            PlungerWatch.State.MOVING  -> PumpInfoRow(
+                label = rh.gs(CoreUiR.string.fork_diag_plunger),
+                value = rh.gs(CoreUiR.string.fork_diag_plunger_moving, plungerSteps(plunger), plunger.percentOfNormal ?: 0),
+                level = StatusLevel.NORMAL
+            )
+
+            PlungerWatch.State.SLOW    -> PumpInfoRow(
+                label = rh.gs(CoreUiR.string.fork_diag_plunger),
+                value = rh.gs(CoreUiR.string.fork_diag_plunger_slow, plungerSteps(plunger), plunger.percentOfNormal ?: 0),
+                level = StatusLevel.WARNING
+            )
+
+            PlungerWatch.State.STALLED -> PumpInfoRow(
+                label = rh.gs(CoreUiR.string.fork_diag_plunger),
+                value = rh.gs(CoreUiR.string.fork_diag_plunger_stalled, dateUtil.timeString(plunger.stalledSince ?: dateUtil.now())),
+                level = StatusLevel.CRITICAL
+            )
+        }
+        // The alarm bits as the pump sent them; a bit nobody has a name for is a warning.
+        val flags = medtrumPump.rawAlarmFlags
+        rows += if (flags == 0) {
+            PumpInfoRow(label = rh.gs(CoreUiR.string.fork_diag_alarm_bits), value = rh.gs(CoreUiR.string.fork_diag_alarm_bits_none))
+        } else {
+            PumpInfoRow(
+                label = rh.gs(CoreUiR.string.fork_diag_alarm_bits),
+                value = rh.gs(CoreUiR.string.fork_diag_alarm_bits_value, flags, PumpAlarmBits.bits(flags).joinToString(", ")),
+                level = if (PumpAlarmBits.unknown(flags).isEmpty()) StatusLevel.UNSPECIFIED else StatusLevel.WARNING
+            )
+        }
+        // The last alarm record of the pump history; a code nobody has a name for is a warning.
+        medtrumPump.lastAlarmRecord?.let {
+            rows += PumpInfoRow(
+                label = rh.gs(CoreUiR.string.fork_diag_alarm_record),
+                value = rh.gs(CoreUiR.string.fork_diag_alarm_record_value, dateUtil.dateAndTimeString(it.time), it.code),
+                level = if (PumpAlarmBits.isKnown(it.code)) StatusLevel.UNSPECIFIED else StatusLevel.WARNING
+            )
+        }
+        // A status code the driver has no name for.
+        medtrumPump.unknownStateCode?.let {
+            rows += PumpInfoRow(
+                label = rh.gs(CoreUiR.string.fork_diag_unknown_state),
+                value = rh.gs(CoreUiR.string.fork_diag_unknown_state_value, it),
+                level = StatusLevel.WARNING
+            )
+        }
+        return PumpInfoGroup(rows)
+    }
+
+    /** The plunger travel per reported unit as a whole number of steps. */
+    private fun plungerSteps(plunger: PlungerWatch.Status): String = String.format(Locale.getDefault(), "%.0f", plunger.stepsPerUnit ?: 0.0)
 
     private fun buildStatusBanner(pumpState: MedtrumPumpState): StatusBanner? {
         return when {

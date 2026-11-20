@@ -55,6 +55,7 @@ class GetRecordPacket(injector: MetroMemberInjector, private val recordIndex: In
         private const val BASAL_RECORD = 2
         private const val BASAL_RECORD_ALT = 66
         private const val ALARM_RECORD = 3
+        private const val ALARM_RECORD_MIN_LENGTH = 10
         private const val AUTO_RECORD = 4
         private const val TIME_SYNC_RECORD = 5
         private const val AUTO1_RECORD = 6
@@ -101,7 +102,7 @@ class GetRecordPacket(injector: MetroMemberInjector, private val recordIndex: In
                     }
 
                     ALARM_RECORD                   -> {
-                        aapsLogger.debug(LTag.PUMPCOMM, "GetRecordPacket HandleResponse: ALARM_RECORD")
+                        handleAlarmRecord(data)
                     }
 
                     AUTO_RECORD                    -> {
@@ -141,6 +142,27 @@ class GetRecordPacket(injector: MetroMemberInjector, private val recordIndex: In
         }
 
         return success
+    }
+
+    /**
+     * Fork diagnosis (Toni 20.11.2026): the alarm record. The upstream driver only logs that one came. The layout is
+     * read from the records in the logs, where the code always was the number of the alarm bit the pump had set:
+     * patch age [s], time, alarm code, two bytes that were always 0xFFFF, and two measured values nobody has a name
+     * for. A record that is too short for that is left alone.
+     */
+    private fun handleAlarmRecord(data: ByteArray) {
+        if (data.size < RESP_RECORD_DATA_START + ALARM_RECORD_MIN_LENGTH) {
+            aapsLogger.debug(LTag.PUMPCOMM, "GetRecordPacket HandleResponse: ALARM_RECORD, too short to read: ${data.size}")
+            return
+        }
+        val patchId = data.copyOfRange(RESP_RECORD_PATCH_ID_START, RESP_RECORD_PATCH_ID_END).toLong()
+        val patchAge = data.copyOfRange(RESP_RECORD_DATA_START, RESP_RECORD_DATA_START + 4).toLong()
+        val time = medtrumTimeUtil.convertPumpTimeToSystemTimeMillis(data.copyOfRange(RESP_RECORD_DATA_START + 4, RESP_RECORD_DATA_START + 8).toLong())
+        val code = data.copyOfRange(RESP_RECORD_DATA_START + 8, RESP_RECORD_DATA_START + 10).toInt()
+        val measured = (RESP_RECORD_DATA_START + 12 until minOf(data.size - 1, RESP_RECORD_DATA_START + 16) step 2)
+            .map { data.copyOfRange(it, it + 2).toInt() }
+        aapsLogger.debug(LTag.PUMPCOMM, "GetRecordPacket HandleResponse: ALARM_RECORD, patchId: $patchId, patch age: $patchAge, time: $time, code: $code, measured: $measured")
+        medtrumPump.lastAlarmRecord = MedtrumPump.AlarmRecord(time, code, patchId)
     }
 
     private fun handleBolusRecord(data: ByteArray) {

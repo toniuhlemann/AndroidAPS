@@ -1839,8 +1839,27 @@ class FuseCycleRunner(
                     ?.takeIf { it.valid }
             }.getOrNull()
             val iob = iobTotalAbbruch?.iob
+            // DER WIRKUNGS-WAECHTER LAEUFT AUCH IM ABBRUCH (Toni 20.11.2026). Bei hohen Werten und schnellem Anstieg
+            // setzt der Sensor immer wieder gut zehn Minuten aus; danach reift das Signal neu, und jeder Zyklus endet
+            // hier ("drive not estimable"). Genau dann stieg der Zucker trotz Insulin weiter - und der Waechter lief
+            // nicht. Er braucht nur, was auch der Abbruch kennt: den Messwert, seine Steigung, die Insulinaktivitaet
+            // und das Bolus-IOB. Ohne Signal oder ohne gueltiges IOB bleibt alles, wie es ist. Er liest nur und
+            // dosiert nichts. Ein Abbruch NACH dem Regellauf desselben Zyklus aendert nichts: derselbe Messwert zaehlt
+            // im Waechter nicht doppelt.
+            val wirkungAbbruch = if (signal != null && iobTotalAbbruch != null) InsulinEffectWatch.step(
+                wirkungZustand,
+                InsulinEffectWatch.Sample(
+                    ts = signal.sourceTs,
+                    observedRateMgdlPerMin = signal.ukfRatePerMin,
+                    expectedFallMgdlPerMin = signal.activityAtAnchor * signal.isfAtAnchor,
+                    bolusIobU = iobTotalAbbruch.iob - iobTotalAbbruch.basaliob,
+                    markerTs = markerTs,
+                    bgMgdl = signal.rawBg,
+                ),
+            ).also { wirkungZustand = it.state } else null
             return Outcome(
                 decision = FuseController.noInput(reason), tbr = cancelTbr,
+                bloecke = Bloecke(wirkung = wirkungAbbruch),
                 // Dasselbe valid-geprueft gelesene IobTotal wie die
                 // Abbruch-Anreicherung darueber - keine zweite Rechnung.
                 iobTotal = iobTotalAbbruch,
@@ -2672,6 +2691,7 @@ class FuseCycleRunner(
                 expectedFallMgdlPerMin = signal.activityAtAnchor * signal.isfAtAnchor,
                 bolusIobU = iobTotal.iob - iobTotal.basaliob,
                 markerTs = markerTs,
+                bgMgdl = signal.rawBg,
             ),
         )
         wirkungZustand = wirkung.state
@@ -8281,7 +8301,7 @@ class FuseCycleRunner(
         val slowChannel: SlowChannelExport? = null,
         /** HCL Stufe 2: nur bei einem Marker aus dem Bolusrechner. */
         val hcl: HclExport? = null,
-        /** Der Wirkungs-Waechter dieses Zyklus (Toni 04.11.2026) - `null` auf Abbruchpfaden, dann bleibt die Meldung wie sie ist. */
+        /** Der Wirkungs-Waechter dieses Zyklus (Toni 04.11.2026) - `null` auf Abbruchpfaden ohne Signal oder ohne gueltiges IOB, dann bleibt die Meldung wie sie ist. */
         val wirkung: InsulinEffectWatch.Result? = null,
         /** Die gemeinsame Bilanz der Rechner-Mahlzeit (Entwurf B) - nur im Hauptpfad, mit Episode oder eigener Absenkung. */
         val mealBalance: MealBalanceExport? = null,

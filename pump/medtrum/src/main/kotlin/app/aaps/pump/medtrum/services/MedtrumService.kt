@@ -62,6 +62,10 @@ import app.aaps.pump.medtrum.comm.packets.SetTimeZonePacket
 import app.aaps.pump.medtrum.comm.packets.StopPatchPacket
 import app.aaps.pump.medtrum.comm.packets.SubscribePacket
 import app.aaps.pump.medtrum.comm.packets.SynchronizePacket
+import app.aaps.pump.medtrum.diagnosis.PlungerAlarm
+import app.aaps.pump.medtrum.diagnosis.PlungerHint
+import app.aaps.pump.medtrum.diagnosis.PlungerWatch
+import app.aaps.pump.medtrum.diagnosis.PumpAlarmBits
 import app.aaps.pump.medtrum.keys.MedtrumBooleanKey
 import app.aaps.pump.medtrum.keys.MedtrumIntKey
 import app.aaps.pump.medtrum.keys.MedtrumStringKey
@@ -189,6 +193,16 @@ class MedtrumService : MetroService(), MedtrumBleCallback {
         }
         medtrumPump.pumpWarningFlow.collectResilient(scope, aapsLogger, LTag.PUMP) { pumpWarning ->
             notifyPumpWarning(pumpWarning)
+        }
+        // Fork diagnosis (Toni 20.11.2026): our own reading of raw pump values. Alarms only, no dosing.
+        medtrumPump.plungerStatusFlow.collectResilient(scope, aapsLogger, LTag.PUMP) { status ->
+            notifyPlunger(status)
+        }
+        medtrumPump.rawAlarmFlagsFlow.collectResilient(scope, aapsLogger, LTag.PUMP) { flags ->
+            notifyUnknownAlarmBits(flags)
+        }
+        medtrumPump.unknownStateCodeFlow.collectResilient(scope, aapsLogger, LTag.PUMP) { code ->
+            notifyUnknownStateCode(code)
         }
         scope.launch {
             while (true) {
@@ -810,6 +824,80 @@ class MedtrumService : MetroService(), MedtrumBleCallback {
                 )
             }
         }
+    }
+
+    // ---- Fork diagnosis (Toni 20.11.2026) ---------------------------------------------------------------------
+    // Every text starts with "Fork-Diagnose", so that it is never taken for a message of the pump itself.
+
+    private val plungerAlarm = PlungerAlarm()
+    private val plungerHint = PlungerHint()
+    private var reportedUnknownBits: List<Int> = emptyList()
+
+    /**
+     * The plunger stands although the pump reports delivery: urgent, with sound, again every 15 minutes.
+     * The plunger moves clearly less far than usual: a hint without sound, once.
+     */
+    private fun notifyPlunger(status: PlungerWatch.Status) {
+        when (plungerHint.onStatus(status)) {
+            PlungerHint.Action.HINT    -> {
+                aapsLogger.warn(LTag.PUMP, "Fork diagnosis: plunger slow since ${status.slowSince}, steps per unit ${status.stepsPerUnit}, reservoir ${medtrumPump.reservoir}")
+                notificationManager.post(
+                    NotificationId.FORK_MEDTRUM_PLUNGER_SLOW,
+                    TextRef.AndroidRes(app.aaps.core.ui.R.string.fork_diag_hint_plunger, listOf(status.percentOfNormal ?: 0))
+                )
+            }
+
+            PlungerHint.Action.DISMISS -> notificationManager.dismiss(NotificationId.FORK_MEDTRUM_PLUNGER_SLOW)
+            PlungerHint.Action.NONE    -> Unit
+        }
+        when (plungerAlarm.onStatus(status, dateUtil.now())) {
+            PlungerAlarm.Action.ALARM   -> {
+                val since = dateUtil.timeString(status.stalledSince ?: dateUtil.now())
+                val reservoir = ch.insulinAmountString(PumpInsulin(medtrumPump.reservoir))
+                aapsLogger.error(LTag.PUMP, "Fork diagnosis: plunger stalled since $since, steps per unit ${status.stepsPerUnit}, reservoir ${medtrumPump.reservoir}")
+                notificationManager.post(
+                    NotificationId.FORK_MEDTRUM_PLUNGER_STALLED,
+                    TextRef.AndroidRes(app.aaps.core.ui.R.string.fork_diag_alarm_plunger, listOf(since, reservoir)),
+                    sound = AlarmSound.ALARM
+                )
+                runBlocking {
+                    pumpSync.insertAnnouncement(
+                        rh.gs(app.aaps.core.ui.R.string.fork_diag_alarm_plunger, since, reservoir),
+                        null,
+                        medtrumPump.pumpType(),
+                        medtrumPump.pumpSN.toString(radix = 16)
+                    )
+                }
+            }
+
+            PlungerAlarm.Action.DISMISS -> notificationManager.dismiss(NotificationId.FORK_MEDTRUM_PLUNGER_STALLED)
+            PlungerAlarm.Action.NONE    -> Unit
+        }
+    }
+
+    /** An alarm bit nobody has a name for: said once per set of bits, without sound. */
+    private fun notifyUnknownAlarmBits(flags: Int) {
+        val unknown = PumpAlarmBits.unknown(flags)
+        if (unknown.isEmpty()) {
+            if (reportedUnknownBits.isNotEmpty() && medtrumPump.unknownStateCode == null) notificationManager.dismiss(NotificationId.FORK_MEDTRUM_UNKNOWN_SIGNAL)
+            reportedUnknownBits = emptyList()
+        } else if (unknown != reportedUnknownBits) {
+            reportedUnknownBits = unknown
+            aapsLogger.error(LTag.PUMP, "Fork diagnosis: unknown alarm bits $unknown in flags $flags")
+            notificationManager.post(
+                NotificationId.FORK_MEDTRUM_UNKNOWN_SIGNAL,
+                TextRef.AndroidRes(app.aaps.core.ui.R.string.fork_diag_alarm_bits_unknown, listOf(unknown.joinToString(", ")))
+            )
+        }
+    }
+
+    /** A status code the driver has no name for: said once per code, without sound. */
+    private fun notifyUnknownStateCode(code: Int?) {
+        if (code == null) return
+        notificationManager.post(
+            NotificationId.FORK_MEDTRUM_UNKNOWN_SIGNAL,
+            TextRef.AndroidRes(app.aaps.core.ui.R.string.fork_diag_alarm_state_unknown, listOf(code))
+        )
     }
 
     private fun checkExpiryWarning() {
