@@ -350,10 +350,12 @@ class MedtrumOverviewViewModel(
     /**
      * FORK DIAGNOSIS (Toni 20.11.2026): our own reading of raw values the patch sends, as ONE block under the rows
      * of the pump. Its first row names it, so that nothing in it is taken for a state the pump reports itself.
+     * No row may wrap (Toni 21.11.2026): the value column has a little more than half of the row, so every value stays
+     * short, and the plunger shows its state and its numbers in two rows.
      */
     private fun buildDiagnosisGroup(): PumpInfoGroup {
         val rows = mutableListOf(
-            PumpInfoRow(label = rh.gs(CoreUiR.string.fork_diag_title), value = rh.gs(CoreUiR.string.fork_diag_title_value))
+            PumpInfoRow(label = rh.gs(CoreUiR.string.fork_diag_title), value = "")
         )
         // The plunger: does it follow the delivery the pump reports?
         val plunger = medtrumPump.plungerStatus
@@ -362,13 +364,13 @@ class MedtrumOverviewViewModel(
 
             PlungerWatch.State.MOVING  -> PumpInfoRow(
                 label = rh.gs(CoreUiR.string.fork_diag_plunger),
-                value = rh.gs(CoreUiR.string.fork_diag_plunger_moving, plungerSteps(plunger), plunger.percentOfNormal ?: 0),
+                value = rh.gs(CoreUiR.string.fork_diag_plunger_moving),
                 level = StatusLevel.NORMAL
             )
 
             PlungerWatch.State.SLOW    -> PumpInfoRow(
                 label = rh.gs(CoreUiR.string.fork_diag_plunger),
-                value = rh.gs(CoreUiR.string.fork_diag_plunger_slow, plungerSteps(plunger), plunger.percentOfNormal ?: 0),
+                value = rh.gs(CoreUiR.string.fork_diag_plunger_slow),
                 level = StatusLevel.WARNING
             )
 
@@ -376,6 +378,13 @@ class MedtrumOverviewViewModel(
                 label = rh.gs(CoreUiR.string.fork_diag_plunger),
                 value = rh.gs(CoreUiR.string.fork_diag_plunger_stalled, dateUtil.timeString(plunger.stalledSince ?: dateUtil.now())),
                 level = StatusLevel.CRITICAL
+            )
+        }
+        // Its numbers: steps per reported unit, and the share of the usual travel.
+        plunger.stepsPerUnit?.let { steps ->
+            rows += PumpInfoRow(
+                label = rh.gs(CoreUiR.string.fork_diag_plunger_travel),
+                value = rh.gs(CoreUiR.string.fork_diag_plunger_travel_value, String.format(Locale.getDefault(), "%.0f", steps), plunger.percentOfNormal ?: 0)
             )
         }
         // The alarm bits as the pump sent them; a bit nobody has a name for is a warning.
@@ -407,9 +416,6 @@ class MedtrumOverviewViewModel(
         }
         return PumpInfoGroup(rows)
     }
-
-    /** The plunger travel per reported unit as a whole number of steps. */
-    private fun plungerSteps(plunger: PlungerWatch.Status): String = String.format(Locale.getDefault(), "%.0f", plunger.stepsPerUnit ?: 0.0)
 
     private fun buildStatusBanner(pumpState: MedtrumPumpState): StatusBanner? {
         return when {

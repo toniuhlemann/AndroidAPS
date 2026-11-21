@@ -159,17 +159,18 @@
     <string name="fuse_legend_prediction">Vorhersage (PRED): blau die Mittelbahn von FUSE, gelb die untere Bahn – gegen sie rechnet der Guard.</string>
     <string name="fuse_legend_hold">Gedrückt halten zeigt Zustand, Bindung, Bedarf und Kanal des Zyklus. Abschalten: FUSE-Einstellungen, System.</string>
     <!-- Fork diagnosis of the Medtrum driver (Toni 20.11.2026): our own reading of raw values the patch sends. Every text names it "Fork-Diagnose", so that it is never taken for a message of the pump or of upstream AAPS. -->
-    <string name="fork_diag_title">Fork-Diagnose</string>
-    <string name="fork_diag_title_value">eigene Auswertung, nicht von AAPS</string>
+    <string name="fork_diag_title">Fork-Diagnose (Custom)</string>
     <string name="fork_diag_plunger">Kolben</string>
     <string name="fork_diag_plunger_unknown">noch keine Aussage</string>
-    <string name="fork_diag_plunger_moving" comment="%1$s=plunger travel in steps per unit the pump reports as delivered; about 20 is normal, %2$d=the same as a share of the usual travel in percent. Example: läuft · 20 Schritte je IE (rund 98 %)">läuft · %1$s Schritte je IE (rund %2$d %%)</string>
-    <string name="fork_diag_plunger_slow" comment="%1$s=plunger travel in steps per unit the pump reports as delivered; about 20 is normal, %2$d=the same as a share of the usual travel in percent. Example: läuft zu kurz · 16 Schritte je IE (rund 78 %)">läuft zu kurz · %1$s Schritte je IE (rund %2$d %%)</string>
+    <string name="fork_diag_plunger_moving">läuft</string>
+    <string name="fork_diag_plunger_slow">läuft zu kurz</string>
+    <string name="fork_diag_plunger_travel">Kolbenweg je IE</string>
+    <string name="fork_diag_plunger_travel_value" comment="%1$s=plunger travel in steps per unit the pump reports as delivered; about 20 is usual, %2$d=the same as a share of the usual travel in percent. Example: 23 Schritte (100 %)">%1$s Schritte (%2$d %%)</string>
     <string name="fork_diag_plunger_stalled" comment="%1$s=time since when the plunger stands. Example: STEHT seit 03:04">STEHT seit %1$s</string>
     <string name="fork_diag_alarm_bits">Alarmbits der Pumpe (roh)</string>
     <string name="fork_diag_alarm_bits_none">keine</string>
     <string name="fork_diag_alarm_bits_value" comment="%1$d=the raw alarm flags of the pump, %2$s=the bits that are set. Example: 1028 · Bit 2, 10">%1$d · Bit %2$s</string>
-    <string name="fork_diag_alarm_record">Letzter Alarm-Eintrag der Pumpe</string>
+    <string name="fork_diag_alarm_record">Letzter Alarm-Eintrag</string>
     <string name="fork_diag_alarm_record_value" comment="%1$s=date and time the pump raised the alarm, %2$d=the number of the alarm bit. Example: 01.02.26 03:04 · Bit 10">%1$s · Bit %2$d</string>
     <string name="fork_diag_unknown_state">Unbekannter Statuscode</string>
     <string name="fork_diag_unknown_state_value" comment="%1$d=status code the pump sent and the driver has no name for. Example: Code 104">Code %1$d</string>

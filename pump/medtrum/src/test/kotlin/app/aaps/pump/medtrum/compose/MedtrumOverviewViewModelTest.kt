@@ -127,16 +127,17 @@ internal class MedtrumOverviewViewModelTest {
         // Fork diagnosis block (Toni 20.11.2026): read at build time, so the mock must answer
         whenever(medtrumPump.plungerStatus).thenReturn(PlungerWatch.Status())
         whenever(medtrumPump.unknownStateCode).thenReturn(null)   // a mock answers 0 for Int?, the pump answers null
-        whenever(rh.gs(CoreUiR.string.fork_diag_title)).thenReturn("Fork-Diagnose")
-        whenever(rh.gs(CoreUiR.string.fork_diag_title_value)).thenReturn("eigene Auswertung, nicht von AAPS")
+        whenever(rh.gs(CoreUiR.string.fork_diag_title)).thenReturn("Fork-Diagnose (Custom)")
         whenever(rh.gs(CoreUiR.string.fork_diag_plunger)).thenReturn("Kolben")
         whenever(rh.gs(CoreUiR.string.fork_diag_plunger_unknown)).thenReturn("noch keine Aussage")
         whenever(rh.gs(CoreUiR.string.fork_diag_alarm_bits)).thenReturn("Alarmbits der Pumpe (roh)")
         whenever(rh.gs(CoreUiR.string.fork_diag_alarm_bits_none)).thenReturn("keine")
         whenever(rh.gs(CoreUiR.string.fork_diag_unknown_state)).thenReturn("Unbekannter Statuscode")
-        whenever(rh.gs(eq(CoreUiR.string.fork_diag_plunger_moving), anyOrNull(), anyOrNull())).thenAnswer { "läuft · ${it.arguments[1]} Schritte je IE (rund ${it.arguments[2]} %)" }
-        whenever(rh.gs(eq(CoreUiR.string.fork_diag_plunger_slow), anyOrNull(), anyOrNull())).thenAnswer { "läuft zu kurz · ${it.arguments[1]} Schritte je IE (rund ${it.arguments[2]} %)" }
-        whenever(rh.gs(CoreUiR.string.fork_diag_alarm_record)).thenReturn("Letzter Alarm-Eintrag der Pumpe")
+        whenever(rh.gs(CoreUiR.string.fork_diag_plunger_moving)).thenReturn("läuft")
+        whenever(rh.gs(CoreUiR.string.fork_diag_plunger_slow)).thenReturn("läuft zu kurz")
+        whenever(rh.gs(CoreUiR.string.fork_diag_plunger_travel)).thenReturn("Kolbenweg je IE")
+        whenever(rh.gs(eq(CoreUiR.string.fork_diag_plunger_travel_value), anyOrNull(), anyOrNull())).thenAnswer { "${it.arguments[1]} Schritte (${it.arguments[2]} %)" }
+        whenever(rh.gs(CoreUiR.string.fork_diag_alarm_record)).thenReturn("Letzter Alarm-Eintrag")
         whenever(rh.gs(eq(CoreUiR.string.fork_diag_alarm_record_value), anyOrNull(), anyOrNull())).thenAnswer { "${it.arguments[1]} · Bit ${it.arguments[2]}" }
         whenever(rh.gs(eq(CoreUiR.string.fork_diag_plunger_stalled), anyOrNull())).thenAnswer { "STEHT seit ${it.arguments[1]}" }
         whenever(rh.gs(eq(CoreUiR.string.fork_diag_alarm_bits_value), anyOrNull(), anyOrNull())).thenAnswer { "${it.arguments[1]} · Bit ${it.arguments[2]}" }
@@ -193,12 +194,13 @@ internal class MedtrumOverviewViewModelTest {
 
         assertThat(rows.filterIsInstance<PumpInfoGroup>()).hasSize(1)
         val block = rows.last() as PumpInfoGroup
-        assertThat(block.list.map { it.label }).containsExactly("Fork-Diagnose", "Kolben", "Alarmbits der Pumpe (roh)").inOrder()
-        assertThat(block.list[0].value).isEqualTo("eigene Auswertung, nicht von AAPS")
+        // Without a verdict there are no numbers yet, so no row for them
+        assertThat(block.list.map { it.label }).containsExactly("Fork-Diagnose (Custom)", "Kolben", "Alarmbits der Pumpe (roh)").inOrder()
+        assertThat(block.list[0].value).isEmpty()
         assertThat(block.list[1].value).isEqualTo("noch keine Aussage")
         assertThat(block.list[2].value).isEqualTo("keine")
         // Nothing of it stands among the rows the pump reports itself
-        assertThat(rows.filterIsInstance<PumpInfoRow>().map { it.label }).containsNoneOf("Fork-Diagnose", "Kolben", "Alarmbits der Pumpe (roh)")
+        assertThat(rows.filterIsInstance<PumpInfoRow>().map { it.label }).containsNoneOf("Fork-Diagnose (Custom)", "Kolben", "Alarmbits der Pumpe (roh)")
     }
 
     @Test
@@ -211,11 +213,14 @@ internal class MedtrumOverviewViewModelTest {
 
         val block = createViewModel().uiState.value.infoRows.last() as PumpInfoGroup
 
-        assertThat(block.list[1].value).isEqualTo("läuft · 20 Schritte je IE (rund 100 %)")
+        // The state and its numbers in two short rows, so that nothing wraps
+        assertThat(block.list.map { it.label }).containsExactly("Fork-Diagnose (Custom)", "Kolben", "Kolbenweg je IE", "Alarmbits der Pumpe (roh)").inOrder()
+        assertThat(block.list[1].value).isEqualTo("läuft")
         assertThat(block.list[1].level).isEqualTo(StatusLevel.NORMAL)
+        assertThat(block.list[2].value).isEqualTo("20 Schritte (100 %)")
         // A bit the driver reads itself is shown, but it is no warning of ours
-        assertThat(block.list[2].value).isEqualTo("4 · Bit 2")
-        assertThat(block.list[2].level).isEqualTo(StatusLevel.UNSPECIFIED)
+        assertThat(block.list[3].value).isEqualTo("4 · Bit 2")
+        assertThat(block.list[3].level).isEqualTo(StatusLevel.UNSPECIFIED)
     }
 
     /** A standing plunger is critical; a bit or a status code nobody has a name for is a warning. */
@@ -231,13 +236,42 @@ internal class MedtrumOverviewViewModelTest {
 
         val block = createViewModel().uiState.value.infoRows.last() as PumpInfoGroup
 
-        assertThat(block.list.map { it.label }).containsExactly("Fork-Diagnose", "Kolben", "Alarmbits der Pumpe (roh)", "Unbekannter Statuscode").inOrder()
+        assertThat(block.list.map { it.label })
+            .containsExactly("Fork-Diagnose (Custom)", "Kolben", "Kolbenweg je IE", "Alarmbits der Pumpe (roh)", "Unbekannter Statuscode").inOrder()
         assertThat(block.list[1].value).isEqualTo("STEHT seit 03:04")
         assertThat(block.list[1].level).isEqualTo(StatusLevel.CRITICAL)
-        assertThat(block.list[2].value).isEqualTo("132 · Bit 2, 7")
-        assertThat(block.list[2].level).isEqualTo(StatusLevel.WARNING)
-        assertThat(block.list[3].value).isEqualTo("Code 104")
+        assertThat(block.list[2].value).isEqualTo("0 Schritte (0 %)")
+        assertThat(block.list[3].value).isEqualTo("132 · Bit 2, 7")
         assertThat(block.list[3].level).isEqualTo(StatusLevel.WARNING)
+        assertThat(block.list[4].value).isEqualTo("Code 104")
+        assertThat(block.list[4].level).isEqualTo(StatusLevel.WARNING)
+    }
+
+    /** On the phone a value of about 30 characters and a label of about 25 fit their columns; longer ones wrap. */
+    @Test
+    fun forkDiagnosis_noRowIsLongerThanItsColumn() {
+        whenever(medtrumPump.connectionState).thenReturn(ConnectionState.DISCONNECTED)
+        whenever(medtrumPump.pumpState).thenReturn(MedtrumPumpState.ACTIVE)
+        whenever(medtrumPump.pumpSN).thenReturn(12345L)
+        whenever(dateUtil.timeString(1_800_000_000_000L)).thenReturn("03:04")
+        whenever(dateUtil.dateAndTimeString(1_800_000_000_000L)).thenReturn("01.02.26 03:04")
+        whenever(medtrumPump.rawAlarmFlags).thenReturn(4 + 1024)
+        whenever(medtrumPump.unknownStateCode).thenReturn(104)
+        whenever(medtrumPump.lastAlarmRecord).thenReturn(MedtrumPump.AlarmRecord(1_800_000_000_000L, 10, 7))
+
+        for (status in listOf(
+            PlungerWatch.Status(),
+            PlungerWatch.Status(PlungerWatch.State.MOVING, 123.4, null, 1500),
+            PlungerWatch.Status(PlungerWatch.State.SLOW, 16.4, null, 1500, slowSince = 1_800_000_000_000L),
+            PlungerWatch.Status(PlungerWatch.State.STALLED, -17.6, 1_800_000_000_000L, 1500)
+        )) {
+            whenever(medtrumPump.plungerStatus).thenReturn(status)
+            val block = createViewModel().uiState.value.infoRows.last() as PumpInfoGroup
+            for (row in block.list) {
+                assertThat(row.label.length).isAtMost(25)
+                assertThat(row.value.length).isAtMost(30)
+            }
+        }
     }
 
     /** The hint below the alarm: a plunger that moves too short is a warning, with its share of the usual travel. */
@@ -250,8 +284,9 @@ internal class MedtrumOverviewViewModelTest {
 
         val block = createViewModel().uiState.value.infoRows.last() as PumpInfoGroup
 
-        assertThat(block.list[1].value).isEqualTo("läuft zu kurz · 16 Schritte je IE (rund 80 %)")
+        assertThat(block.list[1].value).isEqualTo("läuft zu kurz")
         assertThat(block.list[1].level).isEqualTo(StatusLevel.WARNING)
+        assertThat(block.list[2].value).isEqualTo("16 Schritte (80 %)")
     }
 
     /** The last alarm record of the pump history stands in the block; a code nobody has a name for is a warning. */
@@ -264,7 +299,7 @@ internal class MedtrumOverviewViewModelTest {
 
         whenever(medtrumPump.lastAlarmRecord).thenReturn(MedtrumPump.AlarmRecord(1_800_000_000_000L, 10, 7))
         val known = createViewModel().uiState.value.infoRows.last() as PumpInfoGroup
-        assertThat(known.list.map { it.label }).containsExactly("Fork-Diagnose", "Kolben", "Alarmbits der Pumpe (roh)", "Letzter Alarm-Eintrag der Pumpe").inOrder()
+        assertThat(known.list.map { it.label }).containsExactly("Fork-Diagnose (Custom)", "Kolben", "Alarmbits der Pumpe (roh)", "Letzter Alarm-Eintrag").inOrder()
         assertThat(known.list[3].value).isEqualTo("01.02.26 03:04 · Bit 10")
         assertThat(known.list[3].level).isEqualTo(StatusLevel.UNSPECIFIED)
 
