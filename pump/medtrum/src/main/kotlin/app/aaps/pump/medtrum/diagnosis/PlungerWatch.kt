@@ -47,13 +47,17 @@ class PlungerWatch {
      * @property stalledSince time of the sample the first stalled window started at; `null` unless [State.STALLED]
      * @property position the last plunger position in steps; `null` before the first sample
      * @property slowSince time of the sample the first slow window started at; `null` unless [State.SLOW]
+     * @property sampleTs when the pump sent the last reading; `null` before the first sample
+     * @property reservoir the reservoir the pump counted at the last reading [U]; `null` before the first sample
      */
     data class Status(
         val state: State = State.UNKNOWN,
         val stepsPerUnit: Double? = null,
         val stalledSince: Long? = null,
         val position: Int? = null,
-        val slowSince: Long? = null
+        val slowSince: Long? = null,
+        val sampleTs: Long? = null,
+        val reservoir: Double? = null
     ) {
 
         /** The travel as a share of the usual travel, 0 to 100 percent; `null` while [State.UNKNOWN]. */
@@ -95,7 +99,7 @@ class PlungerWatch {
         val longBase = base(HINT_WINDOW_U, reservoir)
         val shortSteps = shortBase?.let { (it.position - position) / (it.reservoir - reservoir) }
         val longSteps = longBase?.let { (it.position - position) / (it.reservoir - reservoir) }
-        status = when {
+        val verdict = when {
             shortBase == null || shortSteps == null               -> Status(State.UNKNOWN, null, null, position)
 
             shortSteps < MIN_STEPS_PER_U                          ->
@@ -106,6 +110,7 @@ class PlungerWatch {
 
             else                                                  -> Status(State.MOVING, longSteps ?: shortSteps, null, position)
         }
+        status = verdict.copy(sampleTs = timestamp, reservoir = reservoir)
         return status
     }
 

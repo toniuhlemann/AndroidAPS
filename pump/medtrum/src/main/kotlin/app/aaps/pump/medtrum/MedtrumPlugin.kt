@@ -22,6 +22,7 @@ import app.aaps.core.interfaces.protection.ProtectionCheck
 import app.aaps.core.interfaces.pump.BlePreCheck
 import app.aaps.core.interfaces.pump.DetailedBolusInfo
 import app.aaps.core.interfaces.pump.Medtrum
+import app.aaps.core.interfaces.pump.PlungerReading
 import app.aaps.core.interfaces.pump.PlungerTravel
 import app.aaps.core.interfaces.pump.Pump
 import app.aaps.core.interfaces.pump.PumpEnactResult
@@ -395,9 +396,22 @@ class MedtrumPlugin(
         }
     }
 
-    // Fork diagnosis: the loop reads this to word its own warning, see PlungerWatch.
-    override val slowPlungerPercent: Int?
-        get() = medtrumPump.plungerStatus.takeIf { it.state == PlungerWatch.State.SLOW }?.percentOfNormal
+    // Fork diagnosis: the loop words its own warning with this and writes it into the record of each cycle, see
+    // PlungerWatch. No reading before the first sample of an active patch.
+    override val plungerReading: PlungerReading?
+        get() {
+            val s = medtrumPump.plungerStatus
+            val position = s.position ?: return null
+            val reservoir = s.reservoir ?: return null
+            val ts = s.sampleTs ?: return null
+            val state = when (s.state) {
+                PlungerWatch.State.UNKNOWN -> PlungerReading.State.UNKNOWN
+                PlungerWatch.State.MOVING  -> PlungerReading.State.MOVING
+                PlungerWatch.State.SLOW    -> PlungerReading.State.SLOW
+                PlungerWatch.State.STALLED -> PlungerReading.State.STALLED
+            }
+            return PlungerReading(state, s.stepsPerUnit, s.percentOfNormal, position, reservoir, ts)
+        }
 
     // Medtrum interface
     override fun loadEvents(): PumpEnactResult {

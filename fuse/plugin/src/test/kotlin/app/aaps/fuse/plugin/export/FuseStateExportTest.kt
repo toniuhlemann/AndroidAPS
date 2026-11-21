@@ -2,6 +2,7 @@ package app.aaps.fuse.plugin.export
 
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.RT
+import app.aaps.core.interfaces.pump.PlungerReading
 import app.aaps.fuse.core.controller.EarlySupply
 import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.SlowCorrectionChannel
@@ -1724,5 +1725,29 @@ class FuseStateExportTest {
         assertEquals(0, leer.getInt("candidates"))
         // Vor dem Nachweis abgebrochen: kein Abschnitt.
         assertTrue(record(outcome()).optJSONObject("transportInclusion") == null)
+    }
+
+    /** Patch-Bilanz (Toni 21.11.2026): der Kolbenstand der Pumpe steht im Datensatz. Ausgedachte Werte. */
+    @Test
+    fun `der Kolbenstand der Pumpe steht im Datensatz und fehlt ohne`() {
+        val k = PlungerReading(PlungerReading.State.SLOW, 16.4, 80, 1500, 84.0, 1_000_000L)
+        val p = FuseStateJson.record("s#1", outcome(), rt(), cfg, BUILD, 0L, null, plunger = k) { 5_000_000L }.getJSONObject("plunger")
+        assertEquals("SLOW", p.getString("state"))
+        assertEquals(16.4, p.getDouble("stepsPerU"), 1e-9)
+        assertEquals(80, p.getInt("pct"))
+        assertEquals(1500, p.getInt("pos"))
+        assertEquals(84.0, p.getDouble("resU"), 1e-9)
+        assertEquals(1_000_000L, p.getLong("ts"))
+
+        // Ohne Pumpe, die ihren Kolben misst, bleibt der Datensatz wie zuvor.
+        assertFalse(FuseStateJson.record("s#1", outcome(), rt(), cfg, BUILD, 0L, null) { 5_000_000L }.has("plunger"))
+
+        // Ohne Aussage stehen Schritte und Anteil als null, nie als 0.
+        val offen = FuseStateJson.record(
+            "s#1", outcome(), rt(), cfg, BUILD, 0L, null,
+            plunger = k.copy(state = PlungerReading.State.UNKNOWN, stepsPerUnit = null, percentOfNormal = null),
+        ) { 5_000_000L }.getJSONObject("plunger")
+        assertTrue(offen.isNull("stepsPerU"))
+        assertTrue(offen.isNull("pct"))
     }
 }

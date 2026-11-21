@@ -2,6 +2,7 @@ package app.aaps.fuse.plugin.export
 
 import app.aaps.core.interfaces.aps.RT
 import app.aaps.core.interfaces.overview.FuseOverviewSource
+import app.aaps.core.interfaces.pump.PlungerReading
 import app.aaps.fuse.core.util.Sha
 import app.aaps.fuse.plugin.FuseCycleRunner
 import app.aaps.fuse.plugin.HclMahlzeiten
@@ -593,6 +594,8 @@ object FuseStateJson {
         markerEvent: MarkerEvent? = null,
         /** HCL Teil 1 (Toni 25.10.2026): die juengsten Rechnungen aus dem Bolusrechner - reine Anzeige. */
         hclMeals: List<FuseOverviewSource.WizardBolus> = emptyList(),
+        /** Patch-Bilanz (Toni 21.11.2026): der letzte Kolbenstand einer Pumpe, die ihren Kolben misst - reine Anzeige. */
+        plunger: PlungerReading? = null,
         nowNs: () -> Long,
     ): JSONObject {
         val gaps = JSONArray()
@@ -1381,6 +1384,18 @@ object FuseStateJson {
         // und tatsaechlich abgegebene Menge getrennt. Nur wenn es welche gibt: sonst bleibt der Datensatz bitgleich. Der
         // Viewer fasst sie ueber `calcTs` zusammen. Kein Zyklus liest sie.
         if (hclMeals.isNotEmpty()) o.put("hclMeals", JSONArray(hclMeals.map { HclMahlzeiten.zuJson(it) }))
+        // Patch-Bilanz (Toni 21.11.2026): der letzte Kolbenstand der Pumpe (Fork-Diagnose), damit der Viewer Kolbenweg
+        // und Zucker je Patch nebeneinanderlegen kann. Nur mit einer Pumpe, die ihren Kolben misst - sonst bleibt der
+        // Datensatz bitgleich. Ohne Aussage stehen Schritte und Anteil als null, nie als 0. Kein Zyklus liest ihn.
+        if (plunger != null) o.put(
+            "plunger", JSONObject()
+                .put("state", plunger.state.name)
+                .put("stepsPerU", fin(plunger.stepsPerUnit))
+                .put("pct", plunger.percentOfNormal ?: JSONObject.NULL)
+                .put("pos", plunger.position)
+                .put("resU", fin(plunger.reservoirU))
+                .put("ts", plunger.timestamp)
+        )
 
         if (publicationGate == null) gap("publicationGate", "NOT_REPORTED")
         else o.put(

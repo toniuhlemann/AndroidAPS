@@ -2,6 +2,7 @@ package app.aaps.pump.medtrum
 
 import app.aaps.core.interfaces.protection.ProtectionCheck
 import app.aaps.core.interfaces.pump.BlePreCheck
+import app.aaps.core.interfaces.pump.PlungerReading
 import app.aaps.core.interfaces.pump.PlungerTravel
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.pump.medtrum.comm.enums.MedtrumPumpState
@@ -12,8 +13,8 @@ import org.junit.jupiter.api.Test
 import org.mockito.Mock
 
 /**
- * FORK DIAGNOSIS (Toni 20.11.2026): the loop asks the pump how far its plunger moves, to word its own warning. The
- * pump only answers with a number while the plunger moves too short. Made-up numbers.
+ * FORK DIAGNOSIS (Toni 20.11.2026): the loop asks the pump how far its plunger moves, to word its own warning and to
+ * write it into the record of each cycle. Made-up numbers.
  */
 class MedtrumPluginPlungerTravelTest : MedtrumTestBase() {
 
@@ -44,8 +45,24 @@ class MedtrumPluginPlungerTravelTest : MedtrumTestBase() {
     @Test
     fun `the pump answers the loop as a plunger travel source`() {
         assertThat(plugin).isInstanceOf(PlungerTravel::class.java)
-        // No patch, no verdict, no number
-        assertThat(plugin.slowPlungerPercent).isNull()
+        // No patch, no reading
+        assertThat(plugin.plungerReading).isNull()
+    }
+
+    @Test
+    fun `the reading carries the verdict, the numbers and when the pump sent them`() {
+        twoUnitsWith(steps = 41)
+
+        val reading = plugin.plungerReading!!
+        assertThat(reading.state).isEqualTo(PlungerReading.State.MOVING)
+        assertThat(reading.stepsPerUnit!!).isWithin(0.01).of(20.5)
+        assertThat(reading.percentOfNormal).isEqualTo(medtrumPump.plungerStatus.percentOfNormal)
+        assertThat(reading.position).isEqualTo(2000 - 41)
+        assertThat(reading.reservoirU).isWithin(0.001).of(98.0)
+        // The test clock is fixed: every reading gets the same time
+        assertThat(reading.timestamp).isEqualTo(dateUtil.now())
+        // A plunger that moves as usual gives no "too short" number
+        assertThat(reading.slowPercent).isNull()
     }
 
     @Test
@@ -53,24 +70,18 @@ class MedtrumPluginPlungerTravelTest : MedtrumTestBase() {
         twoUnitsWith(steps = 30)
 
         assertThat(medtrumPump.plungerStatus.state).isEqualTo(PlungerWatch.State.SLOW)
-        assertThat(plugin.slowPlungerPercent).isEqualTo(medtrumPump.plungerStatus.percentOfNormal)
-        assertThat(plugin.slowPlungerPercent!!).isIn(68..78)
+        assertThat(plugin.plungerReading!!.state).isEqualTo(PlungerReading.State.SLOW)
+        assertThat(plugin.plungerReading!!.slowPercent).isEqualTo(medtrumPump.plungerStatus.percentOfNormal)
+        assertThat(plugin.plungerReading!!.slowPercent!!).isIn(68..78)
     }
 
+    /** A plunger that stands is the alarm of the pump itself, not the hint of the loop. */
     @Test
-    fun `a plunger that moves as usual gives no number`() {
-        twoUnitsWith(steps = 41)
-
-        assertThat(medtrumPump.plungerStatus.state).isEqualTo(PlungerWatch.State.MOVING)
-        assertThat(plugin.slowPlungerPercent).isNull()
-    }
-
-    /** A plunger that stands is the alarm of the pump itself, not a hint for the loop. */
-    @Test
-    fun `a plunger that stands gives no number`() {
+    fun `a plunger that stands is a reading, but gives no too short number`() {
         twoUnitsWith(steps = 0)
 
         assertThat(medtrumPump.plungerStatus.state).isEqualTo(PlungerWatch.State.STALLED)
-        assertThat(plugin.slowPlungerPercent).isNull()
+        assertThat(plugin.plungerReading!!.state).isEqualTo(PlungerReading.State.STALLED)
+        assertThat(plugin.plungerReading!!.slowPercent).isNull()
     }
 }

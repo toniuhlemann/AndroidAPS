@@ -64,6 +64,9 @@ class PlungerWatchTest {
         assertThat(status.percentOfNormal!!).isAtLeast(90)
         assertThat(status.stalledSince).isNull()
         assertThat(status.slowSince).isNull()
+        // The last reading: its time and the reservoir the pump counted then
+        assertThat(status.sampleTs).isEqualTo(start + 30 * minute)
+        assertThat(status.reservoir!!).isWithin(0.001).of(r1 - 2.0)
     }
 
     /** A little less travel than usual is within what healthy patches show. */
@@ -218,13 +221,15 @@ class PlungerWatchTest {
         watch.onSample(start, 2000, 100.0)
         val (reservoir, position, before) = watch.run(minutes = 20, fromMinute = 0, reservoir = 100.0, position = 2000)
 
-        // No delivery for hours (a zero basal): the same reading every minute.
+        // No delivery for hours (a zero basal): the same reading every minute. The verdict stays; only the time of
+        // the last reading moves on.
         var status = before
         for (i in 1..300) status = watch.onSample(start + (20 + i) * minute, position, reservoir)
-        assertThat(status).isEqualTo(before)
+        assertThat(status).isEqualTo(before.copy(sampleTs = start + 320 * minute))
 
-        assertThat(watch.onSample(start + 400 * minute, position, Double.NaN)).isEqualTo(before)
-        assertThat(watch.onSample(start + 401 * minute, position, -1.0)).isEqualTo(before)
+        // A reservoir that is no number is no reading at all: nothing changes, not even the time.
+        assertThat(watch.onSample(start + 400 * minute, position, Double.NaN)).isEqualTo(status)
+        assertThat(watch.onSample(start + 401 * minute, position, -1.0)).isEqualTo(status)
     }
 
     /** At the end of a reservoir the plunger is at its stop while the pump still counts a few units: the same alarm. */

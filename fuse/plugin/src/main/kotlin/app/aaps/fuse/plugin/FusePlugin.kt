@@ -32,6 +32,7 @@ import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.plugin.PluginBaseWithPreferences
 import app.aaps.core.interfaces.plugin.PluginDescription
 import app.aaps.core.interfaces.profile.ProfileFunction
+import app.aaps.core.interfaces.pump.PlungerReading
 import app.aaps.core.interfaces.pump.PlungerTravel
 import app.aaps.core.interfaces.queue.CommandQueue
 import app.aaps.core.interfaces.resources.TextResolver
@@ -2255,6 +2256,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 // nicht, sonst sieht ein reparierter Ledger wie ein
                 // unbenutzter aus.
                 ledgerReset = letzteReparatur(),
+                // Patch-Bilanz (Toni 21.11.2026): der letzte Kolbenstand, damit der Viewer ihn neben den Zucker legt.
+                plunger = kolbenStand(),
             priorActuation = priorActuation,
             pumpNeverCalled = pumpNeverCalledTrace,
             // Der Erwartungs-Ledger. `runCatching`, weil ein Messbaustein den
@@ -2428,12 +2431,12 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
     /** Der fruehe Hinweis "steigt trotz Insulin, und der Kolben laeuft zu kurz" - eigener Kanal, eigener Zustand. */
     private val kolbenAnstiegAlarm = FuseHoldAlarm.Zustand()
 
-    /**
-     * FORK-DIAGNOSE: der Kolbenweg der Pumpe in Prozent des Ueblichen, wenn er zu kurz ist; `null` = unauffaellig,
-     * keine Aussage, oder die Pumpe misst ihren Kolben nicht.
-     */
-    private fun kolbenZuKurzProzent(): Int? =
-        (runCatching { activePlugin.activePumpInternal }.getOrNull() as? PlungerTravel)?.slowPlungerPercent
+    /** FORK-DIAGNOSE: der letzte Kolbenstand der Pumpe; `null` = noch keiner, oder die Pumpe misst ihren Kolben nicht. */
+    private fun kolbenStand(): PlungerReading? =
+        runCatching { (activePlugin.activePumpInternal as? PlungerTravel)?.plungerReading }.getOrNull()
+
+    /** Der Kolbenweg in Prozent des Ueblichen, wenn er zu kurz ist; `null` = unauffaellig oder keine Aussage. */
+    private fun kolbenZuKurzProzent(): Int? = kolbenStand()?.slowPercent
 
     /**
      * DER ZUCKER STEIGT TROTZ INSULIN, UND DER KOLBEN LAEUFT ZU KURZ (Toni 20.11.2026).
