@@ -12,7 +12,7 @@ package app.aaps.fuse.core.controller
  * DIE REGEL (Variante B, an 14 Tagen Trail geprueft: ein Fehlalarm, der Ausfall nach gut anderthalb Stunden):
  *  1. "Steigt trotz Insulin": der Zucker steigt um mindestens [MIN_RISE_MGDL_PER_MIN], und das Modell erwartet
  *     zugleich ein Absinken von mindestens [MIN_EXPECTED_FALL_MGDL_PER_MIN] (Insulinaktivitaet x ISF).
- *  2. Das gilt seit [RISE_MIN] am Stueck, es stehen mindestens [MIN_BOLUS_IOB_U] Bolus-IOB auf den Buechern, und
+ *  2. Das gilt seit [RISE_MIN] am Stueck, es stehen mindestens [MIN_IOB_U] IOB auf den Buechern ([iobForWatch]), und
  *     der letzte Mahlzeiten-Marker liegt mindestens [AFTER_MARKER_MIN] zurueck. Eine echte Mahlzeit ueberholt
  *     wirkendes Insulin, aber nicht so lange: im Trail sah sie hoechstens eine knappe halbe Stunde so aus.
  *  3. Haelt die Regel [HOLD_MIN] am Stueck, schlaegt der Waechter an.
@@ -38,6 +38,13 @@ package app.aaps.fuse.core.controller
  * einer Mahlzeit steigt der Zucker oft eine Weile trotz Insulin, und der Kolben laeuft etwa einmal in der Woche ohne
  * erkennbaren Grund zu kurz. Zusammen zeigen sie auf den Patch. Die Wartezeit nach dem Marker gilt hier nicht: der
  * Anlass war ein Anstieg in der Stunde nach einem Snack. Der laute Alarm bleibt die Regel oben.
+ *
+ * DAS INSULIN DER ERHOEHTEN BASALRATE ZAEHLT MIT (Toni 21.11.2026): bis dahin zaehlte nur das Bolus-IOB. Am Abend
+ * des Anlasses gab FUSE neben dem Mahlzeitbolus erhoehte Basalraten; das ist Basal-IOB, und das Bolus-IOB fiel knapp
+ * unter die Grenze, waehrend der Zucker weiter trotz Insulin stieg. Die Regel brach ab und begann von vorn - der Alarm
+ * kam nicht. Seitdem gilt dieselbe Lesart wie fuer die Grenzen von FUSE (capIOB): das Groessere aus Netto-IOB und
+ * Bolus-IOB. Ein abgesenktes Basal schafft so kein Insulin herbei, eine erhoehte Basalrate zaehlt mit. Ueber 32 Tage
+ * Trail nachgerechnet: dieselben Alarme wie zuvor, dazu die beiden des Anlasstages, kein weiterer.
  */
 object InsulinEffectWatch {
 
@@ -47,8 +54,8 @@ object InsulinEffectWatch {
     /** So stark muss das Modell mindestens fallen lassen [mg/dl/min] - Insulinaktivitaet x ISF. */
     const val MIN_EXPECTED_FALL_MGDL_PER_MIN = 3.0
 
-    /** So viel Bolus-IOB [U] muss auf den Buechern stehen. */
-    const val MIN_BOLUS_IOB_U = 3.0
+    /** So viel IOB [U] muss auf den Buechern stehen, gelesen nach [iobForWatch]. */
+    const val MIN_IOB_U = 3.0
 
     /** So lange [min] muss "steigt trotz Insulin" am Stueck gelten, bevor die Regel zaehlt. */
     const val RISE_MIN = 30
@@ -86,7 +93,8 @@ object InsulinEffectWatch {
         val ts: Long,
         val observedRateMgdlPerMin: Double,
         val expectedFallMgdlPerMin: Double,
-        val bolusIobU: Double,
+        /** Das IOB nach [iobForWatch] [U]. */
+        val iobU: Double,
         val markerTs: Long,
         /** Der Messwert dieses Zyklus [mg/dl], fuer die Sensorpause; nicht endlich = unbekannt. */
         val bgMgdl: Double = Double.NaN,
@@ -114,6 +122,15 @@ object InsulinEffectWatch {
         val ruleHolds: Boolean,
         val alarm: Boolean,
     )
+
+    /**
+     * Das IOB, das der Waechter liest: das Groessere aus Netto-IOB und Bolus-IOB - dieselbe Lesart wie die Grenzen von
+     * FUSE (capIOB). Eine erhoehte Basalrate zaehlt mit, ein abgesenktes Basal schafft kein Insulin herbei.
+     *
+     * @param netIobU das Netto-IOB [U] (Bolus und Basal, das Basal gegen das Profil gerechnet)
+     * @param basalIobU sein Basal-Anteil [U]; negativ, wenn weniger Basal lief als im Profil
+     */
+    fun iobForWatch(netIobU: Double, basalIobU: Double): Double = maxOf(netIobU, netIobU - basalIobU)
 
     /** Volle Minuten, die "steigt trotz Insulin" bis zum letzten Zyklus am Stueck gilt; 0 = gerade nicht. */
     fun risingMinutes(s: State): Int {
@@ -145,14 +162,14 @@ object InsulinEffectWatch {
         val luecke = last == null || (x.ts - last > GAP_MIN * MIN_MS && !ueberbrueckt)
         val marker = x.markerTs.takeIf { it in 1..x.ts }
         val lastMarker = listOfNotNull(s.lastMarkerTs, marker).maxOrNull()
-        val werteDa = x.observedRateMgdlPerMin.isFinite() && x.expectedFallMgdlPerMin.isFinite() && x.bolusIobU.isFinite()
+        val werteDa = x.observedRateMgdlPerMin.isFinite() && x.expectedFallMgdlPerMin.isFinite() && x.iobU.isFinite()
 
         val rising = werteDa && x.observedRateMgdlPerMin >= MIN_RISE_MGDL_PER_MIN &&
             x.expectedFallMgdlPerMin >= MIN_EXPECTED_FALL_MGDL_PER_MIN
         val riseSince = if (!rising) null else if (luecke || s.riseSinceTs == null) x.ts else s.riseSinceTs
         val markerAlt = lastMarker == null || x.ts - lastMarker >= AFTER_MARKER_MIN * MIN_MS
         val rule = riseSince != null && x.ts - riseSince >= RISE_MIN * MIN_MS &&
-            x.bolusIobU >= MIN_BOLUS_IOB_U && markerAlt
+            x.iobU >= MIN_IOB_U && markerAlt
         val ruleSince = if (!rule) null else if (luecke || s.ruleSinceTs == null) x.ts else s.ruleSinceTs
         val alarm = ruleSince != null && x.ts - ruleSince >= HOLD_MIN * MIN_MS
 

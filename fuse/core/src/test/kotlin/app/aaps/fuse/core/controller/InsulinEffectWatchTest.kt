@@ -241,4 +241,31 @@ class InsulinEffectWatchTest {
         assertFalse(InsulinEffectWatch.riseWithSlowPlunger(neu[9].state, 80), "neun Minuten nach dem neuen Beginn")
         assertTrue(InsulinEffectWatch.riseWithSlowPlunger(neu[10].state, 80))
     }
+
+    // ---- Das Insulin der erhoehten Basalrate zaehlt mit (Toni 21.11.2026) -------------------------------------------
+
+    @Test
+    fun `der Waechter liest das Groessere aus Netto-IOB und Bolus-IOB`() {
+        // Eine erhoehte Basalrate: Basal-IOB positiv, das Netto-IOB ist groesser als das Bolus-IOB.
+        assertEquals(3.7, InsulinEffectWatch.iobForWatch(netIobU = 3.7, basalIobU = 0.8), 1e-9)
+        // Ein abgesenktes Basal: Basal-IOB negativ - es schafft kein Insulin herbei, es zaehlt das Bolus-IOB.
+        assertEquals(3.0, InsulinEffectWatch.iobForWatch(netIobU = 2.5, basalIobU = -0.5), 1e-9)
+        assertEquals(4.0, InsulinEffectWatch.iobForWatch(netIobU = 4.0, basalIobU = 0.0), 1e-9)
+    }
+
+    /**
+     * Der Anlass: der Zucker steigt trotz Insulin, FUSE gibt erhoehte Basalraten, und das Bolus-IOB sinkt knapp unter
+     * die Grenze. Mit dem Bolus-IOB allein brach die Regel ab und begann von vorn; mit der capIOB-Lesart haelt sie.
+     */
+    @Test
+    fun `sinkt nur das Bolus-IOB unter die Grenze, waehrend eine erhoehte Basalrate laeuft, haelt die Regel`() {
+        // Ab Minute 40: Netto 3.6, davon 0.8 aus der erhoehten Basalrate, also 2.8 Bolus-IOB.
+        val nurBolus = lauf(0..70) { m -> sample(m, bolus = if (m < 40) 5.0 else 2.8) }
+        assertEquals(-1, ersterAlarm(nurBolus), "mit dem Bolus-IOB allein kommt kein Alarm")
+
+        val mitBasal = lauf(0..70) { m ->
+            sample(m, bolus = if (m < 40) 5.0 else InsulinEffectWatch.iobForWatch(netIobU = 3.6, basalIobU = 0.8))
+        }
+        assertEquals(60, ersterAlarm(mitBasal))
+    }
 }

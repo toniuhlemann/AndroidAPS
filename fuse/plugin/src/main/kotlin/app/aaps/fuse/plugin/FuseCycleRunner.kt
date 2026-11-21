@@ -1843,7 +1843,7 @@ class FuseCycleRunner(
             // setzt der Sensor immer wieder gut zehn Minuten aus; danach reift das Signal neu, und jeder Zyklus endet
             // hier ("drive not estimable"). Genau dann stieg der Zucker trotz Insulin weiter - und der Waechter lief
             // nicht. Er braucht nur, was auch der Abbruch kennt: den Messwert, seine Steigung, die Insulinaktivitaet
-            // und das Bolus-IOB. Ohne Signal oder ohne gueltiges IOB bleibt alles, wie es ist. Er liest nur und
+            // und das IOB. Ohne Signal oder ohne gueltiges IOB bleibt alles, wie es ist. Er liest nur und
             // dosiert nichts. Ein Abbruch NACH dem Regellauf desselben Zyklus aendert nichts: derselbe Messwert zaehlt
             // im Waechter nicht doppelt.
             val wirkungAbbruch = if (signal != null && iobTotalAbbruch != null) InsulinEffectWatch.step(
@@ -1852,7 +1852,7 @@ class FuseCycleRunner(
                     ts = signal.sourceTs,
                     observedRateMgdlPerMin = signal.ukfRatePerMin,
                     expectedFallMgdlPerMin = signal.activityAtAnchor * signal.isfAtAnchor,
-                    bolusIobU = iobTotalAbbruch.iob - iobTotalAbbruch.basaliob,
+                    iobU = InsulinEffectWatch.iobForWatch(iobTotalAbbruch.iob, iobTotalAbbruch.basaliob),
                     markerTs = markerTs,
                     bgMgdl = signal.rawBg,
                 ),
@@ -2689,7 +2689,7 @@ class FuseCycleRunner(
                 ts = signal.sourceTs,
                 observedRateMgdlPerMin = signal.ukfRatePerMin,
                 expectedFallMgdlPerMin = signal.activityAtAnchor * signal.isfAtAnchor,
-                bolusIobU = iobTotal.iob - iobTotal.basaliob,
+                iobU = InsulinEffectWatch.iobForWatch(iobTotal.iob, iobTotal.basaliob),
                 markerTs = markerTs,
                 bgMgdl = signal.rawBg,
             ),
