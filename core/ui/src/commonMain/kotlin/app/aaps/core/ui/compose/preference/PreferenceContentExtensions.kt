@@ -124,7 +124,8 @@ private fun RenderPreferenceItems(
                         summaryItems = item.effectiveSummaryItems(),
                         expanded = isSubExpanded,
                         onToggle = { sectionState?.toggle(subSectionKey, SectionLevel.SUB_SECTION, parentKey = parentKey) },
-                        insideCard = true
+                        insideCard = true,
+                        summary = item.summary.takeIf { item.summaryInHeader }
                     )
 
                     // Content without card wrapper

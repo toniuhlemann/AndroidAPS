@@ -54,6 +54,7 @@ import app.aaps.core.ui.compose.stringResource
  *
  * @param insideCard If true, uses symmetric padding suitable for card headers
  * @param icon Optional Compose ImageVector shown next to the title
+ * @param summary Optional own line under the title. When given it is shown and [summaryItems] are not.
  */
 @Composable
 internal fun ClickablePreferenceCategoryHeader(
@@ -64,7 +65,8 @@ internal fun ClickablePreferenceCategoryHeader(
     modifier: Modifier = Modifier,
     insideCard: Boolean = false,
     icon: ImageVector? = null,
-    collapsible: Boolean = true
+    collapsible: Boolean = true,
+    summary: TextRef? = null
 ) {
     val theme = LocalPreferenceTheme.current
     val expandedState = stringResource(CoreUiStrings.state_expanded)
@@ -76,7 +78,9 @@ internal fun ClickablePreferenceCategoryHeader(
 
     // Build summary text from the child titles — resolve each one in composable context
     val resolvedSummaries = summaryItems.map { stringResource(it) }
-    val summaryText = if (resolvedSummaries.isNotEmpty()) {
+    // An own line says what the screen is for. The joined titles are only a list, and it is cut off.
+    val ownSummary = summary?.let { stringResource(it) }
+    val summaryText = ownSummary ?: if (resolvedSummaries.isNotEmpty()) {
         resolvedSummaries.joinToString(", ")
     } else null
 
@@ -136,7 +140,7 @@ internal fun ClickablePreferenceCategoryHeader(
                         Text(
                             text = summaryText,
                             color = theme.summaryCategoryColor,
-                            maxLines = 1,
+                            maxLines = if (ownSummary != null) 2 else 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
