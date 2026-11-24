@@ -3014,28 +3014,11 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
     /** Die kurzen Zeilen am Feld in den Einstellungen - einmal je Plugin, der Bildschirm baut seinen Baum oft neu. */
     internal val liveZeilen: FuseLiveZeilen by lazy { FuseLiveZeilen(this) }
 
-    /** Die Schluessel beider Bloecke, deren Zusammenfassung gemeinsam neu entsteht. */
-    internal val kontoUndFruehSchluessel: List<String> by lazy {
-        listOf(
-            FuseDoubleKey.ExpectationCurveAt30U.key, FuseDoubleKey.ExpectationCurveAt60U.key,
-            FuseDoubleKey.ExpectationCurveAt90U.key, FuseDoubleKey.ExpectationCurveAt120U.key,
-            FuseDoubleKey.ExpectationStabilityBgMgdl.key, FuseIntKey.ExpectationStabilityMin.key,
-            FuseDoubleKey.ExpectationStabilityFallMgdlPerMin.key, FuseDoubleKey.ExpectationReleaseThresholdU.key,
-            FuseDoubleKey.MealRunningMinR.key, FuseDoubleKey.MealRisingMinBgMgdl.key,
-            FuseIntKey.ExpectationHorizonMin.key, FuseStringKey.ExpectationCurve.key,
-            FuseBooleanKey.EarlySupplyEnabled.key, FuseDoubleKey.EarlySupplyBudgetMaxU.key,
-            FuseDoubleKey.EarlySupplyScaleStable.key, FuseDoubleKey.EarlySupplyScaleAfterLow.key,
-            FuseDoubleKey.EarlySupplySnackScale.key,
-            FuseDoubleKey.EarlySupplyScaleMorning.key, FuseDoubleKey.EarlySupplyScaleMidday.key,
-            FuseDoubleKey.EarlySupplyScaleEvening.key,
-            FuseIntKey.EarlySupplyMiddayStartMin.key, FuseIntKey.EarlySupplyEveningStartMin.key,
-            FuseDoubleKey.EarlySupplyInitialShare.key, FuseDoubleKey.EarlySupplyMaxPortionU.key,
-            FuseDoubleKey.EarlySupplyMaxPerPeriodU.key, FuseIntKey.EarlySupplyPeriodMin.key,
-            FuseDoubleKey.EarlySupplyTopUpShare.key,
-            FuseBooleanKey.EarlySupplyInitialLiftsGuard.key, FuseBooleanKey.EarlySupplyInitialLiftsTail.key,
-            FuseBooleanKey.EarlySupplyGuardWithExpectation.key, FuseBooleanKey.EarlySupplyTailWithExpectation.key,
-        )
-    }
+    /**
+     * Die Schluessel, deren Zusammenfassung gemeinsam neu entsteht. Die Liste steht bei den Einstellungen
+     * ([fuseLiveZeilenSchluessel]), weil auch die Gliederung des Bildschirms sie braucht.
+     */
+    internal val kontoUndFruehSchluessel: List<String> get() = fuseLiveZeilenSchluessel
 
     /** Die kompakte Zeile eines Feldes; `null` = Framework-Zusammenfassung bleibt. */
     internal fun fruehZusammenfassung(key: String, l: FruehVersorgungText.Lage): String? {

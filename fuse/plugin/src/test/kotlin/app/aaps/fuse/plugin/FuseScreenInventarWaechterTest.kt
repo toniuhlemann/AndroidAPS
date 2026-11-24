@@ -90,7 +90,7 @@ class FuseScreenInventarWaechterTest {
             "Nur ${gebaut.size} Bildschirmeintraege erkannt - der Waechter waere blind. Erkannt: $gebaut"
         }
         assertTrue(FuseIntKey.LivenessMealPowerMin.key in gebaut) {
-            "Ein bekannter Eintrag (Mahlzeiten-Frist) wird nicht erkannt"
+            "Ein bekannter Eintrag (Mahlzeitfenster) wird nicht erkannt"
         }
         assertTrue(fuseEinstellbareKeys.size >= 20) { "der Vertrag ist leer - der Waechter waere blind" }
     }

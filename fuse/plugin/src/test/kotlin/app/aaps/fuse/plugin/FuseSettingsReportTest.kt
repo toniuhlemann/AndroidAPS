@@ -3,6 +3,7 @@ package app.aaps.fuse.plugin
 import app.aaps.core.keys.interfaces.BooleanPreferenceKey
 import app.aaps.core.keys.interfaces.DoublePreferenceKey
 import app.aaps.core.keys.interfaces.IntPreferenceKey
+import app.aaps.core.keys.interfaces.PreferenceKey
 import app.aaps.core.keys.interfaces.Preferences
 import app.aaps.core.keys.interfaces.StringPreferenceKey
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -90,6 +91,24 @@ class FuseSettingsReportTest {
         assertEquals("23:00", rows.single { it.key == FuseIntKey.NightStartMin.key }.value)
         assertEquals("07:00", rows.single { it.key == FuseIntKey.NightEndMin.key }.value)
     }
+    /**
+     * Der Bericht ist die Landkarte des Bildschirms (Toni 24.11.2026): je Bereich eine Gruppe, in derselben
+     * Reihenfolge, mit denselben Werten in derselben Reihenfolge. So findet man einen Wert aus dem Bericht im Menue
+     * wieder - und ein Wert, der im Menue den Bereich wechselt, wechselt ihn auch im Bericht.
+     */
+    @Test
+    fun `der Bericht folgt der Gliederung des Bildschirms`() {
+        val gruppen = FuseSettingsReport.build(standardPreferences()).gruppen
+        val bereiche = FuseSettings.abschnitte()
+        assertEquals(bereiche.size, gruppen.size, "Gruppen und Bereiche zaehlen verschieden")
+        for ((bereich, gruppe) in bereiche.zip(gruppen)) {
+            val imMenue = bereich.items.filterIsInstance<PreferenceKey>().map { it.key }
+            assertEquals(imMenue, gruppe.second.map { it.key }) { "Gruppe \"${gruppe.first}\" weicht vom Bereich ${bereich.key} ab" }
+        }
+        val namen = gruppen.map { it.first }
+        assertEquals(namen.size, namen.toSet().size, "ein Gruppenname doppelt: $namen")
+    }
+
     /** Der Geraetefund vom 15.08.: die Preference kam mit winzigem
      *  Konvertierungsrest zurueck und "0.15 [Standard 0.15]" stand auf dem
      *  Schirm. Rundungsrauschen ist KEINE Abweichung. */

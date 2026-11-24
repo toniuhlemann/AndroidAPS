@@ -323,7 +323,7 @@ object FuseScreenModel {
         // ---- EINSTELLUNGEN, ganz unten (Toni 15.08.) -----------------------
         //
         // Der Bericht ist die Landkarte des Einstellungsbildschirms: dieselben
-        // fuenf Gruppen, jede Zeile mit aktuellem Wert. Zeilen, die vom
+        // Bereiche in derselben Reihenfolge, jede Zeile mit aktuellem Wert. Zeilen, die vom
         // Standard abweichen, tragen ein `*` und den Standardwert - DAS sind
         // die Zeilen, die ins Auge fallen sollen (ein nach einem Testlauf
         // stehen gebliebenes erhoehtes maxSmb zum Beispiel).
@@ -333,7 +333,8 @@ object FuseScreenModel {
                 b.append(gruppe).append('\n')
                 for (z in zeilen) {
                     val marke = if (z.standard != null) "* " else "  "
-                    b.append(marke).append(z.label.padEnd(21)).append(z.value)
+                    // Ein Name, der laenger ist als die Spalte, bekommt wenigstens ein Leerzeichen vor dem Wert.
+                    b.append(marke).append(z.label.padEnd(21)).append(if (z.label.length >= 21) " " else "").append(z.value)
                     z.standard?.let { b.append("  [Standard ").append(it).append(']') }
                     b.append('\n')
                 }

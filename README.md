@@ -237,6 +237,30 @@ correction deadband (new in November 2026) has no such exception: it holds whene
   exactly this amount in that minute?"* is answered from this file. It rotates at 32 MB and keeps about 30 days. FUSE contains no network
   code; the trail stays on the phone.
 
+### The settings menu (new in November 2026)
+
+The settings are sorted by what you want to change, not by the parts of the controller. Five groups stand as headings
+in the FUSE card, and each group has a few sections that open:
+
+| Group | Sections |
+|---|---|
+| **Mahlzeiten** (meals) | *Menge* (curve, scales, budget) · *Ablauf* (first portion, further portions, meal window) · *Besondere Situationen* (snack, start in a low, bolus calculator, early rise, marker only) · *Erweitert* |
+| **Korrekturen** (corrections) | *Normalweg (SMB)* · *Druck-Kanal* · *Langsamer Kanal* · *Erweitert* |
+| **Schutz und Insulingrenzen** (protection and limits) | *Insulingrenzen* · *Vorhergesagte Tiefs* · *Basal-Abschaltung und Rückkehr* · *Nach einem gemessenen Tief* · *Erweitert* |
+| **Signal und Prognose** | *Modellwerte* |
+| **Anzeige und Diagnose** | *Anzeige und Beobachter* · *Wartung* (the ledger actions, clearly apart) |
+
+Four rules hold. Every value has one place, and a note points to it where a second place would be natural. Advanced
+values stay with their topic in a section of their own, and they work the same whether that section is open or closed.
+One word is used for one thing. The first line of each explanation says where the value applies. A value with a new
+name gives its old title at the end of its explanation (*Bisher: …*), so the search still finds it. Keys, values,
+defaults and dosing did not change.
+
+Some names in the menu differ from the names in the code and in this text: *Druck-Kanal* is the liveness channel,
+*Langsamer Kanal* is the slow correction channel, *Spätwirkungs-Prüfung* is the tail guard (the FUSE tab still says
+*Schwanz*), *Mahlzeit-Versorgung* is the expectation account with its early supply, and *Mahlzeitfenster* is the time the
+meal power runs. The settings report in the FUSE tab uses the same sections in the same order.
+
 ### Warnings that only tell (new in November 2026)
 
 None of these gives insulin or holds it back. They only say what the fork sees. A text that begins with
@@ -410,10 +434,10 @@ Grenzen und führt Buch über jede Einheit, bis AAPS sie als IOB zeigt. Es brauc
 **keine** Kohlenhydrat-Eingaben. Fehlt eine Information, gibt FUSE kein neues Insulin — das Profilbasal läuft weiter.
 
 **Abgabewege.** SMB (schnell), Profilbasal und Schutz-Null (nur bei gemessenem Tief oder bei Fall mit zu viel Bolus an
-Bord). Dazu abschaltbar: der **langsame Korrekturkanal** — eine positive TBR wie die High-Temp bei autoISF, in Stufen
+Bord). Dazu abschaltbar: der **langsame Kanal** — eine positive TBR wie die High-Temp bei autoISF, in Stufen
 von 0,25 × Profilbasal bis Faktor × Profilbasal (nachts auf Wunsch ein eigener, kleinerer Faktor mit eigenen Zeiten,
 ab Werk 22–6 Uhr), gemeinsam mit dem SMB unter maxIOB, mit Stopp bei Fall, Schutz-Null, Nacht- und Rebound-Totband —,
-der Liveness-Kanal und die stufenweise Rückkehr aus der Null. Nach einer Mahlzeit aus dem Bolusrechner kommt die
+der Druck-Kanal (im Code: Liveness-Kanal) und die stufenweise Rückkehr aus der Null. Nach einer Mahlzeit aus dem Bolusrechner kommt die
 **Basal-Rücknahme** der gemeinsamen Bilanz hinzu (unten): eine niedrigere TBR, nie bis auf die echte Null.
 
 **Mahlzeiten.** Ein Knopf erklärt „jetzt kommt eine Mahlzeit“ — ohne Kohlenhydrate. Für die Mahlzeit-Frist (Vorgabe
@@ -421,12 +445,12 @@ der Liveness-Kanal und die stufenweise Rückkehr aus der Null. Nach einer Mahlze
 Knopf ein **Erwartungskonto**: ein einmal gebuchtes Budget, ein erster Teil sofort bei stabilem Zucker, der Rest, wenn
 sich die Mahlzeit zeigt. Korrigiert wird nur nach unten; ein Tief sperrt die Erwartung, bis es vorbei ist — danach läuft
 das Konto von selbst weiter, ohne Bestätigung. Steigt der Zucker (mindestens +1 mg/dl pro Minute in zwei Werten
-hintereinander, über der Einstellung „Mahlzeit steigt ab“), kommen die weiteren Portionen ohne Schwanzprüfung; den Guard
+hintereinander, über der Einstellung „Mahlzeit steigt ab“), kommen die weiteren Portionen ohne Spätwirkungs-Prüfung; den Guard
 prüft jede mit der angekündigten Mahlzeit. Ein gemessenes Tief, das gemessene Abwärtsrisiko, maxIOB und die Portionsgrenzen halten weiter. Zeigt sich die Mahlzeit
 größer als die Kurve, darf das Konto den Überschuss zusätzlich geben, höchstens den eingestellten **Nachschlag** (Anteil
 des Budgets, ab Werk 0 = aus). Am Knopf wählt man „Mahlzeit“, „Snack“ (dasselbe Konto mit dem kleineren
 Snack-Skalierer, ab Werk 1,0 — nie mehr als eine Mahlzeit) oder „Nur Marker · 0 U“; jeder Knopf zeigt, wie viel
-höchstens sofort abgeht. Bei „Nur Marker“ geht beim Druck nichts ab, und der Liveness-Kanal bleibt im Fenster an (mit
+höchstens sofort abgeht. Bei „Nur Marker“ geht beim Druck nichts ab, und der Druck-Kanal bleibt im Fenster an (mit
 den Mahlzeit-Grenzen und eigener Schwelle „Druck-Schwelle Nur Marker“, 0 = Tag/Nacht) — gedacht für langsame oder
 fettreiche Mahlzeiten. Ein Tief im Fenster hält den Kanal danach nicht zurück (das Rebound-Fenster sperrt keine
 Mahlzeit); gemessenes Tief, erwartetes Tief und fallender Zucker stoppen ihn weiter. Ohne Kurve dosiert FUSE wie ohne
@@ -460,7 +484,7 @@ ein **Korrektur-Totband** (ab Werk 0 = aus) — außerhalb einer erklärten Mahl
 diesem Wert keinen SMB, zu jeder Tageszeit; die Kanäle bleiben unberührt.
 
 **Anzeige.** Im Hauptgraphen trägt jeder BG-Punkt die Farbe dessen, was FUSE in diesem Zyklus durfte oder tat (ein Tief
-bleibt rot); der Korrekturkanal steht als Band mit Faktor, Menge und Ende, die SMB-Dreiecke zeigen ihre Quelle
+bleibt rot); der langsame Kanal steht als Band mit Faktor, Menge und Ende, die SMB-Dreiecke zeigen ihre Quelle
 (Mahlzeitkonto, Normalweg, andere) samt Summe je Serie. Gedrückt halten zeigt Zustand, Bindung und Bedarf; eine kleine
 Legende erklärt die Farben. Reine Anzeige, abschaltbar. Unter der Zeile mit dem BG-Wert steht der **FUSE-Chip**:
 zugeklappt der Zustand des letzten Zyklus und bis zu vier angeheftete Werte, aufgeklappt neun Kacheln entlang der
@@ -481,11 +505,21 @@ den Block *Fork-Diagnose*: Kolbenweg in Schritten je IE und als Anteil am Üblic
 Statuscode und den letzten Alarm-Eintrag der Pumpe. Ein laufender Kolben beweist nur, dass Insulin das Reservoir
 verlassen hat — nicht, dass es wirkt.
 
+**Einstellungen (neu im November 2026).** Die Einstellungen sind nach der Frage geordnet, nicht nach den Bauteilen des
+Reglers: fünf Hauptbereiche als Überschriften — Mahlzeiten, Korrekturen, Schutz und Insulingrenzen, Signal und Prognose,
+Anzeige und Diagnose —, darunter Bereiche zum Aufklappen mit einem Satz, was darin ist. Jeder Wert hat genau einen Ort;
+wo eine zweite Stelle naheliegt, steht ein Verweis. „Erweitert“ gehört zum jeweiligen Thema und wirkt auch zugeklappt.
+Die erste Zeile jeder Erklärung sagt, wofür der Wert gilt; ein umbenannter Wert nennt am Ende seinen alten Titel
+(„Bisher: …“), damit die Suche ihn findet. Im Menü heißt der Liveness-Kanal „Druck-Kanal“, der Schwanz-Guard
+„Spätwirkungs-Prüfung“ (im FUSE-Reiter weiter „Schwanz“), der langsame Korrekturkanal „Langsamer Kanal“, das
+Erwartungskonto mit der frühen Versorgung „Mahlzeit-Versorgung“ und die Mahlzeiten-Frist „Mahlzeitfenster“. Schlüssel,
+Werte, Vorgaben und Dosierverhalten sind unverändert. Der Einstellungsbericht im FUSE-Reiter folgt derselben Gliederung.
+
 **Architektur.** `fuse/core` enthält die Dosierlogik in reinem Kotlin ohne Android. `fuse/plugin` verbindet sie mit AAPS:
 Zyklus, Übersetzung in SMB und TBR, Ledger, Trail und Oberfläche. AAPS bleibt Herr über die Pumpe. Jeder Zyklus steht
 als JSON-Zeile in `Documents/aapsLogs/fuse_state_history.jsonl`; FUSE enthält keinen Netzwerkcode.
 
-**Ehrlicher Stand.** Rund 2.650 automatische Tests auf der JVM — kein klinischer Nachweis. Der langsame Korrekturkanal
+**Ehrlicher Stand.** Rund 2.650 automatische Tests auf der JVM — kein klinischer Nachweis. Der langsame Kanal
 war am 21.10.2026 zum ersten Mal im Einsatz.
 
 ---
