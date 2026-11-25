@@ -124,7 +124,7 @@ internal class FuseChipTextsTest {
 
         assertThat(tiles.map { it.tile }).containsExactlyElementsIn(ChipTile.entries).inOrder()
         assertThat(tiles.map { it.label })
-            .containsExactly("Störung r", "Bedarf", "Anteil", "SMB", "Grenze", "Kanal", "Guard", "Schwanz", "Mahlzeit").inOrder()
+            .containsExactly("Störung r", "Bedarf", "Anteil", "SMB", "Grenze", "Kanal", "Guard", "Spätwirkung", "Mahlzeit").inOrder()
     }
 
     @Test
@@ -312,7 +312,7 @@ internal class FuseChipTextsTest {
         assertThat(guard.sub).isEqualTo("Platz 1,00 U")
 
         val tail = tile(chip(cycleState = CycleState.BLOCKED, limit = "tailHeadroom=-0.1"), ChipTile.LIMIT)
-        assertThat(tail.value).isEqualTo("Schwanzprüfung")
+        assertThat(tail.value).isEqualTo("Spätwirkung")
         assertThat(tail.tone).isEqualTo(FuseChipTone.BLOCKED)
 
         assertThat(tile(chip(cycleState = CycleState.ZERO, limit = "SAFETY_ZERO"), ChipTile.LIMIT).tone).isEqualTo(FuseChipTone.BLOCKED)
@@ -346,7 +346,7 @@ internal class FuseChipTextsTest {
 
         assertThat(name("candidate:GUARD_FLOOR")).isEqualTo("Guard")
         assertThat(name("finalShortened:GUARD_FLOOR")).isEqualTo("Guard")
-        assertThat(name("finalVerify:TAIL_LIABILITY")).isEqualTo("Schwanzprüfung")
+        assertThat(name("finalVerify:TAIL_LIABILITY")).isEqualTo("Spätwirkung")
         assertThat(name("liveness:demandRatioCap")).isEqualTo("Bedarfsanteil")
         assertThat(name("correctionDeadband")).isEqualTo("Korrektur-Totband")
         assertThat(name("nightDeadband")).isEqualTo("Nacht-Totband")
@@ -364,7 +364,7 @@ internal class FuseChipTextsTest {
         assertThat(name("PUMP_GATE")).isEqualTo("Pumpe")
         assertThat(name("SMB_SWITCH_OFF")).isEqualTo("SMB aus")
         assertThat(name("PARTIAL_RECOVERY")).isEqualTo("Teilbasal")
-        assertThat(name("SLOW_CORRECTION")).isEqualTo("Korrekturkanal")
+        assertThat(name("SLOW_CORRECTION")).isEqualTo("Langsamer Kanal")
         assertThat(name("PUBLICATION_GATE no commitment")).isEqualTo("Publikations-Tor")
         assertThat(name("SAFETY_HOLD")).isEqualTo("Schutzhalt")
         // No word for it: its own name, without what follows.
@@ -420,19 +420,35 @@ internal class FuseChipTextsTest {
         assertThat(tile(chip(tail = -20.0), ChipTile.TAIL).tone).isEqualTo(FuseChipTone.BLOCKED)
     }
 
-    /** The source holds the margins inside two stops. A value at a stop is "at least this far", not that number. */
+    /** The source holds the margins inside two stops. A value at the upper stop is "at least this far", not that number. */
     @Test
-    fun `a margin at a stop says at least`() {
+    fun `a margin at the upper stop says at least`() {
         val high = tile(chip(guard = FuseOverviewSource.MARGIN_UPPER_MGDL, guardWithMeal = FuseOverviewSource.MARGIN_UPPER_MGDL), ChipTile.GUARD)
         assertThat(high.value).isEqualTo("≥ +150 mg/dl")
         assertThat(high.pinValue).isEqualTo("≥ +150")
         assertThat(high.sub).isEqualTo("mit Mahlzeit ≥ +150")
-
-        val low = tile(chip(tail = FuseOverviewSource.MARGIN_LOWER_MGDL), ChipTile.TAIL)
-        assertThat(low.value).isEqualTo("≤ -150 mg/dl")
-        assertThat(low.tone).isEqualTo(FuseChipTone.BLOCKED)
         // One below the stop is a plain number again.
         assertThat(tile(chip(guard = 149.0), ChipTile.GUARD).value).isEqualTo("+149 mg/dl")
+    }
+
+    /**
+     * Toni 25.11.2026: at the lower stop the tile says a word and no number. The source puts a tail there that blocks
+     * but whose depth it cannot tell, so a number would claim more than is known - and it read like a glucose value.
+     */
+    @Test
+    fun `a margin at the lower stop is a word without a unit, on the tile, on the closed chip and under the meal`() {
+        val low = tile(chip(tail = FuseOverviewSource.MARGIN_LOWER_MGDL, tailWithMeal = FuseOverviewSource.MARGIN_LOWER_MGDL), ChipTile.TAIL)
+        assertThat(low.value).isEqualTo("zu")
+        assertThat(low.pinValue).isEqualTo("zu")
+        assertThat(low.sub).isEqualTo("mit Mahlzeit zu")
+        assertThat(low.tone).isEqualTo(FuseChipTone.BLOCKED)
+
+        val guard = tile(chip(guard = FuseOverviewSource.MARGIN_LOWER_MGDL, guardWithMeal = 7.0), ChipTile.GUARD)
+        assertThat(guard.value).isEqualTo("zu")
+        assertThat(guard.sub).isEqualTo("mit Mahlzeit +7")
+        assertThat(guard.tone).isEqualTo(FuseChipTone.GUARD)
+        // One above the stop is a plain number again.
+        assertThat(tile(chip(guard = -149.0), ChipTile.GUARD).value).isEqualTo("-149 mg/dl")
     }
 
     @Test
@@ -484,9 +500,25 @@ internal class FuseChipTextsTest {
         assertThat(tile.sub).isEqualTo("beendet · ×1,4")
         assertThat(tile.pinLabel).isEqualTo("Konto")
         assertThat(tile.pinValue).isEqualTo("beendet")
-        // Every other state keeps the amount: it can still go out later.
-        assertThat(tile(chip(meal = meal(status = AccountStatus.PAUSIERT)), ChipTile.MEAL).pinValue).isEqualTo("3,20 U")
-        assertThat(tile(chip(meal = meal(status = AccountStatus.GESPERRT)), ChipTile.MEAL).pinValue).isEqualTo("3,20 U")
+    }
+
+    /**
+     * Toni 25.11.2026: the closed chip showed the bare rest of a paused account, and that read as insulin on its way.
+     * While the account gives, the amount says most; in every other state the closed chip names the state. The tile
+     * keeps the amount in every state.
+     */
+    @Test
+    fun `the closed chip names the state of an account that is not giving, and the amount of one that is`() {
+        fun pin(status: AccountStatus?) = tile(chip(meal = meal(status = status)), ChipTile.MEAL).pinValue
+
+        assertThat(pin(AccountStatus.AKTIV)).isEqualTo("3,20 U")
+        assertThat(pin(AccountStatus.WARTET)).isEqualTo("wartet")
+        assertThat(pin(AccountStatus.PAUSIERT)).isEqualTo("pausiert")
+        assertThat(pin(AccountStatus.EINGEFROREN)).isEqualTo("eingefroren")
+        assertThat(pin(AccountStatus.GESPERRT)).isEqualTo("gesperrt")
+        // An account whose state the cycle does not name keeps its amount: there is no word to say instead.
+        assertThat(pin(null)).isEqualTo("3,20 U")
+        assertThat(tile(chip(meal = meal(status = AccountStatus.PAUSIERT)), ChipTile.MEAL).value).isEqualTo("3,20 U Rest")
     }
 
     @Test

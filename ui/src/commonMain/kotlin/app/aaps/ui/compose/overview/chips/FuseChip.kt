@@ -54,6 +54,9 @@ private const val CHAIN_TILES = 6
 /** Tiles in one row. */
 private const val TILES_PER_ROW = 3
 
+/** The small line under the value of a tile may take this many lines before it is cut. */
+private const val SUB_LINES = 2
+
 /** How far a state colour is darkened on a light background, so that the word stays readable. */
 private const val LIGHT_THEME_DARKEN = 0.45f
 
@@ -308,7 +311,9 @@ private fun Tile(
                     text = tile.sub,
                     style = MaterialTheme.typography.labelSmall,
                     color = muted,
-                    maxLines = 1,
+                    // Two lines: the meal tile carries state, minutes and scaler, and one line cut the scaler off
+                    // (Toni 25.11.2026). The tiles of a row stay equally high.
+                    maxLines = SUB_LINES,
                     overflow = TextOverflow.Ellipsis
                 )
             }

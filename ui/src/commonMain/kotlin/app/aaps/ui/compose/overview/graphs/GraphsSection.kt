@@ -625,7 +625,15 @@ fun GraphsSection(
                         .padding(start = FUSE_LEGEND_BUTTON_START, top = 2.dp)
                 )
             }
-            if (showFuseLegend) FuseLegendDialog(onDismiss = { showFuseLegend = false })
+            if (showFuseLegend) {
+                // The switch in the legend: BG points by FUSE state or plainly by range (Toni 25.11.2026).
+                val fusePointsByState by graphViewModel.fusePointsByState.collectAsStateWithLifecycle()
+                FuseLegendDialog(
+                    pointsByState = fusePointsByState,
+                    onPointsByState = graphViewModel::setFusePointsByState,
+                    onDismiss = { showFuseLegend = false }
+                )
+            }
             // Own composable, so a finger move does not recompose this section
             GraphInspectOverlay(
                 inspect = inspect,

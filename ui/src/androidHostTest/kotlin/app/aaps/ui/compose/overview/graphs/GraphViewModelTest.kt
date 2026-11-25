@@ -1,6 +1,9 @@
 package app.aaps.ui.compose.overview.graphs
 
+import app.aaps.core.interfaces.aps.APS
+import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.logging.AAPSLogger
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.overview.graph.BgDataPoint
 import app.aaps.core.interfaces.overview.graph.BgRange
 import app.aaps.core.interfaces.overview.graph.BgType
@@ -8,6 +11,7 @@ import app.aaps.core.interfaces.overview.graph.GraphConfig
 import app.aaps.core.interfaces.overview.graph.GraphConfigRepository
 import app.aaps.core.interfaces.overview.graph.OverviewDataCache
 import app.aaps.core.interfaces.overview.graph.TimeRange
+import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.resources.ResourceHelper
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.keys.UnitDoubleKey
@@ -27,6 +31,10 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.mockito.Mock
 import org.mockito.MockitoAnnotations
+import org.mockito.kotlin.any
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
+import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -38,6 +46,8 @@ internal class GraphViewModelTest {
     @Mock private lateinit var preferences: Preferences
     @Mock private lateinit var dateUtil: DateUtil
     @Mock private lateinit var rh: ResourceHelper
+    @Mock private lateinit var config: Config
+    @Mock private lateinit var activePlugin: ActivePlugin
 
     private lateinit var sut: GraphViewModel
 
@@ -54,7 +64,7 @@ internal class GraphViewModelTest {
         whenever(preferences.observe(UnitDoubleKey.OverviewHighMark)).thenReturn(MutableStateFlow(180.0))
         whenever(preferences.observe(UnitDoubleKey.OverviewLowMark)).thenReturn(MutableStateFlow(72.0))
         // fullWindow = false: the overview behaviour, where the axis hugs the data.
-        sut = GraphViewModel(cache, false, graphConfigRepository, aapsLogger, preferences, dateUtil, rh)
+        sut = GraphViewModel(cache, false, graphConfigRepository, aapsLogger, preferences, dateUtil, rh, config, activePlugin)
     }
 
     @AfterEach
@@ -87,7 +97,7 @@ internal class GraphViewModelTest {
         whenever(cache.predictionsFlow).thenReturn(MutableStateFlow(predictions))
         whenever(cache.timeRangeFlow).thenReturn(MutableStateFlow(TimeRange(fromTime = windowStart, toTime = now, endTime = now + 2 * 3600_000L)))
         whenever(graphConfigRepository.graphConfigFlow).thenReturn(MutableStateFlow(GraphConfig()))
-        val vm = GraphViewModel(cache, false, graphConfigRepository, aapsLogger, preferences, dateUtil, rh)
+        val vm = GraphViewModel(cache, false, graphConfigRepository, aapsLogger, preferences, dateUtil, rh, config, activePlugin)
 
         val range = vm.derivedTimeRange.filterNotNull().first()
 
@@ -102,6 +112,58 @@ internal class GraphViewModelTest {
         val config = sut.chartConfigFlow.value
         assertThat(config.highMark).isEqualTo(180.0)
         assertThat(config.lowMark).isEqualTo(72.0)
+    }
+
+    // ---- Fork (FUSE): the colour of the BG points (Toni 25.11.2026) ---------------------------------------------
+
+    /** FUSE as the active APS: a mock that is an APS and the FUSE source at once, as the plugin is. */
+    private fun fuseActive(pointsByState: Boolean): FuseOverviewSource {
+        val fuse = mock<APS>(extraInterfaces = arrayOf(FuseOverviewSource::class))
+        val source = fuse as FuseOverviewSource
+        whenever(source.fuseGraphPointsByState()).thenReturn(pointsByState)
+        whenever(config.APS).thenReturn(true)
+        whenever(activePlugin.activeAPS).thenReturn(fuse)
+        return source
+    }
+
+    @Test
+    fun `the colour of the BG points starts with the stored choice`() {
+        fuseActive(pointsByState = false)
+
+        assertThat(sut.fusePointsByState.value).isFalse()
+    }
+
+    @Test
+    fun `flipping the switch stores the choice and shows it at once`() {
+        val fuse = fuseActive(pointsByState = true)
+        assertThat(sut.fusePointsByState.value).isTrue()
+
+        sut.setFusePointsByState(false)
+
+        verify(fuse).fuseStoreGraphPointsByState(false)
+        assertThat(sut.fusePointsByState.value).isFalse()
+    }
+
+    /** Without FUSE there are no FUSE points: the flow stays at its default and nothing is stored anywhere. */
+    @Test
+    fun `without FUSE as the active APS the points count as coloured by state and nothing is stored`() {
+        whenever(config.APS).thenReturn(true)
+        whenever(activePlugin.activeAPS).thenReturn(mock<APS>())
+
+        assertThat(sut.fusePointsByState.value).isTrue()
+        sut.setFusePointsByState(false)
+        assertThat(sut.fusePointsByState.value).isTrue()
+    }
+
+    /** On a client the active APS is not asked at all - it does not run the loop there. */
+    @Test
+    fun `on a device that does not run the loop the FUSE source is not asked`() {
+        val fuse = fuseActive(pointsByState = false)
+        whenever(config.APS).thenReturn(false)
+
+        assertThat(sut.fusePointsByState.value).isTrue()
+        sut.setFusePointsByState(false)
+        verify(fuse, never()).fuseStoreGraphPointsByState(any())
     }
 
     @Test

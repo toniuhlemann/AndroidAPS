@@ -238,6 +238,8 @@ class FuseChipStandTest {
     fun `die Vorgabe des Schluessels ist die Vorgabe der Schnittstelle`() {
         assertEquals(FuseOverviewSource.ChipLayout.DEFAULT_PINS, FuseChipStand.pinsAusText(FuseStringNonKey.ChipPins.defaultValue))
         assertEquals(FuseOverviewSource.ChipLayout().expanded, FuseBooleanNonKey.ChipExpanded.defaultValue)
+        // Die Farbe der BG-Punkte im Hauptgraphen: der Schluessel traegt die Vorgabe der Schnittstelle.
+        assertEquals(FuseOverviewSource.DEFAULT_GRAPH_POINTS_BY_STATE, FuseBooleanNonKey.GraphPointsByState.defaultValue)
         assertEquals(FuseStringNonKey.ChipPins.defaultValue, FuseChipStand.pinsAlsText(FuseOverviewSource.ChipLayout.DEFAULT_PINS))
     }
 

@@ -218,13 +218,18 @@ correction deadband (new in November 2026) has no such exception: it holds whene
   protective zero basal, correction channel; a low stays red), the slow correction channel as a band with factor,
   delivered insulin and end reason, SMB triangles in the colour of their source (meal account, normal path, other)
   with the sum per run, and a strip above the basal for protective zero and channel. Press and hold shows the state,
-  the binding limit and the demand of that cycle; a small *Legende* button explains the colours. Display only, with a
-  switch in the FUSE settings.
+  the binding limit and the demand of that cycle; a small *Legende* button explains the colours. Its first row is a
+  switch: the BG points in the colour of the FUSE state, or plainly in the colour of their range (green, yellow above,
+  red below) - the bands, triangles and sums stay in both views. Display only; all FUSE layers can be switched off in
+  the FUSE settings (*Anzeige und Diagnose*).
 - **The FUSE chip** (new in November 2026) on the main screen, under the row with the BG value. Closed it shows the
   state of the last cycle in the colour of the BG points, and up to four pinned values. A tap opens nine tiles in the
   order of the dosing chain — disturbance r, demand, SMB share, SMB, the limit that holds the SMB back (or *frei*),
-  slow correction channel — then guard margin, tail margin and the meal (the rest of the account, or the balance G of
-  a bolus-calculator meal). A tap on a tile pins it to the closed chip; a long press opens the FUSE tab. When the last
+  slow channel — then guard margin, late-effect margin (*Spätwirkung*) and the meal (the rest of the account, or the
+  balance G of a bolus-calculator meal). A margin at its lower stop reads *zu*, not a number: the stop also stands for
+  a check that blocks without a known depth. On the closed chip the account shows its amount while it gives and its
+  state (paused, waiting, locked ...) while it does not. A tap on a tile pins it to the closed chip; a long press opens
+  the FUSE tab. When the last
   cycle is older than ten minutes the chip is greyed out and names its age. It took the place of the insulinReq chip
   beside IOB and COB. While a meal account gives its portions the normal path often stops at the guard, and the
   decision then calculates no demand. The chip and the press-and-hold pill of the main graph show the demand of the
@@ -490,10 +495,14 @@ diesem Wert keinen SMB, zu jeder Tageszeit; die Kanäle bleiben unberührt.
 **Anzeige.** Im Hauptgraphen trägt jeder BG-Punkt die Farbe dessen, was FUSE in diesem Zyklus durfte oder tat (ein Tief
 bleibt rot); der langsame Kanal steht als Band mit Faktor, Menge und Ende, die SMB-Dreiecke zeigen ihre Quelle
 (Mahlzeitkonto, Normalweg, andere) samt Summe je Serie. Gedrückt halten zeigt Zustand, Bindung und Bedarf; eine kleine
-Legende erklärt die Farben. Reine Anzeige, abschaltbar. Unter der Zeile mit dem BG-Wert steht der **FUSE-Chip**:
+Legende erklärt die Farben. Ihre erste Zeile ist ein Schalter: Punkte in der Farbe des FUSE-Zustands oder schlicht in der
+Farbe ihres Bereichs (grün, gelb darüber, rot darunter); Bänder, Dreiecke und Summen bleiben in beiden Sichten. Reine
+Anzeige, abschaltbar. Unter der Zeile mit dem BG-Wert steht der **FUSE-Chip**:
 zugeklappt der Zustand des letzten Zyklus und bis zu vier angeheftete Werte, aufgeklappt neun Kacheln entlang der
-Dosierkette (Störung r, Bedarf, Anteil, SMB, Grenze, Kanal) sowie Guard, Schwanz und Mahlzeit. Eine Kachel antippen
-heftet sie an, lang drücken öffnet den FUSE-Reiter; ein Zyklus älter als zehn Minuten wird grau und nennt sein Alter.
+Dosierkette (Störung r, Bedarf, Anteil, SMB, Grenze, Kanal) sowie Guard, Spätwirkung und Mahlzeit. Am unteren Anschlag
+steht bei Guard und Spätwirkung „zu“ statt einer Zahl; zugeklappt zeigt das Konto seine Menge, solange es liefert, sonst
+seinen Zustand (pausiert, wartet, gesperrt ...). Eine Kachel antippen heftet sie an, lang drücken öffnet den
+FUSE-Reiter; ein Zyklus älter als zehn Minuten wird grau und nennt sein Alter.
 Der Chip ersetzt den Bedarf-Chip neben IOB und COB. Rechnet der Regler in einem Zyklus keinen Bedarf, weil der Normalweg
 am Guard stoppt und die Portion aus dem Mahlzeitkonto kommt, zeigen Chip und Halte-Pille den Bedarf des Kontos, mit dem
 Zusatz „aus dem Konto“.
@@ -517,8 +526,9 @@ Weg zu ihr fest im Kopf, und Zurück führt auf die vorige Seite an ihrer Stelle
 Wert rechts, darunter höchstens die berechnete Zeile. Jeder Wert hat genau einen Ort; wo eine zweite Stelle naheliegt,
 steht ein Verweis. „Erweitert“ gehört zum jeweiligen Thema und steht abgesetzt am Ende der Seite seines Hauptbereichs.
 Die erste Zeile jeder Erklärung sagt, wofür der Wert gilt; ein umbenannter Wert nennt am Ende seinen alten Titel
-(„Bisher: …“), damit die Suche ihn findet. Im Menü heißt der Liveness-Kanal „Druck-Kanal“, der Schwanz-Guard
-„Spätwirkungs-Prüfung“ (im FUSE-Reiter weiter „Schwanz“), der langsame Korrekturkanal „Langsamer Kanal“, das
+(„Bisher: …“), damit die Suche ihn findet. Im Menü und auf der Startseite heißt der Liveness-Kanal „Druck-Kanal“, der
+Schwanz-Guard „Spätwirkungs-Prüfung“ bzw. „Spätwirkung“ (im FUSE-Reiter weiter „Schwanz“), der langsame Korrekturkanal
+„Langsamer Kanal“, das
 Erwartungskonto mit der frühen Versorgung „Mahlzeit-Versorgung“ und die Mahlzeiten-Frist „Mahlzeitfenster“. Schlüssel,
 Werte, Vorgaben und Dosierverhalten sind unverändert. Der Einstellungsbericht im FUSE-Reiter folgt derselben Gliederung.
 

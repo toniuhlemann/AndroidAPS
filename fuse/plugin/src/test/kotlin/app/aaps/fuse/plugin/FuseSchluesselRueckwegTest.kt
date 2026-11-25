@@ -175,6 +175,8 @@ class FuseSchluesselRueckwegTest {
         FuseStringNonKey.ChipPins.key to "DEMAND,GUARD,MEAL",
         // Ab Werk ist der Chip zu.
         FuseBooleanNonKey.ChipExpanded.key to false,
+        // Ab Werk tragen die BG-Punkte des Hauptgraphen die Farbe des FUSE-Zustands (Toni 25.11.2026).
+        FuseBooleanNonKey.GraphPointsByState.key to true,
     )
 
     @Test

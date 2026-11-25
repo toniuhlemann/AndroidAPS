@@ -162,16 +162,27 @@ internal class FuseChipTexts(
         return FuseChipTileUi(
             tile = tile,
             label = rh.gs(label),
-            value = short?.let { rh.gs(CoreUiStrings.fuse_chip_margin, it) } ?: NONE,
+            value = when {
+                margin == null || short == null -> NONE
+                // The word of the lower stop stands alone: it is no number, so it has no unit.
+                atLowerStop(margin)             -> short
+                else                            -> rh.gs(CoreUiStrings.fuse_chip_margin, short)
+            },
             sub = withMealMgdl?.takeIf { it.isFinite() }?.let { rh.gs(CoreUiStrings.fuse_chip_margin_with_meal, marginShort(it)) }.orEmpty(),
             pinValue = short ?: NONE,
             tone = if (margin != null && margin < 0.0) blockedTone else FuseChipTone.NEUTRAL
         )
     }
 
-    /** A margin without its unit. The source holds it inside two stops; at a stop it reads "at least this far". */
+    private fun atLowerStop(marginMgdl: Double): Boolean = marginMgdl <= FuseOverviewSource.MARGIN_LOWER_MGDL
+
+    /**
+     * A margin without its unit. The source holds it inside two stops. At the upper stop it reads "at least this far".
+     * At the lower stop it is a word and no number (Toni 25.11.2026): there the source also puts a tail that blocks
+     * but whose depth it cannot tell, so a number would claim more than is known - and it read like a glucose value.
+     */
     private fun marginShort(marginMgdl: Double): String = when {
-        marginMgdl <= FuseOverviewSource.MARGIN_LOWER_MGDL -> rh.gs(CoreUiStrings.fuse_chip_margin_min, signed(FuseOverviewSource.MARGIN_LOWER_MGDL, 0))
+        atLowerStop(marginMgdl)                            -> rh.gs(CoreUiStrings.fuse_chip_margin_closed)
         marginMgdl >= FuseOverviewSource.MARGIN_UPPER_MGDL -> rh.gs(CoreUiStrings.fuse_chip_margin_max, signed(FuseOverviewSource.MARGIN_UPPER_MGDL, 0))
         else                                               -> signed(marginMgdl, 0)
     }
@@ -221,9 +232,10 @@ internal class FuseChipTexts(
                 tile = ChipTile.MEAL, label = label,
                 value = if (meal.withoutBudget) rh.gs(CoreUiStrings.fuse_chip_meal_marker_only) else rh.gs(CoreUiStrings.fuse_chip_meal_rest, insulin(rest)),
                 sub = sub, pinLabel = account,
-                // The closed chip has no room for the state. A rest of an account that has ended can no longer go out,
-                // so there the state stands in place of an amount that would read as still to come.
-                pinValue = if (meal.status == AccountStatus.BEENDET) rh.gs(CoreUiStrings.fuse_chip_meal_status_ended) else insulin(rest),
+                // The closed chip has room for one of the two, the amount or the state. While the account gives, the
+                // amount says most. In every other state the state does (Toni 25.11.2026): a rest that is paused,
+                // waiting, frozen, locked or ended is not on its way, and as a bare amount it read as still to come.
+                pinValue = statusRef(meal.status)?.takeIf { meal.status != AccountStatus.AKTIV }?.let { rh.gs(it) } ?: insulin(rest),
                 tone = tone
             )
 

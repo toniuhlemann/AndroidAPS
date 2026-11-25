@@ -767,6 +767,13 @@ class FusePlugin(
         preferences.put(FuseBooleanNonKey.ChipExpanded, layout.expanded)
     }
 
+    // Die Farbe der BG-Punkte im Hauptgraphen - nur Anzeige, kein Zyklus liest sie (FuseSchluesselRueckwegTest).
+    override fun fuseGraphPointsByState(): Boolean = preferences.get(FuseBooleanNonKey.GraphPointsByState)
+
+    override fun fuseStoreGraphPointsByState(byState: Boolean) {
+        preferences.put(FuseBooleanNonKey.GraphPointsByState, byState)
+    }
+
     /**
      * Derselbe Schluessel wie bei den OpenAPS-Plugins: `ApsSmbMaxIob` ist KEINE
      * autoISF-Groesse, sondern AAPS' eigene maxIOB-Einstellung. Eine

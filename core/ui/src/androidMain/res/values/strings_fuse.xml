@@ -57,7 +57,7 @@
     <string name="fuse_chip_tile_limit">Grenze</string>
     <string name="fuse_chip_tile_channel">Kanal</string>
     <string name="fuse_chip_tile_guard">Guard</string>
-    <string name="fuse_chip_tile_tail">Schwanz</string>
+    <string name="fuse_chip_tile_tail">Spätwirkung</string>
     <string name="fuse_chip_tile_meal">Mahlzeit</string>
     <!-- Short names on the closed chip, where they differ from the tile. -->
     <string name="fuse_chip_pin_drive">r</string>
@@ -81,9 +81,9 @@
     <string name="fuse_chip_channel_off">aus</string>
     <string name="fuse_chip_channel_waiting">wartet</string>
     <string name="fuse_chip_margin" comment="%1$s=margin in mg/dl with its sign. Example: +18 mg/dl">%1$s mg/dl</string>
-    <string name="fuse_chip_margin_min" comment="%1$s=the lower stop of the margin with its sign: the margin is at or below it. Example: ≤ -150">≤ %1$s</string>
+    <string name="fuse_chip_margin_closed" comment="Guard or late-effect margin at its lower stop: the check blocks, how far is not said. One short word.">zu</string>
     <string name="fuse_chip_margin_max" comment="%1$s=the upper stop of the margin with its sign: the margin is at or above it. Example: ≥ +150">≥ %1$s</string>
-    <string name="fuse_chip_margin_with_meal" comment="%1$s=the margin with the announced meal, with its sign. Example: mit Mahlzeit +42">mit Mahlzeit %1$s</string>
+    <string name="fuse_chip_margin_with_meal" comment="%1$s=the margin with the announced meal, with its sign. Example: mit Mahlzeit +42, or with the word of the lower stop: mit Mahlzeit zu">mit Mahlzeit %1$s</string>
     <string name="fuse_chip_meal_rest" comment="%1$s=what the meal account may still give, with unit. Example: 3,20 IE Rest">%1$s Rest</string>
     <string name="fuse_chip_meal_marker_only">Nur Marker</string>
     <string name="fuse_chip_meal_no_account">ohne Konto</string>
@@ -97,19 +97,19 @@
     <string name="fuse_chip_meal_status_locked">gesperrt</string>
     <string name="fuse_chip_meal_status_ended">beendet</string>
     <!-- FUSE graphs below BG, short names in the graph menu, as in the fork. -->
-    <string name="fuse_drive_shortname">F.DRV</string>
-    <string name="fuse_guard_shortname">F.GRD</string>
+    <string name="fuse_drive_shortname">Antrieb r</string>
+    <string name="fuse_guard_shortname">Schutzabstand</string>
     <!-- FUSE in the main graph: what FUSE did in a cycle (colour of the BG point). -->
     <string name="fuse_state_free">SMB frei</string>
     <string name="fuse_state_guard">Guard sperrt SMB</string>
     <string name="fuse_state_blocked">andere Sperre</string>
     <string name="fuse_state_zero">Schutz-Null</string>
-    <string name="fuse_state_channel">Korrekturkanal</string>
+    <string name="fuse_state_channel">Langsamer Kanal</string>
     <string name="fuse_state_unknown">ohne Eingang</string>
     <!-- Where an SMB came from. -->
     <string name="fuse_source_expectation">Mahlzeitkonto</string>
     <string name="fuse_source_normal">Normalweg</string>
-    <string name="fuse_source_other">Liveness/andere</string>
+    <string name="fuse_source_other">Druck-Kanal/andere</string>
     <!-- Why a run of the slow correction channel ended, and labels of the band. -->
     <string name="fuse_channel_end_falling">Fall</string>
     <string name="fuse_channel_end_below">unter Schwelle</string>
@@ -131,7 +131,7 @@
     <string name="fuse_binding" comment="%1$s=limit. Example: bindet: Guard">bindet: %1$s</string>
     <string name="fuse_binding_guard">Guard</string>
     <string name="fuse_binding_safety_hold">Schutzhalt</string>
-    <string name="fuse_binding_tail">Schwanzprüfung</string>
+    <string name="fuse_binding_tail">Spätwirkung</string>
     <string name="fuse_binding_marker">Marker</string>
     <string name="fuse_binding_demand_ratio">Bedarfsanteil</string>
     <string name="fuse_binding_smb_ratio">SMB-Anteil</string>
@@ -152,12 +152,17 @@
     <!-- Legend of the FUSE layers, opened from the main graph. -->
     <string name="fuse_legend">Legende</string>
     <string name="fuse_legend_title">FUSE im Hauptgraphen</string>
+    <string name="fuse_legend_points_switch">Punkte nach FUSE-Zustand färben</string>
+    <string name="fuse_legend_points_range">Aus: BG-Punkte in der Farbe ihres Bereichs. Bänder, SMB-Dreiecke und Summen bleiben.</string>
+    <string name="fuse_legend_range_in">im Zielbereich</string>
+    <string name="fuse_legend_range_high">darüber</string>
+    <string name="fuse_legend_range_low">darunter</string>
     <string name="fuse_legend_points">BG-Punkte in der Farbe dessen, was FUSE in diesem Zyklus durfte oder tat. Unter der unteren Grenze bleibt ein Punkt rot – das Tief geht vor.</string>
     <string name="fuse_legend_smb">SMB-Dreiecke in der IOB-Spur in der Farbe ihrer Quelle, die Zahl ist die Summe je Serie. Ein weißer Ring auf den BG-Punkten markiert den Beginn einer Serie.</string>
-    <string name="fuse_legend_channel">Türkises Band: der langsame Korrekturkanal mit Faktor, der im Band abgegebenen Zusatzmenge über dem Profilbasal und dem Ende.</string>
-    <string name="fuse_legend_basal">Streifen über dem Basal: magenta Schutz-Null, türkis Korrekturkanal.</string>
+    <string name="fuse_legend_channel">Türkises Band: der langsame Kanal mit Faktor, der im Band abgegebenen Zusatzmenge über dem Profilbasal und dem Ende.</string>
+    <string name="fuse_legend_basal">Streifen über dem Basal: magenta Schutz-Null, türkis langsamer Kanal.</string>
     <string name="fuse_legend_prediction">Vorhersage (PRED): blau die Mittelbahn von FUSE, gelb die untere Bahn – gegen sie rechnet der Guard.</string>
-    <string name="fuse_legend_hold">Gedrückt halten zeigt Zustand, Bindung, Bedarf und Kanal des Zyklus. Abschalten: FUSE-Einstellungen, System.</string>
+    <string name="fuse_legend_hold">Gedrückt halten zeigt Zustand, Bindung, Bedarf und Kanal des Zyklus. Alle FUSE-Ebenen abschalten: FUSE-Einstellungen, Anzeige und Diagnose, Anzeige und Beobachter.</string>
     <!-- Fork diagnosis of the Medtrum driver (Toni 20.11.2026): our own reading of raw values the patch sends. Every text names it "Fork-Diagnose", so that it is never taken for a message of the pump or of upstream AAPS. -->
     <string name="fork_diag_title">Fork-Diagnose (Custom)</string>
     <string name="fork_diag_plunger">Kolben</string>

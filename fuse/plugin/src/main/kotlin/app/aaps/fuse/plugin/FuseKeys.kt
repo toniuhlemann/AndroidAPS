@@ -1,5 +1,6 @@
 package app.aaps.fuse.plugin
 
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.keys.PreferenceType
 import app.aaps.core.keys.UnitType
 import app.aaps.core.keys.interfaces.BooleanNonPreferenceKey
@@ -1257,6 +1258,13 @@ enum class FuseBooleanNonKey(
 
     /** Der FUSE-Chip auf dem Hauptbildschirm ist aufgeklappt. Ab Werk zu. */
     ChipExpanded("fuse_chip_expanded", false),
+
+    /**
+     * Die BG-Punkte des Hauptgraphen tragen die Farbe des FUSE-Zustands (an) oder die schlichte Farbe ihres Bereichs -
+     * gruen im Zielbereich, gelb darueber, rot darunter (aus). Toni 25.11.2026: beide Sichten, einen Schalter
+     * voneinander entfernt, in der Legende des Hauptgraphen. Ab Werk der FUSE-Zustand.
+     */
+    GraphPointsByState("fuse_graph_points_by_state", FuseOverviewSource.DEFAULT_GRAPH_POINTS_BY_STATE),
 }
 
 /**

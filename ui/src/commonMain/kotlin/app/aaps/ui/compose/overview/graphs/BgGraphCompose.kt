@@ -201,6 +201,8 @@ fun BgGraphCompose(
     val chartConfig by viewModel.chartConfigFlow.collectAsStateWithLifecycle()
     // Fork (FUSE): the main graph layers (Toni 21.10.2026); null without FUSE or with the layers off.
     val fuseLayers by viewModel.fuseMainLayers.collectAsStateWithLifecycle()
+    // Fork (FUSE, Toni 25.11.2026): the BG points by FUSE state, or plainly by their range - chosen in the legend.
+    val fusePointsByState by viewModel.fusePointsByState.collectAsStateWithLifecycle()
 
     // Use derived time range or fall back to default (last GRAPH_TIME_RANGE_HOURS hours)
     val (minTimestamp, maxTimestamp) = derivedTimeRange ?: run {
@@ -258,7 +260,7 @@ fun BgGraphCompose(
     // it as a repeat, and the lines stayed like that. Same as in SecondaryGraphCompose.
     val modelInput = BgModelInput(
         bgReadings, bucketedData, predictions, basalData, targetData, epsPoints, activityData, showActivity, chartConfig,
-        minTimestamp, maxX, visibleTimeRange, treatmentData, predictionHeadroom, fuseLookup
+        minTimestamp, maxX, visibleTimeRange, treatmentData, predictionHeadroom, fuseLookup, fusePointsByState
     )
     val latestModelInput by rememberUpdatedState(modelInput)
     LaunchedEffect(modelProducer) {
@@ -654,7 +656,9 @@ private data class BgModelInput(
     /** How far a prediction may widen the top of the axis above the real data, in the units of the graph */
     val predictionHeadroom: Double,
     /** Fork (FUSE): the state per cycle while the main graph layers are on, else null. */
-    val fuseLookup: FuseStateLookup? = null
+    val fuseLookup: FuseStateLookup? = null,
+    /** Fork (FUSE): the BG points show the FUSE state; off = they show their range only. Read with [fuseLookup]. */
+    val fusePointsByState: Boolean = true
 )
 
 /**
@@ -922,7 +926,8 @@ private suspend fun submitBgModel(
             if (input.fuseLookup != null) {
                 it[FUSE_BG_PAINT_KEY] = FuseBgPaint(
                     states = input.fuseLookup,
-                    ranges = input.bgReadings.associate { p -> timestampToX(p.timestamp, minTimestamp) to p.range }
+                    ranges = input.bgReadings.associate { p -> timestampToX(p.timestamp, minTimestamp) to p.range },
+                    byState = input.fusePointsByState
                 )
             }
         }

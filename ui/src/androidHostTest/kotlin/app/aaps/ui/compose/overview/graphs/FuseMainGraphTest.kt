@@ -2,6 +2,7 @@ package app.aaps.ui.compose.overview.graphs
 
 import app.aaps.core.interfaces.overview.FuseOverviewSource.CycleState
 import app.aaps.core.interfaces.overview.FuseOverviewSource.SmbSource
+import app.aaps.core.interfaces.overview.graph.BgRange
 import app.aaps.core.interfaces.overview.graph.BolusGraphPoint
 import app.aaps.core.interfaces.overview.graph.BolusType
 import app.aaps.core.interfaces.overview.graph.FuseCycleInfo
@@ -72,6 +73,36 @@ internal class FuseMainGraphTest {
         // Equal by content: Vico compares the extras to decide whether the model changed.
         assertThat(FuseStateLookup.of(listOf(FuseCycleInfo(at(0), CycleState.ZERO)), start))
             .isEqualTo(FuseStateLookup.of(listOf(FuseCycleInfo(at(0), CycleState.ZERO)), start))
+    }
+
+    /**
+     * Toni 25.11.2026: "sometimes it is good to see the plain graph - green, or yellow and red where it leaves the
+     * range". The switch in the legend takes the FUSE state off the BG points; the range colour is what is left.
+     */
+    @Test
+    fun `a BG point shows the FUSE state, or with the switch off only its range - and a low is red in both`() {
+        val states = FuseStateLookup.of(listOf(FuseCycleInfo(at(0), CycleState.ZERO), FuseCycleInfo(at(10), CycleState.CHANNEL)), start)
+        val ranges = mapOf(0.0 to BgRange.IN_RANGE, 10.0 to BgRange.HIGH, 11.0 to BgRange.LOW)
+
+        val byState = FuseBgPaint(states, ranges)
+        assertThat(byState.stateAt(0.0)).isEqualTo(CycleState.ZERO)
+        assertThat(byState.stateAt(10.0)).isEqualTo(CycleState.CHANNEL)
+        // The low comes first: no state colour, so the point stays red.
+        assertThat(byState.stateAt(11.0)).isNull()
+        assertThat(byState.rangeAt(11.0)).isEqualTo(BgRange.LOW)
+        // A reading without a cycle nearby has no state either, and one that is not listed counts as in range.
+        assertThat(byState.stateAt(30.0)).isNull()
+        assertThat(byState.rangeAt(30.0)).isEqualTo(BgRange.IN_RANGE)
+
+        val byRange = FuseBgPaint(states, ranges, byState = false)
+        assertThat(byRange.stateAt(0.0)).isNull()
+        assertThat(byRange.stateAt(10.0)).isNull()
+        assertThat(byRange.rangeAt(0.0)).isEqualTo(BgRange.IN_RANGE)
+        assertThat(byRange.rangeAt(10.0)).isEqualTo(BgRange.HIGH)
+        assertThat(byRange.rangeAt(11.0)).isEqualTo(BgRange.LOW)
+        // The choice is part of what Vico compares: flipping the switch must redraw the points at once.
+        assertThat(byRange).isNotEqualTo(byState)
+        assertThat(FuseBgPaint(states, ranges, byState = false)).isEqualTo(byRange)
     }
 
     @Test

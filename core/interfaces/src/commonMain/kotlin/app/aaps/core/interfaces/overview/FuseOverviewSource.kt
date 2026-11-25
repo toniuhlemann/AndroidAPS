@@ -82,6 +82,9 @@ interface FuseOverviewSource {
          */
         const val MARGIN_LOWER_MGDL = -150.0
         const val MARGIN_UPPER_MGDL = 150.0
+
+        /** From the start the BG points of the main graph show the FUSE state, see [fuseGraphPointsByState]. */
+        const val DEFAULT_GRAPH_POINTS_BY_STATE = true
     }
 
     /** Zustand des Erwartungskontos je Zyklus - der Streifen am oberen Rand des Guard-Untergraphen. */
@@ -301,6 +304,17 @@ interface FuseOverviewSource {
 
     /** Stores the layout of the chip. It is kept across restarts and goes into the settings export. */
     fun fuseStoreChipLayout(layout: ChipLayout) {}
+
+    // ---- The colour of the BG points in the main graph (Toni 25.11.2026) ----
+    //
+    // The FUSE layers colour each BG point by what FUSE did in that cycle. Sometimes the plain view is wanted: green in
+    // range, yellow above, red below. Both are one switch apart, in the legend of the main graph. Display only.
+
+    /** `true` = the BG points carry the colour of the FUSE state of their cycle; `false` = the colour of their range. */
+    fun fuseGraphPointsByState(): Boolean = DEFAULT_GRAPH_POINTS_BY_STATE
+
+    /** Stores the choice of [fuseGraphPointsByState]. It is kept across restarts and goes into the settings export. */
+    fun fuseStoreGraphPointsByState(byState: Boolean) {}
 
     /** `null` = ohne Rueckfrage ausfuehren (Ruecknahme). */
     suspend fun fuseMarkerPrompt(now: Long): MarkerPromptFacts?

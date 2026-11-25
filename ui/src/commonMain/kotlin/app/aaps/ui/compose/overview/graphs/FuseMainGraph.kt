@@ -6,12 +6,17 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -26,6 +31,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -43,6 +50,7 @@ import app.aaps.core.interfaces.overview.graph.FuseSmbSend
 import app.aaps.core.interfaces.utils.DecimalFormatter
 import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.ui.CoreUiStrings
+import app.aaps.core.ui.compose.AapsTheme
 import app.aaps.core.ui.compose.stringResource
 import com.patrykandpatrick.vico.compose.cartesian.CartesianDrawingContext
 import com.patrykandpatrick.vico.compose.cartesian.axis.Axis
@@ -152,17 +160,31 @@ class FuseStateLookup internal constructor(private val xs: DoubleArray, private 
 }
 
 /**
- * What the FUSE point provider needs per model: the FUSE state per cycle and the range of each drawn reading. Both
- * come through the model's extras, so the line and its provider stay the same objects when data changes.
+ * What the FUSE point provider needs per model: the FUSE state per cycle, the range of each drawn reading, and whether
+ * the points show the state at all ([byState]) or only their range (Toni 25.11.2026). All of it comes through the
+ * model's extras, so the line and its provider stay the same objects when data or the choice changes.
  */
-data class FuseBgPaint(val states: FuseStateLookup, val ranges: Map<Double, BgRange>)
+data class FuseBgPaint(val states: FuseStateLookup, val ranges: Map<Double, BgRange>, val byState: Boolean = true) {
+
+    /** The range of the reading at [x]; a reading that is not listed counts as in range. */
+    fun rangeAt(x: Double): BgRange = ranges[x] ?: BgRange.IN_RANGE
+
+    /**
+     * The FUSE state that colours the reading at [x]; `null` = the reading shows the plain colour of its range. That
+     * is so for every reading while [byState] is off, for a low (it stays red, the low comes first), and for a reading
+     * without a FUSE cycle nearby.
+     */
+    fun stateAt(x: Double): FuseOverviewSource.CycleState? =
+        if (!byState || rangeAt(x) == BgRange.LOW) null else states.at(x)
+}
 
 internal val FUSE_BG_PAINT_KEY = ExtraStore.Key<FuseBgPaint>()
 
 /**
  * The 1-minute readings in the colour of the FUSE state (Toni 21.10.2026). FUSE works on the 1-minute readings, and its
  * cycles match them one to one. A low keeps its red, and a reading without a FUSE cycle nearby keeps the usual range
- * colour.
+ * colour. With the state colours switched off in the legend every reading shows its range: green, yellow above, red
+ * below - the same filled 1-minute points, without the faint rings of the plain graph.
  */
 @Immutable
 class FuseBgPointProvider(lowColor: Color, inRangeColor: Color, highColor: Color) : LineCartesianLayer.PointProvider {
@@ -175,9 +197,7 @@ class FuseBgPointProvider(lowColor: Color, inRangeColor: Color, highColor: Color
 
     override fun getPoint(entry: LineCartesianLayerModel.Entry, extraStore: ExtraStore): LineCartesianLayer.Point? {
         val paint = extraStore.getOrNull(FUSE_BG_PAINT_KEY) ?: return rangePoints[BgRange.IN_RANGE]
-        val range = paint.ranges[entry.x] ?: BgRange.IN_RANGE
-        if (range == BgRange.LOW) return rangePoints[BgRange.LOW]
-        val state = paint.states.at(entry.x) ?: return rangePoints[range]
+        val state = paint.stateAt(entry.x) ?: return rangePoints[paint.rangeAt(entry.x)]
         return statePoints[state]
     }
 
@@ -646,6 +666,9 @@ internal fun fuseBindingRef(raw: String): TextRef? {
 // Legend
 // =========================================================================
 
+/** Test tag of the switch row in the legend, so a test finds it without knowing its text. */
+internal const val FUSE_LEGEND_SWITCH_TAG = "fuseLegendPointsSwitch"
+
 /** The small "Legend" button on the BG graph; the legend itself opens as a dialog and takes no room. */
 @Composable
 internal fun FuseLegendButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
@@ -661,16 +684,47 @@ internal fun FuseLegendButton(onClick: () -> Unit, modifier: Modifier = Modifier
     )
 }
 
+/**
+ * The legend of the FUSE layers. Its first row is a switch (Toni 25.11.2026): the BG points in the colour of the FUSE
+ * state, or plainly in the colour of their range. The rows below it explain the view that is on.
+ *
+ * @param pointsByState the BG points show the FUSE state
+ * @param onPointsByState the user chose the other view
+ */
 @Composable
-internal fun FuseLegendDialog(onDismiss: () -> Unit) {
+internal fun FuseLegendDialog(pointsByState: Boolean, onPointsByState: (Boolean) -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(CoreUiStrings.ok)) } },
         title = { Text(stringResource(CoreUiStrings.fuse_legend_title)) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(stringResource(CoreUiStrings.fuse_legend_points), style = MaterialTheme.typography.bodySmall)
-                FuseOverviewSource.CycleState.entries.forEach { state -> FuseLegendRow(fuseStateColor(state), fuseStateText(state), triangle = false) }
+            // The legend is long; on a small screen it scrolls instead of losing its last lines.
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag(FUSE_LEGEND_SWITCH_TAG)
+                        .toggleable(value = pointsByState, role = Role.Switch, onValueChange = onPointsByState)
+                ) {
+                    Text(
+                        text = stringResource(CoreUiStrings.fuse_legend_points_switch),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    // The row is the switch: one target, one spoken name.
+                    Switch(checked = pointsByState, onCheckedChange = null)
+                }
+                if (pointsByState) {
+                    Text(stringResource(CoreUiStrings.fuse_legend_points), style = MaterialTheme.typography.bodySmall)
+                    FuseOverviewSource.CycleState.entries.forEach { state -> FuseLegendRow(fuseStateColor(state), fuseStateText(state), triangle = false) }
+                } else {
+                    Text(stringResource(CoreUiStrings.fuse_legend_points_range), style = MaterialTheme.typography.bodySmall)
+                    FuseLegendRow(AapsTheme.generalColors.bgInRange, stringResource(CoreUiStrings.fuse_legend_range_in), triangle = false)
+                    FuseLegendRow(AapsTheme.generalColors.bgHigh, stringResource(CoreUiStrings.fuse_legend_range_high), triangle = false)
+                    FuseLegendRow(AapsTheme.generalColors.bgLow, stringResource(CoreUiStrings.fuse_legend_range_low), triangle = false)
+                }
                 Text(stringResource(CoreUiStrings.fuse_legend_smb), style = MaterialTheme.typography.bodySmall)
                 FuseOverviewSource.SmbSource.entries.forEach { source -> FuseLegendRow(fuseSourceColor(source), fuseSourceText(source), triangle = true) }
                 Text(stringResource(CoreUiStrings.fuse_legend_channel), style = MaterialTheme.typography.bodySmall)

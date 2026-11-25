@@ -4,13 +4,16 @@ import androidx.compose.runtime.Stable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.aaps.core.data.configuration.Constants
+import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LTag
+import app.aaps.core.interfaces.overview.FuseOverviewSource
 import app.aaps.core.interfaces.overview.graph.BgDataPoint
 import app.aaps.core.interfaces.overview.graph.GraphConfig
 import app.aaps.core.interfaces.overview.graph.GraphConfigRepository
 import app.aaps.core.interfaces.overview.graph.OverviewDataCache
 import app.aaps.core.interfaces.overview.graph.SeriesType
+import app.aaps.core.interfaces.plugin.ActivePlugin
 import app.aaps.core.interfaces.resources.TextResolver
 import app.aaps.core.interfaces.utils.DateUtil
 import app.aaps.core.keys.BooleanNonKey
@@ -56,7 +59,9 @@ class GraphViewModel(
     private val aapsLogger: AAPSLogger,
     private val preferences: Preferences,
     private val dateUtil: DateUtil,
-    private val rh: TextResolver
+    private val rh: TextResolver,
+    private val config: Config,
+    private val activePlugin: ActivePlugin
 ) : ViewModel() {
 
     @AssistedFactory
@@ -156,6 +161,28 @@ class GraphViewModel(
             .map { FuseMainLayers.of(it) }
             .distinctUntilChanged()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FuseMainLayers.of(cache.fuseGraphFlow.value))
+    }
+
+    /** FUSE as the active APS on a device that runs the loop; `null` on a client and with another algorithm. */
+    private fun fuseSource(): FuseOverviewSource? = if (config.APS) activePlugin.activeAPS as? FuseOverviewSource else null
+
+    private val _fusePointsByState by lazy {
+        MutableStateFlow(fuseSource()?.fuseGraphPointsByState() ?: FuseOverviewSource.DEFAULT_GRAPH_POINTS_BY_STATE)
+    }
+
+    /**
+     * Fork (FUSE, Toni 25.11.2026): whether the BG points of the main graph carry the colour of the FUSE state of their
+     * cycle, or the plain colour of their range - green in range, yellow above, red below. Chosen in the legend of the
+     * main graph; the other FUSE layers stay as they are. Lazy, as above: the stored choice is read when the graph first
+     * asks.
+     */
+    val fusePointsByState: StateFlow<Boolean> by lazy { _fusePointsByState.asStateFlow() }
+
+    /** Stores the choice of [fusePointsByState] and shows it at once. Without FUSE there is nothing to choose. */
+    fun setFusePointsByState(byState: Boolean) {
+        val fuse = fuseSource() ?: return
+        fuse.fuseStoreGraphPointsByState(byState)
+        _fusePointsByState.value = byState
     }
     val treatmentGraphFlow = cache.treatmentGraphFlow
     val epsGraphFlow = cache.epsGraphFlow
