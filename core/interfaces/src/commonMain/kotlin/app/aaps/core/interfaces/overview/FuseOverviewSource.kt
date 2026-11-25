@@ -179,14 +179,16 @@ interface FuseOverviewSource {
     )
 
     /**
-     * Meal input at the button (Toni 25.11.2026): the carbs of the meal [g] and its absorption time [min] can be typed
-     * in the dialog. Both are optional and apply to the choice "Mahlzeit" only. [offer] says what "Mahlzeit" books with
-     * them (0 = not given). It is the same calculation as the booking. Its result is `null` when a given value is not
-     * valid: above its limit ([maxCarbsG], [maxAbsorptionMin]), or carbs without a carb ratio in the profile.
+     * Meal input at the button (Toni 25.11.2026): the carbs of the meal [g] and its absorption time [min] can be given
+     * in the dialog. Both are optional and apply to the choice "Mahlzeit" only. [carbsIncrements] are the quick add
+     * buttons of the carbs dialog, so both dialogs offer the same steps. [offer] says what "Mahlzeit" books with them
+     * (0 = not given). It is the same calculation as the booking. Its result is `null` when FUSE cannot book a given
+     * value: above its limit ([maxCarbsG], [maxAbsorptionMin]), or carbs without a carb ratio in the profile.
      */
     class MealInputOffer(
         val maxCarbsG: Int,
         val maxAbsorptionMin: Int,
+        val carbsIncrements: List<Int> = emptyList(),
         val offer: (carbsG: Int, absorptionMin: Int) -> MealOffer?,
     )
 

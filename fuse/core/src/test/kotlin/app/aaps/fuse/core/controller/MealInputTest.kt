@@ -101,18 +101,27 @@ class MealInputTest {
 
     // ---- Der Verlauf ------------------------------------------------------------------------------------------------
 
-    /** Absorptionszeit durch Bezugszeit, in den Grenzen des Verlaufs. Keine Angabe und die Bezugszeit: die Kurve, wie sie ist. */
+    /**
+     * Absorptionszeit durch das Kurvenende, in den Grenzen des Verlaufs: der Verlauf erreicht die ganze angesagte
+     * Mahlzeit am Ende der Aufnahme (Kodex 25.11.2026). Keine Angabe und eine Zeit gleich dem Kurvenende: die Kurve, wie
+     * sie ist.
+     */
     @Test
     fun `die Absorptionszeit streckt oder staucht die Zeitachse`() {
-        val bezug = EarlySupply.ABSORPTION_REFERENCE_MIN
-        for (zeit in listOf(-10, 0, bezug)) assertEquals(1.0, EarlySupply.courseStretch(zeit), 0.0) { "Zeit $zeit" }
-        assertEquals(2.0 / 3.0, EarlySupply.courseStretch(120), 1e-12)
-        assertEquals(4.0 / 3.0, EarlySupply.courseStretch(240), 1e-12)
+        val ende = ExpectationAccount.CURVE_END_MIN
+        for (zeit in listOf(-10, 0, ende)) assertEquals(1.0, EarlySupply.courseStretch(zeit), 0.0) { "Zeit $zeit" }
+        assertEquals(0.75, EarlySupply.courseStretch(90), 1e-12)
+        assertEquals(1.5, EarlySupply.courseStretch(180), 1e-12)
+        assertEquals(2.0, EarlySupply.courseStretch(240), 1e-12)
         // Schneller als eine Stunde und langsamer als fuenf rechnet das Konto nicht.
-        assertEquals(1.0 / 3.0, EarlySupply.courseStretch(EarlySupply.MIN_COURSE_ABSORPTION_MIN), 1e-12)
-        assertEquals(1.0 / 3.0, EarlySupply.courseStretch(20), 1e-12)
-        assertEquals(5.0 / 3.0, EarlySupply.courseStretch(EarlySupply.MAX_COURSE_ABSORPTION_MIN), 1e-12)
-        assertEquals(5.0 / 3.0, EarlySupply.courseStretch(EarlySupply.MAX_INPUT_ABSORPTION_MIN), 1e-12)
+        assertEquals(0.5, EarlySupply.courseStretch(EarlySupply.MIN_COURSE_ABSORPTION_MIN), 1e-12)
+        assertEquals(0.5, EarlySupply.courseStretch(20), 1e-12)
+        assertEquals(2.5, EarlySupply.courseStretch(EarlySupply.MAX_COURSE_ABSORPTION_MIN), 1e-12)
+        assertEquals(EarlySupply.MAX_COURSE_ABSORPTION_MIN, EarlySupply.MAX_INPUT_ABSORPTION_MIN)
+        // Das Ende des Verlaufs IST die Absorptionszeit - in den Grenzen.
+        for (zeit in 60..300 step 30) {
+            assertEquals(zeit.toDouble(), kurve.stretched(EarlySupply.courseStretch(zeit)).endMin, 1e-9) { "Zeit $zeit" }
+        }
     }
 
     /** Dieselbe Form, derselbe Beginn - nur die Zeitachse: F_T(a) = F(a / Streckung), das Ende entsprechend. */
@@ -120,7 +129,7 @@ class MealInputTest {
     fun `die gestreckte Kurve ist dieselbe Form auf einer anderen Zeitachse`() {
         assertSame(kurve, kurve.stretched(1.0))
         for (x in listOf(0.0, -1.0, Double.NaN, Double.POSITIVE_INFINITY)) assertSame(kurve, kurve.stretched(x)) { "bei $x" }
-        for (k in listOf(1.0 / 3.0, 2.0 / 3.0, 4.0 / 3.0, 5.0 / 3.0)) {
+        for (k in listOf(0.5, 0.75, 1.5, 2.5)) {
             val v = kurve.stretched(k)
             assertEquals(k, v.stretch, 0.0)
             assertEquals(120.0 * k, v.endMin, 1e-12)
@@ -145,15 +154,15 @@ class MealInputTest {
     @Test
     fun `fruehbedarf und Erwartung folgen dem Verlauf`() {
         val bezug = bedarf()
-        assertTrue(bedarf(4.0 / 3.0) < bezug) { "langsam: ${bedarf(4.0 / 3.0)} gegen $bezug" }
-        assertTrue(bedarf(5.0 / 3.0) < bedarf(4.0 / 3.0))
-        assertTrue(bedarf(2.0 / 3.0) > bezug) { "schnell: ${bedarf(2.0 / 3.0)} gegen $bezug" }
-        assertTrue(bedarf(1.0 / 3.0) > bedarf(2.0 / 3.0))
-        // Die erwartete Wirkung laeuft bis zum Ende des Verlaufs: bei 4 h auch in Minute 140, ohne Streckung nicht.
-        val langsam = kurve.stretched(4.0 / 3.0)
-        assertTrue(EarlySupply.expectedDriveMgdlPerMin(langsam, 140.0, 1.0, 50.0) > 0.0)
+        assertTrue(bedarf(1.5) < bezug) { "langsam: ${bedarf(1.5)} gegen $bezug" }
+        assertTrue(bedarf(2.0) < bedarf(1.5))
+        assertTrue(bedarf(0.75) > bezug) { "schnell: ${bedarf(0.75)} gegen $bezug" }
+        assertTrue(bedarf(0.5) > bedarf(0.75))
+        // Die erwartete Wirkung laeuft bis zum Ende des Verlaufs: bei 4 h bis Minute 240, ohne Streckung nur bis 120.
+        val langsam = kurve.stretched(EarlySupply.courseStretch(240))
+        assertTrue(EarlySupply.expectedDriveMgdlPerMin(langsam, 230.0, 1.0, 50.0) > 0.0)
         assertEquals(0.0, EarlySupply.expectedDriveMgdlPerMin(kurve, 140.0, 1.0, 50.0), 0.0)
-        assertEquals(0.0, EarlySupply.expectedDriveMgdlPerMin(langsam, 160.0, 1.0, 50.0), 0.0)
+        assertEquals(0.0, EarlySupply.expectedDriveMgdlPerMin(langsam, 240.0, 1.0, 50.0), 0.0)
         // Die Anforderung nach Minute 120: mit gestrecktem Verlauf noch da, mit der Kurve allein nicht mehr.
         fun anforderung(k: ExpectationAccount.Curve) =
             EarlySupply.demandU(k, 120, 110.0, 1.0, iobU = 0.0, freeIobU = 0.0, existingActionU = { 0.0 }, action = wirkung)
@@ -193,8 +202,8 @@ class MealInputTest {
         for (tageszeit in listOf(0.8, 1.2, 1.8)) {
             assertEquals(basis.forTimeOfDay(tageszeit), basis.forMeal(tageszeit, MealInput.NONE, kurve)) { "bei $tageszeit" }
         }
-        // Die Bezugszeit ohne KH-Menge ist die Kurve, wie sie ist - keine Eingabe, die etwas aendert.
-        assertSame(basis, basis.forMeal(null, MealInput(0.0, EarlySupply.ABSORPTION_REFERENCE_MIN), kurve))
+        // Eine Zeit gleich dem Kurvenende ohne KH-Menge ist die Kurve, wie sie ist - keine Eingabe, die etwas aendert.
+        assertSame(basis, basis.forMeal(null, MealInput(0.0, ExpectationAccount.CURVE_END_MIN), kurve))
         assertFalse(MealCourse.NONE.byInput)
     }
 
@@ -205,9 +214,9 @@ class MealInputTest {
         assertEquals(basis.forCarbs(1.5).copy(course = MealCourse(1.0, carbsKnown = true)), mitKh)
         assertEquals(mitKh, basis.forMeal(null, MealInput(6.0, 0), kurve))
         val nurZeit = basis.forMeal(1.8, MealInput(0.0, 240), kurve)
-        assertEquals(basis.forTimeOfDay(1.8).copy(course = MealCourse(4.0 / 3.0, carbsKnown = false)), nurZeit)
-        val beide = basis.forMeal(1.8, MealInput(6.0, 120), kurve)
-        assertEquals(basis.forCarbs(1.5).copy(course = MealCourse(2.0 / 3.0, carbsKnown = true)), beide)
+        assertEquals(basis.forTimeOfDay(1.8).copy(course = MealCourse(2.0, carbsKnown = false)), nurZeit)
+        val beide = basis.forMeal(1.8, MealInput(6.0, 90), kurve)
+        assertEquals(basis.forCarbs(1.5).copy(course = MealCourse(0.75, carbsKnown = true)), beide)
         // Der Anteil der Anfangsportion in den Einstellungen bleibt, wie er eingestellt ist - was daraus wird, rechnet die Buchung.
         for (e in listOf(mitKh, nurZeit, beide)) assertEquals(basis.initialShare, e.initialShare, 0.0)
     }
@@ -265,7 +274,7 @@ class MealInputTest {
     fun `eine schnelle Mahlzeit bekommt mehr vorne, eine langsame weniger`() {
         fun anfang(zeit: Int) = buchung(basis.forMeal(1.2, MealInput(6.0, zeit), kurve)).let { it.initialShare * it.budgetU }
         val normal = anfang(0)
-        assertEquals(normal, anfang(EarlySupply.ABSORPTION_REFERENCE_MIN), 1e-12)
+        assertEquals(normal, anfang(ExpectationAccount.CURVE_END_MIN), 1e-12)
         // Stetig: je kuerzer, desto mehr - und nie ueber die Mahlzeitmenge.
         var vorher = Double.MAX_VALUE
         for (zeit in 60..300 step 15) {
@@ -275,9 +284,9 @@ class MealInputTest {
             vorher = a
         }
         assertEquals(6.0, anfang(60), 1e-12)
-        assertTrue(anfang(150) > normal)
-        assertTrue(anfang(240) < normal)
-        assertEquals(0.5 * 1.5 * bedarf(4.0 / 3.0), anfang(240), 1e-9)
+        assertTrue(anfang(90) > normal)
+        assertTrue(anfang(180) < normal)
+        assertEquals(0.5 * 1.5 * bedarf(2.0), anfang(240), 1e-9)
         // Das Budget bleibt die Mahlzeitmenge, gleich wie schnell.
         for (zeit in listOf(60, 120, 180, 240, 300)) {
             assertEquals(6.0, buchung(basis.forMeal(1.2, MealInput(6.0, zeit), kurve)).budgetU, 1e-12) { "Zeit $zeit" }
@@ -293,10 +302,10 @@ class MealInputTest {
     fun `nur mit Absorptionszeit folgt das Budget dem Verlauf, hoechstens der Kurve`() {
         val ohne = buchung(basis)
         val langsam = buchung(basis.forMeal(null, MealInput(0.0, 240), kurve))
-        assertEquals(1.5 * bedarf(4.0 / 3.0), langsam.budgetU, 1e-9)
+        assertEquals(1.5 * bedarf(2.0), langsam.budgetU, 1e-9)
         assertTrue(langsam.budgetU < ohne.budgetU)
         assertEquals(0.5, langsam.initialShare, 1e-12)
-        val schnell = buchung(basis.forMeal(null, MealInput(0.0, 120), kurve))
+        val schnell = buchung(basis.forMeal(null, MealInput(0.0, 90), kurve))
         assertEquals(ohne.budgetU, schnell.budgetU, 1e-9)
         assertTrue(schnell.initialShare > 0.5)
         assertTrue(schnell.initialShare * schnell.budgetU <= 1.5 * 4.0 + 1e-12) { "Anfangsportion ueber der Mahlzeit des Skalierers" }
@@ -308,14 +317,14 @@ class MealInputTest {
     @Test
     fun `das Konto haelt Streckung und Herkunft fest`() {
         val k = konto(basis.forMeal(1.2, MealInput(6.0, 240), kurve))
-        assertEquals(4.0 / 3.0, k.curveStretch, 1e-12)
+        assertEquals(2.0, k.curveStretch, 1e-12)
         assertTrue(k.byInput)
         assertEquals(6.0, k.a0U, 1e-12)
         assertEquals(1.5, k.phi0, 0.0)
         assertEquals(werte, k.curveValues)
         val gelesen = requireNotNull(k.curve())
-        assertEquals(160.0, gelesen.endMin, 1e-9)
-        assertEquals(kurve.at(90.0), gelesen.at(120.0), 1e-12)
+        assertEquals(240.0, gelesen.endMin, 1e-9)
+        assertEquals(kurve.at(60.0), gelesen.at(120.0), 1e-12)
         // Ohne Eingabe liest das Konto die Kurve, wie sie eingestellt ist.
         assertEquals(120.0, requireNotNull(konto(basis).curve()).endMin, 0.0)
     }

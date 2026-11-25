@@ -1401,7 +1401,14 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
         // statt sie still zu uebergehen.
         val ic = profilIc(jetzt)
         val fenster = preferences.get(FuseIntKey.LivenessMealPowerMin)
-        val mitEingabe = FuseOverviewSource.MealInputOffer(EarlySupply.MAX_INPUT_CARBS_G, EarlySupply.MAX_INPUT_ABSORPTION_MIN) { carbsG, absorptionMin ->
+        // Die Schnellknoepfe des KH-Dialogs (Toni 25.11.2026: Eingabe wie dort). Voll ausgeschrieben: der kurze Name
+        // `IntKey` ist hier schon die Metro-Annotation.
+        val schritte = listOf(
+            app.aaps.core.keys.IntKey.OverviewCarbsButtonIncrement1,
+            app.aaps.core.keys.IntKey.OverviewCarbsButtonIncrement2,
+            app.aaps.core.keys.IntKey.OverviewCarbsButtonIncrement3,
+        ).map { preferences.get(it) }
+        val mitEingabe = FuseOverviewSource.MealInputOffer(EarlySupply.MAX_INPUT_CARBS_G, EarlySupply.MAX_INPUT_ABSORPTION_MIN, schritte) { carbsG, absorptionMin ->
             val stand = MarkerEingabe.von(carbsG, absorptionMin, ic)
             if ((carbsG != 0 && !stand.eingabe.hasCarbs) || (absorptionMin != 0 && !stand.eingabe.hasAbsorption)) null
             else EarlySupply.booking(kurve, horizont, eingestellt.forMeal(tageszeitSkalierer, stand.eingabe, kurve), afterLow = false, wirkung)

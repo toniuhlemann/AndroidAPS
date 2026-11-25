@@ -2489,11 +2489,11 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     }
 
     /**
-     * DER VERLAUF: die Absorptionszeit am Marker streckt oder staucht die Kurve dieser Mahlzeit und ist ihr
-     * Mahlzeitfenster (in dessen Grenzen). Schnell: das Fenster schliesst frueher als eingestellt, vorne geht mehr -
-     * hoechstens die Mahlzeit, fuer die der Skalierer steht -, das Budget waechst nicht. Langsam: das Fenster reicht
-     * weiter, der fruehe Bedarf und mit ihm Budget und Anfangsportion sind kleiner, und die Erwartung laeuft ueber
-     * Minute 120 hinaus bis zum Ende des gestreckten Verlaufs. Konto und Dosierkontext tragen dieselbe Frist.
+     * DER VERLAUF: die Absorptionszeit am Marker ist das Ende des Verlaufs dieser Mahlzeit (die Kurve gestreckt oder
+     * gestaucht) und ihr Mahlzeitfenster (in dessen Grenzen). Schnell: das Fenster schliesst frueher als eingestellt,
+     * vorne geht mehr - hoechstens die Mahlzeit, fuer die der Skalierer steht -, das Budget waechst nicht. Langsam: das
+     * Fenster reicht weiter, der fruehe Bedarf und mit ihm Budget und Anfangsportion sind kleiner, und die Erwartung
+     * laeuft ueber Minute 120 hinaus bis zur Absorptionszeit. Konto und Dosierkontext tragen dieselbe Frist.
      */
     @Test
     fun `die Absorptionszeit am Marker bestimmt Fenster und Verlauf`(@TempDir dir: File) = runBlocking<Unit> {
@@ -2513,46 +2513,47 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         assertFalse(erwartetIn(ohne, 125..175)) { "ohne Eingabe erwartet das Konto nach dem Kurvenende noch Wirkung" }
         try {
             // Schnell: das Fenster endet frueher als eingestellt; vorne mehr, das Budget bleibt das der Kurve.
-            eingabeAbsorptionMin = 150L
+            eingabeAbsorptionMin = 90L
             val schnell = fruehLauf(fStabil, File(dir, "schnell")) { eingabeKonfiguration(fensterMin = eingestellt) }
             val gebuchtSchnell = armiert(schnell)
-            assertEquals(150, gebuchtSchnell.o.state?.markerAbsorptionMin) { "die Absorptionszeit steht nicht im Zustand" }
+            assertEquals(90, gebuchtSchnell.o.state?.markerAbsorptionMin) { "die Absorptionszeit steht nicht im Zustand" }
             val kSchnell = gebuchtSchnell.konto!!
             assertTrue(kSchnell.byInput)
-            assertEquals(150.0 / 180.0, kSchnell.curveStretch, 1e-12)
-            assertEquals(fensterEnde(150), kSchnell.windowEndTs)
+            assertEquals(0.75, kSchnell.curveStretch, 1e-12)
+            // Das Fenster ist nie kuerzer als die Kurve ohne Eingabe: es endet bei Minute 120, frueher als eingestellt.
+            assertEquals(fensterEnde(EarlySupply.MIN_ABSORPTION_WINDOW_MIN), kSchnell.windowEndTs)
             assertEquals(basis.a0U, kSchnell.a0U, 1e-9)
             assertEquals(basis.phi0, kSchnell.phi0, 0.0)
             assertTrue(kSchnell.early!!.initialShare > 0.5) { "schnell: der Anteil vorne waechst nicht (${kSchnell.early!!.initialShare})" }
             assertTrue(kSchnell.early!!.initialShare * kSchnell.a0U <= basis.phi0 * 3.0 + 1e-9) { "Anfangsportion ueber der Mahlzeit des Skalierers" }
             // Nach dem Fensterende gilt das Konto nicht mehr - dort, wo es ohne Eingabe noch gilt (Gegenprobe oben).
-            assertFalse(giltIn(schnell, 150..300)) { "das Konto gilt nach der Absorptionszeit weiter" }
-            assertEquals(0.0, schnell.filter { it.minute >= 150 }.sumOf { it.dErw() }, 0.0)
-            // Die gestauchte Kurve endet bei Minute 100: danach erwartet das Konto keine Wirkung mehr.
-            assertFalse(erwartetIn(schnell, 102..149)) { "schnell: erwartete Wirkung nach dem Ende des gestauchten Verlaufs" }
+            assertFalse(giltIn(schnell, EarlySupply.MIN_ABSORPTION_WINDOW_MIN..300)) { "das Konto gilt nach seinem Fenster weiter" }
+            assertEquals(0.0, schnell.filter { it.minute >= EarlySupply.MIN_ABSORPTION_WINDOW_MIN }.sumOf { it.dErw() }, 0.0)
+            // Die gestauchte Kurve endet mit der Absorptionszeit bei Minute 90: danach erwartet das Konto keine Wirkung mehr.
+            assertFalse(erwartetIn(schnell, 92..119)) { "schnell: erwartete Wirkung nach dem Ende des gestauchten Verlaufs" }
             pruefeMechanik(schnell, kSchnell.early!!.initialShare, 1.0, 2.0)
 
             // Langsam: das Fenster reicht bis zur Absorptionszeit, frueher Bedarf und Budget sind kleiner, die Erwartung
-            // laeuft bis zum Ende des gestreckten Verlaufs (Minute 160).
+            // laeuft bis zum Ende des gestreckten Verlaufs - der Absorptionszeit (Minute 240).
             eingabeAbsorptionMin = 240L
             val langsam = fruehLauf(fStabil, File(dir, "langsam")) { eingabeKonfiguration(fensterMin = eingestellt) }
             val kLangsam = armiert(langsam).konto!!
             assertTrue(kLangsam.byInput)
-            assertEquals(240.0 / 180.0, kLangsam.curveStretch, 1e-12)
+            assertEquals(2.0, kLangsam.curveStretch, 1e-12)
             assertEquals(fensterEnde(240), kLangsam.windowEndTs)
             assertTrue(kLangsam.a0U < basis.a0U - 1e-6) { "langsam: das Budget folgt dem kleineren fruehen Bedarf nicht" }
             assertEquals(0.5, kLangsam.early!!.initialShare, 1e-9)
             assertTrue(giltIn(langsam, eingestellt + 5..235)) { "das Konto gilt nach dem eingestellten Fenster nicht weiter" }
             assertFalse(giltIn(langsam, 240..300)) { "das Konto gilt nach der Absorptionszeit weiter" }
             assertTrue(erwartetIn(langsam, 125..155)) { "langsam: nach Minute 120 keine erwartete Wirkung mehr" }
-            assertFalse(erwartetIn(langsam, 162..235)) { "langsam: erwartete Wirkung nach dem Ende des gestreckten Verlaufs" }
+            assertTrue(erwartetIn(langsam, 200..235)) { "langsam: vor dem Ende des gestreckten Verlaufs keine erwartete Wirkung mehr" }
             pruefeMechanik(langsam, 0.5, 1.0, 2.0)
 
             // Sehr lang: Fenster und Verlauf enden an ihren Grenzen.
-            eingabeAbsorptionMin = 480L
+            eingabeAbsorptionMin = EarlySupply.MAX_INPUT_ABSORPTION_MIN.toLong()
             val kSehrLang = armiert(fruehLauf(fStabil, File(dir, "sehrLang")) { eingabeKonfiguration(fensterMin = eingestellt) }).konto!!
             assertEquals(fensterEnde(EarlySupply.MAX_ABSORPTION_WINDOW_MIN), kSehrLang.windowEndTs)
-            assertEquals(EarlySupply.courseStretch(480), kSehrLang.curveStretch, 1e-12)
+            assertEquals(EarlySupply.courseStretch(EarlySupply.MAX_COURSE_ABSORPTION_MIN), kSehrLang.curveStretch, 1e-12)
         } finally {
             eingabeAbsorptionMin = 0L
         }
@@ -2578,7 +2579,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
                 }
             }) { eingabeKonfiguration(fensterMin = 180) }
             val k = vorher ?: throw AssertionError("Vorbedingung - vor dem Neustart ein Konto")
-            assertTrue(k.byInput && k.curveStretch == 240.0 / 180.0) { "Vorbedingung - Konto mit Eingabe (${k.byInput}, ${k.curveStretch})" }
+            assertTrue(k.byInput && k.curveStretch == EarlySupply.courseStretch(240)) { "Vorbedingung - Konto mit Eingabe (${k.byInput}, ${k.curveStretch})" }
             assertEquals(k, nachher, "das gespeicherte Konto kommt unveraendert zurueck")
             val danach = zyklen.filter { it.minute in neustartMin until 120 }
             assertTrue(danach.isNotEmpty())
@@ -2804,7 +2805,12 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
     @Test
     fun `Kreis - die Mahlzeit kommt wie angesagt`(@TempDir dir: File) = runBlocking<Unit> {
-        kreisProbe(dir, KreisProbe("bezug", 0L, listOf(MahlzeitTeil(kreisMenge))))
+        kreisProbe(dir, KreisProbe("bezug", KREIS_BEZUG_T95_MIN.toLong(), listOf(MahlzeitTeil(kreisMenge))))
+    }
+
+    @Test
+    fun `Kreis - nur KH, ohne Absorptionszeit`(@TempDir dir: File) = runBlocking<Unit> {
+        kreisProbe(dir, KreisProbe("nurKh", 0L, listOf(MahlzeitTeil(kreisMenge))))
     }
 
     @Test
@@ -2827,12 +2833,12 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
     @Test
     fun `Kreis - halbe Wirkung`(@TempDir dir: File) = runBlocking<Unit> {
-        kreisProbe(dir, KreisProbe("halbeWirkung", 0L, listOf(MahlzeitTeil(kreisMenge / 2))))
+        kreisProbe(dir, KreisProbe("halbeWirkung", KREIS_BEZUG_T95_MIN.toLong(), listOf(MahlzeitTeil(kreisMenge / 2))))
     }
 
     @Test
     fun `Kreis - ausbleibende Wirkung`(@TempDir dir: File) = runBlocking<Unit> {
-        kreisProbe(dir, KreisProbe("keineWirkung", 0L, emptyList()))
+        kreisProbe(dir, KreisProbe("keineWirkung", KREIS_BEZUG_T95_MIN.toLong(), emptyList()))
     }
 
     @Test
@@ -4203,8 +4209,8 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         const val KREIS_BIS_MIN = 360
 
         /**
-         * Geschlossener Kreis: die Zeit, nach der die Bezugsmahlzeit zu 95 % aufgenommen ist [min] - die Mahlzeit, fuer
-         * die die Kurve ohne Absorptionszeit steht -, und x der Gamma-Form bei 95 %: (1 + x) e^-x = 0,05.
+         * Geschlossener Kreis: die Zeit, nach der die Bezugsmahlzeit zu 95 % aufgenommen ist [min] - richtig angesagt ist
+         * sie mit genau dieser Absorptionszeit (das Ende des Verlaufs) -, und x der Gamma-Form bei 95 %: (1 + x) e^-x = 0,05.
          */
         const val KREIS_BEZUG_T95_MIN = 180.0
         const val GAMMA_X95 = 4.744

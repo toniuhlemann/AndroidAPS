@@ -97,8 +97,8 @@ object EarlySupply {
          * MAHLZEIT-EINGABE: die Einstellungen der Wahl "Mahlzeit" fuer EINEN Marker. Mit KH-Menge bestimmt sie die
          * Hoehe ([forCarbs]) und ersetzt den Skalierer der Tageszeit - das IC des Profils traegt die Tageszeit schon.
          * Ohne sie gilt [timeOfDayScale] wie bisher ([forTimeOfDay]). Die Absorptionszeit bestimmt den Verlauf
-         * ([courseStretch]); beides steht danach in [course]. Ohne Eingabe ([MealInput.NONE]) und bei der Bezugszeit ohne
-         * KH ist das Ergebnis genau [forTimeOfDay]. Die Buchung und die Zahl am Knopf rechnen beide hiermit und mit
+         * ([courseStretch]); beides steht danach in [course]. Ohne Eingabe ([MealInput.NONE]) und bei einer Zeit gleich
+         * dem Kurvenende ohne KH ist das Ergebnis genau [forTimeOfDay]. Die Buchung und die Zahl am Knopf rechnen beide hiermit und mit
          * [booking] - ein zweiter Rechenweg waere eine zweite Wahrheit.
          */
         fun forMeal(timeOfDayScale: Double?, input: MealInput, curve: ExpectationAccount.Curve): Settings {
@@ -375,16 +375,11 @@ object EarlySupply {
     //  - Die KH-Menge bestimmt die HOEHE: das Kurvenende ist KH / IC ([carbsScale]). Und sie ist die MENGE: auf die
     //    Ankuendigung hin gibt das Konto hoechstens KH / IC ([booking]); mehr nur, wenn die Messung es zeigt (gemessener
     //    Anteil, Nachschlag). Schon gedeckte KH geben spaeter kein Insulin mehr frei, nur weil Budget uebrig waere.
-    //  - Die Absorptionszeit bestimmt den VERLAUF: dieselbe Form, derselbe Beginn, die Zeitachse gestreckt oder gestaucht
+    //  - Die Absorptionszeit bestimmt den VERLAUF: die Zeit vom Essen bis zum ENDE der Aufnahme. Dieselbe Form, derselbe
+    //    Beginn, die Zeitachse so gestreckt oder gestaucht, dass die ganze angesagte Mahlzeit genau dann erreicht ist
     //    ([courseStretch]). Keine Wartezeit, keine pauschale Kuerzung: was eine schnelle Mahlzeit frueher und eine
     //    langsame spaeter braucht, ergibt sich aus dem Verlauf - bei Budget, Anfangsportion, Anforderung und der
     //    Anrechnung in Guard und Spaetwirkung.
-
-    /**
-     * Die Bezugszeit der Absorption [min]: die Absorptionszeit der Mahlzeit, fuer die die Erwartungskurve eingestellt
-     * ist. Mit ihr laeuft die Kurve, wie sie ist.
-     */
-    const val ABSORPTION_REFERENCE_MIN = 180
 
     /**
      * Die Grenzen des Verlaufs [min Absorptionszeit]: schneller als eine Stunde und langsamer als fuenf Stunden rechnet
@@ -399,10 +394,11 @@ object EarlySupply {
 
     /**
      * Die Grenzen der Eingabe (letzte Verteidigung im Kern): was darueber liegt, gilt als keine Angabe. Eine grosse
-     * KH-Menge innerhalb der Grenze begrenzen [MAX_SCALE] und der Budget-Deckel.
+     * KH-Menge innerhalb der Grenze begrenzen [MAX_SCALE] und der Budget-Deckel. Die Absorptionszeit reicht bis zur
+     * Grenze des Verlaufs - mehr rechnet das Konto ohnehin nicht.
      */
     const val MAX_INPUT_CARBS_G = 300
-    const val MAX_INPUT_ABSORPTION_MIN = 600
+    const val MAX_INPUT_ABSORPTION_MIN = MAX_COURSE_ABSORPTION_MIN
 
     /**
      * Was am Marker zur Mahlzeit eingegeben wurde. [carbsInsulinU] = KH / IC, am Druck mit dem IC des Profils gerechnet
@@ -442,13 +438,15 @@ object EarlySupply {
 
     /**
      * Die Streckung der Zeitachse aus der Absorptionszeit [min] ([ExpectationAccount.Curve.stretch]): Absorptionszeit
-     * durch Bezugszeit, in den Grenzen des Verlaufs ([MIN_COURSE_ABSORPTION_MIN] bis [MAX_COURSE_ABSORPTION_MIN]). Die
-     * Mahlzeit beginnt wie jede andere; sie laeuft nur schneller (unter 1) oder langsamer (ueber 1). Keine Angabe (0
-     * oder weniger) = 1: die Kurve, wie sie eingestellt ist.
+     * durch das Kurvenende ([ExpectationAccount.CURVE_END_MIN]), in den Grenzen des Verlaufs ([MIN_COURSE_ABSORPTION_MIN]
+     * bis [MAX_COURSE_ABSORPTION_MIN]). So erreicht der Verlauf die ganze angesagte Mahlzeit genau am Ende der Aufnahme
+     * (Kodex 25.11.2026: eine Bedeutung der Zeit fuer Eingabe, Regler und Pruefstand). Die Mahlzeit beginnt wie jede
+     * andere; sie laeuft nur schneller (unter 1) oder langsamer (ueber 1). Keine Angabe (0 oder weniger) = 1: die Kurve,
+     * wie sie eingestellt ist.
      */
     fun courseStretch(absorptionMin: Int): Double =
         if (absorptionMin <= 0) 1.0
-        else min(MAX_COURSE_ABSORPTION_MIN, max(MIN_COURSE_ABSORPTION_MIN, absorptionMin)).toDouble() / ABSORPTION_REFERENCE_MIN
+        else min(MAX_COURSE_ABSORPTION_MIN, max(MIN_COURSE_ABSORPTION_MIN, absorptionMin)).toDouble() / ExpectationAccount.CURVE_END_MIN
 
     /**
      * Der Verlauf EINER Mahlzeit aus der Eingabe am Marker. [stretch] ist die Streckung der Zeitachse aus der
@@ -457,7 +455,7 @@ object EarlySupply {
      */
     data class MealCourse(val stretch: Double = 1.0, val carbsKnown: Boolean = false) {
 
-        /** Es gibt eine Eingabe, die etwas aendert. Die Bezugszeit ohne KH-Menge ist keine: sie ist die Kurve, wie sie ist. */
+        /** Es gibt eine Eingabe, die etwas aendert. Eine Zeit gleich dem Kurvenende ohne KH-Menge ist keine: sie ist die Kurve, wie sie ist. */
         val byInput: Boolean get() = carbsKnown || stretch != 1.0
 
         companion object {
