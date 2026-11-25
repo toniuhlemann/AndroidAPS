@@ -130,6 +130,11 @@ class FuseSchluesselRueckwegTest {
         // HCL Stufe 2: zu welcher Rechnung der Marker gehoert und ob sie zusammengefuehrt wurde - stirbt mit dem Marker.
         FuseLongKey.MealMarkerHclCalcTs.key,
         FuseLongKey.MealMarkerHclMerged.key,
+        // Mahlzeit-Eingabe (Toni 25.11.2026): KH-Menge, KH-Insulin und Absorptionszeit am Marker - sie kommen aus dem
+        // Dialog des Knopfdrucks und sterben mit dem Marker. Je 0 = keine Angabe: dann rechnet das Konto wie vorher.
+        FuseLongKey.MealMarkerCarbsG.key,
+        FuseLongKey.MealMarkerCarbsInsulinMilliU.key,
+        FuseLongKey.MealMarkerAbsorptionMin.key,
     )
 
     @Test

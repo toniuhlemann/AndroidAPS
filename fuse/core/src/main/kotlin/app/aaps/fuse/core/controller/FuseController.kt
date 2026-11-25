@@ -220,6 +220,13 @@ object FuseController {
         val markerHclCalcTs: Long = 0L,
         /** HCL Stufe 2: die Rechnung wurde mit dem laufenden Marker zusammengefuehrt. Reines Messfeld. */
         val markerHclMerged: Boolean = false,
+        /** MAHLZEIT-EINGABE (Toni 25.11.2026): die am Marker eingegebene KH-Menge [g]; 0 = keine Angabe. Reines
+         *  Messfeld - der Regler liest es nicht (ihre Wirkung steht im gebuchten Konto). */
+        val markerCarbsG: Int = 0,
+        /** Mahlzeit-Eingabe: KH / IC am Druck [U]; 0 = keine Angabe. Reines Messfeld. */
+        val markerCarbsInsulinU: Double = 0.0,
+        /** Mahlzeit-Eingabe: die Absorptionszeit am Marker [min]; 0 = keine Angabe. Reines Messfeld. */
+        val markerAbsorptionMin: Int = 0,
         /** Rebound-Bedingung lag an, wurde aber durch einen aktiven Marker
          *  entwaffnet (Gas-vor-Bremse NUR fuer erklaertes Wissen, 08.08.):
          *  das Fenster schuetzt vor dem Jagen UNANGEKUENDIGTER Hypo-

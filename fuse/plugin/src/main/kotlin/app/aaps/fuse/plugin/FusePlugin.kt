@@ -48,6 +48,7 @@ import app.aaps.core.keys.interfaces.TextRef
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.icons.IcPluginOpenAPS
 import app.aaps.fuse.core.controller.EarlySupply
+import app.aaps.fuse.core.controller.ExpectationAccount
 import app.aaps.fuse.core.controller.ExpectationLedger
 import app.aaps.fuse.core.controller.InsulinEffectWatch
 import app.aaps.fuse.core.controller.InterventionStamp
@@ -827,7 +828,17 @@ class FusePlugin(
         nurErwartung: Boolean = false,
         /** Wahl "Snack" (Toni 24.10.): wie "Mahlzeit", das Budget mit dem kleineren Snack-Skalierer. */
         snack: Boolean = false,
+        /**
+         * Mahlzeit-Eingabe (Toni 25.11.2026), nur mit der Wahl "Mahlzeit": die KH-Menge [g] und die Absorptionszeit
+         * [min] dieser Mahlzeit; je 0 = keine Angabe, dann rechnet das Konto dort wie bisher ([MarkerEingabe]).
+         */
+        carbsG: Int = 0,
+        absorptionMin: Int = 0,
     ): Boolean {
+        // MAHLZEIT-EINGABE: geprueft und mit dem IC des Profils zur Druckzeit gerechnet - VOR der Laufsperre, denn das
+        // Profil gehoert nicht zu dem, was sie schuetzt. "Nur Marker" und "Snack" tragen keine Eingabe.
+        val eingabe = if (!nurErwartung || ohneVorschuss || snack) MarkerEingabe.KEINE
+        else MarkerEingabe.von(carbsG, absorptionMin, if (carbsG > 0) profilIc(now) else null)
         // KI-177: UNTER DER LAUFSPERRE. Der Druck aendert Episodenfelder des
         // Ledgers und schreibt ihn; ohne Sperre konnte er das mitten in einem
         // Zyklus tun, der denselben Adapter rechnet und speichert. Geschuetzt
@@ -840,14 +851,18 @@ class FusePlugin(
             val gewartetMs = (System.nanoTime() - warteBeginn) / 1_000_000L
             if (gewartetMs >= markerWartenMeldenMs)
                 aapsLogger.warn(LTag.APS, "FUSE Marker wartete $gewartetMs ms auf den laufenden Zyklus")
-            toggleMealMarkerUnterSperre(now, ohneVorschuss, ereignisId, quelle, nurErwartung, snack)
+            toggleMealMarkerUnterSperre(now, ohneVorschuss, ereignisId, quelle, nurErwartung, snack, eingabe)
         }
     }
+
+    /** Das IC des Profils zur Zeit [ts] [g/U] fuer die Mahlzeit-Eingabe; `null` = kein Profil oder kein brauchbarer Wert. */
+    private suspend fun profilIc(ts: Long): Double? =
+        runCatching { profileFunction.getProfile(ts)?.getIc(ts) }.getOrNull()?.takeIf { it.isFinite() && it > 0.0 }
 
     /** Der eigentliche Umschaltvorgang. Nur ueber [toggleMealMarker] erreichbar, also nur unter [laufSperre]. */
     private fun toggleMealMarkerUnterSperre(
         now: Long, ohneVorschuss: Boolean, ereignisId: String?, quelle: String, nurErwartung: Boolean = false,
-        snack: Boolean = false,
+        snack: Boolean = false, eingabe: MarkerEingabe.Stand = MarkerEingabe.KEINE,
     ): Boolean {
         val armed = mealMarkerActive(now)
         val ordnung = MarkerReauthorization.ordnungVon(ereignisId)
@@ -896,6 +911,7 @@ class FusePlugin(
             preferences.put(FuseLongKey.MealMarkerSnack, 0L)
             preferences.put(FuseLongKey.MealMarkerHclCalcTs, 0L)
             preferences.put(FuseLongKey.MealMarkerHclMerged, 0L)
+            MarkerEingabe.schreiben(preferences, MarkerEingabe.KEINE)
             // Der Altbestand-Stempel wird mitgeloescht: bliebe er stehen,
             // liesse der Lese-Ruecktausch unten einen zurueckgenommenen
             // Marker wieder auferstehen.
@@ -969,12 +985,17 @@ class FusePlugin(
             // haette keine neue volle Huelle mehr eroeffnet.
             return false
         }
+        // Snack ist eine Form von "Mahlzeit": ohne sie gilt er nicht.
+        val alsSnack = snack && nurErwartung && !ohneVorschuss
+        // MAHLZEIT-EINGABE (Toni 25.11.2026): KH-Insulin und Absorptionszeit dieses Markers - VOR dem Marker selbst
+        // geschrieben. Endet der Prozess dazwischen, gibt es keinen Marker; nie einen, der die Eingabe eines frueheren
+        // traegt. Sie gilt nur fuer die Wahl "Mahlzeit"; "Nur Marker" und "Snack" gehen vor und tragen keine.
+        val mitEingabe = if (nurErwartung && !ohneVorschuss && !alsSnack) eingabe else MarkerEingabe.KEINE
+        MarkerEingabe.schreiben(preferences, mitEingabe)
         preferences.put(FuseLongKey.MealMarkerArmedTs, now)
         preferences.put(FuseLongKey.MealMarkerNoPrime, if (ohneVorschuss) 1L else 0L)
         // "Ohne Vorschuss" geht vor: beide zugleich heisst ohne Vorschuss.
         preferences.put(FuseLongKey.MealMarkerExpectationOnly, if (nurErwartung && !ohneVorschuss) 1L else 0L)
-        // Snack ist eine Form von "Mahlzeit": ohne sie gilt er nicht.
-        val alsSnack = snack && nurErwartung && !ohneVorschuss
         preferences.put(FuseLongKey.MealMarkerSnack, if (alsSnack) 1L else 0L)
         // HCL Stufe 2: ein neuer Marker gehoert zu keiner Rechnung - die Uebernahme des Bolusrechners setzt sie danach.
         preferences.put(FuseLongKey.MealMarkerHclCalcTs, 0L)
@@ -991,7 +1012,13 @@ class FusePlugin(
         // dieser Version ist der Schluessel endgueltig leer.
         preferences.put(FuseLongKey.MealMarkerStamp, 0L)
         synchronized(markerPressRing) { MarkerTimeline.add(markerPressRing, now) }
-        aapsLogger.info(LTag.APS, "FUSE Marker gesetzt: quelle=$quelle marker=$now ohneVorschuss=$ohneVorschuss nurErwartung=$nurErwartung snack=$alsSnack")
+        // Die Eingabe steht nur mit Angabe in der Zeile - ohne sie bleibt die Zeile, wie sie war.
+        val eingabeText = if (mitEingabe.eingabe.isEmpty) ""
+        else " kh=${mitEingabe.carbsG} khInsulin=${mitEingabe.eingabe.carbsInsulinU} absorptionMin=${mitEingabe.eingabe.absorptionMin}"
+        aapsLogger.info(
+            LTag.APS,
+            "FUSE Marker gesetzt: quelle=$quelle marker=$now ohneVorschuss=$ohneVorschuss nurErwartung=$nurErwartung snack=$alsSnack$eingabeText",
+        )
         markerEreignis("ARMED", now, quelle, now)
         // Eine Vormerkung galt dem alten Marker - der neue beginnt ohne.
         speichereRuecknahmeVormerkung(null)
@@ -1286,22 +1313,26 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             },
         )
         return MarkerPrompt.required(armed = mealMarkerActive(now), facts = fakten)?.let {
-            val (mahlzeit, snack) = markerAngebote()
+            val angebote = markerAngebote()
             FuseOverviewSource.MarkerPromptFacts(
                 measuredLow = it.measuredLow,
                 foreignBolusU = it.foreignBolusU,
                 episodeRestMin = it.episodeRestMin,
-                expectationOnlyMaxU = mahlzeit?.budgetU,
-                expectationOnlyInitialU = mahlzeit?.anfangU,
-                snackMaxU = snack?.budgetU,
-                snackInitialU = snack?.anfangU,
+                expectationOnlyMaxU = angebote.mahlzeit?.budgetU,
+                expectationOnlyInitialU = angebote.mahlzeit?.anfangU,
+                snackMaxU = angebote.snack?.budgetU,
+                snackInitialU = angebote.snack?.anfangU,
+                mealInput = angebote.mitEingabe,
             )
         }
     }
 
-    override suspend fun fuseMarkerToggle(now: Long, ohneVorschuss: Boolean, ereignisId: String?, nurErwartung: Boolean, snack: Boolean): Boolean =
+    override suspend fun fuseMarkerToggle(
+        now: Long, ohneVorschuss: Boolean, ereignisId: String?, nurErwartung: Boolean, snack: Boolean, carbsG: Int, absorptionMin: Int,
+    ): Boolean =
         toggleMealMarker(
             now, ohneVorschuss, ereignisId, quelle = MarkerRuecknahme.Quelle.UEBERSICHT.text, nurErwartung = nurErwartung, snack = snack,
+            carbsG = carbsG, absorptionMin = absorptionMin,
         )
 
     /** Welche Erwartungskurve gilt (Toni) - dieselbe Regel wie im Regler. */
@@ -1317,6 +1348,16 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
     private data class MarkerAngebot(val budgetU: Double, val anfangU: Double)
 
     /**
+     * Was der Knopf anbietet: "Mahlzeit" und "Snack" ohne Eingabe, und die Rechnung von "Mahlzeit" MIT Eingabe
+     * ([mitEingabe]: KH [g] und Absorptionszeit [min], je 0 = keine Angabe). Je `null` = nicht angeboten.
+     */
+    private class MarkerAngebote(
+        val mahlzeit: MarkerAngebot?,
+        val snack: MarkerAngebot?,
+        val mitEingabe: FuseOverviewSource.MealInputOffer?,
+    )
+
+    /**
      * Was "Mahlzeit" und "Snack" am Marker buchen koennen: das Gesamtbudget der fruehen Versorgung bei stabilem Start
      * und davon die Anfangsportion - je `null`, wenn die Wahl nicht angeboten wird: keine gueltige Kurve, fruehe
      * Versorgung aus oder ungueltig, kein Profil oder Modell, Budget 0. Ohne "Mahlzeit" auch kein "Snack".
@@ -1328,14 +1369,14 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
      * Kandidat, Toni 11.11.2026: mit dem Skalierer des Tageszeitfensters, in dem JETZT gedrueckt wuerde - am Knopf steht,
      * was der Regler bucht ([TageszeitSkalierer]). Ein ungueltiger Tageszeit-Wert: kein Angebot, wie im Regler.
      */
-    private suspend fun markerAngebote(): Pair<MarkerAngebot?, MarkerAngebot?> {
-        val keine = null to null
-        val kurve = app.aaps.fuse.core.controller.ExpectationAccount.Curve.parse(wirksameKurve().text) ?: return keine
+    private suspend fun markerAngebote(): MarkerAngebote {
+        val keine = MarkerAngebote(null, null, null)
+        val kurve = ExpectationAccount.Curve.parse(wirksameKurve().text) ?: return keine
         if (!preferences.get(FuseBooleanKey.EarlySupplyEnabled)) return keine
         val tageszeit = TageszeitSkalierer.lesen(preferences)
         if (tageszeit.fehler != null) return keine
         val jetzt = dateUtil.now()
-        val einstellung = app.aaps.fuse.core.controller.EarlySupply.Settings.of(
+        val eingestellt = EarlySupply.Settings.of(
             scaleStable = preferences.get(FuseDoubleKey.EarlySupplyScaleStable),
             scaleAfterLow = preferences.get(FuseDoubleKey.EarlySupplyScaleAfterLow),
             budgetMaxU = preferences.get(FuseDoubleKey.EarlySupplyBudgetMaxU),
@@ -1344,15 +1385,34 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
             maxPerPeriodU = preferences.get(FuseDoubleKey.EarlySupplyMaxPerPeriodU),
             periodMin = preferences.get(FuseIntKey.EarlySupplyPeriodMin),
             topUpShare = preferences.get(FuseDoubleKey.EarlySupplyTopUpShare),
-        )?.forTimeOfDay(TageszeitSkalierer.fuerMarker(tageszeit.wirksam, jetzt)) ?: return keine
+        ) ?: return keine
+        val tageszeitSkalierer = TageszeitSkalierer.fuerMarker(tageszeit.wirksam, jetzt)
+        val einstellung = eingestellt.forTimeOfDay(tageszeitSkalierer)
         val kern = einheitskernJetzt(jetzt) ?: return keine
-        val wirkung = app.aaps.fuse.core.controller.EarlySupply.unitActionOf(kern.kernel)
+        val wirkung = EarlySupply.unitActionOf(kern.kernel)
         val horizont = preferences.get(FuseIntKey.ExpectationHorizonMin)
-        fun angebot(s: app.aaps.fuse.core.controller.EarlySupply.Settings): MarkerAngebot? =
-            app.aaps.fuse.core.controller.EarlySupply.budgetU(kurve, horizont, s.scaleStable, s.budgetMaxU, wirkung)
+        fun angebot(s: EarlySupply.Settings): MarkerAngebot? =
+            EarlySupply.budgetU(kurve, horizont, s.scaleStable, s.budgetMaxU, wirkung)
                 .takeIf { it > 0.0 }?.let { MarkerAngebot(budgetU = it, anfangU = s.initialShare * it) }
         val mahlzeit = angebot(einstellung) ?: return keine
-        return mahlzeit to angebot(einstellung.forSnack(preferences.get(FuseDoubleKey.EarlySupplySnackScale)))
+        // MAHLZEIT-EINGABE (Toni 25.11.2026): was "Mahlzeit" mit KH-Menge und Absorptionszeit bucht - dieselbe Pruefung
+        // wie am Druck ([MarkerEingabe.von]) und dieselbe Rechnung wie die Buchung ([EarlySupply.Settings.forMeal]). Eine
+        // Angabe, die nicht gilt (ausserhalb der Grenzen, kein IC im Profil), ergibt `null` - der Dialog meldet sie,
+        // statt sie still zu uebergehen.
+        val ic = profilIc(jetzt)
+        val fenster = preferences.get(FuseIntKey.LivenessMealPowerMin)
+        val mitEingabe = FuseOverviewSource.MealInputOffer(EarlySupply.MAX_INPUT_CARBS_G, EarlySupply.MAX_INPUT_ABSORPTION_MIN) { carbsG, absorptionMin ->
+            val stand = MarkerEingabe.von(carbsG, absorptionMin, ic)
+            if ((carbsG != 0 && !stand.eingabe.hasCarbs) || (absorptionMin != 0 && !stand.eingabe.hasAbsorption)) null
+            else EarlySupply.booking(kurve, horizont, eingestellt.forMeal(tageszeitSkalierer, stand.eingabe, kurve), afterLow = false, wirkung)
+                .takeIf { it.budgetU > 0.0 }?.let {
+                    FuseOverviewSource.MealOffer(
+                        budgetU = it.budgetU, initialU = it.initialShare * it.budgetU,
+                        windowMin = EarlySupply.mealWindowMin(stand.eingabe.absorptionMin, fenster),
+                    )
+                }
+        }
+        return MarkerAngebote(mahlzeit, angebot(einstellung.forSnack(preferences.get(FuseDoubleKey.EarlySupplySnackScale))), mitEingabe)
     }
 
     /** HCL Teil 1 (Toni 25.10.2026): die Rechnungen aus dem Bolusrechner, s. [HclMahlzeiten]. */

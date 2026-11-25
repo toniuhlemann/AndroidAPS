@@ -227,6 +227,34 @@ class ExpectationAccountPersistTest {
         assertNull(LedgerCodec.decodeEpisodes(json).expectation)
     }
 
+    /**
+     * MAHLZEIT-EINGABE (Toni 25.11.2026): Verlauf und Herkunft eines Kontos aus einer Eingabe stehen nur abweichend in
+     * der Datei - ein Konto ohne Eingabe schreibt sie nicht. Fehlen sie, gilt der Verlauf der Kurve ohne Eingabe; ein
+     * Verlauf ausserhalb seiner Grenzen verwirft das Konto, nie still uebernommen.
+     */
+    @Test
+    fun `Verlauf und Herkunft aus der Eingabe stehen nur abweichend in der Datei und ueberleben den Rundlauf`() {
+        val k = fruehesKonto()
+        val ohne = LedgerCodec.encodeEpisodes(episoden(k)).getJSONObject("earlySupply")
+        assertFalse(ohne.has("curveStretch"))
+        assertFalse(ohne.has("byInput"))
+        val mit = k.copy(curveStretch = EarlySupply.courseStretch(240), byInput = true)
+        val json = LedgerCodec.encodeEpisodes(episoden(mit))
+        val f = json.getJSONObject("earlySupply")
+        assertTrue(f.has("curveStretch"))
+        assertTrue(f.getBoolean("byInput"))
+        assertEquals(mit, LedgerCodec.decodeEpisodes(json).expectation)
+        // Ein aelterer Stand ohne die Felder: der Verlauf der Kurve, keine Eingabe.
+        f.remove("curveStretch")
+        f.remove("byInput")
+        assertEquals(k, LedgerCodec.decodeEpisodes(json).expectation)
+        // Ein Verlauf ausserhalb der Grenzen: das Konto wird verworfen.
+        f.put("curveStretch", 1.5 * EarlySupply.courseStretch(EarlySupply.MAX_COURSE_ABSORPTION_MIN))
+        val zurueck = LedgerCodec.decodeEpisodes(json)
+        assertNull(zurueck.expectation)
+        assertTrue(zurueck.expectationDropped)
+    }
+
     @Test
     fun `ein ungueltiges v2-Konto wird verworfen und die Generation bleibt gueltig`() {
         val faelle = listOf<(JSONObject) -> Unit>(

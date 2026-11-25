@@ -585,7 +585,9 @@ fun MainScreen(
     fuseMealPrompt?.let { prompt ->
         FuseMealPromptDialog(
             facts = prompt.facts,
-            onExpectationOnly = { mainViewModel.confirmFuseMeal(expectationOnly = true) },
+            onExpectationOnly = { carbsG, absorptionMin ->
+                mainViewModel.confirmFuseMeal(expectationOnly = true, carbsG = carbsG, absorptionMin = absorptionMin)
+            },
             onNoPrime = { mainViewModel.confirmFuseMeal(expectationOnly = false) },
             onCancel = { mainViewModel.cancelFuseMeal() },
             onSnack = { mainViewModel.confirmFuseMeal(expectationOnly = true, snack = true) }

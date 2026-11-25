@@ -700,6 +700,13 @@ object LedgerCodec {
                 if (s.stabilityFallMgdlPerMin != ExpectationAccount.DEFAULT_STABILITY_FALL_MGDL_PER_MIN)
                     put("stabilityFallMgdlPerMin", zahl(s.stabilityFallMgdlPerMin))
             }
+            // MAHLZEIT-EINGABE (Toni 25.11.2026): Streckung der Kurve und "aus einer Eingabe gebucht" - nur abweichend
+            // geschrieben, ein Konto ohne Eingabe bleibt bytegleich zu frueher. Ein aelterer Stand liest die Felder
+            // nicht und fuehrt das Konto mit der eingestellten Kurve weiter.
+            .apply {
+                if (s.curveStretch != 1.0) put("curveStretch", zahl(s.curveStretch))
+                if (s.byInput) put("byInput", true)
+            }
             .apply {
                 val f = s.early ?: return@apply
                 put("early", JSONObject()
@@ -777,6 +784,14 @@ object LedgerCodec {
                 "stabilityFallMgdlPerMin $it"
             }
         }
+        // Optional (Mahlzeit-Eingabe, Toni 25.11.2026): fehlen sie, lief die Kurve, wie sie eingestellt ist, und das
+        // Konto kam nicht aus einer Eingabe. Die Streckung nur in den Grenzen des Verlaufs.
+        val streckung = if (!o.has("curveStretch")) 1.0 else zahl("curveStretch").also {
+            val unten = app.aaps.fuse.core.controller.EarlySupply.courseStretch(app.aaps.fuse.core.controller.EarlySupply.MIN_COURSE_ABSORPTION_MIN)
+            val oben = app.aaps.fuse.core.controller.EarlySupply.courseStretch(app.aaps.fuse.core.controller.EarlySupply.MAX_COURSE_ABSORPTION_MIN)
+            require(it in unten..oben) { "curveStretch $it" }
+        }
+        val ausEingabe = o.has("byInput") && o.getBoolean("byInput")
         val an = schalter("expectationOn")
         val kurveRoh = o.getJSONArray("curveValues")
         val kurve = (0 until kurveRoh.length()).map { i -> kurveRoh.getDouble(i) }
@@ -810,6 +825,8 @@ object LedgerCodec {
             stabilityMin = stabMin,
             stabilityFallMgdlPerMin = fallGrenze,
             cancelledU = menge("cancelledU"),
+            curveStretch = streckung,
+            byInput = ausEingabe,
         ).let { basis ->
             // Konsolidierung 2.0: das Konto v1 ist entfallen. Ein v1-Konto eines aelteren Standes wird als Konto ohne
             // fruehe Versorgung weitergefuehrt (neutrale Pins): Verbrauch, Freigabe und Strecke bleiben, sein Vorgriff

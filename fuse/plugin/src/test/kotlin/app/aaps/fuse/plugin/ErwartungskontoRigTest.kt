@@ -58,6 +58,11 @@ import org.mockito.kotlin.any
 import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.whenever
 import java.io.File
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.exp
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * RIG-PROBE DES ERWARTUNGSKONTOS (Testkandidat E-034, Bauphase P6).
@@ -141,7 +146,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
     private fun roundUp(t: Long) = if (t % 60_000L == 0L) t else (t / 60_000L + 1) * 60_000L
 
-    private fun aapsNahIob(atTs: Long, zwischenspeichern: Boolean = true): IobTotal {
+    private fun aapsNahIob(atTs: Long, zwischenspeichern: Boolean = true, nurBolus: Boolean = false): IobTotal {
         val key = if (zwischenspeichern) roundUp(atTs) else atTs
         if (zwischenspeichern) aapsCache[key]?.let { return it }
         val dia = insulin.dia
@@ -153,7 +158,9 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             akt += r.activityContrib
         }
         val bolus = IobTotal(key).also { it.iob = iob; it.activity = akt }.round()
-        val ergebnis = IobTotal.combine(bolus, IobTotal(key).round()).round().also { it.valid = true }
+        // Das Basal-IOB: leer, ausser im geschlossenen Kreis ([kreisBasalIob]).
+        val basal = if (nurBolus) IobTotal(key) else kreisBasalIob(key)
+        val ergebnis = IobTotal.combine(bolus, basal.round()).round().also { it.valid = true }
         if (zwischenspeichern && key <= clock) aapsCache[key] = ergebnis
         return ergebnis
     }
@@ -164,7 +171,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         if (betroffen != null) aapsCache.keys.removeAll { it > betroffen }
     }
 
-    private fun reihe(bis: Long): List<GV> = folge.cgm.filter { it.first <= bis }.map { (t, v) ->
+    private fun reihe(bis: Long): List<GV> = (kreisCgm ?: folge.cgm).filter { it.first <= bis }.map { (t, v) ->
         GV(timestamp = t, value = v, raw = v, noise = 0.0, sourceSensor = SourceSensor.UNKNOWN, trendArrow = TrendArrow.FLAT)
     }
 
@@ -192,9 +199,9 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         whenever(ads.roundUpTime(any())).thenAnswer { inv -> roundUp(inv.getArgument(0)) }
         whenever(ads.getBgReadingsDataTableCopy()).thenAnswer { reihe(clock) }
         whenever(iobCobCalculator.calculateFromTreatmentsAndTemps(any(), any())).thenAnswer { inv -> aapsNahIob(inv.getArgument(0)) }
-        whenever(iobCobCalculator.calculateIobFromBolus()).thenAnswer { aapsNahIob(clock, zwischenspeichern = false) }
+        whenever(iobCobCalculator.calculateIobFromBolus()).thenAnswer { aapsNahIob(clock, zwischenspeichern = false, nurBolus = true) }
         whenever(iobCobCalculator.calculateIobToTimeFromTempBasalsIncludingConvertedExtended(any()))
-            .thenAnswer { inv -> IobTotal(inv.getArgument(0)) }
+            .thenAnswer { inv -> kreisBasalIob(inv.getArgument(0)) }
         whenever(persistenceLayer.getExtendedBolusesStartingFromTimeToTime(any(), any(), any())).thenReturn(emptyList())
 
         whenever(commandQueue.bolusInQueue()).thenReturn(false)
@@ -284,6 +291,8 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         arm: FuseCycleRunner.Pruefarm? = null,
         /** Vor jedem Zyklus, mit seiner Minute - fuer Eingriffe mitten in der Folge. */
         vorZyklus: suspend (Int) -> Unit = {},
+        /** Nach jedem Zyklus, mit seinem Ergebnis - fuer Proben, die auf die Abgabe antworten (geschlossener Kreis). */
+        nachZyklus: (Zyklus) -> Unit = {},
     ): List<Zyklus> {
         folge = f
         clock = f.ts(f.vonMin)
@@ -348,6 +357,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
                 pumpe.anwenden(o.computeTs, req.rateUPerH, req.durationMin, testPumpe().baseBasalRateUPerH, rigProfil.getBasal(o.computeTs))
             }
             ergebnis += Zyklus(f.minute(o.computeTs), o, ledger.episodes.expectation, geliefert ?: 0.0)
+            nachZyklus(ergebnis.last())
         }
         return ergebnis
     }
@@ -1139,14 +1149,15 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
     /** Ein v2-Lauf: nur volle Zyklen; "Nur Erwartung" ist waehrend des Laufs gewaehlt. */
     private suspend fun fruehLauf(
-        f: Fuse20Folgen.Folge, dir: File, vorZyklus: suspend (Int) -> Unit = {}, einstellen: suspend () -> Unit,
+        f: Fuse20Folgen.Folge, dir: File, vorZyklus: suspend (Int) -> Unit = {}, nachZyklus: (Zyklus) -> Unit = {},
+        einstellen: suspend () -> Unit,
     ): List<Zyklus> {
         nurErwartung = true
         try {
             markerAt = 0L
             markerPress = 0L
             einstellen()
-            return lauf(f, dir, vorZyklus = vorZyklus).filter { it.o.abortReason == null }
+            return lauf(f, dir, vorZyklus = vorZyklus, nachZyklus = nachZyklus).filter { it.o.abortReason == null }
         } finally {
             nurErwartung = false
         }
@@ -2367,6 +2378,482 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         } finally {
             snack = false
         }
+    }
+
+    // ---- MAHLZEIT-EINGABE (Toni 25.11.2026): KH-MENGE UND ABSORPTIONSZEIT AM MARKER -------------------------------
+    //
+    // Der Rig spielt nach, was der Druck festhaelt ([MarkerEingabe.schreiben]): das KH-Insulin in tausendstel Einheiten
+    // und die Absorptionszeit in Minuten. Ohne Eingabe (alle anderen Proben) stehen beide auf 0. Alle Zahlen synthetisch.
+    // Die Kurve des Rigs endet bei 3 U - die "Mahlzeitmenge" eines Kontos ist Skalierer mal 3 U.
+
+    private var eingabeKhMilliU = 0L
+    private var eingabeAbsorptionMin = 0L
+
+    /** Die v2-Einstellung der Eingabe-Proben: Budget-Max so hoch, dass es nicht deckelt; das Mahlzeitfenster [fensterMin]. */
+    private suspend fun eingabeKonfiguration(fensterMin: Int = FuseIntKey.LivenessMealPowerMin.defaultValue) {
+        fruehKonfiguration(g1 = true, g2 = true, budgetU = SNACK_PROBE_BUDGET_U)
+        whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenReturn(fensterMin)
+        whenever(preferences.get(FuseLongKey.MealMarkerCarbsInsulinMilliU)).thenAnswer { eingabeKhMilliU }
+        whenever(preferences.get(FuseLongKey.MealMarkerCarbsG)).thenAnswer { if (eingabeKhMilliU > 0L) EINGABE_KH_G else 0L }
+        whenever(preferences.get(FuseLongKey.MealMarkerAbsorptionMin)).thenAnswer { eingabeAbsorptionMin }
+    }
+
+    private fun armiert(z: List<Zyklus>) = z.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }
+
+    /**
+     * HOEHE UND MENGE: mit KH-Menge am Marker bucht "Mahlzeit" mit dem Skalierer KH-Insulin durch Kurvenende (hier 3 U),
+     * und das Budget ist die Mahlzeitmenge selbst - nicht der fruehe Bedarf, der darueber liegt. Auf die Ankuendigung
+     * hin fliesst nie mehr als sie. Die Anfangsportion ist der eingestellte Anteil am fruehen Bedarf, hoechstens die
+     * Menge. Die Eingabe steht im Zustand (Trail). Ohne Eingabe wie eingestellt.
+     */
+    @Test
+    fun `mit KH am Marker ist das Budget die Mahlzeitmenge`(@TempDir dir: File) = runBlocking<Unit> {
+        val ohne = armiert(fruehLauf(fStabil, File(dir, "ohne")) { eingabeKonfiguration() })
+        val mahlzeit = ohne.konto!!
+        assertEquals(1.0, mahlzeit.phi0, 0.0)
+        assertFalse(mahlzeit.byInput)
+        assertEquals(1.0, mahlzeit.curveStretch, 0.0)
+        // Der fruehe Bedarf je Skalierer 1 (= das Budget ohne Eingabe) liegt ueber dem Kurvenende - sonst zeigt die Probe nichts.
+        assertTrue(mahlzeit.a0U > 3.0 + 1e-6 && 2.0 * mahlzeit.a0U < SNACK_PROBE_BUDGET_U - 1e-9) { "Probe zeigt nichts: Budget ${mahlzeit.a0U}" }
+        assertEquals(0, ohne.o.state?.markerCarbsG)
+        assertEquals(0.0, ohne.o.state?.markerCarbsInsulinU)
+        try {
+            // KH-Insulin 1,8 U und 4,5 U bei Kurvenende 3 U: Skalierer 0,6 und 1,5.
+            for ((khMilliU, skalierer) in listOf(1_800L to 0.6, 4_500L to 1.5)) {
+                eingabeKhMilliU = khMilliU
+                val khInsulin = khMilliU / 1000.0
+                val zyklen = fruehLauf(fStabil, File(dir, "kh$khMilliU")) { eingabeKonfiguration() }
+                val gebucht = armiert(zyklen)
+                assertEquals(EINGABE_KH_G.toInt(), gebucht.o.state?.markerCarbsG) { "die KH-Menge steht nicht im Zustand" }
+                assertEquals(khInsulin, gebucht.o.state?.markerCarbsInsulinU) { "das KH-Insulin steht nicht im Zustand" }
+                val k = gebucht.konto!!
+                assertTrue(k.byInput)
+                assertEquals(1.0, k.curveStretch, 0.0)
+                assertEquals(skalierer, k.phi0, 1e-12)
+                // Die Menge: das KH-Insulin - weniger als der fruehe Bedarf bei diesem Skalierer.
+                assertEquals(khInsulin, k.a0U, 1e-9) { "Budget ist nicht die Mahlzeitmenge ($skalierer)" }
+                assertTrue(k.a0U < skalierer * mahlzeit.a0U - 1e-6)
+                // Die Anfangsportion: Anteil mal frueher Bedarf wie ohne Eingabe bei diesem Skalierer, hoechstens die Menge.
+                val anfangSoll = min(0.5 * skalierer * mahlzeit.a0U, k.a0U)
+                assertEquals(anfangSoll, k.early!!.initialShare * k.a0U, 1e-9)
+                val anfang = zyklen.filter { it.frueh()?.initial == true }.sumOf { it.dErw() }
+                assertTrue(anfang > 0.0 && anfang <= anfangSoll + 1e-9) { "Anfangsportion $anfang bei Soll $anfangSoll" }
+                // Auf die Ankuendigung hin nie mehr als die Mahlzeitmenge (einen Nachschlag gibt es in dieser Probe nicht).
+                assertTrue(zyklen.sumOf { it.dErw() } <= k.a0U + 1e-9) { "mehr Erwartungsanteil als die Mahlzeitmenge" }
+                pruefeMechanik(zyklen, k.early!!.initialShare, 1.0, 2.0)
+            }
+            // Eine sehr grosse Mahlzeit endet am hoechsten Skalierer - die Menge ist dann die der Kurve in dieser Hoehe.
+            eingabeKhMilliU = 15_000L
+            val gross = armiert(fruehLauf(fStabil, File(dir, "gross")) { eingabeKonfiguration() }).konto!!
+            assertEquals(EarlySupply.MAX_SCALE, gross.phi0, 0.0)
+            assertEquals(EarlySupply.MAX_SCALE * 3.0, gross.a0U, 1e-9)
+        } finally {
+            eingabeKhMilliU = 0L
+        }
+    }
+
+    /** Die Eingabe gilt nur fuer "Mahlzeit": ein "Snack" und "Nur Marker" buchen mit ihr genau wie ohne sie. */
+    @Test
+    fun `Snack und Nur Marker tragen keine Eingabe`(@TempDir dir: File) = runBlocking<Unit> {
+        snack = true
+        try {
+            val ohne = armiert(fruehLauf(fStabil, File(dir, "snackOhne")) {
+                eingabeKonfiguration(fensterMin = 180)
+                whenever(preferences.get(FuseDoubleKey.EarlySupplySnackScale)).thenReturn(SNACK_SKALA)
+            })
+            eingabeKhMilliU = 9_000L
+            eingabeAbsorptionMin = 360L
+            val mit = armiert(fruehLauf(fStabil, File(dir, "snackMit")) {
+                eingabeKonfiguration(fensterMin = 180)
+                whenever(preferences.get(FuseDoubleKey.EarlySupplySnackScale)).thenReturn(SNACK_SKALA)
+            })
+            assertEquals(ohne.konto, mit.konto)
+            assertFalse(mit.konto!!.byInput)
+            assertEquals(0, mit.o.state?.markerCarbsG)
+            assertEquals(0, mit.o.state?.markerAbsorptionMin)
+            snack = false
+            ohneVorschuss = true
+            eingabeKonfiguration(fensterMin = 180)
+            val nurMarker = lauf(fStabil, File(dir, "nurMarker")).filter { it.o.abortReason == null }
+            val k = nurMarker.mapNotNull { it.konto }.first()
+            assertEquals(0.0, k.a0U, 0.0)
+            assertFalse(k.byInput)
+            // Auch das Fenster bleibt das eingestellte - die Absorptionszeit der Eingabe gilt hier nicht.
+            assertEquals(k.authId + 180 * 60_000L, k.windowEndTs)
+        } finally {
+            snack = false
+            ohneVorschuss = false
+            eingabeKhMilliU = 0L
+            eingabeAbsorptionMin = 0L
+        }
+    }
+
+    /**
+     * DER VERLAUF: die Absorptionszeit am Marker streckt oder staucht die Kurve dieser Mahlzeit und ist ihr
+     * Mahlzeitfenster (in dessen Grenzen). Schnell: das Fenster schliesst frueher als eingestellt, vorne geht mehr -
+     * hoechstens die Mahlzeit, fuer die der Skalierer steht -, das Budget waechst nicht. Langsam: das Fenster reicht
+     * weiter, der fruehe Bedarf und mit ihm Budget und Anfangsportion sind kleiner, und die Erwartung laeuft ueber
+     * Minute 120 hinaus bis zum Ende des gestreckten Verlaufs. Konto und Dosierkontext tragen dieselbe Frist.
+     */
+    @Test
+    fun `die Absorptionszeit am Marker bestimmt Fenster und Verlauf`(@TempDir dir: File) = runBlocking<Unit> {
+        val eingestellt = 180
+        val ohne = fruehLauf(fStabil, File(dir, "ohne")) { eingabeKonfiguration(fensterMin = eingestellt) }
+        val basis = armiert(ohne).konto!!
+        fun fensterEnde(min: Int) = basis.authId + min * 60_000L
+        /** Gilt das Konto in einem Zyklus dieser Minuten noch (nicht abgelaufen)? */
+        fun giltIn(z: List<Zyklus>, minuten: IntRange) = z.any { it.minute in minuten && it.o.erwartungskonto?.zyklus?.eval?.expired == false }
+        /** Erwartet das Konto in einem Zyklus dieser Minuten noch Mahlzeitwirkung aus der Kurve? */
+        fun erwartetIn(z: List<Zyklus>, minuten: IntRange) = z.any { it.minute in minuten && (it.frueh()?.expectedDriveMgdlPerMin ?: 0.0) > 0.0 }
+        assertEquals(fensterEnde(eingestellt), basis.windowEndTs)
+        assertEquals(0.5, basis.early!!.initialShare, 0.0)
+        assertTrue(giltIn(ohne, 155..175)) { "Probe zeigt nichts: ohne Eingabe gilt das Konto vor dem eingestellten Fensterende nicht" }
+        assertFalse(giltIn(ohne, eingestellt..300)) { "ohne Eingabe gilt das Konto nach dem eingestellten Fenster" }
+        assertTrue(erwartetIn(ohne, 60..110)) { "Probe zeigt nichts: ohne Eingabe keine erwartete Wirkung vor dem Kurvenende" }
+        assertFalse(erwartetIn(ohne, 125..175)) { "ohne Eingabe erwartet das Konto nach dem Kurvenende noch Wirkung" }
+        try {
+            // Schnell: das Fenster endet frueher als eingestellt; vorne mehr, das Budget bleibt das der Kurve.
+            eingabeAbsorptionMin = 150L
+            val schnell = fruehLauf(fStabil, File(dir, "schnell")) { eingabeKonfiguration(fensterMin = eingestellt) }
+            val gebuchtSchnell = armiert(schnell)
+            assertEquals(150, gebuchtSchnell.o.state?.markerAbsorptionMin) { "die Absorptionszeit steht nicht im Zustand" }
+            val kSchnell = gebuchtSchnell.konto!!
+            assertTrue(kSchnell.byInput)
+            assertEquals(150.0 / 180.0, kSchnell.curveStretch, 1e-12)
+            assertEquals(fensterEnde(150), kSchnell.windowEndTs)
+            assertEquals(basis.a0U, kSchnell.a0U, 1e-9)
+            assertEquals(basis.phi0, kSchnell.phi0, 0.0)
+            assertTrue(kSchnell.early!!.initialShare > 0.5) { "schnell: der Anteil vorne waechst nicht (${kSchnell.early!!.initialShare})" }
+            assertTrue(kSchnell.early!!.initialShare * kSchnell.a0U <= basis.phi0 * 3.0 + 1e-9) { "Anfangsportion ueber der Mahlzeit des Skalierers" }
+            // Nach dem Fensterende gilt das Konto nicht mehr - dort, wo es ohne Eingabe noch gilt (Gegenprobe oben).
+            assertFalse(giltIn(schnell, 150..300)) { "das Konto gilt nach der Absorptionszeit weiter" }
+            assertEquals(0.0, schnell.filter { it.minute >= 150 }.sumOf { it.dErw() }, 0.0)
+            // Die gestauchte Kurve endet bei Minute 100: danach erwartet das Konto keine Wirkung mehr.
+            assertFalse(erwartetIn(schnell, 102..149)) { "schnell: erwartete Wirkung nach dem Ende des gestauchten Verlaufs" }
+            pruefeMechanik(schnell, kSchnell.early!!.initialShare, 1.0, 2.0)
+
+            // Langsam: das Fenster reicht bis zur Absorptionszeit, frueher Bedarf und Budget sind kleiner, die Erwartung
+            // laeuft bis zum Ende des gestreckten Verlaufs (Minute 160).
+            eingabeAbsorptionMin = 240L
+            val langsam = fruehLauf(fStabil, File(dir, "langsam")) { eingabeKonfiguration(fensterMin = eingestellt) }
+            val kLangsam = armiert(langsam).konto!!
+            assertTrue(kLangsam.byInput)
+            assertEquals(240.0 / 180.0, kLangsam.curveStretch, 1e-12)
+            assertEquals(fensterEnde(240), kLangsam.windowEndTs)
+            assertTrue(kLangsam.a0U < basis.a0U - 1e-6) { "langsam: das Budget folgt dem kleineren fruehen Bedarf nicht" }
+            assertEquals(0.5, kLangsam.early!!.initialShare, 1e-9)
+            assertTrue(giltIn(langsam, eingestellt + 5..235)) { "das Konto gilt nach dem eingestellten Fenster nicht weiter" }
+            assertFalse(giltIn(langsam, 240..300)) { "das Konto gilt nach der Absorptionszeit weiter" }
+            assertTrue(erwartetIn(langsam, 125..155)) { "langsam: nach Minute 120 keine erwartete Wirkung mehr" }
+            assertFalse(erwartetIn(langsam, 162..235)) { "langsam: erwartete Wirkung nach dem Ende des gestreckten Verlaufs" }
+            pruefeMechanik(langsam, 0.5, 1.0, 2.0)
+
+            // Sehr lang: Fenster und Verlauf enden an ihren Grenzen.
+            eingabeAbsorptionMin = 480L
+            val kSehrLang = armiert(fruehLauf(fStabil, File(dir, "sehrLang")) { eingabeKonfiguration(fensterMin = eingestellt) }).konto!!
+            assertEquals(fensterEnde(EarlySupply.MAX_ABSORPTION_WINDOW_MIN), kSehrLang.windowEndTs)
+            assertEquals(EarlySupply.courseStretch(480), kSehrLang.curveStretch, 1e-12)
+        } finally {
+            eingabeAbsorptionMin = 0L
+        }
+    }
+
+    /**
+     * NEUSTART: Verlauf, Menge und Fenster einer Mahlzeit mit Eingabe stehen im gespeicherten Konto und kommen
+     * unveraendert zurueck - kein Rueckfall, keine Neubuchung mit anderen Werten.
+     */
+    @Test
+    fun `Neustart - das Konto einer Mahlzeit mit Eingabe kommt mit Verlauf und Menge zurueck`(@TempDir dir: File) = runBlocking<Unit> {
+        val neustartMin = 30
+        var vorher: ExpectationAccount.State? = null
+        var nachher: ExpectationAccount.State? = null
+        eingabeKhMilliU = 4_500L
+        eingabeAbsorptionMin = 240L
+        try {
+            val zyklen = fruehLauf(fStabil, File(dir, fStabil.name).also(File::mkdirs), vorZyklus = { m ->
+                if (m == neustartMin) {
+                    vorher = ledger.episodes.expectation
+                    neustart(File(dir, fStabil.name), fStabil, null)
+                    nachher = ledger.episodes.expectation
+                }
+            }) { eingabeKonfiguration(fensterMin = 180) }
+            val k = vorher ?: throw AssertionError("Vorbedingung - vor dem Neustart ein Konto")
+            assertTrue(k.byInput && k.curveStretch == 240.0 / 180.0) { "Vorbedingung - Konto mit Eingabe (${k.byInput}, ${k.curveStretch})" }
+            assertEquals(k, nachher, "das gespeicherte Konto kommt unveraendert zurueck")
+            val danach = zyklen.filter { it.minute in neustartMin until 120 }
+            assertTrue(danach.isNotEmpty())
+            for (z in danach) {
+                val x = z.o.erwartungskonto!!
+                assertTrue(x.gilt, "Minute ${z.minute}: Konto gilt nicht")
+                assertNull(x.rueckfall, "Minute ${z.minute}: Rueckfall")
+                assertFalse(x.zyklus!!.armiertInDiesemZyklus, "Minute ${z.minute}: Neubuchung")
+                val n = z.konto!!
+                assertTrue(n.byInput, "Minute ${z.minute}: Eingabe verloren")
+                assertEquals(k.curveStretch, n.curveStretch, 0.0, "Minute ${z.minute}: Verlauf")
+                assertEquals(k.a0U, n.a0U, 0.0, "Minute ${z.minute}: Budget")
+                assertEquals(k.windowEndTs, n.windowEndTs, "Minute ${z.minute}: Fenster")
+            }
+        } finally {
+            eingabeKhMilliU = 0L
+            eingabeAbsorptionMin = 0L
+        }
+    }
+
+    // ---- GEGENPROBEN IM GESCHLOSSENEN KREIS (Toni + Kodex 25.11.2026) -------------------------------------------
+    //
+    // Ein kuenstlicher Patient statt einer festen Zuckerfolge: der Sensorwert jeder Minute entsteht aus dem Startwert,
+    // der WAHREN Mahlzeitwirkung der Probe und der Wirkung alles bis dahin abgegebenen Insulins - Boli, SMB und das
+    // Netto-Basal (eine Null steht als zurueckgehaltenes Insulin negativ, wie in AAPS). Insulinmodell und ISF sind die
+    // des Rigs, und der Runner sieht dasselbe Netto-Basal als Basal-IOB. Der echte Runner regelt darauf.
+    //
+    // Die wahre Mahlzeit hat eine glatte Form (Gamma-Form: steigt an, laeuft langsam aus); nach `t95Min` sind 95 %
+    // aufgenommen. VEREINFACHT: kein Sensorverzug, kein Rauschen, keine Gegenregulation, die ISF fest, das Profilbasal
+    // haelt den Zucker. Der Sensor misst 40 bis 400. Alle Zahlen synthetisch.
+    //
+    // Jede Probe laeuft in zwei Armen mit derselben wahren Mahlzeit: "heute" (ohne Eingabe, der eingestellte Skalierer
+    // auf derselben Hoehe) und "eingabe" (KH-Menge und Absorptionszeit am Marker). Erst der Vergleich sagt etwas.
+
+    /** Geschlossener Kreis: die Zuckerreihe, die der kuenstliche Patient fortschreibt; `null` = die feste Reihe der Folge. */
+    private var kreisCgm: List<Pair<Long, Double>>? = null
+
+    /**
+     * Geschlossener Kreis: das Netto-Basal je Minute [U] gegen das Profilbasal, mit dem Beginn der Minute - eine Null steht
+     * negativ. `null` = kein Kreis: dann sieht der Runner wie bisher kein Basal-IOB.
+     */
+    private var kreisNettoBasal: List<Pair<Long, Double>>? = null
+
+    /** Ein Bolus von 1 U zur Zeit [ts] - fuer Anteile, die mit der Menge linear gehen (das Netto-Basal einer Minute). */
+    private fun einheitsBolus(ts: Long) = BS(
+        id = 0L, timestamp = ts, amount = 1.0, type = BS.Type.NORMAL,
+        ids = IDs(pumpId = ts + 3, pumpType = PumpType.GENERIC_AAPS, pumpSerial = Fuse20Folgen.PUMPE_SERIAL),
+        iCfg = rigICfg(),
+    )
+
+    /** Das Basal-IOB zur Zeit [key]: im Kreis aus dem Netto-Basal je Minute, sonst leer wie bisher. */
+    private fun kreisBasalIob(key: Long): IobTotal {
+        val ergebnis = IobTotal(key)
+        val netto = kreisNettoBasal ?: return ergebnis
+        val dia = (insulin.dia * 3_600_000.0).toLong()
+        for ((ts, u) in netto) if (ts < key && ts >= key - dia) {
+            val einheit = insulin.iobCalcForTreatment(einheitsBolus(ts), key)
+            ergebnis.basaliob += u * einheit.iobContrib
+            ergebnis.activity += u * einheit.activityContrib
+            ergebnis.netbasalinsulin += u
+        }
+        return ergebnis
+    }
+
+    /** Ein Teil der wahren Mahlzeit: Menge [U-Aequivalent], Beginn [min nach Marker], Zeit bis 95 % aufgenommen [min]. */
+    private class MahlzeitTeil(val mengeU: Double, val beginnMin: Double = 0.0, val t95Min: Double = KREIS_BEZUG_T95_MIN)
+
+    /** Eine Probe: die Absorptionszeit, die im Arm "eingabe" angesagt wird (0 = keine), und die wahre Mahlzeit. */
+    private class KreisProbe(val name: String, val absorptionMin: Long, val teile: List<MahlzeitTeil>)
+
+    /**
+     * Die wahre Mahlzeitwirkung [U-Aequivalent, aufgelaufen] zur Minute nach dem Marker: je Teil die Gamma-Form
+     * 1 - (1 + x) e^-x mit x = Alter / tau, tau so, dass nach `t95Min` 95 % aufgenommen sind.
+     */
+    private fun wahreMahlzeitU(teile: List<MahlzeitTeil>, minute: Double): Double = teile.sumOf { t ->
+        val x = (minute - t.beginnMin) / (t.t95Min / GAMMA_X95)
+        if (x <= 0.0) 0.0 else t.mengeU * (1.0 - (1.0 + x) * exp(-x))
+    }
+
+    /** Was ein Lauf im geschlossenen Kreis zeigt: die vollen Zyklen, der Zucker je Minute und das Netto-Basal ab dem Marker. */
+    private class KreisLauf(
+        val zyklen: List<Zyklus>, val bg: List<Pair<Int, Double>>, val ueberBasalU: Double, val unterBasalU: Double,
+    ) {
+
+        val konto: ExpectationAccount.State get() = zyklen.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }.konto!!
+        private fun erwartung(z: Zyklus) = z.o.erwartungskonto?.buchung?.split?.dErwU ?: 0.0
+        private val anfang: List<Zyklus> get() = zyklen.filter { it.o.erwartungskonto?.zyklus?.eval?.early?.initial == true && erwartung(it) > 0.0 }
+        val anfangU: Double get() = anfang.sumOf { erwartung(it) }
+        val anfangMin: Int get() = anfang.firstOrNull()?.minute ?: -1
+        val erwartungU: Double get() = zyklen.sumOf { erwartung(it) }
+        val nachschlagU: Double get() = zyklen.mapNotNull { it.konto?.topUpU }.maxOrNull() ?: 0.0
+        fun gegebenBis(minute: Int): Double = zyklen.filter { it.minute in 0..minute }.sumOf { it.geliefertU }
+        fun bgBei(minute: Int): Double = bg.first { it.first == minute }.second
+        val tief: Pair<Int, Double> get() = bg.filter { it.first >= 0 }.minBy { it.second }
+        val hoch: Pair<Int, Double> get() = bg.filter { it.first >= 0 }.maxBy { it.second }
+        fun minutenUnter(grenze: Double): Int = bg.count { it.first >= 0 && it.second < grenze }
+    }
+
+    /**
+     * Ein Lauf im geschlossenen Kreis: Marker "Mahlzeit" in Minute 0, die wahre Mahlzeit [teile], optional ein Bolus
+     * [vorIobU] vor dem Marker (vorhandenes IOB, dem kein erhoehter Zucker gegenuebersteht). Arm "heute": ohne Eingabe,
+     * der eingestellte Skalierer [skalierer]. Arm "eingabe": [khMilliU] und [absorptionMin] am Marker.
+     */
+    private suspend fun kreisLauf(
+        name: String, dir: File, teile: List<MahlzeitTeil>, skalierer: Double = 1.0, khMilliU: Long = 0L, absorptionMin: Long = 0L,
+        vorIobU: Double = 0.0,
+    ): KreisLauf {
+        val f = Fuse20Folgen.Folge(
+            name, 1_700_301_600_000L, -90, KREIS_BIS_MIN, listOf(-90 to KREIS_START_BG, KREIS_BIS_MIN to KREIS_START_BG), markerMin = 0,
+        )
+        val werte = ArrayList<Pair<Long, Double>>()
+        werte += f.ts(f.vonMin) to KREIS_START_BG
+        val netto = ArrayList<Pair<Long, Double>>()
+        var isf = Double.NaN
+        kreisCgm = werte
+        kreisNettoBasal = netto
+        eingabeKhMilliU = khMilliU
+        eingabeAbsorptionMin = absorptionMin
+        try {
+            val zyklen = fruehLauf(
+                f, File(dir, name),
+                vorZyklus = { minute ->
+                    val t = f.ts(minute)
+                    if (vorIobU > 0.0 && minute == KREIS_VOR_IOB_MIN) boliSetzen(boluses + normalBolus(t, vorIobU))
+                    // Das Netto-Basal der eben vergangenen Minute: was die Pumpe lief, gegen das Profilbasal.
+                    val davor = t - 60_000L
+                    val basal = rigProfil.getBasal(davor)
+                    val rate = pumpe.laufende(davor, t)?.rate ?: basal
+                    if (abs(rate - basal) > 1e-9) {
+                        netto += davor to (rate - basal) / 60.0
+                        aapsCache.keys.removeAll { it > davor }
+                    }
+                    // Was vom Insulin bis jetzt gewirkt hat - aus demselben Modell wie das IOB des Rigs.
+                    val gewirktU = boluses.filter { it.timestamp <= t }.sumOf { b -> b.amount - insulin.iobCalcForTreatment(b, t).iobContrib } +
+                        netto.sumOf { (ts, u) -> u * (1.0 - insulin.iobCalcForTreatment(einheitsBolus(ts), t).iobContrib) }
+                    val wahr = if (isf.isFinite()) KREIS_START_BG + isf * (wahreMahlzeitU(teile, minute.toDouble()) - gewirktU) else KREIS_START_BG
+                    werte += t to wahr.coerceIn(KREIS_SENSOR_UNTEN, KREIS_SENSOR_OBEN)
+                },
+                nachZyklus = { z -> z.o.state?.isfMgdlPerU?.takeIf { it.isFinite() && it > 0.0 }?.let { isf = it } },
+            ) {
+                fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true, budgetU = SNACK_PROBE_BUDGET_U)
+                whenever(preferences.get(FuseDoubleKey.EarlySupplyScaleStable)).thenReturn(skalierer)
+                whenever(preferences.get(FuseDoubleKey.EarlySupplyTopUpShare)).thenReturn(KREIS_NACHSCHLAG)
+                whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenReturn(KREIS_FENSTER_MIN)
+                whenever(preferences.get(FuseLongKey.MealMarkerCarbsInsulinMilliU)).thenAnswer { eingabeKhMilliU }
+                whenever(preferences.get(FuseLongKey.MealMarkerCarbsG)).thenAnswer { if (eingabeKhMilliU > 0L) EINGABE_KH_G else 0L }
+                whenever(preferences.get(FuseLongKey.MealMarkerAbsorptionMin)).thenAnswer { eingabeAbsorptionMin }
+            }
+            val ab = f.ts(0)
+            val ueber = netto.filter { it.first >= ab }.sumOf { max(0.0, it.second) }
+            val unter = netto.filter { it.first >= ab }.sumOf { max(0.0, -it.second) }
+            return KreisLauf(zyklen, werte.map { f.minute(it.first) to it.second }, ueber, unter)
+        } finally {
+            kreisCgm = null
+            kreisNettoBasal = null
+            eingabeKhMilliU = 0L
+            eingabeAbsorptionMin = 0L
+        }
+    }
+
+    /** Die Zeile eines Laufs fuer den Bericht (Standardausgabe des Tests): Buchung, Abgabe, Zuckerverlauf. */
+    private fun kreisZeile(name: String, l: KreisLauf): String {
+        val k = l.konto
+        val kopf = String.format(
+            Locale.ROOT,
+            "KREIS;%s;phi0=%.2f;budget=%.2f;anteil=%.3f;streckung=%.3f;anfang=%.2f@%d;erwartung=%.2f;nachschlag=%.2f;" +
+                "gegeben30=%.2f;gegeben60=%.2f;gegeben120=%.2f;gegeben240=%.2f;gegeben360=%.2f;ueberBasal=%.2f;unterBasal=%.2f;" +
+                "tief=%.0f@%d;hoch=%.0f@%d;unter70=%d;unter54=%d",
+            name, k.phi0, k.a0U, k.early!!.initialShare, k.curveStretch, l.anfangU, l.anfangMin, l.erwartungU, l.nachschlagU,
+            l.gegebenBis(30), l.gegebenBis(60), l.gegebenBis(120), l.gegebenBis(240), l.gegebenBis(KREIS_BIS_MIN - 1), l.ueberBasalU,
+            l.unterBasalU, l.tief.second, l.tief.first, l.hoch.second, l.hoch.first, l.minutenUnter(70.0), l.minutenUnter(54.0),
+        )
+        val verlauf = (0 until KREIS_BIS_MIN step 30).joinToString(";") { m -> String.format(Locale.ROOT, "bg%d=%.0f", m, l.bgBei(m)) }
+        return "$kopf;$verlauf"
+    }
+
+    /** Was fuer JEDEN Lauf gilt: die Mechanik des Kontos, und auf die Ankuendigung hin nie mehr als Budget plus Nachschlag. */
+    private fun pruefeKreis(name: String, l: KreisLauf) {
+        val k = l.konto
+        assertTrue(l.erwartungU <= k.a0U + l.nachschlagU + 1e-9) { "$name: Erwartungsanteil ${l.erwartungU} ueber Budget ${k.a0U} plus Nachschlag ${l.nachschlagU}" }
+        assertTrue(l.anfangU <= k.early!!.initialShare * k.a0U + 1e-9) { "$name: Anfangsportion ${l.anfangU} ueber dem Anteil" }
+        pruefeMechanik(l.zyklen, k.early!!.initialShare, 1.0, 2.0)
+    }
+
+    /**
+     * EINE GEGENPROBE (Kodex): dieselbe wahre Mahlzeit in vier Laeufen - "heute" gegen "eingabe", je ohne und mit
+     * vorhandenem IOB. Die Mahlzeit: KH-Insulin 4,5 U (Skalierer 1,5 bei Kurvenende 3 U). Geprueft wird, was fuer jeden
+     * Lauf gilt (Mechanik, Menge), und was die Eingabe bucht. Die Verlaeufe stehen als Zeilen "KREIS;..." in der
+     * Ausgabe - sie sind der Bericht, keine Pflicht des Tests. Je Probe ein eigener Test: die Attrappen des Gestells
+     * sammeln ihre Aufrufe je Test, viele Laeufe in einem Test fuellen den Speicher.
+     */
+    private suspend fun kreisProbe(dir: File, p: KreisProbe): Map<String, KreisLauf> {
+        val menge = KREIS_KH_MILLI_U / 1000.0
+        val skalierer = menge / 3.0
+        val laeufe = LinkedHashMap<String, KreisLauf>()
+        for (vorIob in listOf(0.0, KREIS_VOR_IOB_U)) {
+            val zusatz = if (vorIob > 0.0) "+iob" else ""
+            val heute = kreisLauf("${p.name}$zusatz-heute", dir, p.teile, skalierer = skalierer, vorIobU = vorIob)
+            pruefeKreis("${p.name}$zusatz-heute", heute)
+            assertFalse(heute.konto.byInput)
+            assertEquals(skalierer, heute.konto.phi0, 1e-12)
+            laeufe["heute$zusatz"] = heute
+
+            val eingabe = kreisLauf(
+                "${p.name}$zusatz-eingabe", dir, p.teile, khMilliU = KREIS_KH_MILLI_U, absorptionMin = p.absorptionMin, vorIobU = vorIob,
+            )
+            pruefeKreis("${p.name}$zusatz-eingabe", eingabe)
+            val k = eingabe.konto
+            assertTrue(k.byInput)
+            // Dieselbe Hoehe wie "heute", das Budget aber die Mahlzeitmenge, der Verlauf nach der angesagten Zeit.
+            assertEquals(skalierer, k.phi0, 1e-12)
+            assertEquals(menge, k.a0U, 1e-9) { "${p.name}$zusatz: Budget ist nicht die Mahlzeitmenge" }
+            assertTrue(k.a0U < heute.konto.a0U - 1e-6) { "${p.name}$zusatz: Probe zeigt nichts - das Budget von heute liegt nicht ueber der Mahlzeitmenge" }
+            assertEquals(EarlySupply.courseStretch(p.absorptionMin.toInt()), k.curveStretch, 1e-12)
+            laeufe["eingabe$zusatz"] = eingabe
+        }
+        laeufe.forEach { (arm, l) -> println(kreisZeile("${p.name};$arm", l)) }
+        return laeufe
+    }
+
+    /** Die Mahlzeit der Proben [U-Aequivalent]. */
+    private val kreisMenge = KREIS_KH_MILLI_U / 1000.0
+
+    @Test
+    fun `Kreis - die Mahlzeit kommt wie angesagt`(@TempDir dir: File) = runBlocking<Unit> {
+        kreisProbe(dir, KreisProbe("bezug", 0L, listOf(MahlzeitTeil(kreisMenge))))
+    }
+
+    @Test
+    fun `Kreis - schnelle Aufnahme, schnell angesagt`(@TempDir dir: File) = runBlocking<Unit> {
+        kreisProbe(dir, KreisProbe("schnell", 90L, listOf(MahlzeitTeil(kreisMenge, t95Min = 90.0))))
+    }
+
+    @Test
+    fun `Kreis - echter spaeter Beginn`(@TempDir dir: File) = runBlocking<Unit> {
+        kreisProbe(dir, KreisProbe("spaeterBeginn", 240L, listOf(MahlzeitTeil(kreisMenge, beginnMin = 45.0, t95Min = 195.0))))
+    }
+
+    @Test
+    fun `Kreis - frueher Beginn mit langem Nachlauf`(@TempDir dir: File) = runBlocking<Unit> {
+        kreisProbe(
+            dir,
+            KreisProbe("langerNachlauf", 240L, listOf(MahlzeitTeil(kreisMenge / 2, t95Min = 120.0), MahlzeitTeil(kreisMenge / 2, t95Min = 300.0))),
+        )
+    }
+
+    @Test
+    fun `Kreis - halbe Wirkung`(@TempDir dir: File) = runBlocking<Unit> {
+        kreisProbe(dir, KreisProbe("halbeWirkung", 0L, listOf(MahlzeitTeil(kreisMenge / 2))))
+    }
+
+    @Test
+    fun `Kreis - ausbleibende Wirkung`(@TempDir dir: File) = runBlocking<Unit> {
+        kreisProbe(dir, KreisProbe("keineWirkung", 0L, emptyList()))
+    }
+
+    @Test
+    fun `Kreis - falsche Zeit, schnell angesagt und langsam gekommen`(@TempDir dir: File) = runBlocking<Unit> {
+        kreisProbe(dir, KreisProbe("zuKurzAngesagt", 90L, listOf(MahlzeitTeil(kreisMenge, t95Min = 300.0))))
+    }
+
+    @Test
+    fun `Kreis - falsche Zeit, langsam angesagt und schnell gekommen`(@TempDir dir: File) = runBlocking<Unit> {
+        kreisProbe(dir, KreisProbe("zuLangAngesagt", 300L, listOf(MahlzeitTeil(kreisMenge, t95Min = 90.0))))
+    }
+
+    @Test
+    fun `Kreis - hoeherer Gesamtbedarf als angesagt`(@TempDir dir: File) = runBlocking<Unit> {
+        kreisProbe(
+            dir,
+            KreisProbe(
+                "mehrBedarf", 240L,
+                listOf(MahlzeitTeil(kreisMenge, t95Min = 240.0), MahlzeitTeil(0.4 * kreisMenge, beginnMin = 120.0, t95Min = 180.0)),
+            ),
+        )
     }
 
     // ---- HCL STUFE 2 (Toni 25.10.2026, Entwurf B): DER BOLUSRECHNER ---------------------------------------------
@@ -3696,5 +4183,30 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
 
         /** Synthetische Budgetgrenze der Snack-Probe [U]: so hoch, dass sie die Mahlzeit nicht deckelt. */
         const val SNACK_PROBE_BUDGET_U = 15.0
+
+        /** Synthetische KH-Menge der Eingabe-Proben [g] - nur Anzeige, gerechnet wird mit dem KH-Insulin. */
+        const val EINGABE_KH_G = 40L
+
+        /**
+         * Geschlossener Kreis: Startzucker und Messbereich des kuenstlichen Patienten [mg/dl], die Mahlzeit der Proben
+         * (KH-Insulin in tausendstel Einheiten: Skalierer 1,5 bei Kurvenende 3 U), das vorhandene IOB [U] samt Minute
+         * seines Bolus, das eingestellte Fenster [min], der Nachschlag-Anteil und das Ende des Laufs [min].
+         */
+        const val KREIS_START_BG = 110.0
+        const val KREIS_SENSOR_UNTEN = 40.0
+        const val KREIS_SENSOR_OBEN = 400.0
+        const val KREIS_KH_MILLI_U = 4_500L
+        const val KREIS_VOR_IOB_U = 1.0
+        const val KREIS_VOR_IOB_MIN = -30
+        const val KREIS_FENSTER_MIN = 180
+        const val KREIS_NACHSCHLAG = 0.5
+        const val KREIS_BIS_MIN = 360
+
+        /**
+         * Geschlossener Kreis: die Zeit, nach der die Bezugsmahlzeit zu 95 % aufgenommen ist [min] - die Mahlzeit, fuer
+         * die die Kurve ohne Absorptionszeit steht -, und x der Gamma-Form bei 95 %: (1 + x) e^-x = 0,05.
+         */
+        const val KREIS_BEZUG_T95_MIN = 180.0
+        const val GAMMA_X95 = 4.744
     }
 }

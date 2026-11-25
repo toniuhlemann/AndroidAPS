@@ -216,10 +216,13 @@ private fun FuseScreen(plugin: FusePlugin, dateUtil: DateUtil, rxBus: RxBus, onS
         // Derselbe Dialog wie am Knopf auf dem Hauptbildschirm (core:ui) - zwei Fassungen waeren zwei Sicherheitsniveaus.
         FuseMealPromptDialog(
             facts = fakten,
-            onExpectationOnly = {
+            onExpectationOnly = { carbsG, absorptionMin ->
                 rueckfrage = null
                 scope.launch {
-                    plugin.toggleMealMarker(dateUtil.now(), ereignisId = ereignis, quelle = quelle.text, nurErwartung = true)
+                    plugin.toggleMealMarker(
+                        dateUtil.now(), ereignisId = ereignis, quelle = quelle.text, nurErwartung = true,
+                        carbsG = carbsG, absorptionMin = absorptionMin,
+                    )
                     aktualisierung++
                 }
             },

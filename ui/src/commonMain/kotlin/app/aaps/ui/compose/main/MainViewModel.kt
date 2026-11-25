@@ -1062,14 +1062,18 @@ class MainViewModel(
 
     /**
      * One of the answers: "Mahlzeit" ([expectationOnly]), "Snack" ([expectationOnly] and [snack]: the same account with
-     * the smaller snack scale) or "Nur Marker - 0 U".
+     * the smaller snack scale) or "Nur Marker - 0 U". "Mahlzeit" can carry the meal input of the dialog: the carbs
+     * [carbsG] and the absorption time [absorptionMin] of the meal, 0 = not given.
      */
-    fun confirmFuseMeal(expectationOnly: Boolean, snack: Boolean = false) {
+    fun confirmFuseMeal(expectationOnly: Boolean, snack: Boolean = false, carbsG: Int = 0, absorptionMin: Int = 0) {
         val prompt = _fuseMealPrompt.value ?: return
         _fuseMealPrompt.value = null
         val source = fuseSource() ?: return
         viewModelScope.launch {
-            if (expectationOnly) source.fuseMarkerToggle(prompt.pressedAt, ereignisId = prompt.eventId, nurErwartung = true, snack = snack)
+            if (expectationOnly) source.fuseMarkerToggle(
+                prompt.pressedAt, ereignisId = prompt.eventId, nurErwartung = true, snack = snack,
+                carbsG = carbsG, absorptionMin = absorptionMin,
+            )
             else source.fuseMarkerToggle(prompt.pressedAt, ohneVorschuss = true, ereignisId = prompt.eventId)
             refreshQuickLaunch()
         }

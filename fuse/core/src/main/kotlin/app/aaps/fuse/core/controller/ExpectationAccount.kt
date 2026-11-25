@@ -92,17 +92,29 @@ object ExpectationAccount {
      * beginnend, monoton steigend und am Ende positiv ist - sonst gibt es
      * keine Kurve, und die Erwartung ist aus.
      */
-    class Curve private constructor(private val pointsU: DoubleArray) {
+    class Curve private constructor(
+        private val pointsU: DoubleArray,
+        /**
+         * MAHLZEIT-EINGABE (Toni 25.11.2026): die STRECKUNG der Zeitachse - dieselbe Form, derselbe Beginn, nur langsamer
+         * (ueber 1) oder schneller (unter 1) durchlaufen. 1 = die Kurve, wie sie eingestellt ist. Die Stuetzwerte selbst
+         * bleiben, wie sie sind ([values]).
+         */
+        val stretch: Double = 1.0,
+    ) {
 
         val endU: Double get() = pointsU[CURVE_POINTS - 1]
 
+        /** Ende der Erwartung [min nach Marker]: [CURVE_END_MIN] mal Streckung. */
+        val endMin: Double get() = CURVE_END_MIN * stretch
+
         fun values(): List<Double> = pointsU.toList()
 
-        /** F(a), linear zwischen den Stuetzwerten; ausserhalb geklemmt. */
+        /** F(a), linear zwischen den Stuetzwerten; ausserhalb geklemmt. Mit Streckung auf der gestreckten Zeitachse. */
         fun at(ageMin: Double): Double {
             if (!ageMin.isFinite() || ageMin <= 0.0) return pointsU[0]
-            if (ageMin >= CURVE_END_MIN) return endU
-            val pos = ageMin / CURVE_STEP_MIN
+            val a = if (stretch == 1.0) ageMin else ageMin / stretch
+            if (a >= CURVE_END_MIN) return endU
+            val pos = a / CURVE_STEP_MIN
             val i = pos.toInt()
             val w = pos - i
             return pointsU[i] + (pointsU[i + 1] - pointsU[i]) * w
@@ -111,8 +123,21 @@ object ExpectationAccount {
         /** Z(a) = F(min(a + H, Ende)) - F(a), nie negativ. */
         fun remaining(ageMin: Double, horizonMin: Int): Double {
             val a = max(0.0, ageMin)
-            return max(0.0, at(min(a + horizonMin, CURVE_END_MIN.toDouble())) - at(a))
+            return max(0.0, at(min(a + horizonMin, endMin)) - at(a))
         }
+
+        /**
+         * Bis hierhin [min nach Marker] rechnet die Vorschau [horizonMin] die Kurve an: die Vorschau auf der Zeitachse
+         * der Kurve, hoechstens ihr Ende. Ohne Streckung `min(Vorschau, CURVE_END_MIN)` wie bisher.
+         */
+        fun endWithin(horizonMin: Int): Double = stretch * min(horizonMin.toDouble(), CURVE_END_MIN.toDouble())
+
+        /**
+         * Dieselbe Kurve mit der Streckung [factor] ([stretch]). Ein ungueltiger Faktor (nicht endlich, nicht positiv)
+         * laesst sie, wie sie ist.
+         */
+        fun stretched(factor: Double): Curve =
+            if (!factor.isFinite() || factor <= 0.0 || factor == stretch) this else Curve(pointsU, factor)
 
         companion object {
 
@@ -287,9 +312,24 @@ object ExpectationAccount {
          * nur mit der Beobachtung und sinkt nur mit dem Deckel. Verpflichtet nie zur Abgabe.
          */
         val topUpU: Double = 0.0,
+        /**
+         * MAHLZEIT-EINGABE (Toni 25.11.2026): die Streckung der Zeitachse dieser Mahlzeit aus der Absorptionszeit am
+         * Marker ([EarlySupply.courseStretch]), am Marker festgehalten. 1 = die Kurve, wie sie eingestellt ist. Die
+         * Stuetzwerte in [curveValues] bleiben die eingestellten; gelesen wird die Kurve ueber [curve].
+         */
+        val curveStretch: Double = 1.0,
+        /**
+         * MAHLZEIT-EINGABE: das Konto ist aus einer Eingabe am Marker gebucht ([EarlySupply.MealCourse.byInput]). Dann
+         * rechnen Guard und Spaetwirkung die Mahlzeit in der GEBUCHTEN Hoehe an - die Anfangsportion gegen den
+         * angekuendigten Verlauf (statt pauschal gehoben), weitere Portionen gegen den bestaetigten Teil davon.
+         */
+        val byInput: Boolean = false,
     ) {
         /** Was noch fliessen darf: Budget plus Nachschlag, abzueglich des Verbrauchten. */
         val restU: Double get() = max(0.0, a0U + topUpU - bookedU)
+
+        /** Die Erwartungskurve dieser Episode mit ihrer Streckung; `null` = keine gueltige Kurve (Erwartung aus). */
+        fun curve(): Curve? = Curve.of(curveValues)?.stretched(curveStretch)
     }
 
     /**
@@ -369,19 +409,22 @@ object ExpectationAccount {
         unitAction: (Double) -> Double,
         afterLow: Boolean = !startStable,
     ): State {
-        val scale = if (afterLow) settings.scaleAfterLow else settings.scaleStable
-        val b = EarlySupply.budgetU(params.curve, params.horizonMin, scale, settings.budgetMaxU, unitAction)
+        // MAHLZEIT-EINGABE (Toni 25.11.2026): Skalierer, Budget und Anteil der Anfangsportion kommen aus EINER Rechnung
+        // ([EarlySupply.booking]) - ohne Eingabe genau die bisherige, mit Eingabe aus dem Verlauf dieser Mahlzeit.
+        val b = EarlySupply.booking(params.curve, params.horizonMin, settings, afterLow, unitAction)
         return grundbuchung(authId, windowEndTs, params, startStable, nowTs, bgMgdl, isfMgdlPerU).copy(
-            phi0 = scale,
-            a0U = if (b.isFinite()) max(0.0, b) else 0.0,
+            phi0 = b.scale,
+            a0U = b.budgetU,
             early = EarlySupply.Pins(
-                initialShare = settings.initialShare,
+                initialShare = b.initialShare,
                 maxPortionU = settings.maxPortionU,
                 maxPerPeriodU = settings.maxPerPeriodU,
                 periodMin = settings.periodMin,
                 switches = switches,
                 topUpShare = settings.topUpShare,
             ),
+            curveStretch = b.course.stretch,
+            byInput = b.course.byInput,
         )
     }
 
@@ -614,15 +657,21 @@ object ExpectationAccount {
         val imZeitraumU = buch.filter { inputs.nowTs - it.ts < pins.periodMin * 60_000L }.sumOf { it.amountU }
         val zeitraumRestU = max(0.0, pins.maxPerPeriodU - imZeitraumU)
 
-        val curve = Curve.of(s.curveValues)
+        val curve = s.curve()
         // NACHSCHLAG (Toni 23.10.): zeigt sich die Mahlzeit groesser als erwartet - beobachtete Stoerung ueber Skalierer
         // mal Kurve, nach dem Kurvenende ihr Endwert -, darf das Konto den Ueberschuss zusaetzlich geben, hoechstens den
         // festgehaltenen Anteil des Budgets. Nur mit gueltiger Beobachtung; einmal erlaubt, bleibt er, ausser der Deckel
         // sinkt. Er hebt nur die Grenze - wie viel fliesst, sagen weiter Anforderung, Pruefungen und Portionsdeckel.
+        // MAHLZEIT-EINGABE (Toni + Kodex 25.11.2026): mit angesagtem Verlauf ist eine Mahlzeit, die FRUEHER kommt als
+        // angesagt, nicht GROESSER. Der Nachschlag misst die Beobachtung dort an der ganzen angesagten Mahlzeit (Skalierer
+        // mal Kurvenende), nicht am Stand des Verlaufs - schon gedeckte KH geben kein Insulin erneut frei. Was die Messung
+        // zeigt, versorgt weiter der Normalbedarf; uebersteigt die Beobachtung die ganze Mahlzeit, gilt der Nachschlag.
+        // Pruefstand: eine Mahlzeit, deren erste Haelfte schneller kam als angesagt, bekam sonst den Nachschlag obendrauf.
         if (curve != null && !expired) {
             val deckel = max(0.0, pins.topUpShare) * s.a0U
+            val erwartetU = if (s.byInput) s.phi0 * curve.endU else s.phi0 * curve.at(inputs.ageMin)
             val ueberschuss = if (s.disturbanceValid && s.disturbanceU.isFinite()) {
-                max(0.0, s.disturbanceU - s.phi0 * curve.at(inputs.ageMin))
+                max(0.0, s.disturbanceU - erwartetU)
             } else 0.0
             val nachschlag = min(deckel, max(s.topUpU, ueberschuss))
             if (nachschlag != s.topUpU) s = s.copy(topUpU = nachschlag)
@@ -679,8 +728,10 @@ object ExpectationAccount {
                 // 22.10.: von selbst) - dann wie sonst, soweit sie sich zeigt und hoechstens die Kurve. Solange sie gilt,
                 // keine Anrechnung.
                 guardScale = if (curve == null || expired || s.earlyLowLocked) 0.0
-                // KANDIDAT W (Pruefstand): bis zur gebuchten Skalierung nur in der Wendephase.
-                else if (wende?.active == true)
+                // KANDIDAT W (Pruefstand): bis zur gebuchten Skalierung nur in der Wendephase. MAHLZEIT-EINGABE: ein
+                // Konto aus einer Eingabe rechnet den bestaetigten Teil in der gebuchten Hoehe an - die Hoehe ist dort
+                // die Mahlzeit selbst (KH / IC), nicht ein frei gewaehlter Skalierer.
+                else if (wende?.active == true || s.byInput)
                     EarlySupply.confirmedGuardScaleToBooked(s.phi0, inputs.ageMin, s.disturbanceU, s.disturbanceValid, curve)
                 else EarlySupply.confirmedGuardScale(s.phi0, inputs.ageMin, s.disturbanceU, s.disturbanceValid, curve),
                 continuationUPerMin = if (expired || curve == null || e == null) 0.0

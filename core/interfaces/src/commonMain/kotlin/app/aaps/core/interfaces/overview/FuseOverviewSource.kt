@@ -174,7 +174,27 @@ interface FuseOverviewSource {
         val snackMaxU: Double? = null,
         /** Davon hoechstens sofort am Druck [U] - steht am Knopf. */
         val snackInitialU: Double? = null,
+        /** Meal input at the button (Toni 25.11.2026); `null` = not offered, then the dialog shows no input fields. */
+        val mealInput: MealInputOffer? = null,
     )
+
+    /**
+     * Meal input at the button (Toni 25.11.2026): the carbs of the meal [g] and its absorption time [min] can be typed
+     * in the dialog. Both are optional and apply to the choice "Mahlzeit" only. [offer] says what "Mahlzeit" books with
+     * them (0 = not given). It is the same calculation as the booking. Its result is `null` when a given value is not
+     * valid: above its limit ([maxCarbsG], [maxAbsorptionMin]), or carbs without a carb ratio in the profile.
+     */
+    class MealInputOffer(
+        val maxCarbsG: Int,
+        val maxAbsorptionMin: Int,
+        val offer: (carbsG: Int, absorptionMin: Int) -> MealOffer?,
+    )
+
+    /**
+     * What "Mahlzeit" books for one meal input ([MealInputOffer.offer]): the budget, what goes out at once at most (at
+     * a stable start), and how long the meal window stays open.
+     */
+    data class MealOffer(val budgetU: Double, val initialU: Double, val windowMin: Int)
 
     fun fuseMarkerArmed(now: Long): Boolean
 
@@ -341,6 +361,16 @@ interface FuseOverviewSource {
         nurErwartung: Boolean = false,
         /** Wahl "Snack" (Toni 24.10.2026): wie "Mahlzeit", aber das Budget mit dem Snack-Skalierer. */
         snack: Boolean = false,
+        /**
+         * Meal input (Toni 25.11.2026), only with the choice "Mahlzeit": the carbs of the meal [g]. 0 = not given; then
+         * the budget comes from the settings as before.
+         */
+        carbsG: Int = 0,
+        /**
+         * Meal input, only with the choice "Mahlzeit": the absorption time of the meal [min]. 0 = not given; then the
+         * initial portion and the meal window come from the settings as before.
+         */
+        absorptionMin: Int = 0,
     ): Boolean
 
     /**

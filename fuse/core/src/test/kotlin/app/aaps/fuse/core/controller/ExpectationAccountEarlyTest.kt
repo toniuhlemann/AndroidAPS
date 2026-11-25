@@ -416,6 +416,34 @@ class ExpectationAccountEarlyTest {
         assertEquals(0.5 * t.a0U, t.topUpU, 1e-9)
     }
 
+    /**
+     * MAHLZEIT-EINGABE (Toni + Kodex 25.11.2026): mit angesagtem Verlauf misst der Nachschlag die Beobachtung an der
+     * ganzen angesagten Mahlzeit - eine Mahlzeit, die frueher kommt als angesagt, ist nicht groesser. Erst was ueber die
+     * ganze Mahlzeit hinausgeht, gibt den Nachschlag frei. Ohne Eingabe wie bisher (Probe oben).
+     */
+    @Test
+    fun `mit Eingabe gilt der Nachschlag erst ueber der ganzen angesagten Mahlzeit`() {
+        val mitEingabe = einstellung.copy(topUpShare = 0.5, course = EarlySupply.MealCourse(stretch = 4.0 / 3.0))
+        var s = ExpectationAccount.armEarly(
+            authId = t0, windowEndTs = t0 + 240 * 60_000L, params = params, settings = mitEingabe, switches = alle,
+            startStable = true, nowTs = t0, bgMgdl = 100.0, isfMgdlPerU = 50.0, unitAction = wirkung,
+        )
+        assertTrue(s.byInput)
+        val kurve = requireNotNull(s.curve())
+        // Eine Beobachtung ueber dem Stand des (gestreckten) Verlaufs, aber unter der ganzen Mahlzeit: 2 mg/dl je Minute.
+        for (m in 0..60) s = schritt(s, m, bg = 100.0 + 2.0 * m).first
+        assertTrue(s.disturbanceU > s.phi0 * kurve.at(60.0)) { "Probe zeigt nichts: nicht ueber dem Verlauf" }
+        assertTrue(s.disturbanceU < s.phi0 * kurve.endU) { "Probe zeigt nichts: schon ueber der ganzen Mahlzeit" }
+        assertEquals(0.0, s.topUpU, 0.0)
+        // Geht die Beobachtung ueber die ganze Mahlzeit hinaus, gilt der Nachschlag - hoechstens der Ueberschuss ueber
+        // sie und hoechstens der eingestellte Anteil des Budgets.
+        for (m in 61..119) s = schritt(s, m, bg = 220.0 + 4.0 * (m - 60)).first
+        val ueberGanz = s.disturbanceU - s.phi0 * kurve.endU
+        assertTrue(ueberGanz > 0.0) { "Probe zeigt nichts: nie ueber der ganzen Mahlzeit" }
+        assertTrue(s.topUpU > 0.0)
+        assertTrue(s.topUpU <= ueberGanz + 1e-9 && s.topUpU <= 0.5 * s.a0U + 1e-9) { "Nachschlag ${s.topUpU}" }
+    }
+
     @Test
     fun `ohne Nachschlag-Einstellung bleibt das Budget die Grenze - ohne gueltige Beobachtung kein Nachschlag`() {
         var s = konto()

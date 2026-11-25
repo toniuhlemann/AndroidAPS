@@ -1752,6 +1752,17 @@ object FuseStateJson {
                         put("markerHclMerged", it.markerHclMerged)
                     }
                 }
+                // MAHLZEIT-EINGABE (Toni 25.11.2026): KH-Menge und Absorptionszeit am Marker, fuer Viewer und Auswertung.
+                // Nur mit Angabe, sonst bleibt der Datensatz bitgleich.
+                .apply {
+                    outcome.state?.let {
+                        if (it.markerCarbsG > 0) {
+                            put("markerCarbsG", it.markerCarbsG)
+                            put("markerCarbsInsulinU", fin(it.markerCarbsInsulinU))
+                        }
+                        if (it.markerAbsorptionMin > 0) put("markerAbsorptionMin", it.markerAbsorptionMin)
+                    }
+                }
                 .put("markerBoost", outcome.state?.markerBoost ?: JSONObject.NULL)
                 .put("mealWindow", outcome.state?.mealWindow ?: JSONObject.NULL)
                 .put("smbRatioEffective", fin(outcome.state?.effectiveSmbRatio))
@@ -2622,6 +2633,12 @@ object FuseStateJson {
                 .put("expectationOn", s.expectationOn)
                 .put("curveVersion", if (s.curveValues.isEmpty()) JSONObject.NULL
                     else app.aaps.fuse.core.controller.ExpectationAccount.curveVersion(s.curveValues))
+                // MAHLZEIT-EINGABE (Toni 25.11.2026): der Verlauf dieser Mahlzeit - die Streckung der Kurve und dass das
+                // Konto aus einer Eingabe gebucht ist. Nur abweichend, sonst bleibt der Datensatz bitgleich.
+                .apply {
+                    if (s.curveStretch != 1.0) put("curveStretch", fin(s.curveStretch))
+                    if (s.byInput) put("byInput", true)
+                }
                 .put("armedThisCycle", z.armiertInDiesemZyklus)
                 .put("startStable", s.startStable)
                 .put("stable", z.stabil)

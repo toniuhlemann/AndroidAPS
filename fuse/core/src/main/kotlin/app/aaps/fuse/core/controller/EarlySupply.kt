@@ -59,6 +59,11 @@ object EarlySupply {
         val periodMin: Int,
         /** Toni 23.10.: Nachschlag hoechstens, als Anteil des Budgets (0..1); 0 = kein Nachschlag ([Pins.topUpShare]). */
         val topUpShare: Double = 0.0,
+        /**
+         * MAHLZEIT-EINGABE (Toni 25.11.2026): der Verlauf DIESER Mahlzeit aus der Eingabe am Marker ([forMeal]). Ohne
+         * Eingabe [MealCourse.NONE] - dann bucht das Konto wie bisher ([booking]).
+         */
+        val course: MealCourse = MealCourse.NONE,
     ) {
         /**
          * Toni 24.10.2026: die Wahl "Snack" am Marker - dieselben Einstellungen, beide Skalierer hoechstens [snackScale].
@@ -78,6 +83,30 @@ object EarlySupply {
         fun forTimeOfDay(scale: Double?): Settings =
             if (scale == null || !scale.isFinite() || scale <= 0.0 || scale > MAX_SCALE) this
             else copy(scaleStable = scale, scaleAfterLow = min(scaleAfterLow, scale))
+
+        /**
+         * MAHLZEIT-EINGABE (Toni 25.11.2026): die KH-Menge am Marker bestimmt die Hoehe. Ihr Skalierer ([carbsScale])
+         * ersetzt den "bei stabilem Start" mit derselben Regel wie der Skalierer der Tageszeit ([forTimeOfDay]): der
+         * "nach Tief" wird hoechstens so gross - ein Start im Tief bucht nie mehr als ein stabiler und nie mehr als
+         * eingestellt. `null` (keine oder keine verwertbare Eingabe) laesst die Einstellungen unveraendert: ohne
+         * Eingabe wie bisher.
+         */
+        fun forCarbs(scale: Double?): Settings = forTimeOfDay(scale)
+
+        /**
+         * MAHLZEIT-EINGABE: die Einstellungen der Wahl "Mahlzeit" fuer EINEN Marker. Mit KH-Menge bestimmt sie die
+         * Hoehe ([forCarbs]) und ersetzt den Skalierer der Tageszeit - das IC des Profils traegt die Tageszeit schon.
+         * Ohne sie gilt [timeOfDayScale] wie bisher ([forTimeOfDay]). Die Absorptionszeit bestimmt den Verlauf
+         * ([courseStretch]); beides steht danach in [course]. Ohne Eingabe ([MealInput.NONE]) und bei der Bezugszeit ohne
+         * KH ist das Ergebnis genau [forTimeOfDay]. Die Buchung und die Zahl am Knopf rechnen beide hiermit und mit
+         * [booking] - ein zweiter Rechenweg waere eine zweite Wahrheit.
+         */
+        fun forMeal(timeOfDayScale: Double?, input: MealInput, curve: ExpectationAccount.Curve): Settings {
+            val khSkalierer = if (input.hasCarbs) carbsScale(input.carbsInsulinU, curve) else null
+            val hoehe = if (khSkalierer != null) forCarbs(khSkalierer) else forTimeOfDay(timeOfDayScale)
+            val verlauf = MealCourse(stretch = courseStretch(input.absorptionMin), carbsKnown = khSkalierer != null)
+            return if (verlauf.byInput) hoehe.copy(course = verlauf) else hoehe
+        }
 
         companion object {
             /**
@@ -287,10 +316,10 @@ object EarlySupply {
      * mal Skalierer mal ISF. Ausserhalb der Kurve 0. Dosierneutral - nur Graph und Trail lesen sie.
      */
     fun expectedDriveMgdlPerMin(curve: ExpectationAccount.Curve, ageMin: Double, scale: Double, isfMgdlPerU: Double): Double {
-        if (!ageMin.isFinite() || ageMin < 0.0 || ageMin >= ExpectationAccount.CURVE_END_MIN) return 0.0
+        if (!ageMin.isFinite() || ageMin < 0.0 || ageMin >= curve.endMin) return 0.0
         if (!scale.isFinite() || scale <= 0.0 || !isfMgdlPerU.isFinite() || isfMgdlPerU <= 0.0) return 0.0
         val von = max(0.0, ageMin - 1.0)
-        val bis = min(ExpectationAccount.CURVE_END_MIN.toDouble(), ageMin + 1.0)
+        val bis = min(curve.endMin, ageMin + 1.0)
         val v = scale * (curve.at(bis) - curve.at(von)) / (bis - von) * isfMgdlPerU
         return if (v.isFinite()) max(0.0, v) else 0.0
     }
@@ -338,11 +367,161 @@ object EarlySupply {
         scale: Double, ageMin: Double, observedU: Double, observedValid: Boolean, curve: ExpectationAccount.Curve,
     ): Double = confirmedGuardScale(min(1.0, scale), ageMin, observedU, observedValid, curve)
 
+    // ---- MAHLZEIT-EINGABE (Toni 25.11.2026): KH-Menge und Absorptionszeit am Marker ---------------------------------
+    //
+    // Zwei freiwillige Angaben zur Wahl "Mahlzeit". Jede faellt fuer sich auf die Einstellungen zurueck - ohne Angabe
+    // rechnet das Konto wie bisher.
+    //
+    //  - Die KH-Menge bestimmt die HOEHE: das Kurvenende ist KH / IC ([carbsScale]). Und sie ist die MENGE: auf die
+    //    Ankuendigung hin gibt das Konto hoechstens KH / IC ([booking]); mehr nur, wenn die Messung es zeigt (gemessener
+    //    Anteil, Nachschlag). Schon gedeckte KH geben spaeter kein Insulin mehr frei, nur weil Budget uebrig waere.
+    //  - Die Absorptionszeit bestimmt den VERLAUF: dieselbe Form, derselbe Beginn, die Zeitachse gestreckt oder gestaucht
+    //    ([courseStretch]). Keine Wartezeit, keine pauschale Kuerzung: was eine schnelle Mahlzeit frueher und eine
+    //    langsame spaeter braucht, ergibt sich aus dem Verlauf - bei Budget, Anfangsportion, Anforderung und der
+    //    Anrechnung in Guard und Spaetwirkung.
+
     /**
-     * KANDIDAT W (Pruefstand): IN DER WENDEPHASE rechnen Guard und Schwanz dieselbe Mahlzeit an wie die Anforderung
-     * ([effectiveScale]: der gebuchte Skalierer im Verhaeltnis beobachtet/erwartet, hoechstens er) - ohne den Deckel der
-     * Kurve, den [confirmedGuardScale] sonst setzt. Nur dort; sonst gilt [confirmedGuardScale]. Nie weniger als sie.
-     * Dieselben Bedingungen: vor [ADAPT_FROM_MIN] und ohne gueltige Beobachtung nichts.
+     * Die Bezugszeit der Absorption [min]: die Absorptionszeit der Mahlzeit, fuer die die Erwartungskurve eingestellt
+     * ist. Mit ihr laeuft die Kurve, wie sie ist.
+     */
+    const val ABSORPTION_REFERENCE_MIN = 180
+
+    /**
+     * Die Grenzen des Verlaufs [min Absorptionszeit]: schneller als eine Stunde und langsamer als fuenf Stunden rechnet
+     * das Konto nicht - eine Angabe ausserhalb zaehlt wie die Grenze.
+     */
+    const val MIN_COURSE_ABSORPTION_MIN = 60
+    const val MAX_COURSE_ABSORPTION_MIN = 300
+
+    /** Das Mahlzeitfenster aus der Absorptionszeit [min]: nie kuerzer als die Erwartungskurve, hoechstens fuenf Stunden. */
+    const val MIN_ABSORPTION_WINDOW_MIN = ExpectationAccount.CURVE_END_MIN
+    const val MAX_ABSORPTION_WINDOW_MIN = MAX_COURSE_ABSORPTION_MIN
+
+    /**
+     * Die Grenzen der Eingabe (letzte Verteidigung im Kern): was darueber liegt, gilt als keine Angabe. Eine grosse
+     * KH-Menge innerhalb der Grenze begrenzen [MAX_SCALE] und der Budget-Deckel.
+     */
+    const val MAX_INPUT_CARBS_G = 300
+    const val MAX_INPUT_ABSORPTION_MIN = 600
+
+    /**
+     * Was am Marker zur Mahlzeit eingegeben wurde. [carbsInsulinU] = KH / IC, am Druck mit dem IC des Profils gerechnet
+     * (der Regler kennt kein IC); [absorptionMin] = die Absorptionszeit [min]. Je 0 = keine Angabe.
+     */
+    data class MealInput(val carbsInsulinU: Double = 0.0, val absorptionMin: Int = 0) {
+        val hasCarbs: Boolean get() = carbsInsulinU > 0.0
+        val hasAbsorption: Boolean get() = absorptionMin > 0
+        val isEmpty: Boolean get() = !hasCarbs && !hasAbsorption
+
+        companion object {
+            val NONE = MealInput()
+
+            /**
+             * Die Eingabe, geprueft: KH [g] und IC [g/U] ergeben das KH-Insulin. Eine Angabe ausserhalb ihrer Grenzen
+             * (auch ein fehlendes oder ungueltiges IC) gilt als nicht gemacht - dann rechnet das Konto dort wie ohne
+             * Eingabe, nie mit einem geratenen Wert.
+             */
+            fun of(carbsG: Int, icGPerU: Double?, absorptionMin: Int): MealInput {
+                val khInsulin = if (carbsG in 1..MAX_INPUT_CARBS_G && icGPerU != null && icGPerU.isFinite() && icGPerU > 0.0)
+                    (carbsG / icGPerU).takeIf { it.isFinite() && it > 0.0 } ?: 0.0
+                else 0.0
+                return MealInput(khInsulin, if (absorptionMin in 1..MAX_INPUT_ABSORPTION_MIN) absorptionMin else 0)
+            }
+        }
+    }
+
+    /**
+     * Der Skalierer aus der KH-Menge: das KH-Insulin [carbsInsulinU] (KH / IC) im Verhaeltnis zum Endwert der
+     * Erwartungskurve, hoechstens [MAX_SCALE] - dieselbe Rechnung wie bei der Mahlzeit aus dem Bolusrechner
+     * ([hclScale]). Die Kurve ist damit auf DIESE Mahlzeit gehoben: sie erwartet bis zu ihrem Ende die Wirkung von
+     * KH / IC. Ein eingestellter Skalierer bedeutet dasselbe: Skalierer mal Kurvenende ist das KH-Insulin der Mahlzeit,
+     * fuer die er steht. `null` = keine Angabe oder nicht berechenbar; dann gilt der eingestellte Skalierer.
+     */
+    fun carbsScale(carbsInsulinU: Double, curve: ExpectationAccount.Curve): Double? =
+        hclScale(carbsInsulinU, curve).takeIf { it > 0.0 }
+
+    /**
+     * Die Streckung der Zeitachse aus der Absorptionszeit [min] ([ExpectationAccount.Curve.stretch]): Absorptionszeit
+     * durch Bezugszeit, in den Grenzen des Verlaufs ([MIN_COURSE_ABSORPTION_MIN] bis [MAX_COURSE_ABSORPTION_MIN]). Die
+     * Mahlzeit beginnt wie jede andere; sie laeuft nur schneller (unter 1) oder langsamer (ueber 1). Keine Angabe (0
+     * oder weniger) = 1: die Kurve, wie sie eingestellt ist.
+     */
+    fun courseStretch(absorptionMin: Int): Double =
+        if (absorptionMin <= 0) 1.0
+        else min(MAX_COURSE_ABSORPTION_MIN, max(MIN_COURSE_ABSORPTION_MIN, absorptionMin)).toDouble() / ABSORPTION_REFERENCE_MIN
+
+    /**
+     * Der Verlauf EINER Mahlzeit aus der Eingabe am Marker. [stretch] ist die Streckung der Zeitachse aus der
+     * Absorptionszeit ([courseStretch]); [carbsKnown] sagt, dass die KH-Menge angegeben ist - dann ist die Hoehe der Kurve
+     * die Mahlzeit selbst, und das Konto gibt auf die Ankuendigung hin hoechstens sie ([booking]).
+     */
+    data class MealCourse(val stretch: Double = 1.0, val carbsKnown: Boolean = false) {
+
+        /** Es gibt eine Eingabe, die etwas aendert. Die Bezugszeit ohne KH-Menge ist keine: sie ist die Kurve, wie sie ist. */
+        val byInput: Boolean get() = carbsKnown || stretch != 1.0
+
+        companion object {
+            val NONE = MealCourse()
+        }
+    }
+
+    /**
+     * Was eine Buchung am Marker festhaelt: den Skalierer [scale], das Budget [budgetU], den Anteil der Anfangsportion am
+     * Budget [initialShare] und den Verlauf [course].
+     */
+    data class Booking(val scale: Double, val budgetU: Double, val initialShare: Double, val course: MealCourse)
+
+    /**
+     * DIE BUCHUNG AM MARKER - eine Rechnung fuer das Konto ([ExpectationAccount.armEarly]) und fuer die Zahl am Knopf.
+     *
+     * OHNE Eingabe wie bisher: Budget = `min(Budget-Max, Skalierer mal frueher Bedarf der Kurve)` ([budgetU]), die
+     * Anfangsportion ist der eingestellte Anteil daran.
+     *
+     * MIT Eingabe ([MealCourse.byInput]) aus dem Verlauf dieser Mahlzeit (die Kurve mit ihrer Streckung):
+     *  - MAHLZEITMENGE = Skalierer mal Kurvenende. Mit KH-Menge ist das KH / IC.
+     *  - BUDGET: mit KH-Menge die Mahlzeitmenge - auf die Ankuendigung hin nie mehr, als die KH brauchen. Was die
+     *    Mahlzeit darueber hinaus zeigt, tragen der gemessene Anteil und der Nachschlag. Ohne KH-Menge (nur
+     *    Absorptionszeit) der fruehe Bedarf des Verlaufs, hoechstens der der eingestellten Kurve: eine schnellere
+     *    Mahlzeit laesst sich nicht besser decken, indem man mehr gibt - nur frueher.
+     *  - ANFANGSPORTION: der eingestellte Anteil am fruehen Bedarf des VERLAUFS, hoechstens die Mahlzeitmenge und
+     *    hoechstens das Budget. Eine schnelle Mahlzeit braucht frueh mehr (bis zur ganzen Menge), eine langsame weniger.
+     *    Ob die Bahn sie traegt, prueft der Regler mit dem angekuendigten Verlauf (Guard und Spaetwirkung).
+     */
+    fun booking(
+        curve: ExpectationAccount.Curve, horizonMin: Int, settings: Settings, afterLow: Boolean, action: (Double) -> Double,
+    ): Booking {
+        val scale = if (afterLow) settings.scaleAfterLow else settings.scaleStable
+        val verlauf = settings.course
+        if (!verlauf.byInput) {
+            val b = budgetU(curve, horizonMin, scale, settings.budgetMaxU, action)
+            return Booking(scale, if (b.isFinite()) max(0.0, b) else 0.0, settings.initialShare, verlauf)
+        }
+        val fruehJeSkalierer = budgetU(curve.stretched(verlauf.stretch), horizonMin, 1.0, Double.MAX_VALUE, action)
+        val bezugJeSkalierer = budgetU(curve, horizonMin, 1.0, Double.MAX_VALUE, action)
+        val mengeU = scale * curve.endU
+        val grenzeU = if (verlauf.carbsKnown) mengeU else scale * min(fruehJeSkalierer, bezugJeSkalierer)
+        val budget = min(settings.budgetMaxU, grenzeU).let { if (it.isFinite()) max(0.0, it) else 0.0 }
+        val anfang = min(min(settings.initialShare * scale * fruehJeSkalierer, mengeU), budget)
+        val anteil = if (budget > EPS && anfang.isFinite()) min(1.0, max(0.0, anfang / budget)) else 0.0
+        return Booking(scale, budget, anteil, verlauf)
+    }
+
+    /**
+     * Das Mahlzeitfenster eines Markers [min]: ohne Angabe (0 oder weniger) die Einstellung [settingMin]; mit
+     * Absorptionszeit diese, begrenzt auf [MIN_ABSORPTION_WINDOW_MIN] bis [MAX_ABSORPTION_WINDOW_MIN]. Eine schnelle
+     * Mahlzeit schliesst ihr Fenster damit frueher als eingestellt (keine spaeten Konto-Gaben), eine langsame spaeter.
+     */
+    fun mealWindowMin(absorptionMin: Int, settingMin: Int): Int =
+        if (absorptionMin <= 0) settingMin
+        else min(MAX_ABSORPTION_WINDOW_MIN, max(MIN_ABSORPTION_WINDOW_MIN, absorptionMin))
+
+    /**
+     * Guard und Schwanz rechnen dieselbe Mahlzeit an wie die Anforderung ([effectiveScale]: der gebuchte Skalierer im
+     * Verhaeltnis beobachtet/erwartet, hoechstens er) - ohne den Deckel der Kurve, den [confirmedGuardScale] sonst setzt.
+     * Gilt an zwei Stellen: in der Wendephase (KANDIDAT W, Pruefstand) und fuer ein Konto aus einer MAHLZEIT-EINGABE
+     * (Toni 25.11.2026) - dort ist die gebuchte Hoehe die angesagte Mahlzeit, kein frei gewaehlter Skalierer. Sonst gilt
+     * [confirmedGuardScale]. Nie weniger als sie. Dieselben Bedingungen: vor [ADAPT_FROM_MIN] und ohne gueltige
+     * Beobachtung nichts.
      */
     fun confirmedGuardScaleToBooked(
         scale: Double, ageMin: Double, observedU: Double, observedValid: Boolean, curve: ExpectationAccount.Curve,
@@ -369,7 +548,7 @@ object EarlySupply {
         scaleGuard: Double, isfMgdlPerU: Double, continuation: Continuation? = null,
     ): Double {
         if (!ageMin.isFinite() || !offsetMin.isFinite() || !isfMgdlPerU.isFinite() || isfMgdlPerU <= 0.0) return 0.0
-        val ende = min(horizonMin.toDouble(), ExpectationAccount.CURVE_END_MIN.toDouble())
+        val ende = curve.endWithin(horizonMin)
         val von = min(max(0.0, ageMin), ende)
         val bis = min(max(0.0, ageMin + offsetMin), ende)
         val fortsetzung = if (continuation == null || !(scaleGuard > 0.0)) 0.0
@@ -484,9 +663,12 @@ object EarlySupply {
         }
     }
 
-    /** Die Deckungszeitpunkte tau [min ab jetzt] fuer Markeralter [ageMin]: 30 .. Ende, im Raster. */
-    private fun deckung(ageMin: Double, horizonMin: Int): List<Int> {
-        val bis = (min(horizonMin.toDouble(), ExpectationAccount.CURVE_END_MIN.toDouble()) - ageMin).toInt()
+    /**
+     * Die Deckungszeitpunkte tau [min ab jetzt] fuer Markeralter [ageMin]: 30 .. Ende, im Raster. Das Ende ist das der
+     * Kurve [curve] in ihrer Vorschau ([ExpectationAccount.Curve.endWithin]) - mit Streckung spaeter oder frueher.
+     */
+    private fun deckung(curve: ExpectationAccount.Curve, ageMin: Double, horizonMin: Int): List<Int> {
+        val bis = (curve.endWithin(horizonMin) - ageMin).toInt()
         if (bis < MIN_COVER_MIN) return emptyList()
         return (MIN_COVER_MIN..bis step STEP_MIN).toList()
     }
@@ -496,7 +678,7 @@ object EarlySupply {
      * fruehe Gabe, deren Wirkung die erwartete Mahlzeitwirkung rechtzeitig abdeckt. Nie negativ.
      */
     fun budgetU(curve: ExpectationAccount.Curve, horizonMin: Int, scale: Double, budgetMaxU: Double, action: (Double) -> Double): Double {
-        val bedarf = deckung(0.0, horizonMin).maxOfOrNull { t ->
+        val bedarf = deckung(curve, 0.0, horizonMin).maxOfOrNull { t ->
             val c = action(t.toDouble())
             if (c > EPS) curve.at(t.toDouble()) / c else 0.0
         } ?: 0.0
@@ -509,7 +691,7 @@ object EarlySupply {
     /** Wie [budgetU], aber ungedeckelt und mit dem bestimmenden Punkt - fuer die Anzeige der Wirkung. `null` = keine Deckung. */
     fun need(curve: ExpectationAccount.Curve, horizonMin: Int, action: (Double) -> Double): Need? {
         var best: Need? = null
-        for (t in deckung(0.0, horizonMin)) {
+        for (t in deckung(curve, 0.0, horizonMin)) {
             val c = action(t.toDouble())
             if (c <= EPS) continue
             val r = curve.at(t.toDouble()) / c
@@ -606,9 +788,9 @@ object EarlySupply {
         val anteilFrei = if (iobU > EPS) min(1.0, max(0.0, freeIobU / iobU)) else 0.0
         val fa = curve.at(ageMin)
         val fortsetzung = continuation?.takeIf { it.amountU(0.0, ExpectationAccount.CURVE_END_MIN.toDouble()) > EPS }
-        val kurvenEnde = min(horizonMin.toDouble(), ExpectationAccount.CURVE_END_MIN.toDouble())
+        val kurvenEnde = curve.endWithin(horizonMin)
         val u0 = max(0.0, kurvenEnde - ageMin)
-        val punkte = if (fortsetzung == null) deckung(ageMin, horizonMin)
+        val punkte = if (fortsetzung == null) deckung(curve, ageMin, horizonMin)
         else (MIN_COVER_MIN..ExpectationAccount.CURVE_END_MIN step STEP_MIN).toList()
         val x = punkte.maxOfOrNull { t ->
             val c = action(t.toDouble())

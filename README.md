@@ -158,6 +158,37 @@ their window (0 = not set, then the general scaler applies).
 - The times must rise (04:00, midday, evening). If they do not while a scaler is set, the early supply is off and the
   settings show the reason — never a silent fall back to the general scaler.
 
+**Carbs and absorption time at the button (new in November 2026).** The dialog has two optional number fields for the
+choice *Mahlzeit*: the net carbs of the meal in grams and its absorption time in hours. They are meant for values from a
+food app, typed in by hand. Empty fields leave everything as it was, and each field works alone.
+
+- **Carbs set the height and the amount.** The end value of the curve becomes carbs / carb ratio (scaler = carbs insulin
+  divided by the curve end, at most 2) — the same calculation as for a bolus-calculator meal. For this meal it replaces
+  the scaler of the settings. The **budget is the meal amount itself** (carbs / carb ratio, at most the budget maximum):
+  on the announcement alone the account never gives more than the meal needs. Carbs that are covered do not release
+  insulin again later. More insulin only comes from what is measured (the measured part, the normal need, the top-up) —
+  so carbs / carb ratio is no limit for later corrections. The carb ratio is the one of the profile at the time of the
+  press.
+- **The absorption time sets the course.** It counts from eating to the end of the uptake. The curve of this meal keeps
+  its shape and its start; only its time axis is stretched or squeezed by absorption time / 3 hours (the time counts
+  between 1 and 5 hours). There is no start delay. A fast meal is expected earlier, a slow meal over a longer time, and
+  then the expectation runs past minute 120. The meal window of this meal is the absorption time (at least 120, at most
+  300 minutes) instead of the setting *Mahlzeitfenster*.
+- **The initial portion is calculated, not capped.** It is the set share of the early need of this course, at most the
+  meal amount. For a meal with input the guard and the late-effect check test it together with the announced course of
+  this meal, so insulin on board, the new amount and the meal each count once. Without input the initial portion is
+  lifted as before. Further portions count the meal only as far as the measurement confirms it.
+- With an absorption time but no carbs the height stays the one of the settings, and the budget is the smaller early
+  need of the two courses (the set curve and the stretched curve).
+- **What it is not.** This is a model for the timing of the carb effect. It is not a model for extra insulin need from
+  fat and protein; such need is still found from the measured course. The three hours that stand for the set curve are
+  an assumption, not a measured value.
+- The button shows the amount for this meal before the press, and a line names the budget and the window. A value that
+  does not count (above 300 g or above 10 hours) blocks *Mahlzeit* until it is corrected or removed.
+- *Snack*, *Nur Marker* and bolus-calculator meals take no input. The account keeps the values of the press, also over
+  a restart. The trail records them (`markerCarbsG`, `markerCarbsInsulinU`, `markerAbsorptionMin`, and in the account
+  `curveStretch` and `byInput`).
+
 ### Bolus-calculator meals: the joint meal balance (new in November 2026)
 
 With the switch *Bolusrechner-Mahlzeiten anrechnen (HCL)* (factory off), a bolus from the AAPS bolus calculator with
@@ -471,6 +502,28 @@ allgemeine Skalierer. Er ersetzt ihn ganz und ändert damit das Budget **und die
 des Drucks; das Konto hält den Skalierer fest. Ein Snack bucht weiter höchstens so viel wie die Mahlzeit dieser
 Tageszeit, „Nur Marker“ und Mahlzeiten aus dem Bolusrechner bleiben unberührt. Stehen die Uhrzeiten nicht in der
 Reihenfolge 04:00, Mittag, Abend, ist die frühe Versorgung aus, und die Einstellungen nennen den Grund.
+
+**KH und Absorptionszeit am Knopf (neu im November 2026).** Der Dialog hat für „Mahlzeit“ zwei freiwillige Zahlenfelder:
+die Netto-KH der Mahlzeit in Gramm und ihre Absorptionszeit in Stunden — gedacht für Werte aus einer Foto-App, von Hand
+eingetippt. Leere Felder lassen alles, wie es war; jedes Feld wirkt für sich. Die **KH bestimmen Höhe und Menge**: das
+Kurvenende wird KH / IC (Skalierer = KH-Insulin durch Kurvenende, höchstens 2 — dieselbe Rechnung wie beim Bolusrechner)
+und ersetzt für diese Mahlzeit den eingestellten Skalierer. Das **Budget ist die Mahlzeitmenge selbst** (KH / IC,
+höchstens das Budget-Maximum): auf die Ankündigung hin gibt das Konto nie mehr, als die Mahlzeit braucht, und schon
+gedeckte KH geben später nicht erneut Insulin frei. Mehr kommt nur aus der Messung (gemessener Anteil, Normalbedarf,
+Nachschlag) — KH / IC ist also keine Grenze für spätere Korrekturen. Die **Absorptionszeit bestimmt den Verlauf**: sie
+zählt vom Essen bis zum Ende der Aufnahme. Die Kurve dieser Mahlzeit behält Form und Beginn, nur ihre Zeitachse wird mit
+Absorptionszeit / 3 Stunden gestreckt oder gestaucht (die Zeit zählt zwischen 1 und 5 Stunden); eine Wartezeit am Anfang
+gibt es nicht. Eine langsame Mahlzeit wird damit über längere Zeit erwartet, auch über Minute 120 hinaus. Ihr
+Mahlzeitfenster ist die Absorptionszeit (mindestens 120, höchstens 300 Minuten) statt der Einstellung. Die
+**Anfangsportion wird gerechnet, nicht gedeckelt**: eingestellter Anteil am frühen Bedarf dieses Verlaufs, höchstens die
+Mahlzeitmenge; bei einer Mahlzeit mit Eingabe prüfen Guard und Spätwirkung sie zusammen mit dem angekündigten Verlauf,
+so zählen vorhandenes Insulin, die neue Menge und die Mahlzeit je einmal (ohne Eingabe wird sie wie bisher gehoben).
+Weitere Portionen rechnen die Mahlzeit nur an, soweit die Messung sie bestätigt. Nur mit Absorptionszeit, ohne KH,
+bleibt die Höhe die eingestellte, und das Budget ist der kleinere frühe Bedarf der beiden Verläufe. **Was es nicht
+ist:** ein Modell für den zeitlichen Verlauf der KH-Wirkung, kein Modell für zusätzlichen Insulinbedarf durch Fett und
+Eiweiß — der wird weiter aus dem gemessenen Verlauf ermittelt. Die drei Stunden, für die die eingestellte Kurve steht,
+sind eine Annahme, kein Messwert. Der Knopf zeigt die Menge für diese Mahlzeit vor dem Druck. „Snack“, „Nur Marker“ und
+Mahlzeiten aus dem Bolusrechner nehmen keine Eingabe.
 
 **Mahlzeiten aus dem Bolusrechner (neu im November 2026).** Mit dem Schalter „Bolusrechner-Mahlzeiten anrechnen (HCL)“
 (ab Werk aus) ist ein Rechner-Bolus mit KH eine angekündigte Mahlzeit. Sie bekommt jetzt zusätzlich eine **gemeinsame

@@ -1689,6 +1689,10 @@ class FuseCycleRunner(
         // "Snack" (Toni 24.10.): eine "Mahlzeit" mit dem kleineren Snack-Skalierer. Ein Altbestand-Stempel kennt
         // die Wahl nicht und laeuft als Mahlzeit.
         val markerSnack = markerNurErwartung && preferences.get(FuseLongKey.MealMarkerSnack) != 0L
+        // MAHLZEIT-EINGABE (Toni 25.11.2026): KH-Menge und Absorptionszeit am Marker - nur bei der Wahl "Mahlzeit".
+        // "Snack", "Nur Marker" und der Marker aus dem Bolusrechner (er ist ein "Nur Marker") tragen keine, ein
+        // Altbestand-Stempel kennt sie nicht. Ohne Eingabe rechnet der Zyklus wie bisher.
+        val markerEingabe = if (!markerNurErwartung || markerSnack) MarkerEingabe.KEINE else MarkerEingabe.lesen(preferences)
         // HCL STUFE 2 (Toni 25.10.2026): der Marker gehoert zu einer Rechnung des Bolusrechners - und ob sie mit einem
         // schon laufenden Marker zusammengefuehrt wurde. Beide leben und sterben mit dem Marker (FusePlugin).
         val markerHclCalcTs = if (markerTs > 0L) preferences.get(FuseLongKey.MealMarkerHclCalcTs).coerceAtLeast(0L) else 0L
@@ -2339,7 +2343,7 @@ class FuseCycleRunner(
         // OHNE Schreibzugriff. Unten wird sie gegen den echten Kontext geprueft. Konsolidierung 2.0: die Vorschau
         // steht auch ohne Konto (keine gueltige Kurve) - sonst waere dort der Rueckfall nicht erkennbar.
         val ekVorschau = ekKontextVorschau(
-            computeTs, markerTs, episodeGate.creditRevoked, cfg.livenessMealPowerMin, episodes,
+            computeTs, markerTs, episodeGate.creditRevoked, mahlzeitFensterMin(cfg, markerEingabe), episodes,
         )
         val ekGilt = cfg.expectationAccountEnabled && ekVorschau.mealAuthorized && run {
             val konto = episodes.expectation
@@ -2748,7 +2752,9 @@ class FuseCycleRunner(
             markerPowerLastSeenTs = markerTs
         } else if (markerTs != markerPowerLastSeenTs) {
             episodes.markerPowerPinnedFor = markerTs
-            episodes.markerPowerDeadlineTs = markerTs + cfg.livenessMealPowerMin * 60_000L
+            // MAHLZEIT-EINGABE: mit Absorptionszeit am Marker ist sie das Fenster ([mahlzeitFensterMin]) - dieselbe
+            // Regel wie in der Vorschau oben.
+            episodes.markerPowerDeadlineTs = markerTs + mahlzeitFensterMin(cfg, markerEingabe) * 60_000L
             markerPowerLastSeenTs = markerTs
             // Schritt B: der frisch beobachtete Druck friert die
             // Basalluecken-Lage ein - befuellt wird NACH der einen
@@ -2846,6 +2852,9 @@ class FuseCycleRunner(
                     markerSnack = markerSnack,
                     markerHclCalcTs = markerHclCalcTs,
                     markerHclMerged = markerHclMerged,
+                    markerCarbsG = markerEingabe.carbsG,
+                    markerCarbsInsulinU = markerEingabe.eingabe.carbsInsulinU,
+                    markerAbsorptionMin = markerEingabe.eingabe.absorptionMin,
                     reboundSuppressedByMarker = reboundSuppressedByMarker,
                     mealWindow = mealWindow,
                     rSignedMgdlPerMin = ratioDrive,
@@ -3037,7 +3046,7 @@ class FuseCycleRunner(
                 maxIobU, transportModelledU, ledgerView, episodes, onset, band,
                 built.discount, built.input.trajectory.model, sensorEpoch, calibrationEpoch, gate,
                 ekGilt = ekGilt, ekVorschau = ekVorschau, markerNoPrime = markerNoPrime, markerSnack = markerSnack,
-                markerHclCalcTs = markerHclCalcTs, markerHclMerged = markerHclMerged,
+                markerHclCalcTs = markerHclCalcTs, markerHclMerged = markerHclMerged, markerEingabe = markerEingabe.eingabe,
             ).let { it.copy(bloecke = it.bloecke.copy(wirkung = wirkung)) }
         }
         // AB HIER ist die Bahn vorhanden. Einmal ausgepackt statt an dreissig
@@ -3324,6 +3333,7 @@ class FuseCycleRunner(
             computeTs = computeTs,
             nurErwartung = markerNurErwartung,
             snack = markerSnack,
+            eingabe = markerEingabe.eingabe,
             // E-034 v2: die Geraetegroessen der fruehen Versorgung - aus DEMSELBEN
             // Einheitskern und denselben IOB-Arrays wie Bahn und Kandidatensuche.
             fruehEingabenVon = {
@@ -3669,6 +3679,13 @@ class FuseCycleRunner(
         // (wie G3, mit G1 auch bei G3 aus) - Geraetebefund: steigende Portionen kamen, obwohl der Guard mit Mahlzeit
         // die Unterschreitung schon sah. Ist G1 bzw. G2 aus, gilt fuer diesen Teil G3/G4 wie sonst.
         val fruehSteigt = !fruehAnfang && fruehZyklus?.mahlzeitSteigt == true
+        // MAHLZEIT-EINGABE (Toni 25.11.2026): die Anfangsportion eines Kontos AUS EINER EINGABE wird nicht pauschal an
+        // Guard und Spaetwirkung vorbei gehoben, sondern gegen den angekuendigten Verlauf dieser Mahlzeit gerechnet -
+        // dieselbe Pruefung wie bei den weiteren Portionen (G3/G4), nur mit der ganzen gebuchten Hoehe statt des
+        // bestaetigten Teils (auf der unbestaetigten Erwartung darf weiter allein die Anfangsportion bauen). So zaehlen
+        // vorhandenes Insulin, die neue Menge und der Kanal je einmal, ueber Guard UND Spaetwirkung. Ohne Eingabe wie
+        // bisher.
+        val fruehAnfangNachVerlauf = fruehAnfang && fruehZyklus?.state?.byInput == true
         val fruehHebung = fruehZyklus?.fruehSchalter?.takeIf { fruehAnteilU > 0.0 }?.let { g ->
             if (fruehAnfang) app.aaps.fuse.core.controller.AuthorizedLift.EarlyLift(guardLift = g.initialLiftsGuard, tailLift = g.initialLiftsTail)
             else app.aaps.fuse.core.controller.AuthorizedLift.EarlyLift(
@@ -3677,9 +3694,10 @@ class FuseCycleRunner(
             )
         }
         // Was die Portion nicht prueft: Guard bzw. Schwanz bei der Anfangsportion mit G1/G2 - bei der steigenden
-        // weiteren Portion nur den Schwanz (G2).
-        val fruehOhneGuard = fruehAnfang && fruehZyklus?.fruehSchalter?.initialLiftsGuard == true
-        val fruehOhneSchwanz = (fruehAnfang || fruehSteigt) && fruehZyklus?.fruehSchalter?.initialLiftsTail == true
+        // weiteren Portion nur den Schwanz (G2). Die Anfangsportion aus einer Eingabe prueft beide, mit dem Verlauf.
+        val fruehOhneGuard = fruehAnfang && !fruehAnfangNachVerlauf && fruehZyklus?.fruehSchalter?.initialLiftsGuard == true
+        val fruehOhneSchwanz = ((fruehAnfang && !fruehAnfangNachVerlauf) || fruehSteigt) &&
+            fruehZyklus?.fruehSchalter?.initialLiftsTail == true
         val fruehBodenU = if (fruehHebung != null) fruehGemessenFreiU + fruehAnteilU else 0.0
         // A: traegt der Normalbedarf schon mindestens diesen Boden, bleibt es seine Menge. Eine Anhebung gaebe es
         // nicht, aber ihr Grant buchte die Normalmenge gegen das Budget.
@@ -3691,10 +3709,12 @@ class FuseCycleRunner(
         // danach beobachtet/erwartet, hoechstens die Kurve): die
         // Skalierbarkeit gibt Guard und Schwanz nichts frei, und auf die
         // unbestaetigte Erwartung darf nur die Anfangsportion bauen.
-        val fruehKurve = fruehZyklus?.takeIf { fruehHebung != null && !fruehAnfang }
-            ?.state?.curveValues?.let { ExpectationAccount.Curve.of(it) }
+        val fruehKurve = fruehZyklus?.takeIf { fruehHebung != null && (!fruehAnfang || fruehAnfangNachVerlauf) }?.state?.curve()
         val fruehAlterAmAnkerMin = fruehZyklus?.let { (prediction.predictionAnchorTs - it.state.authId) / 60_000.0 } ?: 0.0
-        val fruehSkala = fruehZyklus?.eval?.early?.guardScale ?: 0.0
+        // Die Anfangsportion aus einer Eingabe rechnet den angekuendigten Verlauf in der gebuchten Hoehe an (noch ist
+        // nichts bestaetigt); jede weitere Portion den bestaetigten Teil ([ExpectationAccount.EarlyEvaluation.guardScale]).
+        val fruehSkala = if (fruehAnfangNachVerlauf) fruehZyklus?.state?.phi0?.takeIf { it.isFinite() && it > 0.0 } ?: 0.0
+        else fruehZyklus?.eval?.early?.guardScale ?: 0.0
         val fruehIsf = fruehZyklus?.state?.isfAtMarkerMgdlPerU?.takeIf { it.isFinite() && it > 0.0 } ?: state.isfMgdlPerU
         val fruehHorizontMin = fruehZyklus?.state?.horizonMin ?: ExpectationAccount.MAX_HORIZON_MIN
         // SCHRITT 2 (Toni): laeuft die Mahlzeit, rechnen Guard und Schwanz jenseits des Kurvenendes dieselbe beobachtete
@@ -3726,7 +3746,7 @@ class FuseCycleRunner(
         // weiteren Portionen - auch in der Pause. Dieselbe Rechnung wie die Pruefung G3 oben; sonst saehe man sie nur,
         // wenn gerade eine Portion geprueft wurde.
         val fruehMitMahlzeitZ = ekZyklus?.takeIf { z -> z.eval.early?.initial == false && !z.eval.expired }
-        val zKurve = fruehMitMahlzeitZ?.let { ExpectationAccount.Curve.of(it.state.curveValues) }
+        val zKurve = fruehMitMahlzeitZ?.state?.curve()
         val zIsf = fruehMitMahlzeitZ?.state?.isfAtMarkerMgdlPerU?.takeIf { it.isFinite() && it > 0.0 } ?: state.isfMgdlPerU
         val zAlterMin = fruehMitMahlzeitZ?.let { (prediction.predictionAnchorTs - it.state.authId) / 60_000.0 } ?: 0.0
         val zSkala = fruehMitMahlzeitZ?.eval?.early?.guardScale ?: 0.0
@@ -3761,8 +3781,8 @@ class FuseCycleRunner(
         val fruehSchwanzKappeU: Double? = when {
             // G2: die Markerautorisierung hebt den Schwanz der Anfangsportion - und der steigenden weiteren (Toni 22.10.).
             fruehOhneSchwanz -> null
-            // G4: die Kappe ist der Spielraum MIT Erwartung.
-            !fruehAnfang && tailMitErwartung != null -> tailMitErwartung.takeIf { it.usable }?.headroomU
+            // G4: die Kappe ist der Spielraum MIT Erwartung - auch fuer die Anfangsportion aus einer Eingabe.
+            (!fruehAnfang || fruehAnfangNachVerlauf) && tailMitErwartung != null -> tailMitErwartung.takeIf { it.usable }?.headroomU
             else -> tail?.takeIf { it.usable }?.headroomU
         }
         val lifted = when {
@@ -4004,14 +4024,14 @@ class FuseCycleRunner(
                 prediction, k, built.input.isfSlots, candidateBand, u, restraint = restraint,
             )?.let { return it.name }
             if (!fruehOhneGuard) {
-                val mitErwartung = !fruehAnfang && h.guardLift && predictionMitErwartung != null
+                val mitErwartung = (!fruehAnfang || fruehAnfangNachVerlauf) && h.guardLift && predictionMitErwartung != null
                 CandidateSearch.verifyGuardFloor(
                     if (mitErwartung) predictionMitErwartung!! else prediction, k, built.input.isfSlots, candidateBand, u,
                     restraint = if (mitErwartung) restraintMitErwartung else restraint,
                 )?.let { return it.name }
             }
             if (!fruehOhneSchwanz) {
-                val bericht = if (!fruehAnfang && h.tailLift && tailBaseMitErwartung != null) tailAus(tailBaseMitErwartung, u)
+                val bericht = if ((!fruehAnfang || fruehAnfangNachVerlauf) && h.tailLift && tailBaseMitErwartung != null) tailAus(tailBaseMitErwartung, u)
                 else tailWith(u)
                 bericht?.takeIf { it.usable && it.headroomU < -TAIL_VETO_EPS_U }?.let { return TAIL_VETO }
             }
@@ -6615,17 +6635,26 @@ class FuseCycleRunner(
         computeTs: Long,
         markerTs: Long,
         revoked: Boolean,
-        livenessMealPowerMin: Int,
+        /** Das Mahlzeitfenster dieses Markers [min] ([mahlzeitFensterMin]) - dieselbe Zahl wie in der Pin-Pflege. */
+        fensterMin: Int,
         episodes: app.aaps.fuse.plugin.ledger.EpisodeBudgets,
     ): app.aaps.fuse.core.controller.DosingContext.Decision {
         val (pin, frist) = when {
             revoked || markerTs <= 0L -> 0L to 0L
             markerPowerLastSeenTs == -1L -> episodes.markerPowerPinnedFor to episodes.markerPowerDeadlineTs
-            markerTs != markerPowerLastSeenTs -> markerTs to markerTs + livenessMealPowerMin * 60_000L
+            markerTs != markerPowerLastSeenTs -> markerTs to markerTs + fensterMin * 60_000L
             else -> episodes.markerPowerPinnedFor to episodes.markerPowerDeadlineTs
         }
         return app.aaps.fuse.core.controller.DosingContext.decide(computeTs, markerTs, pin, frist)
     }
+
+    /**
+     * MAHLZEIT-EINGABE (Toni 25.11.2026): das Mahlzeitfenster eines Markers [min] - die Einstellung, mit Absorptionszeit
+     * am Marker diese in ihren Grenzen ([EarlySupply.mealWindowMin]). EINE Regel fuer die Pin-Pflege und ihre Vorschau
+     * ([ekKontextVorschau]): rechneten die beiden verschieden, meldete der Zyklus eine Kontextabweichung.
+     */
+    private fun mahlzeitFensterMin(cfg: Config, eingabe: MarkerEingabe.Stand): Int =
+        EarlySupply.mealWindowMin(eingabe.eingabe.absorptionMin, cfg.livenessMealPowerMin)
 
     /**
      * E-034: Stabilitaetsstrecke fortschreiben, das Konto am bewussten Druck
@@ -6678,6 +6707,12 @@ class FuseCycleRunner(
         nurErwartung: Boolean = false,
         /** Toni 24.10.2026: "Snack" am Marker - die fruehe Versorgung mit dem Snack-Skalierer (nur mit [nurErwartung]). */
         snack: Boolean = false,
+        /**
+         * MAHLZEIT-EINGABE (Toni 25.11.2026): KH-Insulin und Absorptionszeit am Marker - nur bei der Wahl "Mahlzeit". Sie
+         * wirkt allein bei der Buchung: die KH-Menge auf Skalierer und Budget, die Absorptionszeit auf die
+         * Anfangsportion ([EarlySupply.Settings.forMeal]). Das Fenster kommt ueber die Frist des Dosierkontexts.
+         */
+        eingabe: EarlySupply.MealInput = EarlySupply.MealInput.NONE,
         /**
          * v2: die Geraetegroessen dieses Zyklus; `null` = kein Insulinmodell.
          * TRAEGE: gerechnet nur, wenn ein v2-Konto gebucht oder fortgeschrieben
@@ -6772,9 +6807,10 @@ class FuseCycleRunner(
                     ?.let { app.aaps.fuse.core.controller.EarlySupply.hclScale(it.carbsInsulinU, p.curve) } ?: 0.0
             }
             // Kandidat, Toni 11.11.2026: der Knopf bucht mit dem Skalierer der Tageszeit des Markers; der Marker aus dem
-            // Bolusrechner bleibt bei dem der Rechnung.
+            // Bolusrechner bleibt bei dem der Rechnung. MAHLZEIT-EINGABE (Toni 25.11.2026): mit KH-Menge oder
+            // Absorptionszeit am Marker bucht die Wahl "Mahlzeit" damit; ohne Eingabe wie bisher.
             val frueh = if (hclSkalierer != null) app.aaps.fuse.core.controller.EarlySupply.Settings.forHcl(hclSkalierer)
-            else ekFruehEinstellungen(cfg, nurErwartung, snack, markerTs = dosingCtx.authorizationId)
+            else ekFruehEinstellungen(cfg, nurErwartung, snack, markerTs = dosingCtx.authorizationId, eingabe = eingabe)
             val schalter =
                 if (hclSkalierer == null && cfg.earlySupplySettings != null) cfg.earlySupplySwitches
                 else app.aaps.fuse.core.controller.EarlySupply.Switches.NONE
@@ -7035,7 +7071,7 @@ class FuseCycleRunner(
     ): BilanzZyklus? {
         val konto = episodes.expectation?.takeIf { markerTs > 0L && it.authId == markerTs }
         val rechnung = if (cfg.hclMealsEnabled && hclCalcTs > 0L && !hclMerged) hclMahlzeiten.rechnung(hclCalcTs) else null
-        val kurve = konto?.let { ExpectationAccount.Curve.of(it.curveValues) }
+        val kurve = konto?.curve()
         if (konto == null || rechnung == null || kurve == null) {
             // Ein Marker ohne Rechnung beendet die Bilanz. Fehlt einer Rechner-Mahlzeit nur Konto oder Kurve, bleibt die
             // Episode stehen: ein eben gesetzter Marker uebernimmt ihre eCarbs dann im naechsten Zyklus.
@@ -7162,7 +7198,7 @@ class FuseCycleRunner(
         if (!cfg.hclMealsEnabled) return ohne("SWITCH_OFF")
         if (merged) return ohne("MERGED")
         if (z == null || konto == null) return ohne("NO_ACCOUNT")
-        val kurve = ExpectationAccount.Curve.of(konto.curveValues) ?: return ohne("NO_CURVE")
+        val kurve = konto.curve() ?: return ohne("NO_CURVE")
         if (z.eval.expired) return ohne("EXPIRED")
         if (konto.earlyLowLocked) return ohne("LOW_LOCK")
         if (lowThreat != LowThreatGate.Verdict.NONE) return ohne("LOW_THREAT")
@@ -7197,15 +7233,26 @@ class FuseCycleRunner(
      * Zyklus) und liegt dazwischen eine Fenstergrenze, bucht sie trotzdem das Fenster des Markers. Ein "Snack" bucht
      * weiter hoechstens so viel wie diese Mahlzeit; "Nur Marker" bleibt beim allgemeinen Skalierer. Ohne [markerTs]
      * (die Frage nach dem Budget-Max) wie bisher.
+     *
+     * MAHLZEIT-EINGABE (Toni 25.11.2026): bei "Mahlzeit" mit einer [eingabe] am Marker bestimmt die KH-Menge die Hoehe
+     * (statt des Skalierers der Tageszeit, gemessen an der Erwartungskurve) und die Absorptionszeit die Anfangsportion
+     * ([EarlySupply.Settings.forMeal]). Ohne Eingabe und ohne gueltige Kurve wie bisher. Ein "Snack" traegt keine
+     * Eingabe.
      */
     private fun ekFruehEinstellungen(
         cfg: Config, nurErwartung: Boolean, snack: Boolean = false, markerTs: Long? = null,
+        eingabe: EarlySupply.MealInput = EarlySupply.MealInput.NONE,
     ): EarlySupply.Settings =
         cfg.earlySupplySettings?.let { s ->
             if (!nurErwartung || !cfg.earlySupplyEnabled) s.copy(budgetMaxU = 0.0)
             else {
-                val mahlzeit = s.forTimeOfDay(markerTs?.let { TageszeitSkalierer.fuerMarker(cfg.earlySupplyTimeScales, it) })
-                if (snack) mahlzeit.forSnack(cfg.earlySupplySnackScale) else mahlzeit
+                val tageszeit = markerTs?.let { TageszeitSkalierer.fuerMarker(cfg.earlySupplyTimeScales, it) }
+                val kurve = cfg.expectationParams?.curve
+                when {
+                    snack -> s.forTimeOfDay(tageszeit).forSnack(cfg.earlySupplySnackScale)
+                    kurve != null -> s.forMeal(tageszeit, eingabe, kurve)
+                    else -> s.forTimeOfDay(tageszeit)
+                }
             }
         } ?: EarlySupply.Settings.NEUTRAL
 
@@ -7550,6 +7597,8 @@ class FuseCycleRunner(
         /** HCL Stufe 2: s. [erwartungskontoZyklus]. */
         markerHclCalcTs: Long = 0L,
         markerHclMerged: Boolean = false,
+        /** Mahlzeit-Eingabe: s. [erwartungskontoZyklus]. */
+        markerEingabe: EarlySupply.MealInput = EarlySupply.MealInput.NONE,
     ): Outcome {
         // A1: derselbe zentrale Kontext auch im predictorfreien Pfad -
         // ein Zyklus, EINE Entscheidung, egal welcher Weg ihn traegt.
@@ -7574,6 +7623,7 @@ class FuseCycleRunner(
             // ein Erwartungsanteil fliesst hier nie (NO_TRAJECTORY pausiert).
             nurErwartung = mealMarkerActive && !markerNoPrime,
             snack = mealMarkerActive && !markerNoPrime && markerSnack,
+            eingabe = if (mealMarkerActive) markerEingabe else EarlySupply.MealInput.NONE,
             bgMgdl = signal.q1, targetMgdl = state.targetMgdl, isfMgdlPerU = state.isfMgdlPerU,
             iobTotalU = iobTotal.iob + transportModelledU, activityUPerMin = iobTotal.activity,
             sperren = listOfNotNull(

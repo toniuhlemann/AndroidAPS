@@ -835,6 +835,19 @@ enum class FuseLongKey(
     /** EPISODENZUSTAND, kein Setting (HCL Stufe 2): 1 = die Rechnung kam zu einem schon laufenden Marker und wurde mit
      *  ihm zusammengefuehrt - keine weiteren Portionen, keine Anrechnung. Lebt und stirbt mit [MealMarkerArmedTs]. */
     MealMarkerHclMerged("fuse_meal_marker_hcl_merged", 0, exportable = false),
+    /** EPISODENZUSTAND, kein Setting (Mahlzeit-Eingabe, Toni 25.11.2026): die am Mahlzeit-Knopf eingegebene KH-Menge
+     *  [g]; 0 = keine Angabe. Nur fuer Trail und Anzeige - gerechnet wird mit [MealMarkerCarbsInsulinMilliU]. Lebt und
+     *  stirbt mit [MealMarkerArmedTs] wie [MealMarkerNoPrime]; gilt nur fuer die Wahl "Mahlzeit". */
+    MealMarkerCarbsG("fuse_meal_marker_carbs_g", 0, exportable = false),
+    /** EPISODENZUSTAND, kein Setting (Mahlzeit-Eingabe): KH / IC am Druck in tausendstel Einheiten, mit dem IC des
+     *  Profils zur Druckzeit (der Regler kennt kein IC); 0 = keine Angabe. Daraus bucht das Konto das Budget
+     *  ([app.aaps.fuse.core.controller.EarlySupply.carbsScale]). Lebt und stirbt mit [MealMarkerArmedTs]. */
+    MealMarkerCarbsInsulinMilliU("fuse_meal_marker_carbs_insulin_milli_u", 0, exportable = false),
+    /** EPISODENZUSTAND, kein Setting (Mahlzeit-Eingabe): die am Mahlzeit-Knopf eingegebene Absorptionszeit [min];
+     *  0 = keine Angabe. Sie bestimmt Anfangsportion und Mahlzeitfenster dieses Markers
+     *  ([app.aaps.fuse.core.controller.EarlySupply.absorptionInitialFactor],
+     *  [app.aaps.fuse.core.controller.EarlySupply.mealWindowMin]). Lebt und stirbt mit [MealMarkerArmedTs]. */
+    MealMarkerAbsorptionMin("fuse_meal_marker_absorption_min", 0, exportable = false),
 
     /**
      * ALTBESTAND, nur noch LESEND: `armedTs*10 + Stufe`.

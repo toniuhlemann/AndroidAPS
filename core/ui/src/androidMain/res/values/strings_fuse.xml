@@ -19,6 +19,12 @@
     <string name="fuse_meal_confirm_low">Zucker ist TIEF.</string>
     <string name="fuse_meal_confirm_foreign" comment="%1$.2f=manueller Bolus der letzten Stunde in Einheiten">Achtung: %1$.2f U manueller Bolus in der letzten Stunde. Das Konto rechnet ihn als vorhandenes Insulin an, das Budget bleibt — beides zusammen wirkt.</string>
     <string name="fuse_meal_confirm_episode" comment="%1$d=Minuten bis zum Ablauf">Evidenz-Fenster läuft in %1$d min ab — danach ohne Mahlzeiten-Kredit.</string>
+    <!-- Meal input at the meal button (Toni 25.11.2026): carbs and absorption time, both optional, for "Mahlzeit" only. -->
+    <string name="fuse_meal_input_carbs" comment="Label of the number field for the carbs of the meal. Keep it short, the field is narrow.">KH</string>
+    <string name="fuse_meal_input_absorption" comment="Label of the number field for the absorption time of the meal. Keep it short, the field is narrow.">Absorption</string>
+    <string name="fuse_meal_input_hint">Freiwillig, nur für „Mahlzeit“. Leer = wie bisher.</string>
+    <string name="fuse_meal_input_effect" comment="%1$.2f=Budget der Mahlzeit in Einheiten, %2$d=Mahlzeitfenster in Minuten. Example: Budget 6,00 U · Fenster 240 min">Budget %1$.2f U · Fenster %2$d min</string>
+    <string name="fuse_meal_input_invalid" comment="%1$d=hoechste KH-Menge in Gramm, %2$d=hoechste Absorptionszeit in Stunden. Example: Eingabe gilt nicht: KH bis 300 g, Absorption bis 10 h.">Eingabe gilt nicht: KH bis %1$d g, Absorption bis %2$d h.</string>
     <string name="fuse_meal_withdraw_pending" comment="%1$d=Sekunden bis zur Ruecknahme">Mahlzeiten-Marker wird in %1$d s zurückgenommen</string>
     <string name="fuse_meal_withdraw_undo">Rückgängig</string>
     <string name="fuse_meal_withdraw_undone">Rücknahme abgebrochen – der Marker läuft weiter</string>
