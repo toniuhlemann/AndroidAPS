@@ -183,34 +183,6 @@ class MorePreferenceComponentsTest {
     }
 
     @Test
-    fun aHeaderWithItsOwnSummaryShowsItAndNotTheRowTitles() {
-        render {
-            ClickablePreferenceCategoryHeader(
-                title = TextRef.Literal("Amount"),
-                summaryItems = listOf(TextRef.Literal("First row"), TextRef.Literal("Second row")),
-                expanded = false,
-                onToggle = {},
-                summary = TextRef.Literal("How much a meal may get")
-            )
-        }
-        compose.onNodeWithText("How much a meal may get").assertIsDisplayed()
-        compose.onNodeWithText("First row, Second row").assertDoesNotExist()
-    }
-
-    @Test
-    fun aHeaderWithoutAnOwnSummaryStillListsTheRowTitles() {
-        render {
-            ClickablePreferenceCategoryHeader(
-                title = TextRef.Literal("Amount"),
-                summaryItems = listOf(TextRef.Literal("First row"), TextRef.Literal("Second row")),
-                expanded = false,
-                onToggle = {}
-            )
-        }
-        compose.onNodeWithText("First row, Second row").assertIsDisplayed()
-    }
-
-    @Test
     fun syncBadgeRendersWhenVisible() {
         render { SyncBadge(visible = true) }
         compose.onRoot().assertIsDisplayed()

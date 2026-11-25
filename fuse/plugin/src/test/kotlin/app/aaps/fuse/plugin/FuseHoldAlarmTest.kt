@@ -286,4 +286,15 @@ class FuseHoldAlarmTest {
         assertTrue(a is FuseHoldAlarm.Aktion.Melden)
         assertTrue(melden(a).text.contains("Grund unbekannt"))
     }
+
+    /**
+     * Toni 25.11.2026: die Einstellungen sind Seiten, die Wartung steht auf der Seite von "Anzeige und Diagnose".
+     * Der Wegweiser nennt den Weg so, wie das Menue ihn hat - ein umbenannter Hauptbereich faellt hier auf.
+     */
+    @Test
+    fun `der Wegweiser nennt den Weg zur Wartung so, wie das Menue ihn hat`() {
+        val bereich = FuseSettings.hauptbereiche.single { it.key == "fuse_area_display" }.titel
+        val t = FuseHoldAlarm.ausweg(listOf("LEDGER_STATE_HOLD"), quittierbar = true, darfReparieren = false)
+        assertTrue(t.contains("Einstellungen -> FUSE -> $bereich -> Wartung -> Hold quittieren")) { t }
+    }
 }

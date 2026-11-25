@@ -73,7 +73,8 @@ fun LazyListScope.addPreferenceSubScreenDef(
                     onShowMessage = onShowMessage,
                     sectionState = sectionState,
                     visibilityContext = visibilityContext,
-                    rowSummaries = def.rowSummaries?.lines().orEmpty()
+                    rowSummaries = def.rowSummaries?.lines().orEmpty(),
+                    asPages = def.pages
                 )
             }
         }
@@ -90,8 +91,11 @@ private fun RenderPreferenceItems(
     onShowMessage: (String) -> Unit,
     sectionState: PreferenceSectionState?,
     visibilityContext: VisibilityContext?,
-    rowSummaries: Map<String, String> = emptyMap()
+    rowSummaries: Map<String, String> = emptyMap(),
+    asPages: Boolean = false
 ) {
+    // A screen of pages shows its sub-screens as rows that open their own page - where a page can be opened.
+    val navigator = LocalPreferenceNavigator.current.takeIf { asPages }
     items.forEach { item ->
         when (item) {
             is PreferenceKey          -> {
@@ -113,7 +117,9 @@ private fun RenderPreferenceItems(
                     visibilityContext = visibilityContext
                 )
 
-                if (shouldShow) {
+                if (shouldShow && navigator != null) {
+                    PreferenceNavigationRow(screen = item, onClick = { navigator(item.key, null) })
+                } else if (shouldShow) {
                     // Render nested subscreen as simple collapsible section (no extra card)
                     val subSectionKey = "${parentKey}_${item.key}"
                     val isSubExpanded = sectionState?.isExpanded(subSectionKey) ?: false
@@ -124,8 +130,7 @@ private fun RenderPreferenceItems(
                         summaryItems = item.effectiveSummaryItems(),
                         expanded = isSubExpanded,
                         onToggle = { sectionState?.toggle(subSectionKey, SectionLevel.SUB_SECTION, parentKey = parentKey) },
-                        insideCard = true,
-                        summary = item.summary.takeIf { item.summaryInHeader }
+                        insideCard = true
                     )
 
                     // Content without card wrapper
@@ -158,7 +163,7 @@ private fun RenderPreferenceItems(
  * Used in inline rendering context (AllPreferencesScreen).
  */
 @Composable
-private fun shouldShowSubScreenInline(
+internal fun shouldShowSubScreenInline(
     subScreen: PreferenceSubScreenDef,
     visibilityContext: VisibilityContext?
 ): Boolean {
@@ -205,7 +210,7 @@ private const val HIGHLIGHT_DURATION_MS = 5000L
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun HighlightablePreference(
+internal fun HighlightablePreference(
     preferenceKey: String,
     content: @Composable () -> Unit
 ) {

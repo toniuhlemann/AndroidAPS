@@ -75,11 +75,8 @@ fun AdaptiveIntPreferenceItem(
     val hasValidRange = intKey.min > Int.MIN_VALUE && intKey.max < Int.MAX_VALUE
 
     if (hasValidRange) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(theme.padding)
-        ) {
+        // The name with its line: the same in the usual row and in the compact row of a page.
+        val head: @Composable () -> Unit = {
             TextWithSyncBadge(
                 text = stringResource(effectiveTitle),
                 key = intKey,
@@ -102,16 +99,14 @@ fun AdaptiveIntPreferenceItem(
                         color = summaryColor
                     )
             }
-            PreferenceSliderWithButtons(
+        }
+        if (LocalCompactPreferenceRows.current) {
+            CompactValueRow(
+                head = head,
                 value = value.toDouble(),
-                onValueChange = { newValue ->
-                    if (visibility.enabled) {
-                        state.value = newValue.toInt()
-                    }
-                },
+                onValueChange = { newValue -> if (visibility.enabled) state.value = newValue.toInt() },
                 valueRange = intKey.min.toDouble()..intKey.max.toDouble(),
                 step = 1.0,
-                showValue = true,
                 valueFormatRef = valueFormatRef,
                 formatAsInt = true,
                 valueFormat = NumberFormat.INTEGER,
@@ -121,6 +116,33 @@ fun AdaptiveIntPreferenceItem(
                 dialogSummary = summary,
                 enabled = visibility.enabled
             )
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(theme.padding)
+            ) {
+                head()
+                PreferenceSliderWithButtons(
+                    value = value.toDouble(),
+                    onValueChange = { newValue ->
+                        if (visibility.enabled) {
+                            state.value = newValue.toInt()
+                        }
+                    },
+                    valueRange = intKey.min.toDouble()..intKey.max.toDouble(),
+                    step = 1.0,
+                    showValue = true,
+                    valueFormatRef = valueFormatRef,
+                    formatAsInt = true,
+                    valueFormat = NumberFormat.INTEGER,
+                    unitLabel = unitLabelRef,
+                    asDuration = unitType.isDuration(),
+                    dialogLabel = stringResource(effectiveTitle),
+                    dialogSummary = summary,
+                    enabled = visibility.enabled
+                )
+            }
         }
     } else {
         // For unspecified ranges, use text field with range summary

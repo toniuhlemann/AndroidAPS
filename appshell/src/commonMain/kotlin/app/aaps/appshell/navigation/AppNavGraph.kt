@@ -61,6 +61,7 @@ import app.aaps.core.ui.compose.ToolbarConfig
 import app.aaps.core.ui.compose.metroViewModel
 import app.aaps.core.ui.compose.navigation.LocalPluginNavigationRequest
 import app.aaps.core.ui.compose.navigation.NavigationRequest
+import app.aaps.core.ui.compose.preference.LocalPreferenceNavigator
 import app.aaps.core.ui.compose.preference.PluginPreferencesScreen
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
 import app.aaps.core.ui.compose.siteRotation.SiteLocationPickerScreen
@@ -192,6 +193,15 @@ fun NavGraphBuilder.appNavGraph(
     // assembled, which is where the Android implementation's `by lazy` field effectively put it.
     val pluginScreenDefs = activePlugin.getPluginsList()
         .mapNotNull { it.getPreferenceScreenContent() as? PreferenceSubScreenDef }
+
+    // Opens a preference screen as a page of its own. A screen of pages (PreferenceSubScreenDef.pages) uses it for
+    // its sub-screens and for a hit of its search; every such page is a step of its own on the back stack. A second
+    // tap while the page is still opening is ignored (see safePopBackStack), or back would be needed twice.
+    val openPreferencePage: (String, String?) -> Unit = { screenKey, highlightKey ->
+        if (navController.currentBackStackEntry?.lifecycle?.currentState == Lifecycle.State.RESUMED) {
+            navController.navigate(AppRoute.PreferenceScreen.createRoute(screenKey, highlightKey))
+        }
+    }
 
     overview?.let { content ->
         composable(AppRoute.Main.route) { content() }
@@ -537,13 +547,15 @@ fun NavGraphBuilder.appNavGraph(
     }
 
     composable(AppRoute.Preferences.route) {
-        AllPreferencesScreen(
-            activePlugin = activePlugin,
-            rh = rh,
-            builtInSearchables = builtInSearchables,
-            configBuilder = configBuilder,
-            onBackClick = { navController.safePopBackStack() }
-        )
+        CompositionLocalProvider(LocalPreferenceNavigator provides openPreferencePage) {
+            AllPreferencesScreen(
+                activePlugin = activePlugin,
+                rh = rh,
+                builtInSearchables = builtInSearchables,
+                configBuilder = configBuilder,
+                onBackClick = { navController.safePopBackStack() }
+            )
+        }
     }
 
     composable(
@@ -703,11 +715,13 @@ fun NavGraphBuilder.appNavGraph(
             it::class.simpleName == pluginKey
         }
         if (plugin != null) {
-            PluginPreferencesScreen(
-                plugin = plugin,
-                visibilityContext = visibilityContext,
-                onBackClick = { navController.safePopBackStack() }
-            )
+            CompositionLocalProvider(LocalPreferenceNavigator provides openPreferencePage) {
+                PluginPreferencesScreen(
+                    plugin = plugin,
+                    visibilityContext = visibilityContext,
+                    onBackClick = { navController.safePopBackStack() }
+                )
+            }
         } else {
             NavigationErrorFallback(
                 rxBus = rxBus,
@@ -720,13 +734,19 @@ fun NavGraphBuilder.appNavGraph(
     composable(AppRoute.PreferenceScreen.route) { backStackEntry ->
         val screenKey = backStackEntry.stringArg("screenKey")
         val highlightKey = backStackEntry.stringArg("highlightKey")
-        val screenDef = screenKey?.let { key -> findPreferenceScreen(key, builtInSearchables, pluginScreenDefs) }
+        // The way to the screen, the outermost screen first: a page shows it above its title.
+        val way = screenKey?.let { key -> findPreferenceScreenPath(key, builtInSearchables, pluginScreenDefs) }
+        val screenDef = way?.lastOrNull()
         if (screenDef != null) {
-            PreferenceScreenView(
-                screenDef = screenDef,
-                highlightKey = highlightKey,
-                onBackClick = { navController.safePopBackStack() }
-            )
+            CompositionLocalProvider(LocalPreferenceNavigator provides openPreferencePage) {
+                PreferenceScreenView(
+                    screenDef = screenDef,
+                    highlightKey = highlightKey,
+                    parents = way.dropLast(1).map { it.title },
+                    visibilityContext = visibilityContext,
+                    onBackClick = { navController.safePopBackStack() }
+                )
+            }
         } else {
             NavigationErrorFallback(
                 rxBus = rxBus,
@@ -1041,6 +1061,29 @@ internal fun findPreferenceScreen(
         if (content.key == key) return content
         findNestedPreferenceScreen(content, key)?.let { return it }
     }
+    return null
+}
+
+/**
+ * The way to the preference screen with [key]: the screens from the outermost one down to the screen itself, or
+ * null when no screen has this key. A page shows the titles of the screens above it, so the user sees where he is.
+ */
+internal fun findPreferenceScreenPath(
+    key: String,
+    builtInSearchables: SearchableProvider,
+    pluginScreenDefs: List<PreferenceSubScreenDef>
+): List<PreferenceSubScreenDef>? {
+    fun below(screen: PreferenceSubScreenDef): List<PreferenceSubScreenDef>? {
+        if (screen.key == key) return listOf(screen)
+        for (item in screen.items) {
+            if (item is PreferenceSubScreenDef) below(item)?.let { return listOf(screen) + it }
+        }
+        return null
+    }
+    builtInSearchables.getSearchableItems().forEach { item ->
+        if (item is SearchableItem.Category) below(item.screenDef)?.let { return it }
+    }
+    for (content in pluginScreenDefs) below(content)?.let { return it }
     return null
 }
 

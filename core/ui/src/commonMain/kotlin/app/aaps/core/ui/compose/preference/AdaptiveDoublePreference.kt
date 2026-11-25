@@ -76,11 +76,8 @@ fun AdaptiveDoublePreferenceItem(
     val hasValidRange = doubleKey.min != -Double.MAX_VALUE && doubleKey.max != Double.MAX_VALUE
 
     if (hasValidRange) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(theme.padding)
-        ) {
+        // The name with its line: the same in the usual row and in the compact row of a page.
+        val head: @Composable () -> Unit = {
             TextWithSyncBadge(
                 text = stringResource(effectiveTitle),
                 key = doubleKey,
@@ -103,17 +100,16 @@ fun AdaptiveDoublePreferenceItem(
                         color = summaryColor
                     )
             }
-            PreferenceSliderWithButtons(
+        }
+        if (LocalCompactPreferenceRows.current) {
+            CompactValueRow(
+                head = head,
                 value = value,
-                onValueChange = { newValue ->
-                    if (visibility.enabled) {
-                        state.value = newValue
-                    }
-                },
+                onValueChange = { newValue -> if (visibility.enabled) state.value = newValue },
                 valueRange = doubleKey.min..doubleKey.max,
                 step = step,
-                showValue = true,
                 valueFormatRef = valueFormatRef,
+                formatAsInt = false,
                 valueFormat = valueFormat,
                 unitLabel = unitLabelRef,
                 asDuration = unitType.isDuration(),
@@ -121,6 +117,32 @@ fun AdaptiveDoublePreferenceItem(
                 dialogSummary = summary,
                 enabled = visibility.enabled
             )
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(theme.padding)
+            ) {
+                head()
+                PreferenceSliderWithButtons(
+                    value = value,
+                    onValueChange = { newValue ->
+                        if (visibility.enabled) {
+                            state.value = newValue
+                        }
+                    },
+                    valueRange = doubleKey.min..doubleKey.max,
+                    step = step,
+                    showValue = true,
+                    valueFormatRef = valueFormatRef,
+                    valueFormat = valueFormat,
+                    unitLabel = unitLabelRef,
+                    asDuration = unitType.isDuration(),
+                    dialogLabel = stringResource(effectiveTitle),
+                    dialogSummary = summary,
+                    enabled = visibility.enabled
+                )
+            }
         }
     } else {
         // For unspecified ranges, use text field with range summary

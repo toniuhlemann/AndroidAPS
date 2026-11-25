@@ -75,7 +75,18 @@ fun PluginPreferencesScreen(
             LocalNavigateToCompose provides { screen -> composeScreen = screen }
         ) {
             when (preferenceScreenContent) {
-                is PreferenceSubScreenDef -> {
+                is PreferenceSubScreenDef -> if (preferenceScreenContent.pages) {
+                    // A plugin with pages: its start page lists its sub-screens and can search through all of them.
+                    val snackbarHostState = LocalSnackbarHostState.current
+                    val snackbarScope = rememberCoroutineScope()
+                    PreferencePageScreen(
+                        screen = preferenceScreenContent,
+                        showSearch = true,
+                        visibilityContext = visibilityContext,
+                        onShowMessage = { message -> snackbarScope.launch { snackbarHostState.showSnackbar(message) } },
+                        onBackClick = onBackClick
+                    )
+                } else {
                     // PreferenceSubScreenDef - use same rendering as AllPreferencesScreen
                     SinglePluginPreferencesRenderer(
                         screen = preferenceScreenContent,

@@ -109,4 +109,34 @@ class FindPreferenceScreenTest {
     fun `nothing registered at all is null rather than a crash`() {
         assertThat(findPreferenceScreen("protection", provider(), emptyList())).isNull()
     }
+
+    /**
+     * A page shows the screens above it, so the user sees where he is: "FUSE > Meals" above "Amount". The way is
+     * the chain of screens from the outermost one down to the screen itself.
+     */
+    @Test
+    fun `the way to a nested screen names every screen above it, the outermost first`() {
+        val amount = screen("amount")
+        val meals = screen("meals", amount)
+        val root = screen("fuse", meals, screen("corrections"))
+
+        val way = findPreferenceScreenPath("amount", provider(), listOf(screen("other"), root))
+
+        assertThat(way).containsExactly(root, meals, amount).inOrder()
+    }
+
+    @Test
+    fun `the way to a top screen is that screen alone`() {
+        val root = screen("fuse", screen("meals"))
+
+        assertThat(findPreferenceScreenPath("fuse", provider(), listOf(root))).containsExactly(root)
+        assertThat(findPreferenceScreenPath("fuse", provider(root), emptyList())).containsExactly(root)
+    }
+
+    @Test
+    fun `a key that names no screen has no way`() {
+        val root = screen("fuse", screen("meals"))
+
+        assertThat(findPreferenceScreenPath("nope", provider(root), listOf(root))).isNull()
+    }
 }

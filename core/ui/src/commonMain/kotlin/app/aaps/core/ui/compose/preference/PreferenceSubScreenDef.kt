@@ -30,8 +30,10 @@ import app.aaps.core.keys.interfaces.TextRef
  *   [PreferenceSummaryMode.SHORT]
  * @param liveLinesOnly The rows show only their live line, the explanation where the value is entered, see
  *   [PreferenceSummaryMode.LIVE_ONLY]. Wins over [shortSummaries].
- * @param summaryInHeader The closed header of this screen shows [summary] and not the list of its row titles.
- *   Off by default, so a screen that sets a summary for another use keeps its look.
+ * @param pages This screen is a page of its own ([PreferencePageScreen]): its sub-screens are rows that open their
+ *   own page, and its values stand in groups under the headings of its info rows. Its [summary] is the line of the
+ *   row that opens it. Off by default; without a way to open a page ([LocalPreferenceNavigator]) the sub-screens
+ *   unfold as sections, as on every other screen.
  */
 data class PreferenceSubScreenDef(
     val key: String,
@@ -44,7 +46,7 @@ data class PreferenceSubScreenDef(
     val rowSummaries: PreferenceRowSummaries? = null,
     val shortSummaries: Boolean = false,
     val liveLinesOnly: Boolean = false,
-    val summaryInHeader: Boolean = false
+    val pages: Boolean = false
 ) : PreferenceItem {
 
     /** How much of their explanation the rows of this screen show, provided as [LocalPreferenceSummaryMode]. */
@@ -100,11 +102,8 @@ fun interface PreferenceRowSummaries {
  *
  * @param text the text
  * @param title optional heading above the text; without one the text stands alone, like a short paragraph
- * @param groupHeading true = this row opens a group of screens in a long card. It is drawn with a line above it,
- *   more space and a larger title, so the groups can be told apart. Needs a [title].
  */
 data class PreferenceInfoDef(
     val text: TextRef,
-    val title: TextRef? = null,
-    val groupHeading: Boolean = false
+    val title: TextRef? = null
 ) : PreferenceItem

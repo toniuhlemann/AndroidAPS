@@ -42,3 +42,16 @@ val LocalHighlightKey = compositionLocalOf<String?> { null }
  * The lambda receives a composable content that takes an onBack callback.
  */
 val LocalNavigateToCompose = compositionLocalOf<((ComposeScreenContent) -> Unit)?> { null }
+
+/**
+ * CompositionLocal for opening a preference screen as a page of its own, by its key
+ * ([PreferenceSubScreenDef.pages]). The second argument is the key of a value to bring into view and to tint on
+ * that page, or null. Provided by the navigation of the app; where it is missing, sub-screens unfold as sections.
+ */
+val LocalPreferenceNavigator = compositionLocalOf<((String, String?) -> Unit)?> { null }
+
+/**
+ * True on a page ([PreferencePageScreen]): a value row shows its name left and its value right, with at most one
+ * line below. Everywhere else a row keeps its usual shape.
+ */
+val LocalCompactPreferenceRows = compositionLocalOf { false }

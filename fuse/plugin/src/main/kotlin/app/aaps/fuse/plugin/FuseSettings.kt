@@ -9,6 +9,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.outlined.Insights
+import androidx.compose.material.icons.outlined.Restaurant
+import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.Timeline
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
@@ -27,6 +32,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.PreferenceType
@@ -108,11 +114,14 @@ internal val fuseLiveZeilenSchluessel: List<String> = listOf(
  *  - Die erste Zeile jeder Erklaerung sagt, wofuer der Wert gilt.
  * Schluessel, Werte, Vorgaben und Dosierverhalten haengen nicht an dieser Gliederung.
  *
- * v4 zeichnet in einer Karte genau eine Ebene von Bereichen; ein Bereich im Bereich wird nicht gezeichnet. Die
- * Hauptbereiche stehen deshalb als Ueberschrift-Zeilen in der Karte ([hauptbereiche]), darunter ihre Bereiche zum
- * Aufklappen. Unter dem Titel eines Bereichs steht ein Satz, der sagt, was darin ist.
+ * SEITEN STATT AUFKLAPPLISTE (Toni 25.11.2026): eine aufgeklappte Karte ist eine lange Liste - der Titel laeuft weg,
+ * und der naechste Bereich beginnt mitten im Bild. Deshalb drei Ebenen eigener Seiten ([gliederung]): die Startseite
+ * mit den fuenf Hauptbereichen und einer Suche, die Seite eines Hauptbereichs mit je einer Zeile je Bereich
+ * ("Erweitert" abgesetzt am Ende), und die Seite eines Bereichs mit seinen Werten. Jede Seite traegt ihren Titel
+ * und den Weg zu ihr fest im Kopf; zurueck fuehrt auf die vorige Seite an ihrer Stelle. Die Werte stehen kompakt:
+ * Name links, Wert rechts, darunter hoechstens die berechnete Zeile.
  *
- * Die Info-Zeilen gliedern einen Bereich als Zwischenueberschriften. Die Felder von Kurve, Stabilitaet und
+ * Die Info-Zeilen gliedern eine Seite als Zwischenueberschriften. Die Felder von Kurve, Stabilitaet und
  * Mahlzeit-Versorgung zeigen die laufend berechnete kurze Zeile ([FuseLiveZeilen]). In ALLEN Bereichen (Toni, wie
  * autoISF) steht am Feld nur die Live-Zeile; die Erklaerung kommt beim Hineingehen oder Antippen (liveLinesOnly).
  *
@@ -121,18 +130,30 @@ internal val fuseLiveZeilenSchluessel: List<String> = listOf(
  */
 object FuseSettings {
 
-    /** Ein Hauptbereich: Titel, ein Satz dazu und die Schluessel seiner Bereiche in ihrer Reihenfolge. */
-    class Hauptbereich(val titel: String, val text: String, val bereiche: List<String>)
+    /**
+     * Ein Hauptbereich: der Schluessel seiner Seite, sein Titel, die Zeile auf der Startseite ([kurz]), der Satz oben
+     * auf seiner Seite ([text]), sein Symbol und die Schluessel seiner Bereiche in ihrer Reihenfolge.
+     */
+    class Hauptbereich(
+        val key: String, val titel: String, val kurz: String, val text: String, val symbol: ImageVector,
+        val bereiche: List<String>,
+    )
+
+    /** Die Zwischenzeile vor "Erweitert" auf der Seite eines Hauptbereichs. */
+    private const val WEITERE_EINSTELLUNGEN = "Weitere Einstellungen"
+
+    /** Auf der Seite dieses Hauptbereichs steht die Wartung - abgesetzt von der Anzeige. */
+    private const val WARTUNG_BEI = "fuse_area_display"
 
     /**
-     * Ein Bereich mit seinem Satz unter dem Titel. Toni: in ALLEN FUSE-Bereichen am Feld nur die Live-Zeile, die
-     * Erklaerung erst im Eingabedialog, bei Schaltern und Absprung-Zeilen hinter dem (i) am Titel. Die Info-Zeilen
-     * bleiben kurz mit (i).
+     * Ein Bereich als eigene Seite; sein Satz steht auf der Zeile, die ihn oeffnet. Toni: in ALLEN FUSE-Bereichen am
+     * Feld nur die Live-Zeile, die Erklaerung erst im Eingabedialog, bei Schaltern und Absprung-Zeilen hinter dem (i)
+     * am Titel. Die Info-Zeilen bleiben kurz mit (i).
      */
     private fun section(key: String, title: Int, summary: Int, vararg items: PreferenceItem) =
         PreferenceSubScreenDef(
             key = key, title = TextRef.AndroidRes(title), items = items.toList(), summary = TextRef.AndroidRes(summary),
-            liveLinesOnly = true, summaryInHeader = true,
+            liveLinesOnly = true, pages = true,
         )
 
     /** Eine Zwischenueberschrift in einem Bereich mit ihrem Satz; auch ein Verweis auf den Ort eines Werts. */
@@ -376,34 +397,39 @@ object FuseSettings {
     )
 
     /**
-     * Die fuenf Hauptbereiche in ihrer Reihenfolge: Titel, ein Satz und die Schluessel ihrer Bereiche. Der Bildschirm
-     * zeichnet sie als Ueberschrift-Zeilen in der Karte, darunter die Bereiche zum Aufklappen.
+     * Die fuenf Hauptbereiche in ihrer Reihenfolge: Schluessel ihrer Seite, Titel, die Zeile auf der Startseite, der
+     * Satz oben auf ihrer Seite, ihr Symbol und die Schluessel ihrer Bereiche.
      */
     internal val hauptbereiche: List<Hauptbereich> = listOf(
         Hauptbereich(
-            "Mahlzeiten",
+            "fuse_area_meals", "Mahlzeiten", "Menge, Ablauf und besondere Situationen",
             "Alles vom Knopf bis zum Ende des Mahlzeitfensters. In den Erklärungen und im FUSE-Reiter heißt die " +
                 "Mahlzeit-Versorgung auch „Erwartungskonto“ oder kurz „Konto“.",
+            Icons.Outlined.Restaurant,
             listOf("fuse_meal_amount", "fuse_meal_flow", "fuse_meal_special", "fuse_meal_advanced"),
         ),
         Hauptbereich(
-            "Korrekturen",
+            "fuse_area_corrections", "Korrekturen", "SMB, Druck-Kanal und Zusatzbasal",
             "Alles außerhalb der Mahlzeit-Versorgung: drei Wege mit eigenen Schwellen.",
+            Icons.Outlined.Tune,
             listOf("fuse_corr_smb", "fuse_corr_pressure", "fuse_corr_slow", "fuse_corr_advanced"),
         ),
         Hauptbereich(
-            "Schutz und Insulingrenzen",
+            "fuse_area_protection", "Schutz und Insulingrenzen", "Grenzen, Tiefschutz und Basalrückkehr",
             "Was Insulin begrenzt oder sperrt, gleich auf welchem Weg.",
+            Icons.Outlined.Shield,
             listOf("fuse_protect_limits", "fuse_protect_predicted", "fuse_protect_basal", "fuse_protect_after_low", "fuse_protect_advanced"),
         ),
         Hauptbereich(
-            "Signal und Prognose",
+            "fuse_area_signal", "Signal und Prognose", "Modellwerte und Glättung",
             "Modellwerte. Sie wirken auf alle Wege.",
+            Icons.Outlined.Timeline,
             listOf("fuse_signal"),
         ),
         Hauptbereich(
-            "Anzeige und Diagnose",
+            "fuse_area_display", "Anzeige und Diagnose", "Darstellung, Beobachter und Wartung",
             "Graph, Beobachter und – deutlich getrennt – die Wartung.",
+            Icons.Outlined.Insights,
             listOf("fuse_display"),
         ),
     )
@@ -426,8 +452,8 @@ object FuseSettings {
         abschnitte().flatMap { it.items }.filterIsInstance<PreferenceKey>().filter { it !is IntentPreferenceKey }.map { it.key }
 
     /**
-     * DIE WARTUNG: die drei Ledger-Handlungen, je auf einer eigenen Seite mit Rueckfrage. Ein eigener Bereich am
-     * Ende, deutlich getrennt von der Anzeige - das sind keine Einstellwerte, sondern Eingriffe.
+     * DIE WARTUNG: die drei Ledger-Handlungen, je auf einer eigenen Seite mit Rueckfrage. Eine eigene Seite, deutlich
+     * getrennt von der Anzeige - das sind keine Einstellwerte, sondern Eingriffe.
      */
     private fun wartung(plugin: FusePlugin) = PreferenceSubScreenDef(
         key = "fuse_maintenance",
@@ -450,33 +476,51 @@ object FuseSettings {
             }),
         ),
         liveLinesOnly = true,
-        summaryInHeader = true,
+        pages = true,
     )
 
     /**
-     * Die Zeilen der Karte in ihrer Reihenfolge: je Hauptbereich eine Ueberschrift-Zeile, darunter seine Bereiche.
+     * Die Seiten der Hauptbereiche in ihrer Reihenfolge - die Zeilen der Startseite.
+     *
+     * Ein Hauptbereich mit mehreren Bereichen ist eine Seite mit je einer Zeile je Bereich; oben steht sein Satz,
+     * "Erweitert" steht abgesetzt am Ende. Ein Hauptbereich mit nur einem Bereich IST dieser Bereich - eine Seite mit
+     * einer einzigen Zeile waere nur ein Tipp mehr. Die Wartung steht auf der Seite von Anzeige und Diagnose.
      * Ohne Plugin (Test) fehlen die Live-Zeilen und die Wartung; die Gliederung ist dieselbe.
      */
-    internal fun gliederung(plugin: FusePlugin? = null): List<PreferenceItem> {
+    internal fun gliederung(plugin: FusePlugin? = null): List<PreferenceSubScreenDef> {
         val bereiche = abschnitte().associateBy { it.key }
-        return buildList {
-            for (h in hauptbereiche) {
-                add(PreferenceInfoDef(text = TextRef.Literal(h.text), title = TextRef.Literal(h.titel), groupHeading = true))
-                for (key in h.bereiche) {
-                    val b = bereiche.getValue(key)
-                    add(if (plugin != null && hatLiveZeilen(b)) b.copy(rowSummaries = plugin.liveZeilen) else b)
-                }
+        fun seite(key: String): PreferenceSubScreenDef = bereiche.getValue(key).let { b ->
+            if (plugin != null && hatLiveZeilen(b)) b.copy(rowSummaries = plugin.liveZeilen) else b
+        }
+        return hauptbereiche.map { h ->
+            val titel = TextRef.Literal(h.titel)
+            val kurz = TextRef.Literal(h.kurz)
+            if (h.bereiche.size == 1 && h.key != WARTUNG_BEI) {
+                seite(h.bereiche.single()).let { b -> b.copy(title = titel, summary = kurz, icon = h.symbol, items = listOf(absatz(h.text)) + b.items) }
+            } else {
+                val (erweitert, alltag) = h.bereiche.map(::seite).partition { it.key.endsWith(ERWEITERT) }
+                PreferenceSubScreenDef(
+                    key = h.key, title = titel, summary = kurz, icon = h.symbol,
+                    items = listOf<PreferenceItem>(absatz(h.text)) + alltag +
+                        (if (plugin != null && h.key == WARTUNG_BEI) listOf(wartung(plugin)) else emptyList()) +
+                        (if (erweitert.isEmpty()) emptyList() else listOf(info(WEITERE_EINSTELLUNGEN, "")) + erweitert),
+                    liveLinesOnly = true, pages = true,
+                )
             }
-            if (plugin != null) add(wartung(plugin))
         }
     }
 
+    /** So endet der Schluessel eines Bereichs mit den selten gebrauchten Werten eines Hauptbereichs. */
+    private const val ERWEITERT = "_advanced"
+
+    /** Die Startseite: die fuenf Hauptbereiche als Zeilen, die ihre Seite oeffnen. */
     fun content(plugin: FusePlugin): PreferenceSubScreenDef =
         PreferenceSubScreenDef(
             key = "fuse_settings",
             title = TextRef.AndroidRes(R.string.fuse_settings),
             items = gliederung(plugin),
             liveLinesOnly = true,
+            pages = true,
         )
 }
 

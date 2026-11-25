@@ -24,6 +24,7 @@ import androidx.navigationevent.NavigationEventInfo
 import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
 import app.aaps.core.keys.interfaces.TextRef
+import app.aaps.core.keys.interfaces.VisibilityContext
 import app.aaps.core.ui.CoreUiStrings
 import app.aaps.core.ui.compose.AapsTopAppBar
 import app.aaps.core.ui.compose.ComposeScreenContent
@@ -32,6 +33,7 @@ import app.aaps.core.ui.compose.MasterOfflineBanner
 import app.aaps.core.ui.compose.masterEditingEnabled
 import app.aaps.core.ui.compose.preference.LocalHighlightKey
 import app.aaps.core.ui.compose.preference.LocalNavigateToCompose
+import app.aaps.core.ui.compose.preference.PreferencePageScreen
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
 import app.aaps.core.ui.compose.preference.ProvidePreferenceTheme
 import app.aaps.core.ui.compose.preference.SectionLevel
@@ -47,12 +49,16 @@ import kotlinx.coroutines.launch
  *
  * @param screenDef The preference screen definition to display
  * @param highlightKey Optional preference key to highlight (for search navigation)
+ * @param parents Titles of the screens above this one, the outermost first; a page shows them as the way to it
+ * @param visibilityContext Context for the visibility rules of the values; a page needs it like the plugin screen
  * @param onBackClick Callback when back button is clicked
  */
 @Composable
 fun PreferenceScreenView(
     screenDef: PreferenceSubScreenDef,
     highlightKey: String? = null,
+    parents: List<TextRef> = emptyList(),
+    visibilityContext: VisibilityContext? = null,
     onBackClick: () -> Unit
 ) {
     // A screen built with titleResId = 0 has no title of its own and falls back to its key.
@@ -88,6 +94,20 @@ fun PreferenceScreenView(
         LocalNavigateToCompose provides { screen -> composeScreen = screen }
     ) {
         ProvidePreferenceTheme {
+            if (screenDef.pages) {
+                // A screen of pages draws itself: the way to it above its title, its values in groups, its
+                // sub-screens as rows that open the next page. The start page of such a tree has the search,
+                // whichever way it was reached.
+                PreferencePageScreen(
+                    screen = screenDef,
+                    parents = parents,
+                    showSearch = parents.isEmpty(),
+                    visibilityContext = visibilityContext,
+                    onShowMessage = onShowMessage,
+                    onBackClick = onBackClick
+                )
+                return@ProvidePreferenceTheme
+            }
             Scaffold(
                 topBar = {
                     AapsTopAppBar(

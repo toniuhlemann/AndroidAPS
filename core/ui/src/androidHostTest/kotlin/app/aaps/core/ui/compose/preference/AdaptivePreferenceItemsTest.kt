@@ -2,9 +2,6 @@ package app.aaps.core.ui.compose.preference
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.ui.semantics.SemanticsProperties
-import androidx.compose.ui.test.SemanticsMatcher
-import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
@@ -132,30 +129,6 @@ class AdaptivePreferenceItemsTest {
         render { PreferenceInfoRow(PreferenceInfoDef(text = TextRef.Literal("The text"), title = TextRef.Literal("The heading"))) }
         compose.onNodeWithText("The heading").assertIsDisplayed().assertHasNoClickAction()
         compose.onNodeWithText("The text").assertIsDisplayed().assertHasNoClickAction()
-    }
-
-    @Test
-    fun aGroupHeadingShowsItsTitleAsAHeadingAndItsLine() {
-        render {
-            PreferenceInfoRow(
-                PreferenceInfoDef(
-                    text = TextRef.Literal("All from the button to the end of the meal"),
-                    title = TextRef.Literal("Meals"),
-                    groupHeading = true
-                )
-            )
-        }
-        compose.onNodeWithText("Meals")
-            .assertIsDisplayed()
-            .assertHasNoClickAction()
-            .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading))
-        compose.onNodeWithText("All from the button to the end of the meal").assertIsDisplayed().assertHasNoClickAction()
-    }
-
-    @Test
-    fun aRowWithATitleThatIsNoGroupHeadingIsNotAHeading() {
-        render { PreferenceInfoRow(PreferenceInfoDef(text = TextRef.Literal("The text"), title = TextRef.Literal("Plain title"))) }
-        compose.onNodeWithText("Plain title").assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Heading))
     }
 
     @Test

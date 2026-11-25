@@ -200,10 +200,10 @@ object FuseHoldAlarm {
 
         val wege = mutableListOf<String>()
         if (speichern.isNotEmpty())
-            wege += "Einstellungen -> FUSE -> Wartung -> Nach unterbrochenem Speichern wiederherstellen (nur mit technischem Nachweis, sonst bleibt der Hold)"
-        if (zustand.isNotEmpty() && quittierbar) wege += "Einstellungen -> FUSE -> Wartung -> Hold quittieren"
+            wege += "Einstellungen -> FUSE -> Anzeige und Diagnose -> Wartung -> Nach unterbrochenem Speichern wiederherstellen (nur mit technischem Nachweis, sonst bleibt der Hold)"
+        if (zustand.isNotEmpty() && quittierbar) wege += "Einstellungen -> FUSE -> Anzeige und Diagnose -> Wartung -> Hold quittieren"
         val reparaturNoetig = rest.isNotEmpty() || (zustand.isNotEmpty() && !quittierbar)
-        if (reparaturNoetig && darfReparieren) wege += "Einstellungen -> FUSE -> Wartung -> Ledger reparieren"
+        if (reparaturNoetig && darfReparieren) wege += "Einstellungen -> FUSE -> Anzeige und Diagnose -> Wartung -> Ledger reparieren"
 
         val offen = if (darfReparieren) emptyList()
         else rest + (if (quittierbar) emptyList() else zustand)

@@ -16,9 +16,10 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * DIE GLIEDERUNG DER FUSE-EINSTELLUNGEN (Toni 24.11.2026): fuenf Hauptbereiche als Ueberschriften, darunter die
- * Bereiche mit ihrem Satz; die Info-Zeilen gliedern einen Bereich als Zwischenueberschriften; die Live-Zeilen am Feld
- * haengen an den Schluesseln und folgen jeder ihrer Eingaben.
+ * DIE GLIEDERUNG DER FUSE-EINSTELLUNGEN (Toni 24./25.11.2026): drei Ebenen eigener Seiten - die Startseite mit den
+ * fuenf Hauptbereichen, die Seite eines Hauptbereichs mit je einer Zeile je Bereich, die Seite eines Bereichs mit
+ * seinen Werten. Die Info-Zeilen gliedern eine Seite als Zwischenueberschriften; die Live-Zeilen am Feld haengen an
+ * den Schluesseln und folgen jeder ihrer Eingaben.
  */
 class FuseSettingsInfoZeilenTest {
 
@@ -70,7 +71,6 @@ class FuseSettingsInfoZeilenTest {
         val texte = infos.map { it.text }
         assertEquals(texte.size, texte.toSet().size, "eine Info-Zeile doppelt")
         for (i in infos) assertTrue((i.text as TextRef.Literal).text.isNotBlank()) { "Info-Zeile ohne Text: ${i.title}" }
-        assertTrue(infos.none { it.groupHeading }) { "eine Hauptueberschrift steht in einem Bereich statt in der Karte" }
         for (b in abschnitte) assertTrue(b.items.any { it is PreferenceKey }) { "Bereich ${b.key} zeigt keinen Wert" }
     }
 
@@ -81,11 +81,11 @@ class FuseSettingsInfoZeilenTest {
         assertTrue(mitErklaerung.isEmpty()) { "Bereiche mit Erklaerung am Feld: $mitErklaerung" }
     }
 
-    /** Statt der abgeschnittenen Aufzaehlung der Optionsnamen: ein Satz, der sagt, was im Bereich ist. */
+    /** Jeder Bereich ist eine eigene Seite; sein Satz steht auf der Zeile, die ihn oeffnet. */
     @Test
-    fun `jeder Bereich traegt seinen Satz unter dem Titel`() {
-        val ohne = abschnitte.filter { it.summary == null || !it.summaryInHeader }.map { it.key }
-        assertTrue(ohne.isEmpty()) { "Bereiche ohne eigenen Satz: $ohne" }
+    fun `jeder Bereich ist eine eigene Seite mit seinem Satz`() {
+        val ohne = abschnitte.filter { it.summary == null || !it.pages }.map { it.key }
+        assertTrue(ohne.isEmpty()) { "Bereiche ohne Seite oder ohne Satz: $ohne" }
     }
 
     @Test
@@ -96,22 +96,60 @@ class FuseSettingsInfoZeilenTest {
         assertEquals(listOf("Mahlzeiten", "Korrekturen", "Schutz und Insulingrenzen", "Signal und Prognose", "Anzeige und Diagnose"), titel)
     }
 
-    /** v4 zeichnet in der Karte genau eine Ebene von Bereichen - die Hauptbereiche sind deshalb Ueberschrift-Zeilen. */
+    /**
+     * Toni 25.11.2026: eine aufgeklappte Karte ist eine lange Liste. Die Startseite zeigt deshalb nur die fuenf
+     * Hauptbereiche - je eine Zeile mit Symbol und Satz, die ihre Seite oeffnet.
+     */
     @Test
-    fun `die Karte beginnt jeden Hauptbereich mit einer Ueberschrift, darunter seine Bereiche`() {
-        val karte = FuseSettings.gliederung()
-        var i = 0
-        for (h in FuseSettings.hauptbereiche) {
-            val kopf = karte[i++] as PreferenceInfoDef
-            assertTrue(kopf.groupHeading) { "keine Hauptueberschrift vor ${h.titel}" }
-            assertEquals(h.titel, (kopf.title as TextRef.Literal).text)
-            assertTrue((kopf.text as TextRef.Literal).text.isNotBlank()) { "Hauptbereich ${h.titel} ohne Satz" }
-            for (key in h.bereiche) assertEquals(key, (karte[i++] as PreferenceSubScreenDef).key)
+    fun `die Startseite zeigt die fuenf Hauptbereiche als Zeilen mit Symbol und Satz`() {
+        val seiten = FuseSettings.gliederung()
+        assertEquals(FuseSettings.hauptbereiche.map { it.titel }, seiten.map { (it.title as TextRef.Literal).text })
+        for ((h, s) in FuseSettings.hauptbereiche.zip(seiten)) {
+            assertTrue(s.pages) { "${h.titel} ist keine eigene Seite" }
+            assertEquals(h.kurz, (s.summary as TextRef.Literal).text, "Zeile von ${h.titel}")
+            assertEquals(h.symbol, s.icon, "Symbol von ${h.titel}")
         }
-        assertEquals(karte.size, i, "die Karte hat Zeilen ausserhalb der Hauptbereiche")
-        // Kein Bereich im Bereich: den wuerde der Bildschirm nicht zeichnen.
+        val keys = seiten.map { it.key }
+        assertEquals(keys.size, keys.toSet().size, "Seitenschluessel doppelt: $keys")
+    }
+
+    /** Jeder Bereich ist von der Startseite aus erreichbar: als Seite eines Hauptbereichs oder als Zeile darauf. */
+    @Test
+    fun `jeder Bereich ist in hoechstens zwei Schritten erreichbar, in seiner Reihenfolge`() {
+        val erreichbar = FuseSettings.gliederung().flatMap { seite ->
+            val zeilen = seite.items.filterIsInstance<PreferenceSubScreenDef>()
+            if (zeilen.isEmpty()) listOf(seite.key) else {
+                assertTrue(seite.items.none { it is PreferenceKey }) { "${seite.key} mischt Werte und Seiten" }
+                zeilen.map { it.key }
+            }
+        }
+        assertEquals(abschnitte.map { it.key }.sorted(), erreichbar.sorted(), "Bereiche fehlen oder stehen doppelt")
+        // Keine vierte Ebene: die Seite eines Bereichs traegt keine weitere Seite.
         val verschachtelt = abschnitte.filter { b -> b.items.any { it is PreferenceSubScreenDef } }.map { it.key }
-        assertTrue(verschachtelt.isEmpty()) { "Bereich im Bereich: $verschachtelt" }
+        assertTrue(verschachtelt.isEmpty()) { "Seite in der Seite eines Bereichs: $verschachtelt" }
+    }
+
+    /** Ein Hauptbereich mit nur einem Bereich IST dieser Bereich - eine Seite mit einer einzigen Zeile waere ein Tipp mehr. */
+    @Test
+    fun `Signal und Prognose zeigt seine Werte direkt`() {
+        val seite = FuseSettings.gliederung().single { (it.title as TextRef.Literal).text == "Signal und Prognose" }
+        assertEquals("fuse_signal", seite.key)
+        assertEquals(bereiche.getValue("fuse_signal").items.filterIsInstance<PreferenceKey>(), seite.items.filterIsInstance<PreferenceKey>())
+        assertTrue(seite.items.first() is PreferenceInfoDef) { "der Satz des Hauptbereichs steht oben auf seiner Seite" }
+    }
+
+    /** Kodex 24.11.2026: "Erweitert" gehoert zum Thema - auf der Seite seines Hauptbereichs, abgesetzt am Ende. */
+    @Test
+    fun `Erweitert steht abgesetzt am Ende der Seite seines Hauptbereichs`() {
+        val mit = FuseSettings.gliederung().filter { s -> s.items.any { it is PreferenceSubScreenDef && it.key.endsWith("_advanced") } }
+        assertEquals(listOf("fuse_area_meals", "fuse_area_corrections", "fuse_area_protection"), mit.map { it.key })
+        for (seite in mit) {
+            val letzte = seite.items.last() as PreferenceSubScreenDef
+            assertTrue(letzte.key.endsWith("_advanced")) { "${seite.key}: Erweitert steht nicht am Ende" }
+            val davor = seite.items[seite.items.size - 2] as PreferenceInfoDef
+            assertEquals("Weitere Einstellungen", (davor.title as TextRef.Literal).text)
+            assertEquals(1, seite.items.count { it is PreferenceSubScreenDef && it.key.endsWith("_advanced") })
+        }
     }
 
     /** Die Wartung ist kein Einstellwert: ihre drei Seiten stehen in keinem Wertebereich, auch nicht bei der Anzeige. */

@@ -239,8 +239,12 @@ correction deadband (new in November 2026) has no such exception: it holds whene
 
 ### The settings menu (new in November 2026)
 
-The settings are sorted by what you want to change, not by the parts of the controller. Five groups stand as headings
-in the FUSE card, and each group has a few sections that open:
+The settings are sorted by what you want to change, not by the parts of the controller, and they are pages, not one
+long list. The start page shows five groups and a search field. A group opens a page with its sections, and a section
+opens a page with its values. Every page shows its title and the way to it in the top bar (*FUSE › Mahlzeiten*), and
+back leads to the page before, at the place it was left. A value is one row: its name left, its value right, with at
+most one computed line below; a tap opens the input with the explanation. The search looks through the names and the
+explanations of all FUSE pages and values, opens the page of a hit and brings the value into view.
 
 | Group | Sections |
 |---|---|
@@ -251,7 +255,7 @@ in the FUSE card, and each group has a few sections that open:
 | **Anzeige und Diagnose** | *Anzeige und Beobachter* · *Wartung* (the ledger actions, clearly apart) |
 
 Four rules hold. Every value has one place, and a note points to it where a second place would be natural. Advanced
-values stay with their topic in a section of their own, and they work the same whether that section is open or closed.
+values stay with their topic on a page of their own, set apart at the end of the page of their group.
 One word is used for one thing. The first line of each explanation says where the value applies. A value with a new
 name gives its old title at the end of its explanation (*Bisher: …*), so the search still finds it. Keys, values,
 defaults and dosing did not change.
@@ -506,9 +510,12 @@ Statuscode und den letzten Alarm-Eintrag der Pumpe. Ein laufender Kolben beweist
 verlassen hat — nicht, dass es wirkt.
 
 **Einstellungen (neu im November 2026).** Die Einstellungen sind nach der Frage geordnet, nicht nach den Bauteilen des
-Reglers: fünf Hauptbereiche als Überschriften — Mahlzeiten, Korrekturen, Schutz und Insulingrenzen, Signal und Prognose,
-Anzeige und Diagnose —, darunter Bereiche zum Aufklappen mit einem Satz, was darin ist. Jeder Wert hat genau einen Ort;
-wo eine zweite Stelle naheliegt, steht ein Verweis. „Erweitert“ gehört zum jeweiligen Thema und wirkt auch zugeklappt.
+Reglers, und sie sind Seiten statt einer langen Liste. Die Startseite zeigt fünf Hauptbereiche — Mahlzeiten,
+Korrekturen, Schutz und Insulingrenzen, Signal und Prognose, Anzeige und Diagnose — und ein Suchfeld. Ein Hauptbereich
+öffnet eine Seite mit seinen Bereichen, ein Bereich eine Seite mit seinen Werten; jede Seite trägt ihren Titel und den
+Weg zu ihr fest im Kopf, und Zurück führt auf die vorige Seite an ihrer Stelle. Ein Wert ist eine Zeile: Name links,
+Wert rechts, darunter höchstens die berechnete Zeile. Jeder Wert hat genau einen Ort; wo eine zweite Stelle naheliegt,
+steht ein Verweis. „Erweitert“ gehört zum jeweiligen Thema und steht abgesetzt am Ende der Seite seines Hauptbereichs.
 Die erste Zeile jeder Erklärung sagt, wofür der Wert gilt; ein umbenannter Wert nennt am Ende seinen alten Titel
 („Bisher: …“), damit die Suche ihn findet. Im Menü heißt der Liveness-Kanal „Druck-Kanal“, der Schwanz-Guard
 „Spätwirkungs-Prüfung“ (im FUSE-Reiter weiter „Schwanz“), der langsame Korrekturkanal „Langsamer Kanal“, das
