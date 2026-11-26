@@ -25,6 +25,9 @@
     <string name="fuse_meal_input_hint">Freiwillig, nur für „Mahlzeit“. 0 = wie bisher.</string>
     <string name="fuse_meal_input_effect" comment="%1$.2f=Budget der Mahlzeit in Einheiten, %2$d=Mahlzeitfenster in Minuten. Example: Budget 6,00 U · Fenster 240 min">Budget %1$.2f U · Fenster %2$d min</string>
     <string name="fuse_meal_input_invalid">Mit dieser Eingabe kann FUSE nicht rechnen (fehlt das IC im Profil?).</string>
+    <!-- The carbs entry that "Mahlzeit" with carbs writes to the treatment list (Toni 26.11.2026). -->
+    <string name="fuse_meal_carbs_note">FUSE-Mahlzeit</string>
+    <string name="fuse_meal_carbs_note_absorption" comment="%1$.1f=Absorptionszeit der Mahlzeit in Stunden. Example: FUSE-Mahlzeit · Absorptionszeit 2,5 h">FUSE-Mahlzeit · Absorptionszeit %1$.1f h</string>
     <string name="fuse_meal_withdraw_pending" comment="%1$d=Sekunden bis zur Ruecknahme">Mahlzeiten-Marker wird in %1$d s zurückgenommen</string>
     <string name="fuse_meal_withdraw_undo">Rückgängig</string>
     <string name="fuse_meal_withdraw_undone">Rücknahme abgebrochen – der Marker läuft weiter</string>

@@ -133,6 +133,7 @@ class FuseSchluesselRueckwegTest {
         // Mahlzeit-Eingabe (Toni 25.11.2026): KH-Menge, KH-Insulin und Absorptionszeit am Marker - sie kommen aus dem
         // Dialog des Knopfdrucks und sterben mit dem Marker. Je 0 = keine Angabe: dann rechnet das Konto wie vorher.
         FuseLongKey.MealMarkerCarbsG.key,
+        FuseLongKey.MealMarkerCarbsEntryId.key,
         FuseLongKey.MealMarkerCarbsInsulinMilliU.key,
         FuseLongKey.MealMarkerAbsorptionMin.key,
     )

@@ -189,6 +189,13 @@ and the same quick add buttons) and its absorption time in half hours. They are 
   keep each value in its range (up to 300 g, up to 5 hours). A number that is still being typed is taken over first; if
   that changes the input, the press does nothing, so a press counts only for what the dialog showed. If FUSE cannot
   book the input (no carb ratio in the profile), *Mahlzeit* is blocked and the line says so.
+- **The carbs go into the treatment list (new on 26 November 2026).** *Mahlzeit* with carbs writes a normal carbs entry
+  at the time of the press, without a duration, with the absorption time in its note. It shows in the treatment list, in
+  COB on the main screen and in Nightscout. FUSE does not count it twice: FUSE doses without COB, and it reads carbs
+  entries only as the eCarbs of a bolus-calculator meal, which always have a duration. The AAPS bolus calculator counts
+  it as COB when its COB box is ticked, like any carbs entry. The note does not change how AAPS lets COB go down. When
+  the meal is taken back within 15 minutes of the press, it was a mistake and the entry goes with it; later the carbs
+  were eaten and the entry stays. A new meal never touches the entry of an earlier one.
 - *Snack*, *Nur Marker* and bolus-calculator meals take no input. The account keeps the values of the press, also over
   a restart. The trail records them (`markerCarbsG`, `markerCarbsInsulinU`, `markerAbsorptionMin`, and in the account
   `curveStretch` and `byInput`).
@@ -529,7 +536,13 @@ bleibt die Höhe die eingestellte, und das Budget ist der kleinere frühe Bedarf
 ist:** ein Modell für den zeitlichen Verlauf der KH-Wirkung, kein Modell für zusätzlichen Insulinbedarf durch Fett und
 Eiweiß — der wird weiter aus dem gemessenen Verlauf ermittelt. Ohne Eingabe läuft die Kurve wie eingestellt und
 erreicht die ganze Mahlzeit bei Minute 120. Der Knopf zeigt die Menge für diese Mahlzeit vor dem Druck; eine Zahl, die
-noch getippt wird, übernimmt der Druck zuerst — ändert sich dadurch die Eingabe, zählt erst der nächste Druck. „Snack“, „Nur Marker“ und
+noch getippt wird, übernimmt der Druck zuerst — ändert sich dadurch die Eingabe, zählt erst der nächste Druck. Seit dem
+26.11.2026 schreibt „Mahlzeit“ mit KH einen **normalen KH-Eintrag** zur Zeit des Drucks, ohne Dauer, die Absorptionszeit
+in der Notiz: er steht in der Behandlungsliste, im COB der Startseite und in Nightscout. FUSE zählt ihn nicht doppelt
+(FUSE dosiert ohne COB und liest KH-Einträge nur als eCarbs einer Rechner-Mahlzeit, die immer eine Dauer haben). Der
+AAPS-Bolusrechner rechnet ihn mit gesetztem COB-Häkchen als COB mit, wie jeden KH-Eintrag; den COB-Abbau von AAPS ändert
+die Notiz nicht. Wird die Mahlzeit binnen 15 Minuten nach dem Druck zurückgenommen, war es ein Versehen und der Eintrag
+fällt mit; später ist gegessen, und er bleibt. „Snack“, „Nur Marker“ und
 Mahlzeiten aus dem Bolusrechner nehmen keine Eingabe.
 
 **Mahlzeiten aus dem Bolusrechner (neu im November 2026).** Mit dem Schalter „Bolusrechner-Mahlzeiten anrechnen (HCL)“

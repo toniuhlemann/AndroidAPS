@@ -844,10 +844,14 @@ enum class FuseLongKey(
      *  ([app.aaps.fuse.core.controller.EarlySupply.carbsScale]). Lebt und stirbt mit [MealMarkerArmedTs]. */
     MealMarkerCarbsInsulinMilliU("fuse_meal_marker_carbs_insulin_milli_u", 0, exportable = false),
     /** EPISODENZUSTAND, kein Setting (Mahlzeit-Eingabe): die am Mahlzeit-Knopf eingegebene Absorptionszeit [min];
-     *  0 = keine Angabe. Sie bestimmt Anfangsportion und Mahlzeitfenster dieses Markers
-     *  ([app.aaps.fuse.core.controller.EarlySupply.absorptionInitialFactor],
+     *  0 = keine Angabe. Sie bestimmt Verlauf und Mahlzeitfenster dieses Markers
+     *  ([app.aaps.fuse.core.controller.EarlySupply.courseStretch],
      *  [app.aaps.fuse.core.controller.EarlySupply.mealWindowMin]). Lebt und stirbt mit [MealMarkerArmedTs]. */
     MealMarkerAbsorptionMin("fuse_meal_marker_absorption_min", 0, exportable = false),
+    /** EPISODENZUSTAND, kein Setting (Toni 26.11.2026): die Kennung des KH-Eintrags, den der Druck "Mahlzeit" mit KH
+     *  in die Datenbank geschrieben hat ([MahlzeitKhEintrag]); 0 = keiner. Jeder neue Marker setzt sie zurueck, damit
+     *  eine Ruecknahme nie den Eintrag einer frueheren Mahlzeit trifft. */
+    MealMarkerCarbsEntryId("fuse_meal_marker_carbs_entry_id", 0, exportable = false),
 
     /**
      * ALTBESTAND, nur noch LESEND: `armedTs*10 + Stufe`.

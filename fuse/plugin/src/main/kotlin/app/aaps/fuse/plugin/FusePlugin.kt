@@ -3,7 +3,11 @@ package app.aaps.fuse.plugin
 import android.content.Context
 import android.os.Environment
 import app.aaps.core.data.model.BS
+import app.aaps.core.data.model.CA
 import app.aaps.core.data.plugin.PluginType
+import app.aaps.core.data.ue.Action
+import app.aaps.core.data.ue.Sources
+import app.aaps.core.data.ue.ValueWithUnit
 import app.aaps.core.interfaces.aps.APS
 import app.aaps.core.interfaces.aps.APSResult
 import app.aaps.core.interfaces.aps.GlucoseStatus
@@ -847,12 +851,15 @@ class FusePlugin(
         // wartet hoechstens bis zum Ende des laufenden Zyklus; eine lange
         // Wartezeit wird gemeldet, damit sie am Geraet sichtbar ist.
         val warteBeginn = System.nanoTime()
-        return laufSperre.withLock {
+        val umschaltung = laufSperre.withLock {
             val gewartetMs = (System.nanoTime() - warteBeginn) / 1_000_000L
             if (gewartetMs >= markerWartenMeldenMs)
                 aapsLogger.warn(LTag.APS, "FUSE Marker wartete $gewartetMs ms auf den laufenden Zyklus")
             toggleMealMarkerUnterSperre(now, ohneVorschuss, ereignisId, quelle, nurErwartung, snack, eingabe)
         }
+        // DER KH-EINTRAG (Toni 26.11.2026), ausserhalb der Laufsperre: die Datenbank gehoert nicht zu dem, was sie schuetzt.
+        umschaltung.khEintrag?.let { khEintragAusfuehren(it) }
+        return umschaltung.aktiv
     }
 
     /** Das IC des Profils zur Zeit [ts] [g/U] fuer die Mahlzeit-Eingabe; `null` = kein Profil oder kein brauchbarer Wert. */
@@ -863,14 +870,14 @@ class FusePlugin(
     private fun toggleMealMarkerUnterSperre(
         now: Long, ohneVorschuss: Boolean, ereignisId: String?, quelle: String, nurErwartung: Boolean = false,
         snack: Boolean = false, eingabe: MarkerEingabe.Stand = MarkerEingabe.KEINE,
-    ): Boolean {
+    ): Umschaltung {
         val armed = mealMarkerActive(now)
         val ordnung = MarkerReauthorization.ordnungVon(ereignisId)
         // VERALTETE RUECKRUFE FALLEN HERAUS. Nur ein echt juengeres
         // Ereignis wirkt noch; die Folge Start E1 -> Abbruch E2 ->
         // verspaeteter E1 haette einen blossen Letztvergleich passiert.
         if (!MarkerReauthorization.ereignisWirkt(ordnung, ledgerAdapter.episodes.lastMarkerEventOrdnung))
-            return armed
+            return Umschaltung(armed)
         val vorher = EpisodeAutorisierung(ledgerAdapter.episodes)
         if (armed) {
             // Die Beobachtung stirbt mit der Ruecknahme. Bliebe sie stehen,
@@ -911,6 +918,13 @@ class FusePlugin(
             preferences.put(FuseLongKey.MealMarkerSnack, 0L)
             preferences.put(FuseLongKey.MealMarkerHclCalcTs, 0L)
             preferences.put(FuseLongKey.MealMarkerHclMerged, 0L)
+            // DER KH-EINTRAG (Kodex 26.11.2026): im Versehen-Fenster faellt er mit, danach bleibt er. Die Kennung stirbt
+            // mit dem Marker - gelesen VOR dem Loeschen der Eingabe, die die Menge traegt.
+            val khAktion = MahlzeitKhEintrag.beiRuecknahme(
+                preferences.get(FuseLongKey.MealMarkerCarbsEntryId), zurueckgenommenTs, now,
+                preferences.get(FuseLongKey.MealMarkerCarbsG).toInt(),
+            )
+            preferences.put(FuseLongKey.MealMarkerCarbsEntryId, 0L)
             MarkerEingabe.schreiben(preferences, MarkerEingabe.KEINE)
             // Der Altbestand-Stempel wird mitgeloescht: bliebe er stehen,
             // liesse der Lese-Ruecktausch unten einen zurueckgenommenen
@@ -927,7 +941,7 @@ class FusePlugin(
             markerEreignis("WITHDRAWN", now, quelle, zurueckgenommenTs)
             // Eine noch offene Vormerkung ist damit erledigt.
             speichereRuecknahmeVormerkung(null)
-            return false
+            return Umschaltung(false, khAktion)
         }
         // ---- DIE NEUE AUTORISIERUNG, IN EINEM SCHRITT -------------------
         //
@@ -983,7 +997,7 @@ class FusePlugin(
             // dieser gescheiterte Druck die Marke im Speicher als
             // "verbraucht" markiert, und der naechste - erfolgreiche - Druck
             // haette keine neue volle Huelle mehr eroeffnet.
-            return false
+            return Umschaltung(false)
         }
         // Snack ist eine Form von "Mahlzeit": ohne sie gilt er nicht.
         val alsSnack = snack && nurErwartung && !ohneVorschuss
@@ -992,6 +1006,8 @@ class FusePlugin(
         // traegt. Sie gilt nur fuer die Wahl "Mahlzeit"; "Nur Marker" und "Snack" gehen vor und tragen keine.
         val mitEingabe = if (nurErwartung && !ohneVorschuss && !alsSnack) eingabe else MarkerEingabe.KEINE
         MarkerEingabe.schreiben(preferences, mitEingabe)
+        // Der KH-Eintrag eines frueheren Markers gehoert nicht zu diesem: eine Ruecknahme darf ihn nie treffen.
+        preferences.put(FuseLongKey.MealMarkerCarbsEntryId, 0L)
         preferences.put(FuseLongKey.MealMarkerArmedTs, now)
         preferences.put(FuseLongKey.MealMarkerNoPrime, if (ohneVorschuss) 1L else 0L)
         // "Ohne Vorschuss" geht vor: beide zugleich heisst ohne Vorschuss.
@@ -1022,7 +1038,48 @@ class FusePlugin(
         markerEreignis("ARMED", now, quelle, now)
         // Eine Vormerkung galt dem alten Marker - der neue beginnt ohne.
         speichereRuecknahmeVormerkung(null)
-        return true
+        return Umschaltung(true, MahlzeitKhEintrag.beimSetzen(now, mitEingabe.carbsG, mitEingabe.eingabe.absorptionMin))
+    }
+
+    /** Das Ergebnis des Umschaltens: ob danach ein Marker laeuft, und was mit seinem KH-Eintrag geschieht. */
+    private class Umschaltung(val aktiv: Boolean, val khEintrag: MahlzeitKhEintrag.Aktion? = null)
+
+    /**
+     * Fuehrt die Aktion am KH-Eintrag aus ([MahlzeitKhEintrag]). Ein Fehler der Datenbank haelt den Marker nicht auf -
+     * er steht im Log, und die Mahlzeit laeuft wie ohne Eintrag.
+     */
+    private suspend fun khEintragAusfuehren(aktion: MahlzeitKhEintrag.Aktion) {
+        when (aktion) {
+            is MahlzeitKhEintrag.Aktion.Schreiben -> {
+                val notiz = if (aktion.absorptionMin > 0) rh.gs(CoreUiStrings.fuse_meal_carbs_note_absorption, aktion.absorptionMin / 60.0)
+                else rh.gs(CoreUiStrings.fuse_meal_carbs_note)
+                val eintrag = CA(timestamp = aktion.markerTs, duration = 0L, amount = aktion.carbsG.toDouble(), notes = notiz)
+                val id = runCatching {
+                    persistenceLayer.insertOrUpdateCarbs(eintrag, Action.CARBS, Sources.Overview, notiz).inserted.firstOrNull()?.id
+                }.onFailure { aapsLogger.error(LTag.APS, "FUSE KH-Eintrag nicht geschrieben: ${it.message}") }.getOrNull()
+                // Nur, solange derselbe Marker laeuft: sonst gehoert die Kennung zu keinem Marker mehr.
+                if (id != null && id > 0L && preferences.get(FuseLongKey.MealMarkerArmedTs) == aktion.markerTs)
+                    preferences.put(FuseLongKey.MealMarkerCarbsEntryId, id)
+                aapsLogger.info(
+                    LTag.APS,
+                    "FUSE KH-Eintrag geschrieben: marker=${aktion.markerTs} kh=${aktion.carbsG} absorptionMin=${aktion.absorptionMin} id=$id",
+                )
+            }
+            is MahlzeitKhEintrag.Aktion.Loeschen -> {
+                runCatching {
+                    persistenceLayer.invalidateCarbs(
+                        aktion.eintragId, Action.CARBS_REMOVED, Sources.Overview, null,
+                        listOf(ValueWithUnit.Timestamp(aktion.markerTs), ValueWithUnit.Gram(aktion.carbsG)),
+                    )
+                }.onFailure { aapsLogger.error(LTag.APS, "FUSE KH-Eintrag nicht zurueckgenommen: ${it.message}") }
+                aapsLogger.info(LTag.APS, "FUSE KH-Eintrag zurueckgenommen (Versehen): marker=${aktion.markerTs} id=${aktion.eintragId}")
+            }
+            is MahlzeitKhEintrag.Aktion.Behalten ->
+                aapsLogger.info(
+                    LTag.APS,
+                    "FUSE KH-Eintrag bleibt (Ruecknahme nach ${aktion.alterMin} min): marker=${aktion.markerTs} id=${aktion.eintragId}",
+                )
+        }
     }
 
     // ---- RUECKNAHME MIT RUECKGAENGIG-FRIST (Toni 04.10.) -------------------
@@ -1143,12 +1200,15 @@ class FusePlugin(
                     // Der GEWOHNTE Umschaltvorgang, mit der Ereignisordnung des
                     // Tipps: ein inzwischen neueres Ereignis laesst ihn verfallen.
                     // Unter der Sperre: der Umschaltvorgang selbst, nicht die sperrende Fassung.
-                    val laeuftNoch = toggleMealMarkerUnterSperre(
+                    val umschaltung = toggleMealMarkerUnterSperre(
                         now,
                         ohneVorschuss = false,
                         ereignisId = v.ordnung.takeIf { it > 0L }?.let { MarkerReauthorization.ereignisKennung(it) },
                         quelle = "${v.quelle.text} nach Frist",
                     )
+                    // Der KH-Eintrag des zurueckgenommenen Markers (Kodex 26.11.2026): im Versehen-Fenster faellt er mit.
+                    umschaltung.khEintrag?.let { khEintragAusfuehren(it) }
+                    val laeuftNoch = umschaltung.aktiv
                     if (laeuftNoch) {
                         speichereRuecknahmeVormerkung(null)
                         markerEreignis("WITHDRAWAL_DROPPED", now, v.quelle.text, v.markerTs, v.faelligTs)
@@ -1492,7 +1552,8 @@ override fun fuseMarkerArmed(now: Long): Boolean = mealMarkerActive(now)
                 true
             }
             is HclMahlzeiten.Uebernahme.NeuerMarker -> {
-                if (!toggleMealMarkerUnterSperre(e.ts, ohneVorschuss = true, ereignisId = null, quelle = HCL_QUELLE)) {
+                // Der Marker des Bolusrechners traegt keine Eingabe am Knopf - und damit keinen KH-Eintrag von FUSE.
+                if (!toggleMealMarkerUnterSperre(e.ts, ohneVorschuss = true, ereignisId = null, quelle = HCL_QUELLE).aktiv) {
                     aapsLogger.warn(LTag.APS, "FUSE Bolusrechner-Mahlzeit: Marker nicht gesetzt, rechnung=${b.calcTs}")
                     false
                 } else {
