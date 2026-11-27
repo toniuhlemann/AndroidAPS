@@ -34,7 +34,8 @@ package app.aaps.fuse.core.signal
 class MaturityPolicy private constructor(
     /** Mindestzahl Punkte im Fenster. */
     val minPoints: Int,
-    /** Mindestzahl Paarsteigungen mit dt >= [BgiAdjustedSeries.PAIR_DT_MIN_MS]. */
+    /** Mindestzahl Paarsteigungen mit dt >= [BgiAdjustedSeries.PAIR_DT_MIN_MS]
+     *  (candidate cand/blind-anstieg: counted by [BgiAdjustedSeries.usablePairCount]). */
     val minSlopes: Int,
     /**
      * VOR diesem Zeitpunkt gilt die Produktion; 0 = immer diese Politik.

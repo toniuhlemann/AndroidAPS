@@ -24,7 +24,8 @@ data class SignalReadiness(
     val points: Int,
     /** Wieviele es braucht - [BgiAdjustedSeries.MIN_POINTS]. */
     val pointsRequired: Int,
-    /** Gueltige Paarsteigungen (dt >= [BgiAdjustedSeries.PAIR_DT_MIN_MS]). */
+    /** Gueltige Paarsteigungen (dt >= [BgiAdjustedSeries.PAIR_DT_MIN_MS];
+     *  candidate cand/blind-anstieg: counted by [BgiAdjustedSeries.usablePairCount]). */
     val slopes: Int,
     /** Wieviele es braucht - [BgiAdjustedSeries.MIN_SLOPES]. */
     val slopesRequired: Int,

@@ -82,16 +82,19 @@ class SignalRejoinTest {
         val punkte = ts.filter { it >= segment }
             .mapIndexed { i, t -> BgiAdjustedSeries.AdjustedPoint(t, 100.0 + i) }
 
-        // VIER Punkte reichen im ECHTEN Takt NOCH NICHT - und das ist kein
-        // Mangel des Wiedereinstiegs, sondern die 120-s-Paarschranke: die
-        // Zyklen liegen 58-62 s auseinander, drei Abstaende ergeben 178 s
-        // (ein Paar) und der zweite Nachbar nur 119 s. Macht zwei Paare,
-        // noetig sind drei. Wer die idealisierte Minutentabelle fuer eine
-        // Messung haelt, verspricht hier eine Minute zu viel.
+        // VIER Punkte im ECHTEN Takt: die Zyklen liegen 58-62 s auseinander,
+        // das ergibt die Paare 178 s und 120 s - und den zweiten Nachbarn mit
+        // nur 119 s. Vor diesem Kandidaten waren das zwei Paare, noetig sind
+        // drei: der Wiedereinstieg kostete im echten Takt eine Minute mehr.
+        // CANDIDATE (cand/blind-anstieg): the 119-s pair is only
+        // clock jitter and counts, because the strict pairs are too few.
         val vier = punkte.take(4)
         val w4 = waehle(ts, segment, now = vier.last().sourceTs)
-        assertTrue(w4.active, "der Wiedereinstieg gilt, er reicht nur noch nicht")
-        assertNull(BgiAdjustedSeries.theilSen(vier, vier.last().sourceTs, w4.maturity))
+        assertTrue(w4.active, "der Wiedereinstieg gilt")
+        assertNotNull(BgiAdjustedSeries.theilSen(vier, vier.last().sourceTs, w4.maturity),
+                      "four real points reach 4x3 with the jitter pair")
+        assertNull(BgiAdjustedSeries.theilSen(vier, vier.last().sourceTs),
+                   "die Produktion bleibt bei vier Punkten blind")
 
         // FUENF Punkte: vier zulaessige Paare. Streng blind (braucht 8),
         // gelockert reif (braucht 3). Das ist der gemessene Gewinn.

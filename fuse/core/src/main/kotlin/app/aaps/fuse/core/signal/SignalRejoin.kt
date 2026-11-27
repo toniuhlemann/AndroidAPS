@@ -309,10 +309,7 @@ object SignalRejoin {
         val abschnittStart = BgiAdjustedSeries.segmentStart(vor, fensterStart, gapPolicy)
         val punkte = vor.filter { it >= abschnittStart }
         if (punkte.size < strict.minPoints) return false
-        var paare = 0
-        for (a in punkte.indices) for (b in a + 1 until punkte.size) {
-            if (punkte[b] - punkte[a] >= BgiAdjustedSeries.PAIR_DT_MIN_MS) paare++
-        }
-        return paare >= strict.minSlopes
+        // The estimator's own counting rule (with the jitter candidate, cand/blind-anstieg) - never a second copy.
+        return BgiAdjustedSeries.usablePairCount(punkte, strict.minSlopes) >= strict.minSlopes
     }
 }

@@ -11,6 +11,9 @@ package app.aaps.fuse.core.signal
  *  - adjusted = q1 - cumulativeBgi, Reset je R-Segment
  *  - Theil-Sen: Paare nur mit dt >= PAIR_DT_MIN_MS, mindestens MIN_POINTS
  *    Punkte und MIN_SLOPES Paare, sonst KEIN R (null — nie 0, Spec §12 U1-U5)
+ *  - CANDIDATE (branch cand/blind-anstieg, NOT locked, not on the device): pairs that miss
+ *    PAIR_DT_MIN_MS only by PAIR_DT_JITTER_MS also count, but only when the strict pairs are too few.
+ *    Every cycle the strict rule makes mature stays bit-identical.
  *
  * UNKNOWN ist ein Zustand, kein Wert: fehlende activity/profileIsf erzeugen
  * hier keinen Ersatzwert — der Aufrufer (Adapter/State-Machine) bricht das
@@ -20,6 +23,15 @@ package app.aaps.fuse.core.signal
 object BgiAdjustedSeries {
 
     const val PAIR_DT_MIN_MS = 120_000L   // THEIL_SEN_PAIR_DT_MIN 2.0 min (v6 DT_MIN_PAIR)
+
+    /**
+     * CANDIDATE (branch cand/blind-anstieg, not on the device): clock jitter at 1-min cadence. Two readings "two
+     * minutes" apart are often a little short of [PAIR_DT_MIN_MS] and then do not count. After a CGM gap that often
+     * cost one more blind cycle before the trend came back. Such pairs count ONLY when the strict rule alone leaves
+     * the series immature - every cycle the strict rule already makes mature stays bit-identical (same pairs, same
+     * order, same median).
+     */
+    const val PAIR_DT_JITTER_MS = 5_000L
     const val MIN_POINTS = 5              // THEIL_SEN_MIN_POINTS (v6)
     const val MIN_SLOPES = 8              // THEIL_SEN_MIN_SLOPES (v6)
     const val WINDOW_MS = 18 * 60_000L    // W = 18 min (Candidate-Lock R58)
@@ -191,6 +203,10 @@ object BgiAdjustedSeries {
      * dieselbe Sortierung greift). Der Kandidat bleibt damit woertlich
      * derselbe.
      *
+     * Candidate (cand/blind-anstieg): the jitter pairs ([PAIR_DT_JITTER_MS]) are the one change. They are added only when the
+     * strict pairs are fewer than needed, so a list the strict rule already accepts is the same list as before.
+     * The count follows [usablePairCount].
+     *
      * `internal`, weil sie ein Zwischenschritt ist und kein Ergebnis: eine
      * Untergrenze DARAUS zu bilden ist Policy und gehoert nach
      * [PairSlopeBand], nicht in diese gelockte Datei.
@@ -220,13 +236,22 @@ object BgiAdjustedSeries {
         val window = points.filter { nowTs - it.sourceTs <= windowMs && it.sourceTs <= nowTs }
         if (window.size < maturity.minPointsAt(nowTs)) return null
         val slopes = ArrayList<Double>()
+        // Pairs that miss the 2-min rule only by clock jitter ([PAIR_DT_JITTER_MS]) - used only below.
+        val jitterSlopes = ArrayList<Double>()
         for (i in window.indices) for (j in i + 1 until window.size) {
             val dtMs = window[j].sourceTs - window[i].sourceTs
             if (dtMs >= PAIR_DT_MIN_MS) {
                 slopes.add((window[j].adjusted - window[i].adjusted) / (dtMs / 60_000.0))
+            } else if (dtMs >= PAIR_DT_MIN_MS - PAIR_DT_JITTER_MS) {
+                jitterSlopes.add((window[j].adjusted - window[i].adjusted) / (dtMs / 60_000.0))
             }
         }
-        if (slopes.size < maturity.minSlopesAt(nowTs)) return null
+        val needed = maturity.minSlopesAt(nowTs)
+        if (slopes.size < needed) {
+            // Candidate: only a series that the strict rule leaves immature may use the jitter pairs.
+            if (slopes.size + jitterSlopes.size < needed) return null
+            slopes.addAll(jitterSlopes)
+        }
         slopes.sort()
         return slopes
     }
@@ -253,10 +278,7 @@ object BgiAdjustedSeries {
         maturity: MaturityPolicy = MaturityPolicy.PRODUCTION,
     ): SignalReadiness {
         val window = points.filter { nowTs - it.sourceTs <= windowMs && it.sourceTs <= nowTs }
-        var slopes = 0
-        for (i in window.indices) for (j in i + 1 until window.size) {
-            if (window[j].sourceTs - window[i].sourceTs >= PAIR_DT_MIN_MS) slopes++
-        }
+        val slopes = usablePairCount(window.map { it.sourceTs }, maturity.minSlopesAt(nowTs))
         val grund = when {
             lastGapMs != null && lastGapMs > policy.rSegmentBreakMs &&
                 window.size < maturity.minPointsAt(nowTs) -> SignalReadiness.Reason.GAP_RESET
@@ -273,6 +295,23 @@ object BgiAdjustedSeries {
             breakMs = policy.rSegmentBreakMs,
             reason = grund,
         )
+    }
+
+    /**
+     * How many pair slopes the estimator uses on these (ascending) timestamps - the ONE counting rule behind
+     * [pairSlopes], [readiness] and the pre-gap check in [SignalRejoin]. Strict pairs (dt >= [PAIR_DT_MIN_MS]) always
+     * count. Jitter pairs (dt >= [PAIR_DT_MIN_MS] - [PAIR_DT_JITTER_MS]) count only when the strict pairs alone are
+     * fewer than [neededSlopes] - the same choice [pairSlopes] makes when it collects the values.
+     */
+    internal fun usablePairCount(ascendingTs: List<Long>, neededSlopes: Int): Int {
+        var strict = 0
+        var jitter = 0
+        for (i in ascendingTs.indices) for (j in i + 1 until ascendingTs.size) {
+            val dtMs = ascendingTs[j] - ascendingTs[i]
+            if (dtMs >= PAIR_DT_MIN_MS) strict++
+            else if (dtMs >= PAIR_DT_MIN_MS - PAIR_DT_JITTER_MS) jitter++
+        }
+        return if (strict < neededSlopes) strict + jitter else strict
     }
 
     /** Median einer bereits SORTIERTEN Liste — exakt die Zeilen, die vorher am
