@@ -23,6 +23,12 @@ package app.aaps.fuse.core.controller
  * DER PREIS: die Ruecknahme wirkt [FRIST_MS] spaeter. Faellt ein Zyklus in
  * die Frist, rechnet er noch mit Marker - so, als waere der Tipp ein paar
  * Sekunden spaeter gekommen.
+ *
+ * SEIT TONI 27.11.2026 STEHT VOR DER VORMERKUNG EINE FRAGE. Die Frist allein
+ * reichte nicht: ein Tipp, den niemand bemerkte, lief nach [FRIST_MS] in die
+ * Ruecknahme - ohne Antwort gewann das Zuruecknehmen. Jetzt merken die Knoepfe
+ * erst nach einem ausdruecklichen "Zuruecknehmen" vor; ohne Antwort bleibt die
+ * Mahlzeit. Diese Regel hier bleibt unveraendert.
  */
 object MarkerRuecknahme {
 

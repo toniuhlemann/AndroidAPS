@@ -338,7 +338,8 @@ interface FuseOverviewSource {
     /** Stores the choice of [fuseGraphPointsByState]. It is kept across restarts and goes into the settings export. */
     fun fuseStoreGraphPointsByState(byState: Boolean) {}
 
-    /** `null` = ohne Rueckfrage ausfuehren (Ruecknahme). */
+    /** `null` = ein Marker laeuft: der Druck fragt, ob er zurueckgenommen werden soll (Toni 27.11.2026: nur nach
+     *  ausdruecklichem "Zuruecknehmen", dann vorgemerkt mit [fuseMarkerRuecknahmeVormerken]). */
     suspend fun fuseMarkerPrompt(now: Long): MarkerPromptFacts?
 
     /** Schaltet um. @return ob der Marker DANACH laeuft. */

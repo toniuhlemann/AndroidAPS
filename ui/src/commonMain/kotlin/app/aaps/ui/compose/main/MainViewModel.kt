@@ -1016,8 +1016,14 @@ class MainViewModel(
     /** A noted withdrawal: the snackbar with its undo button for [restMs] (until the deadline), and the texts for its outcome. */
     data class FuseMealWithdrawal(val restMs: Long, val message: String, val undoLabel: String, val undoneText: String, val tooLateText: String)
 
+    /** The question before a running meal is withdrawn, while it is on screen. [eventId] belongs to the press. */
+    data class FuseMealWithdrawQuestion(val eventId: String)
+
     private val _fuseMealPrompt = MutableStateFlow<FuseMealPrompt?>(null)
     val fuseMealPrompt: StateFlow<FuseMealPrompt?> = _fuseMealPrompt.asStateFlow()
+
+    private val _fuseMealWithdrawQuestion = MutableStateFlow<FuseMealWithdrawQuestion?>(null)
+    val fuseMealWithdrawQuestion: StateFlow<FuseMealWithdrawQuestion?> = _fuseMealWithdrawQuestion.asStateFlow()
 
     private val _fuseMealWithdrawal = MutableSharedFlow<FuseMealWithdrawal>(extraBufferCapacity = 1)
     val fuseMealWithdrawal: SharedFlow<FuseMealWithdrawal> = _fuseMealWithdrawal.asSharedFlow()
@@ -1038,26 +1044,46 @@ class MainViewModel(
             val facts = source.fuseMarkerPrompt(now)
             // The shape `if (facts == null) { withdrawal } else { question }` is read by MarkerRuecknahmeWaechterTest.
             if (facts == null) {
-                // UNDO DEADLINE (Toni): the withdrawal is only noted and runs after the deadline - a slip in the middle
-                // of a meal would cost the whole authorization. NO fall back to toggling: without a running marker
-                // that would set a NEW one, without any question.
-                source.fuseMarkerRuecknahmeVormerken(now, eventId)?.let { due ->
-                    val seconds = ((due - now + 999L) / 1_000L).toInt().coerceAtLeast(1)
-                    _fuseMealWithdrawal.tryEmit(
-                        FuseMealWithdrawal(
-                            restMs = (due - now).coerceAtLeast(1_000L),
-                            message = rh.gs(CoreUiStrings.fuse_meal_withdraw_pending, seconds),
-                            undoLabel = rh.gs(CoreUiStrings.fuse_meal_withdraw_undo),
-                            undoneText = rh.gs(CoreUiStrings.fuse_meal_withdraw_undone),
-                            tooLateText = rh.gs(CoreUiStrings.fuse_meal_withdraw_too_late)
-                        )
-                    )
-                }
+                // A RUNNING MEAL IS ONLY WITHDRAWN AFTER AN ACTIVE YES (Toni 27.11.2026): the press only asks. Until
+                // now it noted the withdrawal at once, and a press by mistake that nobody noticed ended the meal when
+                // the undo bar ran out. NO fall back to toggling: without a running marker that would set a NEW one.
+                _fuseMealWithdrawQuestion.value = FuseMealWithdrawQuestion(eventId)
             } else {
                 _fuseMealPrompt.value = FuseMealPrompt(facts, eventId, now)
             }
             refreshQuickLaunch()
         }
+    }
+
+    /**
+     * "Zuruecknehmen" in the withdraw question: only now the withdrawal is noted. It then runs as before - after the
+     * deadline, with the undo bar ([fuseMealWithdrawal]).
+     */
+    fun confirmFuseMealWithdrawal() {
+        val question = _fuseMealWithdrawQuestion.value ?: return
+        _fuseMealWithdrawQuestion.value = null
+        val source = fuseSource() ?: return
+        viewModelScope.launch {
+            val now = dateUtil.now()
+            source.fuseMarkerRuecknahmeVormerken(now, question.eventId)?.let { due ->
+                val seconds = ((due - now + 999L) / 1_000L).toInt().coerceAtLeast(1)
+                _fuseMealWithdrawal.tryEmit(
+                    FuseMealWithdrawal(
+                        restMs = (due - now).coerceAtLeast(1_000L),
+                        message = rh.gs(CoreUiStrings.fuse_meal_withdraw_pending, seconds),
+                        undoLabel = rh.gs(CoreUiStrings.fuse_meal_withdraw_undo),
+                        undoneText = rh.gs(CoreUiStrings.fuse_meal_withdraw_undone),
+                        tooLateText = rh.gs(CoreUiStrings.fuse_meal_withdraw_too_late)
+                    )
+                )
+            }
+            refreshQuickLaunch()
+        }
+    }
+
+    /** "Mahlzeit behalten", back key or a tap outside: the meal keeps running, nothing is noted. */
+    fun keepFuseMeal() {
+        _fuseMealWithdrawQuestion.value = null
     }
 
     /**

@@ -32,6 +32,11 @@
     <string name="fuse_meal_withdraw_undo">Rückgängig</string>
     <string name="fuse_meal_withdraw_undone">Rücknahme abgebrochen – der Marker läuft weiter</string>
     <string name="fuse_meal_withdraw_too_late">Zu spät – der Marker ist bereits zurückgenommen</string>
+    <!-- The question before a running meal is withdrawn (Toni 27.11.2026): only the button "Zurücknehmen" withdraws it; no answer keeps the meal. -->
+    <string name="fuse_meal_withdraw_confirm_title">Mahlzeit zurücknehmen?</string>
+    <string name="fuse_meal_withdraw_confirm_text">Die laufende Mahlzeit endet. FUSE rechnet danach ohne Mahlzeit: kein Mahlzeitkonto mehr und der kleinere Korrektur-Deckel. Schon abgegebenes Insulin zählt weiter im IOB.</string>
+    <string name="fuse_meal_withdraw_confirm_yes" comment="Button that withdraws the running meal. A verb, short.">Zurücknehmen</string>
+    <string name="fuse_meal_withdraw_confirm_no" comment="Button that closes the question and keeps the running meal.">Mahlzeit behalten</string>
     <!-- insulinReq chip on the main screen -->
     <string name="insulin_req_chip" comment="%1$s=insulinReq with unit, or a dash when not calculated. Example: Req 0,35 U">Req %1$s</string>
     <string name="insulin_req_title">insulinReq</string>

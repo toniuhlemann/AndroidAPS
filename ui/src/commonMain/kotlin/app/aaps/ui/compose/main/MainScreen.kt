@@ -56,6 +56,7 @@ import app.aaps.core.ui.compose.LocalSnackbarHostState
 import app.aaps.core.ui.compose.dialogs.OkCancelDialog
 import app.aaps.core.ui.compose.dialogs.ThreeButtonDialog
 import app.aaps.core.ui.compose.fuse.FuseMealPromptDialog
+import app.aaps.core.ui.compose.fuse.FuseMealWithdrawConfirmDialog
 import app.aaps.core.ui.compose.navigation.NavigationRequest
 import app.aaps.core.ui.compose.preference.PreferenceSubScreenDef
 import app.aaps.core.ui.compose.stringResource
@@ -591,6 +592,14 @@ fun MainScreen(
             onNoPrime = { mainViewModel.confirmFuseMeal(expectationOnly = false) },
             onCancel = { mainViewModel.cancelFuseMeal() },
             onSnack = { mainViewModel.confirmFuseMeal(expectationOnly = true, snack = true) }
+        )
+    }
+    // Fork (FUSE): the question before a running meal is withdrawn - only "Zuruecknehmen" withdraws it (Toni 27.11.2026).
+    val fuseMealWithdrawQuestion by mainViewModel.fuseMealWithdrawQuestion.collectAsStateWithLifecycle()
+    if (fuseMealWithdrawQuestion != null) {
+        FuseMealWithdrawConfirmDialog(
+            onConfirm = { mainViewModel.confirmFuseMealWithdrawal() },
+            onKeep = { mainViewModel.keepFuseMeal() }
         )
     }
     // Fork (FUSE): a noted withdrawal - "Rueckgaengig" until the deadline. The bar is only the display: the withdrawal

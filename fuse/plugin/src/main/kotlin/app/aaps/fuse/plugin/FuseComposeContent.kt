@@ -38,6 +38,7 @@ import app.aaps.core.ui.compose.AapsSpacing
 import app.aaps.core.ui.compose.ComposablePluginContent
 import app.aaps.core.ui.compose.ToolbarConfig
 import app.aaps.core.ui.compose.fuse.FuseMealPromptDialog
+import app.aaps.core.ui.compose.fuse.FuseMealWithdrawConfirmDialog
 import app.aaps.core.ui.compose.stringResource
 import app.aaps.fuse.core.controller.MarkerRuecknahme
 import app.aaps.fuse.core.controller.OnsetChannel
@@ -48,7 +49,8 @@ import kotlinx.coroutines.withContext
 
 /**
  * Der FUSE-Reiter (v4: Compose statt FuseFragment). Inhalt und Bedienung wie im Fork: Betriebssicht aus
- * [FuseDashboardModel], Mahlzeiten-Knopf mit Rueckfrage und Ruecknahme-Frist, Einstellungen, und die Details aus
+ * [FuseDashboardModel], Mahlzeiten-Knopf mit Rueckfrage, Frage vor der Ruecknahme und Ruecknahme-Frist,
+ * Einstellungen, und die Details aus
  * [FuseScreenModel]. Toni 22.10.: "Mahlzeit nach Tief bestaetigen" ist entfallen - die Tief-Sperre faellt von selbst.
  */
 class FuseComposeContent(
@@ -106,6 +108,8 @@ private fun FuseScreen(plugin: FusePlugin, dateUtil: DateUtil, rxBus: RxBus, onS
     var stand by remember { mutableStateOf<FuseAnsicht?>(null) }
     var detailsOffen by remember { mutableStateOf(false) }
     var rueckfrage by remember { mutableStateOf<Pair<FuseOverviewSource.MarkerPromptFacts, String>?>(null) }
+    // Die Frage vor der Ruecknahme einer laufenden Mahlzeit (Toni 27.11.2026) - traegt die Ereigniskennung des Drucks.
+    var ruecknahmeFrage by remember { mutableStateOf<String?>(null) }
     var ruecknahmeFaellig by remember { mutableStateOf<Long?>(null) }
     var meldung by remember { mutableStateOf<String?>(null) }
 
@@ -138,10 +142,9 @@ private fun FuseScreen(plugin: FusePlugin, dateUtil: DateUtil, rxBus: RxBus, onS
                     val ereignis = plugin.markerEreignisKennung()
                     val fakten = plugin.fuseMarkerPrompt(now)
                     if (fakten == null) {
-                        // Laeuft ein Marker: Ruecknahme mit Frist statt sofort.
-                        val faellig = plugin.markerRuecknahmeVormerken(now, ereignis, quelle)
-                        if (faellig != null) ruecknahmeFaellig = faellig
-                        aktualisierung++
+                        // Laeuft ein Marker: erst fragen (Toni 27.11.2026). Nur "Zuruecknehmen" merkt die Ruecknahme
+                        // vor; ohne Antwort bleibt die Mahlzeit.
+                        ruecknahmeFrage = ereignis
                     } else rueckfrage = fakten to ereignis
                 }
             }) {
@@ -241,6 +244,21 @@ private fun FuseScreen(plugin: FusePlugin, dateUtil: DateUtil, rxBus: RxBus, onS
                     aktualisierung++
                 }
             },
+        )
+    }
+    ruecknahmeFrage?.let { ereignis ->
+        // Derselbe Dialog wie am Knopf auf dem Hauptbildschirm (core:ui). Nur "Zuruecknehmen" merkt die Ruecknahme vor -
+        // danach wie bisher mit Frist und "Rueckgaengig".
+        FuseMealWithdrawConfirmDialog(
+            onConfirm = {
+                ruecknahmeFrage = null
+                scope.launch {
+                    val faellig = plugin.markerRuecknahmeVormerken(dateUtil.now(), ereignis, quelle)
+                    if (faellig != null) ruecknahmeFaellig = faellig
+                    aktualisierung++
+                }
+            },
+            onKeep = { ruecknahmeFrage = null },
         )
     }
     meldung?.let { text ->

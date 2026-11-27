@@ -13,8 +13,11 @@ import java.io.File
  * `MarkerRuecknahmeTest` (fuse/core). Hier steht die Verdrahtung, die ein
  * Umbau oder Merge still verlieren koennte:
  *
- * 1. Jeder Marker-Knopf merkt die Ruecknahme nur VOR - im Ruecknahme-Zweig
- *    steht kein direktes Umschalten.
+ * 1. Jeder Marker-Knopf FRAGT bei laufendem Marker nur (Toni 27.11.2026):
+ *    im Ruecknahme-Zweig steht weder die Vormerkung noch ein direktes
+ *    Umschalten, sondern die Frage. Vorgemerkt wird erst nach "Zuruecknehmen".
+ *    Vorher merkte der Druck sofort vor, und ein unbemerkter Druck beendete
+ *    die Mahlzeit, sobald die Rueckgaengig-Leiste ablief.
  * 2. Der Zyklus holt eine faellige Vormerkung nach; sonst verschluckte ein
  *    Prozessende in der Frist eine gewollte Ruecknahme.
  *
@@ -61,14 +64,22 @@ class MarkerRuecknahmeWaechterTest {
 
     private fun pruefeKnopf(name: String, code: String) {
         val zweig = ruecknahmeZweig(name, code)
-        assertTrue(zweig.contains("RuecknahmeVormerken(")) { "$name: die Ruecknahme wird nicht vorgemerkt" }
+        // Toni 27.11.2026: der Druck FRAGT nur. Eine Vormerkung schon im Zweig braechte die alte Falle zurueck.
+        assertFalse(zweig.contains("RuecknahmeVormerken(")) {
+            "$name: der Druck merkt die Ruecknahme sofort vor - er darf nur fragen"
+        }
+        assertTrue(Regex("""ruecknahmeFrage|WithdrawQuestion""").containsMatchIn(zweig)) {
+            "$name: der Druck zeigt die Frage vor der Ruecknahme nicht"
+        }
         assertFalse(Regex("""(toggleMealMarker|fuseMarkerToggle)\s*\(""").containsMatchIn(zweig)) {
             "$name: der Ruecknahme-Zweig schaltet direkt um - ohne laufenden Marker setzte das einen neuen"
         }
+        // Zurueckgenommen wird weiterhin - nach dem Ja, vorgemerkt mit Frist wie bisher.
+        assertTrue(code.contains("RuecknahmeVormerken(")) { "$name: kein Weg merkt die Ruecknahme nach der Frage vor" }
     }
 
     @Test
-    fun `der Marker-Knopf des Reiters merkt die Ruecknahme nur vor`() {
+    fun `der Marker-Knopf des Reiters fragt vor der Ruecknahme`() {
         pruefeKnopf("FUSE-Reiter", reiter)
     }
 
