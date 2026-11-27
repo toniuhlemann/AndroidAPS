@@ -107,6 +107,24 @@ object ExpectationAccount {
         /** Ende der Erwartung [min nach Marker]: [CURVE_END_MIN] mal Streckung. */
         val endMin: Double get() = CURVE_END_MIN * stretch
 
+        /**
+         * HALBZEIT (Toni 27.11.2026): wann die Haelfte der angenommenen Mahlzeitwirkung erreicht ist [min nach Marker] -
+         * aus den Stuetzwerten DIESER Kurve, linear zwischen ihnen wie [at], auf der gestreckten Zeitachse. Keine feste
+         * Zahl: eine andere Kurvenform oder eine andere Absorptionszeit verschiebt die Halbzeit mit.
+         */
+        fun halfTimeMin(): Double {
+            val half = endU / 2.0
+            for (i in 1 until CURVE_POINTS) {
+                val lo = pointsU[i - 1]
+                val hi = pointsU[i]
+                if (hi >= half) {
+                    val w = if (hi > lo) (half - lo) / (hi - lo) else 0.0
+                    return ((i - 1) + w) * CURVE_STEP_MIN * stretch
+                }
+            }
+            return endMin
+        }
+
         fun values(): List<Double> = pointsU.toList()
 
         /** F(a), linear zwischen den Stuetzwerten; ausserhalb geklemmt. Mit Streckung auf der gestreckten Zeitachse. */

@@ -234,6 +234,14 @@ object FuseController {
          *  Mess-Flag - der Regler liest es nicht. */
         val reboundSuppressedByMarker: Boolean = false,
         /**
+         * REBOUND NACH DER ANFANGSPHASE (Toni 27.11.2026): warum die Vollmacht des Kontos die Rebound-Bremse in diesem
+         * Zyklus NICHT aufhebt ([MealReboundPhase.Reason] als Name); `null` = nicht zutreffend. Reines Mess-Feld - der
+         * Regler liest es nicht, er sieht nur `reboundWindow`.
+         */
+        val reboundRearmAfterLow: String? = null,
+        /** Halbzeit der angenommenen Mahlzeitwirkung des laufenden Kontos [min nach Marker]; `null` = kein Konto. Mess-Feld. */
+        val mealHalfTimeMin: Double? = null,
+        /**
          * MAHLZEIT-FENSTER (Fenster-Trio, 08.08.): offen durch Marker, offene
          * Onset-Episode ODER kinematische Persistenz - mit 10-min-Gedaechtnis
          * gegen Plateau-Flattern (ein reales Abendessen: echte langsame Mahlzeit

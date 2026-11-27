@@ -28,6 +28,7 @@ import app.aaps.core.objects.profile.ProfileSealed
 import app.aaps.fuse.core.controller.AuthorizedLift
 import app.aaps.fuse.core.controller.EarlySupply
 import app.aaps.fuse.core.controller.ExpectationAccount
+import app.aaps.fuse.core.controller.FuseController
 import app.aaps.fuse.core.controller.LivenessChannel
 import app.aaps.fuse.core.controller.LowThreatGate
 import app.aaps.fuse.core.controller.MealBalance
@@ -35,6 +36,7 @@ import app.aaps.fuse.core.controller.PartialTbrOwnership
 import app.aaps.fuse.core.controller.SlowCorrectionChannel
 import app.aaps.fuse.core.controller.InterventionStamp
 import app.aaps.fuse.core.controller.MarkerReauthorization
+import app.aaps.fuse.core.controller.MealReboundPhase
 import app.aaps.fuse.core.predictor.PredictorReason
 import app.aaps.fuse.plugin.export.FuseStateJson
 import app.aaps.fuse.plugin.ledger.FuseLedgerAdapter
@@ -1150,6 +1152,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     /** Ein v2-Lauf: nur volle Zyklen; "Nur Erwartung" ist waehrend des Laufs gewaehlt. */
     private suspend fun fruehLauf(
         f: Fuse20Folgen.Folge, dir: File, vorZyklus: suspend (Int) -> Unit = {}, nachZyklus: (Zyklus) -> Unit = {},
+        arm: FuseCycleRunner.Pruefarm? = null,
         einstellen: suspend () -> Unit,
     ): List<Zyklus> {
         nurErwartung = true
@@ -1157,7 +1160,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             markerAt = 0L
             markerPress = 0L
             einstellen()
-            return lauf(f, dir, vorZyklus = vorZyklus, nachZyklus = nachZyklus).filter { it.o.abortReason == null }
+            return lauf(f, dir, arm = arm, vorZyklus = vorZyklus, nachZyklus = nachZyklus).filter { it.o.abortReason == null }
         } finally {
             nurErwartung = false
         }
@@ -2659,9 +2662,24 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         if (x <= 0.0) 0.0 else t.mengeU * (1.0 - (1.0 + x) * exp(-x))
     }
 
+    /**
+     * GEGEN-KH IM KREIS (Toni 27.11.2026): faellt der Zucker ab [abMin] unter [unterMgdl], isst der kuenstliche Patient
+     * schnelle KH - ein Teil [mengeU] mit [t95Min], ab der naechsten Minute. Danach fruehestens nach [abstandMin] wieder.
+     * Synthetische Werte.
+     */
+    private class KreisRettung(
+        val mengeU: Double,
+        val unterMgdl: Double = 72.0,
+        val t95Min: Double = 45.0,
+        val abstandMin: Int = 20,
+        val abMin: Int = 15,
+    )
+
     /** Was ein Lauf im geschlossenen Kreis zeigt: die vollen Zyklen, der Zucker je Minute und das Netto-Basal ab dem Marker. */
     private class KreisLauf(
         val zyklen: List<Zyklus>, val bg: List<Pair<Int, Double>>, val ueberBasalU: Double, val unterBasalU: Double,
+        /** Minuten, in denen der Patient Gegen-KH nahm ([KreisRettung]). */
+        val rettungMin: List<Int> = emptyList(),
     ) {
 
         val konto: ExpectationAccount.State get() = zyklen.first { it.o.erwartungskonto?.zyklus?.armiertInDiesemZyklus == true }.konto!!
@@ -2686,6 +2704,12 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
     private suspend fun kreisLauf(
         name: String, dir: File, teile: List<MahlzeitTeil>, skalierer: Double = 1.0, khMilliU: Long = 0L, absorptionMin: Long = 0L,
         vorIobU: Double = 0.0,
+        /** Pruefarm des Runners; `null` = wie konfiguriert. */
+        arm: FuseCycleRunner.Pruefarm? = null,
+        /** Gegen-KH bei einem Tief; `null` = keine. */
+        rettung: KreisRettung? = null,
+        /** Der langsame Kanal an (Standardwerte der Schluessel). */
+        kanal: Boolean = false,
     ): KreisLauf {
         val f = Fuse20Folgen.Folge(
             name, 1_700_301_600_000L, -90, KREIS_BIS_MIN, listOf(-90 to KREIS_START_BG, KREIS_BIS_MIN to KREIS_START_BG), markerMin = 0,
@@ -2694,6 +2718,8 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
         werte += f.ts(f.vonMin) to KREIS_START_BG
         val netto = ArrayList<Pair<Long, Double>>()
         var isf = Double.NaN
+        val alleTeile = ArrayList(teile)
+        val rettungen = ArrayList<Int>()
         kreisCgm = werte
         kreisNettoBasal = netto
         eingabeKhMilliU = khMilliU
@@ -2715,12 +2741,21 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
                     // Was vom Insulin bis jetzt gewirkt hat - aus demselben Modell wie das IOB des Rigs.
                     val gewirktU = boluses.filter { it.timestamp <= t }.sumOf { b -> b.amount - insulin.iobCalcForTreatment(b, t).iobContrib } +
                         netto.sumOf { (ts, u) -> u * (1.0 - insulin.iobCalcForTreatment(einheitsBolus(ts), t).iobContrib) }
-                    val wahr = if (isf.isFinite()) KREIS_START_BG + isf * (wahreMahlzeitU(teile, minute.toDouble()) - gewirktU) else KREIS_START_BG
+                    val wahr = if (isf.isFinite()) KREIS_START_BG + isf * (wahreMahlzeitU(alleTeile, minute.toDouble()) - gewirktU) else KREIS_START_BG
                     werte += t to wahr.coerceIn(KREIS_SENSOR_UNTEN, KREIS_SENSOR_OBEN)
+                    // Gegen-KH: wie der Mensch, der das Tief sieht - wirkt ab der naechsten Minute.
+                    if (rettung != null && minute >= rettung.abMin && wahr < rettung.unterMgdl &&
+                        (rettungen.isEmpty() || minute - rettungen.last() >= rettung.abstandMin)
+                    ) {
+                        alleTeile += MahlzeitTeil(rettung.mengeU, beginnMin = minute.toDouble(), t95Min = rettung.t95Min)
+                        rettungen += minute
+                    }
                 },
                 nachZyklus = { z -> z.o.state?.isfMgdlPerU?.takeIf { it.isFinite() && it > 0.0 }?.let { isf = it } },
+                arm = arm,
             ) {
                 fruehKonfiguration(g1 = true, g2 = true, g3 = true, g4 = true, budgetU = SNACK_PROBE_BUDGET_U)
+                if (kanal) whenever(preferences.get(FuseBooleanKey.SlowChannelEnabled)).thenReturn(true)
                 whenever(preferences.get(FuseDoubleKey.EarlySupplyScaleStable)).thenReturn(skalierer)
                 whenever(preferences.get(FuseDoubleKey.EarlySupplyTopUpShare)).thenReturn(KREIS_NACHSCHLAG)
                 whenever(preferences.get(FuseIntKey.LivenessMealPowerMin)).thenReturn(KREIS_FENSTER_MIN)
@@ -2731,7 +2766,7 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
             val ab = f.ts(0)
             val ueber = netto.filter { it.first >= ab }.sumOf { max(0.0, it.second) }
             val unter = netto.filter { it.first >= ab }.sumOf { max(0.0, -it.second) }
-            return KreisLauf(zyklen, werte.map { f.minute(it.first) to it.second }, ueber, unter)
+            return KreisLauf(zyklen, werte.map { f.minute(it.first) to it.second }, ueber, unter, rettungen.toList())
         } finally {
             kreisCgm = null
             kreisNettoBasal = null
@@ -2860,6 +2895,149 @@ class ErwartungskontoRigTest : TestBaseWithProfile() {
                 listOf(MahlzeitTeil(kreisMenge, t95Min = 240.0), MahlzeitTeil(0.4 * kreisMenge, beginnMin = 120.0, t95Min = 180.0)),
             ),
         )
+    }
+
+    // ---- REBOUND NACH DER ANFANGSPHASE (Toni 27.11.2026): KANDIDAT GEGEN "WIE BISHER" -----------------------------
+    //
+    // Dieselbe wahre Mahlzeit, dieselbe Eingabe am Marker und dieselben Gegen-KH-Regeln in zwei Armen: "heute"
+    // (Pruefarm RB_HEUTE - die Vollmacht hebt den Rebound fuer das ganze Fenster auf) und "kandidat" (wie konfiguriert,
+    // mit MealReboundPhase). Der langsame Kanal ist an. Die Zeilen "REBOUND;..." sind der Bericht; der Test prueft nur
+    // die Mechanik (wann der Rebound wieder gilt und dass der Vergleichsarm die Regel nicht kennt). Alle Zahlen
+    // synthetisch. Gemessen wird ab dem ersten Tief nach der Halbzeit (sonst ab dem ersten Tief) fuer 120 min.
+
+    /** Eine Rebound-Probe: Eingabe am Marker, wahre Mahlzeit, Gegen-KH (`null` = keine). */
+    private class ReboundProbe(
+        val name: String, val khMilliU: Long, val absorptionMin: Long, val teile: List<MahlzeitTeil>, val rettung: KreisRettung?,
+    )
+
+    private class ReboundAuswertung(val zeile: String, val wiederScharf: Int)
+
+    private fun reboundAuswertung(probe: String, arm: String, l: KreisLauf): ReboundAuswertung {
+        val k = l.konto
+        val halbzeit = k.curve()?.halfTimeMin() ?: Double.NaN
+        val bgJe = l.bg.toMap()
+        val tiefe = l.bg.filter { it.first >= 15 && it.second < FuseController.REBOUND_LOW_MGDL }.map { it.first }
+        val erstesTief = tiefe.firstOrNull()
+        val spaetesTief = tiefe.firstOrNull { it >= halbzeit }
+        val ab = spaetesTief ?: erstesTief ?: KREIS_BIS_MIN
+        val nach = l.zyklen.filter { it.minute in ab..(ab + 120) }
+        fun band(z: Zyklus): Double = (z.o.state?.targetMgdl ?: 0.0) + (z.o.state?.reboundDeadbandMgdl ?: 0.0)
+        fun normal(z: Zyklus): Double = if ((z.o.exposureFinalSource ?: "").startsWith("NORMAL")) z.geliefertU else 0.0
+        fun bgVon(z: Zyklus): Double = bgJe[z.minute] ?: Double.NaN
+        val unter = nach.filter { bgVon(it) < band(it) }
+        val ueber = nach.filter { bgVon(it) >= band(it) }
+        val anteilUeber = ueber.mapNotNull { it.o.state?.effectiveSmbRatio }.takeIf { it.isNotEmpty() }?.average()
+        val nachBg = l.bg.filter { it.first in ab..(ab + 120) }
+        val hoch = nachBg.maxByOrNull { it.second }
+        val danach = hoch?.let { h -> l.bg.filter { it.first > h.first }.minByOrNull { it.second } }
+        val scharf = l.zyklen.count { it.o.state?.reboundRearmAfterLow != null }
+        val gruende = l.zyklen.mapNotNull { it.o.state?.reboundRearmAfterLow }.distinct().joinToString("+").ifEmpty { "-" }
+        val aufgehoben = l.zyklen.count { it.o.state?.reboundSuppressedByMarker == true }
+        val fensterEnde = (k.windowEndTs - k.authId) / 60_000L
+        val restBeimTief = l.zyklen.firstOrNull { it.minute >= ab }?.konto?.restU
+        val steigtNach = nach.count { it.o.erwartungskonto?.zyklus?.mahlzeitSteigt == true }
+        val zeile = String.format(
+            Locale.ROOT,
+            "REBOUND;%s;%s;halbzeit=%.0f;fensterEnde=%d;tief1=%s;spaet=%s;rettung=%s;scharf=%d(%s);aufgehoben=%d;" +
+                "restBeimTief=%s;steigtNach=%d;" +
+                "normalUnter=%.2f;normalUeber=%.2f;konto=%.2f;kanal=%.2f;gesamtNach=%.2f;anteilUeber=%s;" +
+                "maxNach=%s;danachMin=%s;unter70=%d;unter54=%d;gesamt=%.2f;budget=%.2f;rest=%.2f",
+            probe, arm, halbzeit, fensterEnde, erstesTief?.toString() ?: "-", spaetesTief?.toString() ?: "-",
+            l.rettungMin.joinToString("/").ifEmpty { "-" }, scharf, gruende, aufgehoben,
+            restBeimTief?.let { String.format(Locale.ROOT, "%.2f", it) } ?: "-", steigtNach,
+            unter.sumOf { normal(it) }, ueber.sumOf { normal(it) }, nach.sumOf { it.dErw() },
+            nach.sumOf { (it.o.slowChannel?.extraUPerH ?: 0.0) / 60.0 }, nach.sumOf { it.geliefertU },
+            anteilUeber?.let { String.format(Locale.ROOT, "%.2f", it) } ?: "-",
+            hoch?.let { String.format(Locale.ROOT, "%.0f@%d", it.second, it.first) } ?: "-",
+            danach?.let { String.format(Locale.ROOT, "%.0f@%d", it.second, it.first) } ?: "-",
+            l.minutenUnter(70.0), l.minutenUnter(54.0), l.gegebenBis(KREIS_BIS_MIN - 1), k.a0U,
+            l.zyklen.lastOrNull()?.konto?.restU ?: Double.NaN,
+        )
+        val verlauf = (0 until KREIS_BIS_MIN step 15).joinToString(";") { m -> String.format(Locale.ROOT, "%d=%.0f", m, l.bgBei(m)) }
+        return ReboundAuswertung("$zeile;$verlauf", scharf)
+    }
+
+    /** Beide Arme einer Probe; prueft die Mechanik, die Zahlen stehen als Zeilen "REBOUND;..." in der Ausgabe. */
+    private suspend fun reboundProbe(dir: File, p: ReboundProbe): Pair<KreisLauf, KreisLauf> {
+        val heute = kreisLauf(
+            "${p.name}-heute", dir, p.teile, khMilliU = p.khMilliU, absorptionMin = p.absorptionMin,
+            arm = FuseCycleRunner.Pruefarm.RB_HEUTE, rettung = p.rettung, kanal = true,
+        )
+        val kandidat = kreisLauf(
+            "${p.name}-kandidat", dir, p.teile, khMilliU = p.khMilliU, absorptionMin = p.absorptionMin,
+            rettung = p.rettung, kanal = true,
+        )
+        val a = reboundAuswertung(p.name, "heute", heute)
+        val b = reboundAuswertung(p.name, "kandidat", kandidat)
+        println(a.zeile)
+        println(b.zeile)
+        assertEquals(0, a.wiederScharf) { "${p.name}: der Vergleichsarm darf die neue Regel nicht anwenden" }
+        for (z in kandidat.zyklen) {
+            val grund = z.o.state?.reboundRearmAfterLow ?: continue
+            assertTrue(z.o.state?.reboundWindow == true) { "${p.name} Minute ${z.minute}: Grund $grund, aber kein Rebound-Fenster" }
+            assertFalse(z.o.state?.reboundSuppressedByMarker == true) { "${p.name} Minute ${z.minute}: Grund $grund und trotzdem aufgehoben" }
+        }
+        return heute to kandidat
+    }
+
+    /** Gegen-KH: kleine Menge, schnell. */
+    private val rettungKlein = KreisRettung(mengeU = 1.2)
+
+    @Test
+    fun `Rebound - spaetes Tief mit Gegen-KH`(@TempDir dir: File) = runBlocking<Unit> {
+        // Kleinere und schnellere Mahlzeit als angesagt: das Insulin ueberdauert sie, das Tief kommt spaet.
+        val (_, kandidat) = reboundProbe(dir, ReboundProbe("spaet", KREIS_KH_MILLI_U, 210L, listOf(MahlzeitTeil(2.8, t95Min = 100.0)), rettungKlein))
+        val halbzeit = kandidat.konto.curve()!!.halfTimeMin()
+        val spaet = kandidat.bg.firstOrNull { it.first >= halbzeit && it.second < FuseController.REBOUND_LOW_MGDL }
+        if (spaet != null) assertTrue(kandidat.zyklen.any { it.o.state?.reboundRearmAfterLow == MealReboundPhase.Reason.AFTER_HALF_TIME.name }) {
+            "spaetes Tief bei Minute ${spaet.first}, aber der Rebound wurde nicht wieder scharf"
+        }
+    }
+
+    @Test
+    fun `Rebound - spaetes Tief mit grosser Gegen-KH ueber das Totband`(@TempDir dir: File) = runBlocking<Unit> {
+        reboundProbe(dir, ReboundProbe("spaetGross", KREIS_KH_MILLI_U, 210L, listOf(MahlzeitTeil(2.8, t95Min = 100.0)), KreisRettung(mengeU = 2.4)))
+    }
+
+    @Test
+    fun `Rebound - Gegenprobe Konto-Rest, die Mahlzeit zeigt sich kaum`(@TempDir dir: File) = runBlocking<Unit> {
+        // Viel kleiner und langsam: das Konto haelt Budget zurueck; danach Tief und Gegen-KH im offenen Fenster.
+        reboundProbe(dir, ReboundProbe("restOffen", KREIS_KH_MILLI_U, 210L, listOf(MahlzeitTeil(2.4, t95Min = 180.0)), rettungKlein))
+    }
+
+    @Test
+    fun `Rebound - fruehes Tief, die Mahlzeit kommt spaeter`(@TempDir dir: File) = runBlocking<Unit> {
+        val (heute, kandidat) = reboundProbe(
+            dir, ReboundProbe("frueh", KREIS_KH_MILLI_U, 210L, listOf(MahlzeitTeil(kreisMenge, beginnMin = 45.0, t95Min = 180.0)), rettungKlein),
+        )
+        // Kein Tief nach der Halbzeit: dann aendert der Kandidat nichts.
+        val halbzeit = kandidat.konto.curve()!!.halfTimeMin()
+        if (kandidat.bg.none { it.first >= halbzeit && it.second < FuseController.REBOUND_LOW_MGDL } &&
+            kandidat.zyklen.none { it.o.state?.reboundRearmAfterLow != null }
+        ) assertEquals(heute.gegebenBis(KREIS_BIS_MIN - 1), kandidat.gegebenBis(KREIS_BIS_MIN - 1), 1e-9)
+    }
+
+    @Test
+    fun `Rebound - Gegenprobe Konto-Rest nach spaetem Tief`(@TempDir dir: File) = runBlocking<Unit> {
+        // Kleinere, langsame Mahlzeit: das Konto behaelt einen Rest, bis das Tief kommt.
+        reboundProbe(dir, ReboundProbe("kontoRest", KREIS_KH_MILLI_U, 240L, listOf(MahlzeitTeil(2.7, t95Min = 240.0)), rettungKlein))
+    }
+
+    @Test
+    fun `Rebound - zweite echte Welle ohne Gegen-KH`(@TempDir dir: File) = runBlocking<Unit> {
+        reboundProbe(
+            dir,
+            ReboundProbe(
+                "zweiteWelle", KREIS_KH_MILLI_U, 210L,
+                listOf(MahlzeitTeil(2.6, t95Min = 100.0), MahlzeitTeil(1.9, beginnMin = 120.0, t95Min = 120.0)), null,
+            ),
+        )
+    }
+
+    @Test
+    fun `Rebound - leeres Konto vor der Halbzeit`(@TempDir dir: File) = runBlocking<Unit> {
+        // Lang angesagt (Halbzeit spaet), schnell und kleiner gekommen: das Konto ist frueh leer.
+        reboundProbe(dir, ReboundProbe("kontoLeer", KREIS_KH_MILLI_U, 300L, listOf(MahlzeitTeil(3.4, t95Min = 90.0)), rettungKlein))
     }
 
     // ---- HCL STUFE 2 (Toni 25.10.2026, Entwurf B): DER BOLUSRECHNER ---------------------------------------------

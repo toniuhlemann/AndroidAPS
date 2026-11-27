@@ -34,6 +34,7 @@ import app.aaps.fuse.core.controller.LowThreatGate
 import app.aaps.fuse.core.controller.LivenessChannel
 import app.aaps.fuse.core.controller.DeferredPrime
 import app.aaps.fuse.core.controller.MarkerScope
+import app.aaps.fuse.core.controller.MealReboundPhase
 import app.aaps.fuse.core.controller.NightWindow
 import app.aaps.fuse.core.controller.SubStepAccumulator
 import app.aaps.fuse.core.ledger.AccountedTreatment
@@ -2400,7 +2401,20 @@ class FuseCycleRunner(
         // laeuft, bremst das Rebound-Fenster die Dosierung nicht: weder Totband noch Ratio-Deckel, tau-Kuerzung,
         // Sub-Step-Riegel, Null-Ende oder Liveness-Tor. Gemessene Tiefs, Null-Tor und Tief-Sperre bleiben hart, alles
         // andere im Rueckfall bleibt wie ohne Marker.
-        val reboundEntwaffnet = markerBoost || ekGilt || kontoRueckfall
+        // TONI 27.11.2026: die Aufhebung durch das Konto gilt nur fuer die ANFANGSPHASE der Mahlzeit. Lag das juengste
+        // Tief nach der Halbzeit der angenommenen Mahlzeitwirkung oder ist das Konto leer, gilt der Rebound-Schutz wieder
+        // wie ohne Marker ([MealReboundPhase]). Gelesen wird das Konto DIESER Autorisierung aus dem Stand vor diesem
+        // Zyklus; Nur Marker (Budget 0), Rueckfall und Sonderrechte am Anfang (markerBoost) bleiben unveraendert.
+        val kontoDieserMahlzeit = episodes.expectation?.takeIf { ekGilt && it.authId == ekVorschau.authorizationId }
+        val mealHalfTimeMin = kontoDieserMahlzeit?.curve()?.halfTimeMin()
+        val reboundNachAnfangsphase = if (kontoDieserMahlzeit == null || !reboundRaw || markerBoost || pruefarm?.reboundGanzesFenster == true) null else MealReboundPhase.rearmReason(
+            markerTs = kontoDieserMahlzeit.authId,
+            lastLowTs = lastLowTs,
+            a0U = kontoDieserMahlzeit.a0U,
+            restU = kontoDieserMahlzeit.restU,
+            halfTimeMin = mealHalfTimeMin,
+        )
+        val reboundEntwaffnet = markerBoost || (ekGilt && reboundNachAnfangsphase == null) || kontoRueckfall
         val reboundWindow = reboundRaw && !reboundEntwaffnet
         val reboundSuppressedByMarker = reboundRaw && reboundEntwaffnet
 
@@ -2856,6 +2870,8 @@ class FuseCycleRunner(
                     markerCarbsInsulinU = markerEingabe.eingabe.carbsInsulinU,
                     markerAbsorptionMin = markerEingabe.eingabe.absorptionMin,
                     reboundSuppressedByMarker = reboundSuppressedByMarker,
+                    reboundRearmAfterLow = reboundNachAnfangsphase?.name,
+                    mealHalfTimeMin = mealHalfTimeMin,
                     mealWindow = mealWindow,
                     rSignedMgdlPerMin = ratioDrive,
                     riseRampLowRPerMin = cfg.riseRampLowR,
@@ -6483,6 +6499,12 @@ class FuseCycleRunner(
          * Wirkt nur im Pruefstand; am Geraet gibt es keinen Pruefarm.
          */
         val wende: Boolean = false,
+        /**
+         * REBOUND WIE BISHER (Toni 27.11.2026, Pruefstand): die Vollmacht des Kontos hebt den Rebound fuer das ganze
+         * Fenster auf, auch nach einem spaeten Tief ([MealReboundPhase] greift nicht) - der Vergleichsarm zum Kandidaten.
+         * Wirkt nur im Pruefstand; am Geraet gibt es keinen Pruefarm.
+         */
+        val reboundGanzesFenster: Boolean = false,
     ) {
         fun anwenden(c: Config): Config =
             if (!kontoAn) c.copy(
@@ -6513,7 +6535,10 @@ class FuseCycleRunner(
             /** KANDIDAT W: wie [V2], dazu die Wendeerkennung fuer die weiteren Portionen. */
             val V2_W = Pruefarm("V2_W", kontoAn = true, nurErwartung = true, wende = true)
 
-            val ALLE: List<Pruefarm> = listOf(REF, V2, V2_W)
+            /** Rebound wie bisher: Konto an, die Aufhebung gilt fuer das ganze Fenster ([reboundGanzesFenster]). */
+            val RB_HEUTE = Pruefarm("RB_HEUTE", kontoAn = true, reboundGanzesFenster = true)
+
+            val ALLE: List<Pruefarm> = listOf(REF, V2, V2_W, RB_HEUTE)
 
             fun vonName(name: String): Pruefarm? = ALLE.firstOrNull { it.name == name }
         }

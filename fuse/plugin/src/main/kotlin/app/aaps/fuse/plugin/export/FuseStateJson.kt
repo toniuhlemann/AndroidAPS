@@ -1728,6 +1728,9 @@ object FuseStateJson {
                 // marker, meal) stehen laengst da; dieses fehlte als einziges.
                 .put("nightWindow", outcome.state?.nightWindow ?: JSONObject.NULL)
                 .put("reboundSuppressedByMarker", outcome.state?.reboundSuppressedByMarker ?: JSONObject.NULL)
+                // REBOUND NACH DER ANFANGSPHASE (Toni 27.11.2026): Grund, warum die Vollmacht den Rebound NICHT aufhebt.
+                .put("reboundRearmAfterLow", outcome.state?.reboundRearmAfterLow ?: JSONObject.NULL)
+                .put("mealHalfTimeMin", outcome.state?.mealHalfTimeMin ?: JSONObject.NULL)
                 // DER DRUCKZEITPUNKT, nicht nur "Marker aktiv".
                 //
                 // Bisher stand im Trail ausschliesslich das Boolean
