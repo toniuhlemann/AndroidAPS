@@ -1780,8 +1780,12 @@ class FuseCycleRunner(
         // die aus run() entkommt, wird erst in FusePlugin.invoke() gefangen
         // und braucht DENSELBEN Vertrag. Genau EINE Implementierung, keine
         // Kopie.
-        fun abortTbr(): Pair<FuseController.TbrRequest?, Boolean> =
-            lies { FuseAbortTbr.evaluate(processedTbrEbData, profileFunction, computeTs) }.let { it.request to it.alarm }
+        fun abortTbr(
+            ownSlowBlock: FuseAbortTbr.OwnSlowBlock? = null,
+            kept: (() -> Unit)? = null,
+        ): Pair<FuseController.TbrRequest?, Boolean> =
+            lies { FuseAbortTbr.evaluate(processedTbrEbData, profileFunction, computeTs, ownSlowBlock, kept) }
+                .let { it.request to it.alarm }
 
         // `prediction`/`restraint` mit Default null: drei Abbruchstellen liegen
         // NACH dem Bahnbau (bolusStep, iob unknown, state-Guard). Ohne sie
@@ -1803,6 +1807,11 @@ class FuseCycleRunner(
              * genau die Zyklen, die eine Auswertung braucht (Befund 15.08.).
              */
             evidenz: EvidenceStock.Result? = null,
+            /**
+             * Candidate (cand/blind-anstieg): only the immature-trend abort passes this - FUSE's own running
+             * slow-channel block may then stay instead of being cancelled ([FuseAbortTbr.keepsOwnSlowBlock]).
+             */
+            ownSlowBlock: FuseAbortTbr.OwnSlowBlock? = null,
         ): Outcome {
             // SUB-02 (Codex Fix-Pass-5-Closure): der Rest-Zaehler ist
             // aufgeschobene ABSICHT, kein Guthaben. Jeder Abbruch - Signal,
@@ -1829,7 +1838,11 @@ class FuseCycleRunner(
             // Codex 22.08.: ein Abbruchzyklus ist fuer den Liveness-Kanal
             // ein unbeobachteter Zyklus - ein aktiver Lauf endet hier.
             val livenessLostExit = livenessObservationLost(episodes, computeTs, policy?.livenessReArmMin)
-            val (cancelTbr, tbrAlarm) = abortTbr()
+            var ownBlockKept = false
+            val (cancelTbr, tbrAlarm) = abortTbr(ownSlowBlock) { ownBlockKept = true }
+            // The trail shows when the own block stayed - the reason keeps its old start, so readers of the prefix
+            // still see an immature trend.
+            val grund = if (ownBlockKept) "$reason|${FuseAbortTbr.KEEP_OWN_SLOW_BLOCK}" else reason
             // Auch ein Abbruch kennt die Basiswerte (Toni 08.08.: nie
             // verstecken) - jede Lesung einzeln tolerant, ein Abbruch darf an
             // der Anreicherung nicht scheitern.
@@ -1863,7 +1876,7 @@ class FuseCycleRunner(
                 ),
             ).also { wirkungZustand = it.state } else null
             return Outcome(
-                decision = FuseController.noInput(reason), tbr = cancelTbr,
+                decision = FuseController.noInput(grund), tbr = cancelTbr,
                 bloecke = Bloecke(wirkung = wirkungAbbruch),
                 // Dasselbe valid-geprueft gelesene IobTotal wie die
                 // Abbruch-Anreicherung darueber - keine zweite Rechnung.
@@ -1875,10 +1888,10 @@ class FuseCycleRunner(
                 tbrChanged = tbrAktuation(cancelTbr, computeTs, lies { profileFunction.getProfile(computeTs) }, null, pumpe.basalStepUPerH),
                 prediction = prediction, restraint = restraint,
                 sourceTs = signal?.sourceTs, computeTs = computeTs, health = step?.health, gate = gate,
-                reason = reason, alarm = tbrAlarm, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
+                reason = grund, alarm = tbrAlarm, bgMgdl = signal?.q1, targetMgdl = null, targetSource = null,
                 signal = signal, band = null, discount = null, onset = null, prime = null, candidate = null, candidateGap = null, policy = policy, state = null, step = step,
                 sensorEpoch = null, calibrationEpoch = null,
-                isfMgdlPerU = null, iobU = iob, iobThU = iobTh, maxIobU = maxIob, computeDurationMs = null, mealStats = null, abortReason = reason,
+                isfMgdlPerU = null, iobU = iob, iobThU = iobTh, maxIobU = maxIob, computeDurationMs = null, mealStats = null, abortReason = grund,
                 // Typisierter Status auch im Abbruch: NO_INPUT = UNKNOWN -
                 // die Anzeigeseite muss nichts aus abortReason raten.
                 smbState = app.aaps.fuse.core.controller.SmbStatus.State.UNKNOWN.name, rSegmentBreakMs = gapPolicy.rSegmentBreakMs, maturity = maturityPolicy,
@@ -2152,7 +2165,19 @@ class FuseCycleRunner(
             // hatte (oder umgekehrt).
             maturity = signal.rejoin.maturity,
         )
-            ?: return abort("drive not estimable (${signal.samplesUsed} samples)", signal, cfg, step)
+            ?: return abort(
+                "drive not estimable (${signal.samplesUsed} samples)", signal, cfg, step,
+                // Candidate (cand/blind-anstieg): the channel's own block survives an immature trend - same threshold
+                // the channel uses at this time of day; the rule itself is in FuseAbortTbr.
+                ownSlowBlock = FuseAbortTbr.OwnSlowBlock(
+                    own = slowOwnTbr,
+                    basalStepUPerH = pumpe.basalStepUPerH,
+                    q1Mgdl = signal.q1,
+                    q1AgeMin = (computeTs - signal.sourceTs) / 60_000.0,
+                    trendMgdlPerMin = signal.ukfRatePerMin,
+                    thresholdMgdl = cfg.slowChannel.atTime(MidnightUtils.secondsFromMidnight(signal.sourceTs)).thresholdMgdl,
+                ),
+            )
 
         // Bolus-Aktivitaet am Anker - Eingang des Deckungs-Abschlags.
         // `calculateIobFromBolus()` rechnet auf `dateUtil.now()`, bis zu ~1 min

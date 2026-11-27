@@ -3,6 +3,8 @@ package app.aaps.fuse.plugin
 import app.aaps.core.interfaces.pump.Pump
 import app.aaps.core.interfaces.pump.VirtualPump
 import app.aaps.fuse.core.controller.FuseController
+import app.aaps.fuse.core.controller.PartialTbrOwnership
+import app.aaps.fuse.core.controller.TbrPolicy
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -104,5 +106,58 @@ class FuseAbortTbrTest {
         assertNull(rt.rate)
         assertNull(rt.duration)
         assertNull(rt.units)
+    }
+
+    // ---- candidate (cand/blind-anstieg): the own slow-channel block survives an immature trend -------------------
+
+    /** The channel's own block (synthetic values): 1.40 U/h for 30 min, set 5 min ago - the pump shows 25 min left. */
+    private val blockSetAt = now - 5 * 60_000L
+    private val ownBlock = PartialTbrOwnership.Identity(rateUPerH = 1.40, setAtTs = blockSetAt, durationMin = 30)
+    private val runningOwn = TbrPolicy.Current(absoluteRateUPerH = 1.40, remainingMin = 25, sourceType = TbrPolicy.SourceType.TEMP_BASAL)
+
+    private fun keep(
+        own: PartialTbrOwnership.State = PartialTbrOwnership.State(confirmedRunning = ownBlock),
+        current: TbrPolicy.Current? = runningOwn,
+        q1: Double = 240.0,
+        ageMin: Double = 0.1,
+        trend: Double = 2.0,
+        threshold: Double = 150.0,
+    ) = FuseAbortTbr.keepsOwnSlowBlock(
+        FuseAbortTbr.OwnSlowBlock(own, basalStepUPerH = 0.05, q1Mgdl = q1, q1AgeMin = ageMin, trendMgdlPerMin = trend, thresholdMgdl = threshold),
+        current,
+        now,
+    )
+
+    @Test
+    fun `the own block stays when the trend is not ready and glucose is high and not falling`() {
+        assertTrue(keep())
+        // Also while the request is still open (not yet confirmed by the pump).
+        assertTrue(keep(own = PartialTbrOwnership.State(pendingRequest = ownBlock)))
+        // A flat trend is not falling.
+        assertTrue(keep(trend = 0.0))
+    }
+
+    @Test
+    fun `a foreign or changed temp basal is cancelled as before`() {
+        // Another rate than our block.
+        assertFalse(keep(current = runningOwn.copy(absoluteRateUPerH = 2.50)))
+        // Same rate, but a remaining time that does not fit our block (set by hand or by someone else).
+        assertFalse(keep(current = runningOwn.copy(remainingMin = 60)))
+        // A converted extended bolus is never our block.
+        assertFalse(keep(current = runningOwn.copy(sourceType = TbrPolicy.SourceType.FAKE_EXTENDED)))
+        // No own block known.
+        assertFalse(keep(own = PartialTbrOwnership.State()))
+        // The channel is ending its block.
+        assertFalse(keep(own = PartialTbrOwnership.State(confirmedRunning = ownBlock, ending = PartialTbrOwnership.Ending(sinceTs = now))))
+        assertFalse(keep(current = null))
+    }
+
+    @Test
+    fun `low, falling or old glucose cancels as before`() {
+        assertFalse(keep(q1 = 145.0))
+        assertFalse(keep(trend = -0.5))
+        assertFalse(keep(trend = Double.NaN))
+        assertFalse(keep(ageMin = 4.0))
+        assertFalse(keep(q1 = Double.NaN))
     }
 }
