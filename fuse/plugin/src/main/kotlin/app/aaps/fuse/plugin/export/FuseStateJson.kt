@@ -2641,6 +2641,8 @@ object FuseStateJson {
                 .apply {
                     if (s.curveStretch != 1.0) put("curveStretch", fin(s.curveStretch))
                     if (s.byInput) put("byInput", true)
+                    // K2 (Toni 27.11.2026): der Nachschlag ist fuer den Rest der Mahlzeit gesperrt - nur gesetzt.
+                    if (s.topUpLocked) put("topUpLocked", true)
                 }
                 .put("armedThisCycle", z.armiertInDiesemZyklus)
                 .put("startStable", s.startStable)

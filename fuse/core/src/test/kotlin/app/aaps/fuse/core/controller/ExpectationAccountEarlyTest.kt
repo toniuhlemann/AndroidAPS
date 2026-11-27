@@ -31,11 +31,13 @@ class ExpectationAccountEarlyTest {
     private fun schritt(
         s: ExpectationAccount.State, min: Int, bg: Double = 100.0, iobU: Double = 0.0, pause: Boolean = false,
         early: ExpectationAccount.EarlyInputs? = eingaben(iobU),
+        /** K2: in diesem Zyklus sperrt ein spaetes Tief den Nachschlag. */
+        k2: Boolean = false,
     ) = ExpectationAccount.step(
         s,
         ExpectationAccount.Inputs(
             nowTs = t0 + min * 60_000L, ageMin = min.toDouble(), bgMgdl = bg, targetMgdl = 100.0, isfMgdlPerU = 50.0,
-            iobTotalU = iobU, activityUPerMin = 0.0, paused = pause, stableNow = true, early = early,
+            iobTotalU = iobU, activityUPerMin = 0.0, paused = pause, stableNow = true, early = early, topUpFrozen = k2,
         ),
     )
 
@@ -414,6 +416,29 @@ class ExpectationAccountEarlyTest {
         var t = kontoMitNachschlag(0.5)
         for (m in 0..119) t = schritt(t, m, bg = 100.0 + 6.0 * m).first
         assertEquals(0.5 * t.a0U, t.topUpU, 1e-9)
+    }
+
+    /**
+     * K2 (Toni 27.11.2026): nach einem spaeten Tief waechst der Nachschlag fuer den Rest der Mahlzeit nicht mehr - auch
+     * wenn die Beobachtung weiter steigt und der Zyklus danach keine neue Sperre meldet. Der schon erlaubte bleibt.
+     */
+    @Test
+    fun `K2 - nach der Sperre waechst der Nachschlag nicht mehr, der erlaubte bleibt`() {
+        var s = kontoMitNachschlag(0.5)
+        for (m in 0..30) s = schritt(s, m, bg = 100.0 + 4.0 * m).first
+        val vorher = s.topUpU
+        assertTrue(vorher > 0.0) { "Probe zeigt nichts: kein Nachschlag vor der Sperre" }
+        assertFalse(s.topUpLocked)
+        s = schritt(s, 31, bg = 100.0 + 4.0 * 31, k2 = true).first
+        assertTrue(s.topUpLocked)
+        assertEquals(vorher, s.topUpU, 1e-12)
+        for (m in 32..110) s = schritt(s, m, bg = 100.0 + 4.0 * m).first
+        assertTrue(s.topUpLocked)
+        assertEquals(vorher, s.topUpU, 1e-12)
+        // Ohne Sperre waechst er bei derselben Beobachtung weiter (Gegenprobe).
+        var t = kontoMitNachschlag(0.5)
+        for (m in 0..110) t = schritt(t, m, bg = 100.0 + 4.0 * m).first
+        assertTrue(t.topUpU > vorher + 1e-6) { "Gegenprobe zeigt nichts: ohne Sperre waechst er auch nicht" }
     }
 
     /**

@@ -2407,7 +2407,7 @@ class FuseCycleRunner(
         // Zyklus; Nur Marker (Budget 0), Rueckfall und Sonderrechte am Anfang (markerBoost) bleiben unveraendert.
         val kontoDieserMahlzeit = episodes.expectation?.takeIf { ekGilt && it.authId == ekVorschau.authorizationId }
         val mealHalfTimeMin = kontoDieserMahlzeit?.curve()?.halfTimeMin()
-        val reboundNachAnfangsphase = if (kontoDieserMahlzeit == null || !reboundRaw || markerBoost || pruefarm?.reboundGanzesFenster == true) null else MealReboundPhase.rearmReason(
+        val reboundNachAnfangsphase = if (kontoDieserMahlzeit == null || !reboundRaw || markerBoost || pruefarm?.wieBisher == true) null else MealReboundPhase.rearmReason(
             markerTs = kontoDieserMahlzeit.authId,
             lastLowTs = lastLowTs,
             a0U = kontoDieserMahlzeit.a0U,
@@ -3347,6 +3347,7 @@ class FuseCycleRunner(
         val ekZyklus: ErwartungskontoZyklus? = if (!cfg.expectationAccountEnabled) null else erwartungskontoZyklus(
             ekGilt = ekGilt, vorschau = ekVorschau, dosingCtx = dosingCtx, cfg = cfg, episodes = episodes,
             computeTs = computeTs,
+            reboundNachAnfangsphase = reboundNachAnfangsphase,
             nurErwartung = markerNurErwartung,
             snack = markerSnack,
             eingabe = markerEingabe.eingabe,
@@ -6500,11 +6501,11 @@ class FuseCycleRunner(
          */
         val wende: Boolean = false,
         /**
-         * REBOUND WIE BISHER (Toni 27.11.2026, Pruefstand): die Vollmacht des Kontos hebt den Rebound fuer das ganze
-         * Fenster auf, auch nach einem spaeten Tief ([MealReboundPhase] greift nicht) - der Vergleichsarm zum Kandidaten.
-         * Wirkt nur im Pruefstand; am Geraet gibt es keinen Pruefarm.
+         * WIE BISHER (Toni 27.11.2026, Pruefstand): der Vergleichsarm zum Kandidaten "Rebound + K2" - die Vollmacht des
+         * Kontos hebt den Rebound fuer das ganze Fenster auf, auch nach einem spaeten Tief ([MealReboundPhase] greift
+         * nicht), und der Nachschlag wird nie gesperrt. Wirkt nur im Pruefstand; am Geraet gibt es keinen Pruefarm.
          */
-        val reboundGanzesFenster: Boolean = false,
+        val wieBisher: Boolean = false,
     ) {
         fun anwenden(c: Config): Config =
             if (!kontoAn) c.copy(
@@ -6535,8 +6536,8 @@ class FuseCycleRunner(
             /** KANDIDAT W: wie [V2], dazu die Wendeerkennung fuer die weiteren Portionen. */
             val V2_W = Pruefarm("V2_W", kontoAn = true, nurErwartung = true, wende = true)
 
-            /** Rebound wie bisher: Konto an, die Aufhebung gilt fuer das ganze Fenster ([reboundGanzesFenster]). */
-            val RB_HEUTE = Pruefarm("RB_HEUTE", kontoAn = true, reboundGanzesFenster = true)
+            /** Wie bisher: Konto an, Rebound fuer das ganze Fenster aufgehoben, kein Nachschlag-Stopp ([wieBisher]). */
+            val RB_HEUTE = Pruefarm("RB_HEUTE", kontoAn = true, wieBisher = true)
 
             val ALLE: List<Pruefarm> = listOf(REF, V2, V2_W, RB_HEUTE)
 
@@ -6758,6 +6759,8 @@ class FuseCycleRunner(
         fortsetzung: app.aaps.fuse.core.controller.EarlySupply.Continuation? = null,
         /** KANDIDAT W (Pruefstand): r dieses Zyklus fuer die Wendeerkennung; gelesen nur mit dem Pruefarm W. */
         rSigned: Double? = null,
+        /** Rebound nach der Anfangsphase: der Grund dieses Zyklus ([MealReboundPhase]); nach der Halbzeit sperrt er den Nachschlag (K2). */
+        reboundNachAnfangsphase: MealReboundPhase.Reason? = null,
         /**
          * HCL STUFE 2 (Toni 25.10.2026): die Rechnung des Bolusrechners, zu der der Marker gehoert; 0 = keine. Ein
          * solcher Marker bucht sein Konto mit dem HCL-Skalierer ([EarlySupply.hclScale]) und sonst nichts
@@ -6918,6 +6921,10 @@ class FuseCycleRunner(
         // Steigt der Zucker nicht mehr, gilt wieder alles wie bisher. Ob noch etwas fliessen darf, sagt der Rest im Konto
         // (mit Nachschlag erst nach dem Schritt bekannt).
         val steigtAbBg = max(grenzeBg, cfg.mealRisingMinBgMgdl)
+        // K2 (Toni 27.11.2026): liegt das juengste Tief nach der Halbzeit der angenommenen Mahlzeitwirkung, sperrt das
+        // Konto den Nachschlag fuer den Rest der Mahlzeit (die Sperre lebt im Konto, auch nach dem Rebound-Fenster und
+        // ueber einen Neustart). Ein Tief in der Anfangsphase - auch bei leerem Konto - sperrt ihn nicht.
+        val k2Sperrt = reboundNachAnfangsphase == MealReboundPhase.Reason.AFTER_HALF_TIME
         val steigt = konto.early != null && !anfangOffen && ekSteigt.rising && bgMgdl > steigtAbBg && !gemessenesTief &&
             computeTs < konto.windowEndTs
         // SCHRITT 2 (Toni): laeuft die Mahlzeit, gelten fuer die weiteren Portionen die eingestellte Fallgrenze statt der
@@ -6991,6 +6998,7 @@ class FuseCycleRunner(
                 continuation = (fortsetzung ?: if (wendeAktiv) ekFortsetzung(rSigned, isfMgdlPerU, cfg, ohneSchwelle = true) else null)
                     .takeIf { folgeImLauf },
                 turn = wende,
+                topUpFrozen = k2Sperrt,
             ),
         )
         if (neu.released) ekFreigabeBestaetigtFuerAuth = neu.authId

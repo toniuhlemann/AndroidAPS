@@ -706,6 +706,8 @@ object LedgerCodec {
             .apply {
                 if (s.curveStretch != 1.0) put("curveStretch", zahl(s.curveStretch))
                 if (s.byInput) put("byInput", true)
+                // K2 (Toni 27.11.2026): Nachschlag gesperrt - nur gesetzt geschrieben; ein aelterer Stand liest es nicht.
+                if (s.topUpLocked) put("topUpLocked", true)
             }
             .apply {
                 val f = s.early ?: return@apply
@@ -792,6 +794,8 @@ object LedgerCodec {
             require(it in unten..oben) { "curveStretch $it" }
         }
         val ausEingabe = o.has("byInput") && o.getBoolean("byInput")
+        // Optional (K2, Toni 27.11.2026): fehlt es, ist der Nachschlag nicht gesperrt.
+        val nachschlagGesperrt = o.has("topUpLocked") && o.getBoolean("topUpLocked")
         val an = schalter("expectationOn")
         val kurveRoh = o.getJSONArray("curveValues")
         val kurve = (0 until kurveRoh.length()).map { i -> kurveRoh.getDouble(i) }
@@ -827,6 +831,7 @@ object LedgerCodec {
             cancelledU = menge("cancelledU"),
             curveStretch = streckung,
             byInput = ausEingabe,
+            topUpLocked = nachschlagGesperrt,
         ).let { basis ->
             // Konsolidierung 2.0: das Konto v1 ist entfallen. Ein v1-Konto eines aelteren Standes wird als Konto ohne
             // fruehe Versorgung weitergefuehrt (neutrale Pins): Verbrauch, Freigabe und Strecke bleiben, sein Vorgriff

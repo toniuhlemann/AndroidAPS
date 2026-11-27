@@ -255,6 +255,20 @@ class ExpectationAccountPersistTest {
         assertTrue(zurueck.expectationDropped)
     }
 
+    /** K2 (Toni 27.11.2026): die Nachschlag-Sperre steht nur gesetzt in der Datei und ueberlebt den Rundlauf (Neustart). */
+    @Test
+    fun `die Nachschlag-Sperre steht nur gesetzt in der Datei und ueberlebt den Rundlauf`() {
+        val k = fruehesKonto()
+        assertFalse(LedgerCodec.encodeEpisodes(episoden(k)).getJSONObject("earlySupply").has("topUpLocked"))
+        val gesperrt = k.copy(topUpLocked = true)
+        val json = LedgerCodec.encodeEpisodes(episoden(gesperrt))
+        assertTrue(json.getJSONObject("earlySupply").getBoolean("topUpLocked"))
+        assertEquals(gesperrt, LedgerCodec.decodeEpisodes(json).expectation)
+        // Ein aelterer Stand ohne das Feld: nicht gesperrt.
+        json.getJSONObject("earlySupply").remove("topUpLocked")
+        assertEquals(k, LedgerCodec.decodeEpisodes(json).expectation)
+    }
+
     @Test
     fun `ein ungueltiges v2-Konto wird verworfen und die Generation bleibt gueltig`() {
         val faelle = listOf<(JSONObject) -> Unit>(

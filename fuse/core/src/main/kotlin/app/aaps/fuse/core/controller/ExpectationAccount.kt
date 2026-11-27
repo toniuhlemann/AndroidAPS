@@ -331,6 +331,12 @@ object ExpectationAccount {
          */
         val topUpU: Double = 0.0,
         /**
+         * K2 (Toni 27.11.2026): der Nachschlag ist fuer den Rest dieser Mahlzeit gesperrt - nach einem Tief nach der
+         * Halbzeit der angenommenen Mahlzeitwirkung ([Inputs.topUpFrozen]). Der schon erlaubte Nachschlag bleibt. Nie
+         * zurueck; ein Tief in der Anfangsphase sperrt ihn nicht.
+         */
+        val topUpLocked: Boolean = false,
+        /**
          * MAHLZEIT-EINGABE (Toni 25.11.2026): die Streckung der Zeitachse dieser Mahlzeit aus der Absorptionszeit am
          * Marker ([EarlySupply.courseStretch]), am Marker festgehalten. 1 = die Kurve, wie sie eingestellt ist. Die
          * Stuetzwerte in [curveValues] bleiben die eingestellten; gelesen wird die Kurve ueber [curve].
@@ -499,6 +505,12 @@ object ExpectationAccount {
         val continuation: EarlySupply.Continuation? = null,
         /** KANDIDAT W (Pruefstand): Wendephase, Rampe und Abwaertsstopp; `null` = ohne W (Produkt). */
         val turn: Turn? = null,
+        /**
+         * K2 (Toni 27.11.2026): in diesem Zyklus liegt das juengste Tief nach der Halbzeit der angenommenen
+         * Mahlzeitwirkung ([MealReboundPhase.Reason.AFTER_HALF_TIME]). Dann sperrt das Konto den Nachschlag fuer den Rest
+         * dieser Mahlzeit ([State.topUpLocked]) - die Beobachtung misst die Gegen-KH mit. `false` = keine neue Sperre.
+         */
+        val topUpFrozen: Boolean = false,
     )
 
     /**
@@ -685,7 +697,9 @@ object ExpectationAccount {
         // mal Kurvenende), nicht am Stand des Verlaufs - schon gedeckte KH geben kein Insulin erneut frei. Was die Messung
         // zeigt, versorgt weiter der Normalbedarf; uebersteigt die Beobachtung die ganze Mahlzeit, gilt der Nachschlag.
         // Pruefstand: eine Mahlzeit, deren erste Haelfte schneller kam als angesagt, bekam sonst den Nachschlag obendrauf.
-        if (curve != null && !expired) {
+        // K2 (Toni 27.11.2026): nach einem spaeten Tief waechst der Nachschlag fuer den Rest der Mahlzeit nicht mehr.
+        if (inputs.topUpFrozen && !s.topUpLocked) s = s.copy(topUpLocked = true)
+        if (curve != null && !expired && !s.topUpLocked) {
             val deckel = max(0.0, pins.topUpShare) * s.a0U
             val erwartetU = if (s.byInput) s.phi0 * curve.endU else s.phi0 * curve.at(inputs.ageMin)
             val ueberschuss = if (s.disturbanceValid && s.disturbanceU.isFinite()) {
